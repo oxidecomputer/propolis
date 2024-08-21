@@ -154,6 +154,16 @@ impl CrucibleBackend {
         }))
     }
 
+    /// Return the block size of this Crucible backend, if it can be determined.
+    pub async fn block_size(&self) -> Option<u32> {
+        self.state
+            .volume
+            .get_block_size()
+            .await
+            .ok()
+            .and_then(|sz| sz.try_into().ok())
+    }
+
     /// Create Crucible backend using the in-memory volume backend, rather than
     /// "real" Crucible downstairs instances.
     pub async fn create_mem(

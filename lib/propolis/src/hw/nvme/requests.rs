@@ -4,7 +4,10 @@
 
 use crate::{
     accessors::MemAccessor,
-    block::{self, Operation, Request, Result as BlockResult},
+    block::{
+        self, tracking::CompletionCallback, Operation, Request,
+        Result as BlockResult,
+    },
     hw::nvme::{bits, cmds::Completion},
     vmm::mem::MemCtx,
 };
@@ -49,6 +52,10 @@ impl block::Device for PciNvme {
     fn complete(&self, res: BlockResult, id: block::ReqId) {
         let (op, permit) = self.block_tracking.complete(id, res);
         self.complete_req(op, res, permit);
+    }
+
+    fn on_completion(&self, cb: Box<dyn CompletionCallback>) -> bool {
+        self.block_tracking.set_completion_callback(cb)
     }
 
     fn accessor_mem(&self) -> MemAccessor {

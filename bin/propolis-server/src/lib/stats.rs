@@ -7,10 +7,11 @@
 use omicron_common::api::internal::nexus::ProducerEndpoint;
 use omicron_common::api::internal::nexus::ProducerKind;
 use oximeter::{
-    types::{Cumulative, ProducerRegistry, Sample},
-    Metric, MetricsError, Producer,
+    types::{ProducerRegistry, Sample},
+    MetricsError, Producer,
 };
 use oximeter_producer::{Config, Error, Server};
+use propolis_api_types::InstanceProperties;
 use slog::Logger;
 
 use std::net::SocketAddr;
@@ -18,15 +19,11 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 use crate::server::MetricsEndpointConfig;
-use crate::stats::virtual_machine::VirtualMachine;
-
-// Propolis is built and some tests are run on non-illumos systems. The real
-// `kstat` infrastructure cannot be built there, so some conditional compilation
-// tricks are needed
-#[cfg(all(not(test), target_os = "illumos"))]
+use crate::stats::virtual_machine::{Reset, VirtualMachine};
 use oximeter_instruments::kstat::KstatSampler;
 
 mod pvpanic;
+pub(crate) mod virtual_disk;
 pub(crate) mod virtual_machine;
 pub use self::pvpanic::PvpanicProducer;
 
@@ -35,7 +32,6 @@ const OXIMETER_STAT_INTERVAL: tokio::time::Duration =
     tokio::time::Duration::from_secs(30);
 
 // Interval on which we produce vCPU metrics.
-#[cfg(all(not(test), target_os = "illumos"))]
 const VCPU_KSTAT_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(5);
 
@@ -46,24 +42,12 @@ const VCPU_KSTAT_INTERVAL: std::time::Duration =
 //
 // This limit provides extra space for up to 64 samples per vCPU per microstate,
 // to ensure we don't throw away too much data if oximeter cannot reach us.
-#[cfg(all(not(test), target_os = "illumos"))]
 const KSTAT_LIMIT_PER_VCPU: u32 =
     crate::stats::virtual_machine::N_VCPU_MICROSTATES * 64;
 
-/// An Oximeter `Metric` that specifies the number of times an instance was
-/// reset via the server API.
-#[derive(Debug, Default, Copy, Clone, Metric)]
-struct Reset {
-    /// The number of times this instance was reset via the API.
-    #[datum]
-    pub count: Cumulative<u64>,
-}
-
-/// The full set of server-level metrics, collated by
-/// [`ServerStatsOuter::produce`] into the types needed to relay these
-/// statistics to Oximeter.
+/// Shared type for tracking metrics about the Propolis API server itself.
 #[derive(Clone, Debug)]
-struct ServerStats {
+struct ServerStatsInner {
     /// The oximeter Target identifying this instance as the source of metric
     /// data.
     virtual_machine: VirtualMachine,
@@ -72,45 +56,48 @@ struct ServerStats {
     run_count: Reset,
 }
 
-impl ServerStats {
+impl ServerStatsInner {
     pub fn new(virtual_machine: VirtualMachine) -> Self {
-        ServerStats { virtual_machine, run_count: Default::default() }
+        ServerStatsInner {
+            virtual_machine,
+            run_count: Reset { datum: Default::default() },
+        }
     }
 }
 
-/// The public wrapper for server-level metrics.
+/// Type publishing metrics about the Propolis API server itself.
+//
+// NOTE: This type is shared with the server and the oximeter producer. The
+// former updates stats as API requests are handled or other actions taken, and
+// the latter collects the stats when oximeter requests them.
 #[derive(Clone, Debug)]
-pub struct ServerStatsOuter {
-    server_stats_wrapped: Arc<Mutex<ServerStats>>,
-    #[cfg(all(not(test), target_os = "illumos"))]
-    kstat_sampler: Option<KstatSampler>,
+pub struct ServerStats {
+    inner: Arc<Mutex<ServerStatsInner>>,
 }
 
-impl ServerStatsOuter {
-    /// Increments the number of times the instance was reset.
+impl ServerStats {
+    /// Create new server stats, representing the provided instance.
+    pub fn new(vm: VirtualMachine) -> Self {
+        Self { inner: Arc::new(Mutex::new(ServerStatsInner::new(vm))) }
+    }
+
+    /// Increments the number of times the managed instance was reset.
     pub fn count_reset(&self) {
-        let mut inner = self.server_stats_wrapped.lock().unwrap();
-        let datum = inner.run_count.datum_mut();
-        *datum += 1;
+        self.inner.lock().unwrap().run_count.datum.increment();
     }
 }
 
-impl Producer for ServerStatsOuter {
+impl Producer for ServerStats {
     fn produce(
         &mut self,
     ) -> Result<Box<dyn Iterator<Item = Sample> + 'static>, MetricsError> {
         let run_count = {
-            let inner = self.server_stats_wrapped.lock().unwrap();
+            let inner = self.inner.lock().unwrap();
             std::iter::once(Sample::new(
                 &inner.virtual_machine,
                 &inner.run_count,
             )?)
         };
-        #[cfg(all(not(test), target_os = "illumos"))]
-        if let Some(sampler) = self.kstat_sampler.as_mut() {
-            let samples = sampler.produce()?;
-            return Ok(Box::new(run_count.chain(samples)));
-        }
         Ok(Box::new(run_count))
     }
 }
@@ -171,64 +158,42 @@ pub fn start_oximeter_server(
     Server::with_registry(registry.clone(), &config)
 }
 
-/// Creates and registers a set of server-level metrics for an instance.
-///
-/// This attempts to initialize kstat-based metrics for vCPU usage data. This
-/// may fail, in which case those metrics will be unavailable.
-//
-// NOTE: The logger is unused if we don't pass it to `setup_kstat_tracking`
-// internally, so ignore that clippy lint.
-#[cfg_attr(not(all(not(test), target_os = "illumos")), allow(unused_variables))]
-pub async fn register_server_metrics(
-    registry: &ProducerRegistry,
-    virtual_machine: VirtualMachine,
+/// Create an object that can be used to sample kstat-based metrics.
+pub(crate) fn create_kstat_sampler(
     log: &Logger,
-) -> anyhow::Result<ServerStatsOuter> {
-    let stats = ServerStats::new(virtual_machine.clone());
-
-    let stats_outer = ServerStatsOuter {
-        server_stats_wrapped: Arc::new(Mutex::new(stats)),
-        // Setup the collection of kstats for this instance.
-        #[cfg(all(not(test), target_os = "illumos"))]
-        kstat_sampler: setup_kstat_tracking(log, virtual_machine).await,
-    };
-
-    registry.register_producer(stats_outer.clone())?;
-
-    Ok(stats_outer)
-}
-
-#[cfg(all(not(test), target_os = "illumos"))]
-async fn setup_kstat_tracking(
-    log: &Logger,
-    virtual_machine: VirtualMachine,
+    n_vcpus: u32,
 ) -> Option<KstatSampler> {
-    let kstat_limit =
-        usize::try_from(virtual_machine.n_vcpus() * KSTAT_LIMIT_PER_VCPU)
-            .unwrap();
+    let kstat_limit = usize::try_from(n_vcpus * KSTAT_LIMIT_PER_VCPU).unwrap();
     match KstatSampler::with_sample_limit(log, kstat_limit) {
-        Ok(sampler) => {
-            let details = oximeter_instruments::kstat::CollectionDetails::never(
-                VCPU_KSTAT_INTERVAL,
-            );
-            if let Err(e) = sampler.add_target(virtual_machine, details).await {
-                slog::error!(
-                    log,
-                    "failed to add VirtualMachine target, \
-                    vCPU stats will be unavailable";
-                    "error" => ?e,
-                );
-            }
-            Some(sampler)
-        }
+        Ok(sampler) => Some(sampler),
         Err(e) => {
             slog::error!(
                 log,
                 "failed to create KstatSampler, \
-                vCPU stats will be unavailable";
+                kstat-based stats will be unavailable";
                 "error" => ?e,
             );
             None
         }
+    }
+}
+
+/// Track kstats required to publish vCPU metrics for this instance.
+pub(crate) async fn track_vcpu_kstats(
+    log: &Logger,
+    sampler: &KstatSampler,
+    properties: &InstanceProperties,
+) {
+    let virtual_machine = VirtualMachine::from(properties);
+    let details = oximeter_instruments::kstat::CollectionDetails::never(
+        VCPU_KSTAT_INTERVAL,
+    );
+    if let Err(e) = sampler.add_target(virtual_machine, details).await {
+        slog::error!(
+            log,
+            "failed to add VirtualMachine target, \
+            vCPU stats will be unavailable";
+            "error" => ?e,
+        );
     }
 }

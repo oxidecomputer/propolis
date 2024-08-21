@@ -10,11 +10,22 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::block::{self, probes, Device, Operation, ReqId, Request};
 
 static NEXT_DEVICE_ID: AtomicU64 = AtomicU64::new(1);
+
+/// A function that is called when a block operation completes.
+pub trait CompletionCallback:
+    Fn(Operation, block::Result, Duration) + Send + Sync + 'static
+{
+}
+
+impl<T> CompletionCallback for T where
+    T: Fn(Operation, block::Result, Duration) + Send + Sync + 'static
+{
+}
 
 /// Tracking structure for outstanding block [`Request`]s.
 ///
@@ -26,6 +37,11 @@ static NEXT_DEVICE_ID: AtomicU64 = AtomicU64::new(1);
 /// Although use of [`Tracking`] is not required by the block abstraction, it is
 /// here where the general USDT probes are attached.  A device which eschews its
 /// use will be missing calls into those probes.
+///
+/// Each [`Tracking`] also allows one optional callback that it will call
+/// whenever an I/O is completed. This can be set in the
+/// [`Tracking::with_completion_callback()`] constructor, or with
+/// [`Tracking::set_completion_callback()`].
 pub struct Tracking<T> {
     inner: Mutex<TrackingInner<T>>,
     wait: Arc<Mutex<TrackingWait>>,
@@ -35,6 +51,7 @@ struct TrackingInner<T> {
     next_id: ReqId,
     dev: Weak<dyn Device>,
     outstanding: BTreeMap<ReqId, TrackingEntry<T>>,
+    on_completion: Option<Box<dyn CompletionCallback>>,
 }
 struct TrackingEntry<T> {
     op: Operation,
@@ -46,6 +63,21 @@ struct TrackingEntry<T> {
 /// Track device-specific data for outstanding block [Request]s.
 impl<T> Tracking<T> {
     pub fn new(dev: Weak<dyn Device>) -> Self {
+        Self::new_raw(dev, None)
+    }
+
+    /// Create a new tracking object with a completion callback.
+    pub fn with_completion_callback(
+        dev: Weak<dyn Device>,
+        cb: impl CompletionCallback,
+    ) -> Self {
+        Self::new_raw(dev, Some(Box::new(cb)))
+    }
+
+    fn new_raw(
+        dev: Weak<dyn Device>,
+        cb: Option<Box<dyn CompletionCallback>>,
+    ) -> Self {
         let device_id = NEXT_DEVICE_ID.fetch_add(1, Ordering::Relaxed);
         Self {
             inner: Mutex::new(TrackingInner {
@@ -53,9 +85,20 @@ impl<T> Tracking<T> {
                 next_id: ReqId::START,
                 dev,
                 outstanding: BTreeMap::new(),
+                on_completion: cb,
             }),
             wait: Arc::new(Mutex::new(TrackingWait::new())),
         }
+    }
+
+    /// Set or overwrite the completion callback.
+    ///
+    /// Returns true if there was a previous callback.
+    pub fn set_completion_callback(
+        &self,
+        cb: Box<dyn CompletionCallback>,
+    ) -> bool {
+        self.inner.lock().unwrap().on_completion.replace(cb).is_some()
     }
 
     /// Record tracking in an [`Request`] prior to passing it to the associated
@@ -116,8 +159,8 @@ impl<T> Tracking<T> {
             .expect("tracked request should be present");
 
         let devid = guard.device_id;
-        let proc_ns =
-            now.duration_since(entry.time_submitted).as_nanos() as u64;
+        let elapsed = now.duration_since(entry.time_submitted);
+        let proc_ns = elapsed.as_nanos() as u64;
         // TODO: calculate queued time
         let queue_ns = 0;
         let rescode = res as u8;
@@ -137,6 +180,10 @@ impl<T> Tracking<T> {
                     (devid, id, rescode, proc_ns, queue_ns)
                 });
             }
+        }
+
+        if let Some(cb) = guard.on_completion.as_ref() {
+            cb(entry.op, res, elapsed);
         }
 
         if guard.outstanding.is_empty() {

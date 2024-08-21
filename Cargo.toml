@@ -71,18 +71,20 @@ p9ds = { git = "https://github.com/oxidecomputer/p9fs" }
 softnpu = { git = "https://github.com/oxidecomputer/softnpu" }
 
 # Omicron-related
-internal-dns = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
-nexus-client = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
-omicron-common = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+internal-dns = { git = "https://github.com/oxidecomputer/omicron", branch = "new-virtual-disk-timeseries-definition" }
+nexus-client = { git = "https://github.com/oxidecomputer/omicron", branch = "new-virtual-disk-timeseries-definition" }
+omicron-common = { git = "https://github.com/oxidecomputer/omicron", branch = "new-virtual-disk-timeseries-definition" }
 omicron-zone-package = "0.9.0"
-oximeter-instruments = { git = "https://github.com/oxidecomputer/omicron", branch = "main", default-features = false, features = ["kstat"] }
-oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
-oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
-sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+oximeter-instruments = { git = "https://github.com/oxidecomputer/omicron", branch = "new-virtual-disk-timeseries-definition", default-features = false, features = ["kstat"] }
+oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", branch = "new-virtual-disk-timeseries-definition" }
+oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "new-virtual-disk-timeseries-definition" }
+sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", branch = "new-virtual-disk-timeseries-definition" }
 
 # Crucible
-crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "e58ca3693cb9ce0438947beba10e97ee38a0966b" }
-crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "e58ca3693cb9ce0438947beba10e97ee38a0966b" }
+#crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "e58ca3693cb9ce0438947beba10e97ee38a0966b" }
+#crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "e58ca3693cb9ce0438947beba10e97ee38a0966b" }
+crucible = { path = "/home/bnaecker/crucible/upstairs" }
+crucible-client-types = { path = "/home/bnaecker/crucible/crucible-client-types" }
 
 # External dependencies
 anyhow = "1.0"
@@ -120,7 +122,7 @@ http = "0.2.9"
 hyper = "0.14"
 indicatif = "0.17.3"
 inventory = "0.3.0"
-kstat-rs = "0.2.3"
+kstat-rs = "0.2.4"
 lazy_static = "1.4"
 libc = "0.2"
 mockall = "0.12"
