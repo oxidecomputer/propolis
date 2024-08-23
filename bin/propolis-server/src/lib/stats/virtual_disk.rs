@@ -59,7 +59,10 @@ struct VirtualDiskStats {
     /// Histogram tracking I/O latency, by the I/O kind.
     io_latency: [IoLatency; N_IO_KINDS],
     /// Histogram tracking I/O sizes, by the I/O kind.
-    io_size: [IoSize; N_IO_KINDS],
+    ///
+    /// Note that we have 1 fewer histogram here, since flush operations do not
+    /// have a size.
+    io_size: [IoSize; N_IO_KINDS - 1],
 }
 
 impl VirtualDiskStats {
@@ -178,8 +181,10 @@ const UNSUPPORTED_KIND: &str = "unsupported";
 /// which is 10 ** 3 nanos, and 10s, which is 10 * 1e9 == 10 ** 10 nanoseconds.
 const LATENCY_POWERS: (u16, u16) = (3, 10);
 
-/// Sizes are measured in powers of 2 from 4KiB to 1GiB
-const SIZE_POWERS: (u16, u16) = (12, 30);
+/// Sizes are measured in powers of 2 from 512B to 1GiB.
+///
+/// We use 512B as the minimum since that is the minimum supported block size.
+const SIZE_POWERS: (u16, u16) = (9, 30);
 
 /// A [`Producer`] that emits statistics about virtual disks.
 ///
@@ -210,10 +215,6 @@ impl VirtualDiskProducer {
             disk_id,
             project_id: metadata.project_id,
             silo_id: metadata.silo_id,
-            sled_id: metadata.sled_id,
-            sled_model: metadata.sled_model.clone().into(),
-            sled_revision: metadata.sled_revision,
-            sled_serial: metadata.sled_serial.clone().into(),
         };
         let now = Utc::now();
         let datum = Cumulative::with_start_time(now, 0);
@@ -267,10 +268,6 @@ impl VirtualDiskProducer {
                     io_kind: WRITE_KIND.into(),
                     datum: size_histogram.clone(),
                 },
-                IoSize {
-                    io_kind: FLUSH_KIND.into(),
-                    datum: size_histogram.clone(),
-                },
             ],
         };
         Self { inner: Arc::new(Mutex::new(inner)) }
@@ -297,7 +294,7 @@ impl VirtualDiskProducer {
 
     /// Construct a histogram for tracking I/O sizes.
     ///
-    /// This creates a power-of-2 histogram for tracking I/O sizes between 4KiB
+    /// This creates a power-of-2 histogram for tracking I/O sizes between 512B
     /// and 1GiB.
     fn size_histogram() -> Histogram<u64> {
         let bins: Vec<_> =
@@ -361,10 +358,12 @@ mod test {
     fn test_latency_histogram() {
         let hist = VirtualDiskProducer::latency_histogram();
         println!("{:#?}", hist.iter().map(|bin| bin.range).collect::<Vec<_>>());
-        // 1 extra left bin for [0, 1us) and 1 because the range is inclusive.
+        // The math here is a bit silly, but we end up with 9 bins in each
+        // "interior" power of 10, plus one more bin on the right and left for
+        // the bins from [0, 1us) and [10s, inf)
         assert_eq!(
             hist.n_bins(),
-            (LATENCY_POWERS.1 - LATENCY_POWERS.0) as usize + 1 + 1
+            (LATENCY_POWERS.1 - LATENCY_POWERS.0) as usize * 9 + 1 + 1
         );
     }
 
@@ -372,7 +371,7 @@ mod test {
     fn test_size_histogram() {
         let hist = VirtualDiskProducer::size_histogram();
         println!("{:#?}", hist.iter().map(|bin| bin.range).collect::<Vec<_>>());
-        // 1 extra left bin for [0, 4096), and 1 because the range is inclusive.
+        // 1 extra left bin for [0, 512), and 1 because the range is inclusive.
         assert_eq!(
             hist.n_bins(),
             (SIZE_POWERS.1 - SIZE_POWERS.0) as usize + 1 + 1

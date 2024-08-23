@@ -81,10 +81,8 @@ oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "new-vir
 sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", branch = "new-virtual-disk-timeseries-definition" }
 
 # Crucible
-#crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "e58ca3693cb9ce0438947beba10e97ee38a0966b" }
-#crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "e58ca3693cb9ce0438947beba10e97ee38a0966b" }
-crucible = { path = "/home/bnaecker/crucible/upstairs" }
-crucible-client-types = { path = "/home/bnaecker/crucible/crucible-client-types" }
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "db11baa532bf6fad73f22db0d6f2c914ab67b2fa" }
+crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "db11baa532bf6fad73f22db0d6f2c914ab67b2fa" }
 
 # External dependencies
 anyhow = "1.0"

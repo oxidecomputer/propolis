@@ -40,6 +40,7 @@ const OXIMETER_STAT_INTERVAL: tokio::time::Duration =
     tokio::time::Duration::from_secs(10);
 
 // Interval on which we produce vCPU metrics.
+#[cfg(all(not(test), target_os = "illumos"))]
 const VCPU_KSTAT_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(5);
 
@@ -187,6 +188,17 @@ pub(crate) fn create_kstat_sampler(
 }
 
 /// Track kstats required to publish vCPU metrics for this instance.
+#[cfg(any(test, not(target_os = "illumos")))]
+pub(crate) async fn track_vcpu_kstats(
+    log: &Logger,
+    _: &KstatSampler,
+    _: &InstanceProperties,
+) {
+    slog::error!(log, "vCPU stats are not supported on this platform");
+}
+
+/// Track kstats required to publish vCPU metrics for this instance.
+#[cfg(all(not(test), target_os = "illumos"))]
 pub(crate) async fn track_vcpu_kstats(
     log: &Logger,
     sampler: &KstatSampler,
