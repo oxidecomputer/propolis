@@ -28,8 +28,16 @@ pub(crate) mod virtual_machine;
 pub use self::pvpanic::PvpanicProducer;
 
 // Interval on which we ask `oximeter` to poll us for metric data.
+//
+// Note that some statistics, like those based on kstats, are sampled more
+// densely than this proactively. Their sampling rate is decoupled from this
+// poll interval. Others, like the virtual disk stats, are updated all the time,
+// but we only generate _samples_ from that when `oximeter` comes polling.
+//
+// In short, set this to the minimum interval on which you'd like those
+// statistics to be sampled.
 const OXIMETER_STAT_INTERVAL: tokio::time::Duration =
-    tokio::time::Duration::from_secs(30);
+    tokio::time::Duration::from_secs(10);
 
 // Interval on which we produce vCPU metrics.
 const VCPU_KSTAT_INTERVAL: std::time::Duration =
