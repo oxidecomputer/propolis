@@ -228,9 +228,7 @@ pub trait Device: Send + Sync + 'static {
     /// Attach a callback to be run on completion of I/Os.
     ///
     /// Returns whether there was a previously-registered callback.
-    fn on_completion(&self, _cb: Box<dyn CompletionCallback>) -> bool {
-        false
-    }
+    fn on_completion(&self, _cb: Box<dyn CompletionCallback>) -> bool;
 
     /// Get an accessor to guest memory via the underlying device
     fn accessor_mem(&self) -> MemAccessor;

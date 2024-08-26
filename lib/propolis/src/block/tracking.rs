@@ -62,22 +62,11 @@ struct TrackingEntry<T> {
 
 /// Track device-specific data for outstanding block [Request]s.
 impl<T> Tracking<T> {
+    /// Create a new block tracking object.
+    ///
+    /// NOTE: This does not set the completion callback, use
+    /// [`Self::set_completion_callback()`] to do so.
     pub fn new(dev: Weak<dyn Device>) -> Self {
-        Self::new_raw(dev, None)
-    }
-
-    /// Create a new tracking object with a completion callback.
-    pub fn with_completion_callback(
-        dev: Weak<dyn Device>,
-        cb: impl CompletionCallback,
-    ) -> Self {
-        Self::new_raw(dev, Some(Box::new(cb)))
-    }
-
-    fn new_raw(
-        dev: Weak<dyn Device>,
-        cb: Option<Box<dyn CompletionCallback>>,
-    ) -> Self {
         let device_id = NEXT_DEVICE_ID.fetch_add(1, Ordering::Relaxed);
         Self {
             inner: Mutex::new(TrackingInner {
@@ -85,7 +74,7 @@ impl<T> Tracking<T> {
                 next_id: ReqId::START,
                 dev,
                 outstanding: BTreeMap::new(),
-                on_completion: cb,
+                on_completion: None,
             }),
             wait: Arc::new(Mutex::new(TrackingWait::new())),
         }
