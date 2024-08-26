@@ -116,7 +116,7 @@ impl From<Set> for Vec<bhyve_api::vcpu_cpuid_entry> {
     }
 }
 
-/// Convert a [vcpu_cpuid_entry](bhyve_api::vcpu_cpuid_entry) into an ([Ident],
+/// Convert a [vcpu_cpuid_entry] into an ([Ident],
 /// [Entry]) tuple, suitable for insertion into a [Set].
 ///
 /// This would be implemented as a [From] trait if rust let us.
