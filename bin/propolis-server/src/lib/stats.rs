@@ -36,7 +36,7 @@ pub use self::pvpanic::PvpanicProducer;
 //
 // In short, set this to the minimum interval on which you'd like those
 // statistics to be sampled.
-const OXIMETER_STAT_INTERVAL: tokio::time::Duration =
+const OXIMETER_COLLECTION_INTERVAL: tokio::time::Duration =
     tokio::time::Duration::from_secs(10);
 
 // Interval on which we produce vCPU metrics.
@@ -141,7 +141,7 @@ pub fn start_oximeter_server(
         id,
         kind: ProducerKind::Instance,
         address: producer_address,
-        interval: OXIMETER_STAT_INTERVAL,
+        interval: OXIMETER_COLLECTION_INTERVAL,
     };
 
     // Create a child logger, to avoid intermingling the producer server output
