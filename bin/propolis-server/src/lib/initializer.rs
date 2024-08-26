@@ -11,9 +11,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::serial::Serial;
-use crate::stats::virtual_disk::VirtualDiskProducer;
-use crate::stats::virtual_machine::VirtualMachine;
-use crate::stats::{create_kstat_sampler, track_vcpu_kstats};
+use crate::stats::{
+    create_kstat_sampler, track_vcpu_kstats, virtual_disk::VirtualDiskProducer,
+    virtual_machine::VirtualMachine,
+};
 use crate::vm::{BlockBackendMap, CrucibleBackendMap, DeviceMap};
 use anyhow::{Context, Result};
 use crucible_client_types::VolumeConstructionRequest;
@@ -494,7 +495,8 @@ impl<'a> MachineInitializer<'a> {
             Nvme,
         }
 
-        for (name, device_spec) in &self.spec.devices.storage_devices {
+        'devloop: for (name, device_spec) in &self.spec.devices.storage_devices
+        {
             info!(
                 self.log,
                 "Creating storage device {} with properties {:?}",
@@ -590,7 +592,7 @@ impl<'a> MachineInitializer<'a> {
                         virtual disk metrics can't be reported for it";
                         "disk_id" => %disk_id,
                     );
-                    return Ok(());
+                    continue 'devloop;
                 };
 
                 // Register the block device as a metric producer, if we've been
@@ -611,7 +613,7 @@ impl<'a> MachineInitializer<'a> {
                             "disk_id" => %disk_id,
                             "error" => ?e,
                         );
-                        return Ok(());
+                        continue 'devloop;
                     };
 
                     // Set the on-completion callback for the block device, to
@@ -1103,9 +1105,6 @@ impl<'a> MachineInitializer<'a> {
     }
 
     /// Create an object used to sample kstats.
-    ///
-    /// This object is currently used to generate vCPU metrics, though guest NIC
-    /// metrics will be included soon.
     pub(crate) fn create_kstat_sampler(&self) -> Option<KstatSampler> {
         let Some(registry) = &self.producer_registry else {
             return None;
