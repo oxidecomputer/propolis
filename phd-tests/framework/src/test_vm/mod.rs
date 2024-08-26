@@ -132,7 +132,7 @@ enum VmState {
 }
 
 /// A virtual machine running in a Propolis server. Test cases create these VMs
-/// using the [`factory::VmFactory`] embedded in their test contexts.
+/// using the `factory::VmFactory` embedded in their test contexts.
 ///
 /// Once a VM has been created, tests will usually want to issue [`TestVm::run`]
 /// and [`TestVm::wait_to_boot`] calls so they can begin interacting with the

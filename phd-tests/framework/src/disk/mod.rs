@@ -4,7 +4,7 @@
 
 //! Routines for creating and managing guest disks.
 //!
-//! Test cases create disks using the [`DiskFactory`] in their test contexts.
+//! Test cases create disks using the `DiskFactory` in their test contexts.
 //! They can then pass these disks to the VM factory to connect them to a
 //! specific guest VM.
 
