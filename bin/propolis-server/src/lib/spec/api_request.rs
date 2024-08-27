@@ -73,13 +73,14 @@ pub(super) fn parse_disk_from_request(
     disk: &DiskRequest,
 ) -> Result<ParsedStorageDevice, DeviceRequestError> {
     let pci_path = slot_to_pci_path(disk.slot, SlotType::Disk)?;
+    let backend_name = format!("{}-backend", disk.name);
     let device_spec = match disk.device.as_ref() {
         "virtio" => StorageDeviceV0::VirtioDisk(VirtioDisk {
-            backend_name: disk.name.to_string(),
+            backend_name: backend_name.clone(),
             pci_path,
         }),
         "nvme" => StorageDeviceV0::NvmeDisk(NvmeDisk {
-            backend_name: disk.name.to_string(),
+            backend_name: backend_name.clone(),
             pci_path,
         }),
         _ => {
@@ -91,7 +92,6 @@ pub(super) fn parse_disk_from_request(
     };
 
     let device_name = disk.name.clone();
-    let backend_name = format!("{}-backend", disk.name);
     let backend_spec = StorageBackendV0::Crucible(CrucibleStorageBackend {
         request_json: serde_json::to_string(&disk.volume_construction_request)
             .map_err(|e| {
@@ -151,4 +151,60 @@ pub(super) fn parse_nic_from_request(
         backend_name,
         backend_spec,
     })
+}
+
+#[cfg(test)]
+mod test {
+    use propolis_api_types::VolumeConstructionRequest;
+    use uuid::Uuid;
+
+    use super::*;
+
+    fn check_parsed_storage_device_backend_pointer(
+        parsed: &ParsedStorageDevice,
+    ) {
+        let device_to_backend = match &parsed.device_spec {
+            StorageDeviceV0::VirtioDisk(d) => d.backend_name.clone(),
+            StorageDeviceV0::NvmeDisk(d) => d.backend_name.clone(),
+        };
+
+        assert_eq!(device_to_backend, parsed.backend_name);
+    }
+
+    #[test]
+    fn parsed_disk_devices_point_to_backends() {
+        let vcr = VolumeConstructionRequest::File {
+            id: Uuid::nil(),
+            block_size: 512,
+            path: "".to_string(),
+        };
+
+        let req = DiskRequest {
+            name: "my-disk".to_string(),
+            slot: Slot(0),
+            read_only: false,
+            device: "nvme".to_string(),
+            volume_construction_request: vcr,
+        };
+
+        let parsed = parse_disk_from_request(&req).unwrap();
+        check_parsed_storage_device_backend_pointer(&parsed);
+    }
+
+    #[test]
+    fn parsed_network_devices_point_to_backends() {
+        let req =
+            NetworkInterfaceRequest { name: "vnic".to_string(), slot: Slot(0) };
+
+        let parsed = parse_nic_from_request(&req).unwrap();
+        let NetworkDeviceV0::VirtioNic(nic) = &parsed.device_spec;
+        assert_eq!(nic.backend_name, parsed.backend_name);
+    }
+
+    #[test]
+    fn parsed_cloud_init_devices_point_to_backends() {
+        let base64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string();
+        let parsed = parse_cloud_init_from_request(base64).unwrap();
+        check_parsed_storage_device_backend_pointer(&parsed);
+    }
 }
