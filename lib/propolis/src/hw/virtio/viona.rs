@@ -12,6 +12,7 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use crate::common::*;
 use crate::hw::pci;
+use crate::lifecycle::{self, IndicatedState};
 use crate::migrate::*;
 use crate::util::regmap::RegMap;
 use crate::vmm::VmmHdl;
@@ -73,11 +74,16 @@ enum VRingState {
 
 struct Inner {
     poller: Option<PollerHdl>,
+    iop_state: Option<u16>,
     vring_state: [VRingState; 2],
 }
 impl Inner {
     fn new() -> Self {
-        Self { poller: None, vring_state: [Default::default(); 2] }
+        Self {
+            poller: None,
+            iop_state: None,
+            vring_state: [Default::default(); 2],
+        }
     }
 
     /// Get the `VRingState` for a given VirtQueue
@@ -147,6 +153,8 @@ impl Default for DeviceParams {
 pub struct PciVirtioViona {
     virtio_state: PciVirtioState,
     pci_state: pci::DeviceState,
+    indicator: lifecycle::Indicator,
+
     dev_features: u32,
     mac_addr: [u8; ETHERADDRL],
     mtu: Option<u16>,
@@ -213,6 +221,7 @@ impl PciVirtioViona {
         let mut this = PciVirtioViona {
             virtio_state,
             pci_state,
+            indicator: Default::default(),
 
             dev_features,
             mac_addr: [0; ETHERADDRL],
@@ -402,6 +411,21 @@ impl PciVirtioViona {
         drop(inner);
         wait_state.wait_stopped();
     }
+
+    // Transition the emulation to a "running" state, either at initial start-up
+    // or resumption from a "paused" state.
+    fn run(&self) {
+        self.poller_start();
+        if self.queues_restart().is_err() {
+            self.virtio_state.set_needs_reset(self);
+            self.notify_port_update(None);
+        } else {
+            // If all is well with the queue restart, attempt to wire up the
+            // notification ioport again.
+            let state = self.inner.lock().unwrap();
+            let _ = self.hdl.set_notify_iop(state.iop_state);
+        }
+    }
 }
 impl VirtioDevice for PciVirtioViona {
     fn cfg_rw(&self, mut rwo: RWOp) {
@@ -521,20 +545,25 @@ impl Lifecycle for PciVirtioViona {
         self.virtio_state.reset(self);
     }
     fn start(&self) -> anyhow::Result<()> {
-        // This device initializes into a paused state. Starting it is
-        // equivalent to resuming it.
-        self.resume();
+        self.run();
+        self.indicator.start();
         Ok(())
     }
     fn pause(&self) {
         self.poller_stop(false);
         self.queues_sync();
+
+        // In case the device is being paused because of a pending instance
+        // reinitialization (as part of a reboot/reset), the notification ioport
+        // binding must be torn down.  Bhyve will emit failure of an attempted
+        // reinitialization operation if any ioport hooks persist at that time.
+        let _ = self.hdl.set_notify_iop(None);
+
+        self.indicator.pause();
     }
     fn resume(&self) {
-        self.poller_start();
-        if self.queues_restart().is_err() {
-            self.virtio_state.set_needs_reset(self);
-        }
+        self.run();
+        self.indicator.resume();
     }
     fn halt(&self) {
         self.poller_stop(true);
@@ -542,6 +571,7 @@ impl Lifecycle for PciVirtioViona {
         // destruction.
         self.queues_kill();
         let _ = self.hdl.delete();
+        self.indicator.halt();
     }
     fn migrate(&self) -> Migrator<'_> {
         Migrator::Multi(self)
@@ -554,6 +584,16 @@ impl PciVirtio for PciVirtioViona {
     }
     fn pci_state(&self) -> &pci::DeviceState {
         &self.pci_state
+    }
+    fn notify_port_update(&self, port: Option<u16>) {
+        let mut state = self.inner.lock().unwrap();
+        state.iop_state = port;
+
+        // Attaching the notify ioport hook is only performed with the device
+        // emulation is running.
+        if self.indicator.state() == IndicatedState::Run {
+            let _ = self.hdl.set_notify_iop(port);
+        }
     }
 }
 
@@ -742,6 +782,14 @@ impl VionaHdl {
 
     fn api_version(&self) -> io::Result<u32> {
         self.0.api_version()
+    }
+
+    fn set_notify_iop(&self, port: Option<u16>) -> io::Result<()> {
+        self.0.ioctl_usize(
+            viona_api::VNA_IOC_SET_NOTIFY_IOP,
+            port.unwrap_or(0) as usize,
+        )?;
+        Ok(())
     }
 
     /// Set the desired promiscuity level on this interface.
