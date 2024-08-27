@@ -7,6 +7,7 @@ use std::sync::{Arc, Weak};
 
 use crate::accessors::MemAccessor;
 use crate::block;
+use crate::block::tracking::CompletionCallback;
 use crate::common::*;
 use crate::hw::pci;
 use crate::migrate::*;
@@ -248,6 +249,10 @@ impl block::Device for PciVirtioBlock {
         let (op, mut payload) = self.block_tracking.complete(id, res);
         let CompletionPayload { rid, ref mut chain } = payload;
         self.complete_req(rid, op, res, chain);
+    }
+
+    fn on_completion(&self, cb: Box<dyn CompletionCallback>) -> bool {
+        self.block_tracking.set_completion_callback(cb)
     }
 
     fn accessor_mem(&self) -> MemAccessor {

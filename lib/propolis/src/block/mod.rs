@@ -13,6 +13,7 @@ use crate::vmm::{MemCtx, SubMapping};
 
 mod file;
 pub use file::FileBackend;
+use tracking::CompletionCallback;
 
 #[cfg(feature = "crucible")]
 mod crucible;
@@ -223,6 +224,11 @@ pub trait Device: Send + Sync + 'static {
 
     /// Complete processing of result
     fn complete(&self, res: Result, id: ReqId);
+
+    /// Attach a callback to be run on completion of I/Os.
+    ///
+    /// Returns whether there was a previously-registered callback.
+    fn on_completion(&self, _cb: Box<dyn CompletionCallback>) -> bool;
 
     /// Get an accessor to guest memory via the underlying device
     fn accessor_mem(&self) -> MemAccessor;
