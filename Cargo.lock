@@ -157,7 +157,7 @@ dependencies = [
 [[package]]
 name = "api_identity"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "omicron-workspace-hack",
  "proc-macro2",
@@ -754,7 +754,7 @@ checksum = "248e3bacc7dc6baa3b21e405ee045c3047101a49145e7e9eca583ab4c2ca5345"
 [[package]]
 name = "crucible"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=db11baa532bf6fad73f22db0d6f2c914ab67b2fa#db11baa532bf6fad73f22db0d6f2c914ab67b2fa"
+source = "git+https://github.com/oxidecomputer/crucible?rev=d037eeb9a56a8a62ff17266f340c011224d15146#d037eeb9a56a8a62ff17266f340c011224d15146"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -774,7 +774,7 @@ dependencies = [
  "futures-core",
  "http 0.2.12",
  "internal-dns",
- "itertools 0.12.1",
+ "itertools 0.13.0",
  "libc",
  "nexus-client",
  "omicron-common",
@@ -807,7 +807,7 @@ dependencies = [
 [[package]]
 name = "crucible-client-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=db11baa532bf6fad73f22db0d6f2c914ab67b2fa#db11baa532bf6fad73f22db0d6f2c914ab67b2fa"
+source = "git+https://github.com/oxidecomputer/crucible?rev=d037eeb9a56a8a62ff17266f340c011224d15146#d037eeb9a56a8a62ff17266f340c011224d15146"
 dependencies = [
  "base64 0.22.1",
  "crucible-workspace-hack",
@@ -820,7 +820,7 @@ dependencies = [
 [[package]]
 name = "crucible-common"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=db11baa532bf6fad73f22db0d6f2c914ab67b2fa#db11baa532bf6fad73f22db0d6f2c914ab67b2fa"
+source = "git+https://github.com/oxidecomputer/crucible?rev=d037eeb9a56a8a62ff17266f340c011224d15146#d037eeb9a56a8a62ff17266f340c011224d15146"
 dependencies = [
  "anyhow",
  "atty",
@@ -850,7 +850,7 @@ dependencies = [
 [[package]]
 name = "crucible-protocol"
 version = "0.0.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=db11baa532bf6fad73f22db0d6f2c914ab67b2fa#db11baa532bf6fad73f22db0d6f2c914ab67b2fa"
+source = "git+https://github.com/oxidecomputer/crucible?rev=d037eeb9a56a8a62ff17266f340c011224d15146#d037eeb9a56a8a62ff17266f340c011224d15146"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1151,7 +1151,7 @@ dependencies = [
 [[package]]
 name = "dns-service-client"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1648,7 +1648,7 @@ dependencies = [
 [[package]]
 name = "gateway-client"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2106,12 +2106,12 @@ dependencies = [
 [[package]]
 name = "illumos-sys-hdrs"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/opte?rev=3dc9a3dd8d3c623f0cf2c659c7119ce0c026a96d#3dc9a3dd8d3c623f0cf2c659c7119ce0c026a96d"
+source = "git+https://github.com/oxidecomputer/opte?rev=76878de67229ea113d70503c441eab47ac5dc653#76878de67229ea113d70503c441eab47ac5dc653"
 
 [[package]]
 name = "illumos-utils"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2211,7 +2211,7 @@ dependencies = [
 [[package]]
 name = "internal-dns"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2304,9 +2304,9 @@ dependencies = [
 
 [[package]]
 name = "itertools"
-version = "0.12.1"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
+checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
 dependencies = [
  "either",
 ]
@@ -2338,7 +2338,7 @@ dependencies = [
 [[package]]
 name = "kstat-macro"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/opte?rev=3dc9a3dd8d3c623f0cf2c659c7119ce0c026a96d#3dc9a3dd8d3c623f0cf2c659c7119ce0c026a96d"
+source = "git+https://github.com/oxidecomputer/opte?rev=76878de67229ea113d70503c441eab47ac5dc653#76878de67229ea113d70503c441eab47ac5dc653"
 dependencies = [
  "quote",
  "syn 2.0.75",
@@ -2700,7 +2700,7 @@ dependencies = [
 [[package]]
 name = "nexus-client"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "chrono",
  "futures",
@@ -2724,7 +2724,7 @@ dependencies = [
 [[package]]
 name = "nexus-sled-agent-shared"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "omicron-common",
  "omicron-passwords",
@@ -2742,7 +2742,7 @@ dependencies = [
 [[package]]
 name = "nexus-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "anyhow",
  "api_identity",
@@ -3028,7 +3028,7 @@ dependencies = [
 [[package]]
 name = "omicron-common"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "anyhow",
  "api_identity",
@@ -3070,7 +3070,7 @@ dependencies = [
 [[package]]
 name = "omicron-passwords"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "argon2",
  "omicron-workspace-hack",
@@ -3084,7 +3084,7 @@ dependencies = [
 [[package]]
 name = "omicron-uuid-kinds"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "newtype-uuid",
  "paste",
@@ -3193,7 +3193,7 @@ dependencies = [
 [[package]]
 name = "opte"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/opte?rev=3dc9a3dd8d3c623f0cf2c659c7119ce0c026a96d#3dc9a3dd8d3c623f0cf2c659c7119ce0c026a96d"
+source = "git+https://github.com/oxidecomputer/opte?rev=76878de67229ea113d70503c441eab47ac5dc653#76878de67229ea113d70503c441eab47ac5dc653"
 dependencies = [
  "cfg-if",
  "dyn-clone",
@@ -3210,7 +3210,7 @@ dependencies = [
 [[package]]
 name = "opte-api"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/opte?rev=3dc9a3dd8d3c623f0cf2c659c7119ce0c026a96d#3dc9a3dd8d3c623f0cf2c659c7119ce0c026a96d"
+source = "git+https://github.com/oxidecomputer/opte?rev=76878de67229ea113d70503c441eab47ac5dc653#76878de67229ea113d70503c441eab47ac5dc653"
 dependencies = [
  "illumos-sys-hdrs",
  "ipnetwork",
@@ -3222,7 +3222,7 @@ dependencies = [
 [[package]]
 name = "opte-ioctl"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/opte?rev=3dc9a3dd8d3c623f0cf2c659c7119ce0c026a96d#3dc9a3dd8d3c623f0cf2c659c7119ce0c026a96d"
+source = "git+https://github.com/oxidecomputer/opte?rev=76878de67229ea113d70503c441eab47ac5dc653#76878de67229ea113d70503c441eab47ac5dc653"
 dependencies = [
  "libc",
  "libnet",
@@ -3269,7 +3269,7 @@ dependencies = [
 [[package]]
 name = "oxide-vpc"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/opte?rev=3dc9a3dd8d3c623f0cf2c659c7119ce0c026a96d#3dc9a3dd8d3c623f0cf2c659c7119ce0c026a96d"
+source = "git+https://github.com/oxidecomputer/opte?rev=76878de67229ea113d70503c441eab47ac5dc653#76878de67229ea113d70503c441eab47ac5dc653"
 dependencies = [
  "cfg-if",
  "illumos-sys-hdrs",
@@ -3284,7 +3284,7 @@ dependencies = [
 [[package]]
 name = "oximeter"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3303,7 +3303,7 @@ dependencies = [
 [[package]]
 name = "oximeter-instruments"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "cfg-if",
  "chrono",
@@ -3321,7 +3321,7 @@ dependencies = [
 [[package]]
 name = "oximeter-macro-impl"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "omicron-workspace-hack",
  "proc-macro2",
@@ -3332,7 +3332,7 @@ dependencies = [
 [[package]]
 name = "oximeter-producer"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "chrono",
  "dropshot",
@@ -3353,7 +3353,7 @@ dependencies = [
 [[package]]
 name = "oximeter-schema"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3374,7 +3374,7 @@ dependencies = [
 [[package]]
 name = "oximeter-timeseries-macro"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "omicron-workspace-hack",
  "oximeter-schema",
@@ -3387,7 +3387,7 @@ dependencies = [
 [[package]]
 name = "oximeter-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "bytes",
  "chrono",
@@ -3406,7 +3406,7 @@ dependencies = [
 [[package]]
 name = "oxlog"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "anyhow",
  "camino",
@@ -3431,7 +3431,7 @@ dependencies = [
 [[package]]
 name = "oxql-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5122,7 +5122,7 @@ dependencies = [
 [[package]]
 name = "sled-hardware-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/omicron?branch=new-virtual-disk-timeseries-definition#cd8323f86546882e37a146083aafcdd22e5e6cb4"
+source = "git+https://github.com/oxidecomputer/omicron?branch=main#758818aea3f0d375b6bbf9bd87f713a5da09ffbd"
 dependencies = [
  "illumos-utils",
  "omicron-common",
