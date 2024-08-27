@@ -190,7 +190,7 @@ pub enum WSClientOffset {
 }
 
 /// This is a trivial abstraction wrapping the websocket connection returned
-/// by [crate::generated::Client::instance_serial], providing the additional
+/// by [crate::Client::instance_serial], providing the additional
 /// functionality of connecting to the new propolis-server when an instance
 /// is migrated (thus providing the illusion of the connection being
 /// seamlessly maintained through migration)

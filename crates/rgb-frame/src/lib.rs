@@ -61,7 +61,7 @@ impl Frame {
     /// contents initalized via the `populate` function.
     ///
     /// The responsibility is left to the caller to properly initalize the
-    /// entire [MaybeUninit<u8>] slice provided to the `populate` argument.  The
+    /// entire [`MaybeUninit<u8>`] slice provided to the `populate` argument.  The
     /// stride length of that buffer is provided as the second argument.
     pub fn new_uninit<F>(spec: Spec, populate: F) -> Self
     where
@@ -154,22 +154,22 @@ impl Frame {
 #[repr(u32)]
 #[strum(serialize_all = "UPPERCASE")]
 pub enum FourCC {
-    /// x:R:G:B [31:0] little endian
+    /// x:R:G:B `\[` 31:0 `\]` little endian
     XR24 = 0x34325258,
-    /// R:G:B:x [31:0] little endian
+    /// R:G:B:x `\[` 31:0 `\]` little endian
     RX24 = 0x34325852,
-    /// x:B:G:R [31:0] little endian
+    /// x:B:G:R `\[` 31:0 `\]` little endian
     XB24 = 0x34325842,
-    /// B:G:R:x [31:0] little endian
+    /// B:G:R:x `\[` 31:0 `\]` little endian
     BX24 = 0x34324258,
 
-    /// A:R:G:B [31:0] little endian
+    /// A:R:G:B `\[` 31:0 `\]` little endian
     AR24 = 0x34325241,
-    /// R:G:B:A [31:0] little endian
+    /// R:G:B:A `\[` 31:0 `\]` little endian
     RA24 = 0x34324152,
-    /// A:B:G:R [31:0] little endian
+    /// A:B:G:R `\[` 31:0 `\]` little endian
     AB24 = 0x34324142,
-    /// B:G:R:A [31:0] little endian
+    /// B:G:R:A `\[` 31:0 `\]` little endian
     BA24 = 0x34324241,
 }
 impl FourCC {
