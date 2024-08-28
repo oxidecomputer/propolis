@@ -71,18 +71,18 @@ p9ds = { git = "https://github.com/oxidecomputer/p9fs" }
 softnpu = { git = "https://github.com/oxidecomputer/softnpu" }
 
 # Omicron-related
-internal-dns = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
-nexus-client = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
-omicron-common = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+internal-dns = { git = "https://github.com/oxidecomputer/omicron", branch = "zl/instance-network-interface" }
+nexus-client = { git = "https://github.com/oxidecomputer/omicron", branch = "zl/instance-network-interface" }
+omicron-common = { git = "https://github.com/oxidecomputer/omicron", branch = "zl/instance-network-interface" }
 omicron-zone-package = "0.9.0"
-oximeter-instruments = { git = "https://github.com/oxidecomputer/omicron", branch = "main", default-features = false, features = ["kstat"] }
-oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
-oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
-sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+oximeter-instruments = { git = "https://github.com/oxidecomputer/omicron", branch = "zl/instance-network-interface", default-features = false, features = ["kstat"] }
+oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", branch = "zl/instance-network-interface" }
+oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "zl/instance-network-interface" }
+sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", branch = "zl/instance-network-interface" }
 
 # Crucible
-crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "e58ca3693cb9ce0438947beba10e97ee38a0966b" }
-crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "e58ca3693cb9ce0438947beba10e97ee38a0966b" }
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "2aee0bc0fea61f26474b04c88d2c150fa0d35f56" }
+crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "2aee0bc0fea61f26474b04c88d2c150fa0d35f56" }
 
 # External dependencies
 anyhow = "1.0"
@@ -174,7 +174,6 @@ zerocopy = "0.7.34"
 # internal-dns = { path = "../omicron/internal-dns" }
 # nexus-client = { path = "../omicron/clients/nexus-client" }
 # omicron-common = { path = "../omicron/common" }
-# omicron-zone-package = "0.9.0"
 # oximeter-instruments = { path = "../omicron/oximeter/instruments" }
 # oximeter-producer = { path = "../omicron/oximeter/producer" }
 # oximeter = { path = "../omicron/oximeter/oximeter" }
