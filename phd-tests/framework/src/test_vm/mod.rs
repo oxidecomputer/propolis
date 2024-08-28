@@ -5,7 +5,7 @@
 //! Routines for starting VMs, changing their states, and interacting with their
 //! guest OSes.
 
-use std::{fmt::Debug, io::Write, pin::Pin, sync::Arc, time::Duration};
+use std::{fmt::Debug, io::Write, sync::Arc, time::Duration};
 
 use crate::{
     guest_os::{self, CommandSequenceEntry, GuestOs, GuestOsKind},
@@ -19,11 +19,10 @@ use crate::{
 use anyhow::{anyhow, Context, Result};
 use camino::Utf8PathBuf;
 use core::result::Result as StdResult;
-use futures::Future;
 use propolis_client::{
     support::{InstanceSerialConsoleHelper, WSClientOffset},
     types::{
-        InstanceEnsureRequest, InstanceEnsureResponse, InstanceGetResponse,
+        InstanceEnsureRequest, InstanceGetResponse,
         InstanceMigrateInitiateRequest, InstanceMigrateStatusResponse,
         InstanceProperties, InstanceSerialConsoleHistoryResponse,
         InstanceSpecEnsureRequest, InstanceSpecGetResponse, InstanceState,
@@ -334,16 +333,7 @@ impl TestVm {
         // it's possible to create a boxed future that abstracts over the
         // caller's chosen endpoint.
         let ensure_fn = || async {
-            let send_fut: Pin<
-                Box<
-                    dyn Future<
-                            Output = Result<
-                                ResponseValue<InstanceEnsureResponse>,
-                                _,
-                            >,
-                        > + Send,
-                >,
-            > = match api {
+            let result = match api {
                 InstanceEnsureApi::SpecEnsure => {
                     let versioned_spec = VersionedInstanceSpec::V0(
                         self.spec.instance_spec.clone(),
@@ -355,12 +345,11 @@ impl TestVm {
                         migrate: migrate.clone(),
                     };
 
-                    Box::pin(
-                        self.client
-                            .instance_spec_ensure()
-                            .body(&ensure_req)
-                            .send(),
-                    )
+                    self.client
+                        .instance_spec_ensure()
+                        .body(&ensure_req)
+                        .send()
+                        .await
                 }
                 InstanceEnsureApi::Ensure => {
                     let ensure_req = InstanceEnsureRequest {
@@ -371,12 +360,10 @@ impl TestVm {
                         properties: properties.clone(),
                     };
 
-                    Box::pin(
-                        self.client.instance_ensure().body(&ensure_req).send(),
-                    )
+                    self.client.instance_ensure().body(&ensure_req).send().await
                 }
             };
-            if let Err(e) = send_fut.await {
+            if let Err(e) = result {
                 match e {
                     propolis_client::Error::CommunicationError(_) => {
                         info!(%e, "retriable error from instance_spec_ensure");
