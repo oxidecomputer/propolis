@@ -86,7 +86,7 @@ impl VmSpec {
     ///
     /// All of the disks in the spec must be Crucible disks. If one is not, this
     /// routine returns an error.
-    pub(crate) fn make_legacy_disk_requests(
+    pub(crate) fn make_disk_requests(
         &self,
     ) -> anyhow::Result<Vec<DiskRequest>> {
         struct DeviceInfo<'a> {
