@@ -22,11 +22,11 @@ use core::result::Result as StdResult;
 use propolis_client::{
     support::{InstanceSerialConsoleHelper, WSClientOffset},
     types::{
-        InstanceGetResponse, InstanceMigrateInitiateRequest,
-        InstanceMigrateStatusResponse, InstanceProperties,
-        InstanceSerialConsoleHistoryResponse, InstanceSpecEnsureRequest,
-        InstanceSpecGetResponse, InstanceState, InstanceStateRequested,
-        MigrationState, VersionedInstanceSpec,
+        InstanceEnsureRequest, InstanceGetResponse,
+        InstanceMigrateInitiateRequest, InstanceMigrateStatusResponse,
+        InstanceProperties, InstanceSerialConsoleHistoryResponse,
+        InstanceSpecEnsureRequest, InstanceSpecGetResponse, InstanceState,
+        InstanceStateRequested, MigrationState, VersionedInstanceSpec,
     },
 };
 use propolis_client::{Client, ResponseValue};
@@ -124,6 +124,15 @@ enum InstanceConsoleSource<'a> {
 
     // Clone an existing console connection from the supplied VM.
     InheritFrom(&'a TestVm),
+}
+
+/// Specifies the propolis-server interface to use when starting a VM.
+enum InstanceEnsureApi {
+    /// Use the `instance_spec_ensure` interface.
+    SpecEnsure,
+
+    /// Use the `instance_ensure` interface.
+    Ensure,
 }
 
 enum VmState {
@@ -281,6 +290,7 @@ impl TestVm {
     #[instrument(skip_all, fields(vm = self.spec.vm_name, vm_id = %self.id))]
     async fn instance_ensure_internal<'a>(
         &self,
+        api: InstanceEnsureApi,
         migrate: Option<InstanceMigrateInitiateRequest>,
         console_source: InstanceConsoleSource<'a>,
     ) -> Result<SerialConsole> {
@@ -305,27 +315,55 @@ impl TestVm {
             vcpus,
         };
 
-        let versioned_spec =
-            VersionedInstanceSpec::V0(self.spec.instance_spec.clone());
-        let ensure_req = InstanceSpecEnsureRequest {
-            properties,
-            instance_spec: versioned_spec,
-            migrate,
+        // The non-spec ensure interface requires a set of `DiskRequest`
+        // structures to specify disks. Create those once and clone them if the
+        // ensure call needs to be retried.
+        let disk_reqs = if let InstanceEnsureApi::Ensure = api {
+            Some(self.spec.make_disk_requests()?)
+        } else {
+            None
         };
 
         // There is a brief period where the Propolis server process has begun
         // to run but hasn't started its Dropshot server yet. Ensure requests
-        // that land in that window will fail, so retry them. This shouldn't
-        // ever take more than a couple of seconds (if it does, that should be
-        // considered a bug impacting VM startup times).
+        // that land in that window will fail, so retry them.
+        //
+        // The `instance_ensure` and `instance_spec_ensure` endpoints return the
+        // same response type, so (with some gnarly writing out of the types)
+        // it's possible to create a boxed future that abstracts over the
+        // caller's chosen endpoint.
         let ensure_fn = || async {
-            if let Err(e) = self
-                .client
-                .instance_spec_ensure()
-                .body(&ensure_req)
-                .send()
-                .await
-            {
+            let result = match api {
+                InstanceEnsureApi::SpecEnsure => {
+                    let versioned_spec = VersionedInstanceSpec::V0(
+                        self.spec.instance_spec.clone(),
+                    );
+
+                    let ensure_req = InstanceSpecEnsureRequest {
+                        properties: properties.clone(),
+                        instance_spec: versioned_spec,
+                        migrate: migrate.clone(),
+                    };
+
+                    self.client
+                        .instance_spec_ensure()
+                        .body(&ensure_req)
+                        .send()
+                        .await
+                }
+                InstanceEnsureApi::Ensure => {
+                    let ensure_req = InstanceEnsureRequest {
+                        cloud_init_bytes: None,
+                        disks: disk_reqs.clone().unwrap(),
+                        migrate: migrate.clone(),
+                        nics: vec![],
+                        properties: properties.clone(),
+                    };
+
+                    self.client.instance_ensure().body(&ensure_req).send().await
+                }
+            };
+            if let Err(e) = result {
                 match e {
                     propolis_client::Error::CommunicationError(_) => {
                         info!(%e, "retriable error from instance_spec_ensure");
@@ -341,6 +379,9 @@ impl TestVm {
             }
         };
 
+        // It shouldn't ever take more than a couple of seconds for the Propolis
+        // server to come to life. (If it does, that should be considered a bug
+        // impacting VM startup times.)
         backoff::future::retry(
             backoff::ExponentialBackoff {
                 max_elapsed_time: Some(std::time::Duration::from_secs(2)),
@@ -412,7 +453,29 @@ impl TestVm {
         match self.state {
             VmState::New => {
                 let console = self
-                    .instance_ensure_internal(None, InstanceConsoleSource::New)
+                    .instance_ensure_internal(
+                        InstanceEnsureApi::SpecEnsure,
+                        None,
+                        InstanceConsoleSource::New,
+                    )
+                    .await?;
+                self.state = VmState::Ensured { serial: console };
+            }
+            VmState::Ensured { .. } => {}
+        }
+
+        Ok(())
+    }
+
+    pub async fn instance_ensure_using_api_request(&mut self) -> Result<()> {
+        match self.state {
+            VmState::New => {
+                let console = self
+                    .instance_ensure_internal(
+                        InstanceEnsureApi::Ensure,
+                        None,
+                        InstanceConsoleSource::New,
+                    )
                     .await?;
                 self.state = VmState::Ensured { serial: console };
             }
@@ -515,6 +578,7 @@ impl TestVm {
 
                 let serial = self
                     .instance_ensure_internal(
+                        InstanceEnsureApi::SpecEnsure,
                         Some(InstanceMigrateInitiateRequest {
                             migration_id,
                             src_addr: server_addr.to_string(),

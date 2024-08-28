@@ -6,6 +6,7 @@ pub use phd_testcase;
 
 mod crucible;
 mod disk;
+mod ensure_api;
 mod framework;
 mod hw;
 mod migrate;
