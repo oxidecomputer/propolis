@@ -508,8 +508,10 @@ impl PciVirtio for PciVirtioViona {
         let mut state = self.inner.lock().unwrap();
         state.iop_state = port;
 
-        // Attaching the notify ioport hook is only performed with the device
-        // emulation is running.
+        // The notification ioport for the device can change due to guest
+        // action, or other administrative tasks within propolis.  We want to
+        // update the in-kernel IO port hook only in the former case, when the
+        // device emulation is actually running.
         if self.indicator.state() == IndicatedState::Run {
             let _ = self.hdl.set_notify_iop(port);
         }
@@ -687,6 +689,15 @@ impl VionaHdl {
         Ok(())
     }
 
+    /// Set the IO port to which viona attaches for virtqueue notifications
+    ///
+    /// The viona driver is able to install an IO port hook in the associated VM
+    /// at a specified address in order to process `out` operations which would
+    /// result in the in-kernel emulated virtqueues being notified of available
+    /// buffers.
+    ///
+    /// With a non-zero argument, viona will attempt to attach such a hook.
+    /// When the argument is zero, any existing hook is torn down.
     fn set_notify_iop(&self, port: Option<u16>) -> io::Result<()> {
         self.0.ioctl_usize(
             viona_api::VNA_IOC_SET_NOTIFY_IOP,
