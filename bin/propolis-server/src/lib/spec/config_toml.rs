@@ -94,16 +94,13 @@ impl TryFrom<&config::Config> for ParsedConfig {
                 .chipset
                 .options
                 .get("enable-pcie")
-                .map_or_else(
-                    || Ok(false),
-                    |v| {
-                        v.as_bool().ok_or_else(|| {
-                            ConfigTomlError::EnablePcieParseFailed(
-                                v.to_string(),
-                            )
-                        })
-                    },
-                )?,
+                .map(|v| {
+                    v.as_bool().ok_or_else(|| {
+                        ConfigTomlError::EnablePcieParseFailed(v.to_string())
+                    })
+                })
+                .transpose()?
+                .unwrap_or(false),
             ..Default::default()
         };
 

@@ -35,7 +35,6 @@ use propolis_api_types::instance_spec::{self, VersionedInstanceSpec};
 pub use propolis_server_config::Config as VmTomlConfig;
 use rfb::tungstenite::BinaryWs;
 use slog::{error, warn, Logger};
-use thiserror::Error;
 use tokio::sync::MutexGuard;
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::WebSocketStream;
@@ -103,18 +102,12 @@ impl DropshotEndpointContext {
     }
 }
 
-#[derive(Debug, Error)]
-enum SpecCreationError {
-    #[error(transparent)]
-    SpecBuilderError(#[from] SpecBuilderError),
-}
-
 /// Creates an instance spec from an ensure request. (Both types are foreign to
 /// this crate, so implementing TryFrom for them is not allowed.)
 fn instance_spec_from_request(
     request: &api::InstanceEnsureRequest,
     toml_config: &VmTomlConfig,
-) -> Result<VersionedInstanceSpec, SpecCreationError> {
+) -> Result<VersionedInstanceSpec, SpecBuilderError> {
     let mut spec_builder = SpecBuilder::new(&request.properties);
 
     spec_builder.add_devices_from_config(toml_config)?;
@@ -288,7 +281,7 @@ async fn instance_ensure(
                 HttpError::for_bad_request(
                     None,
                     format!(
-                        "failed to generate instance spec from request: {}",
+                        "failed to generate instance spec from request: {:#?}",
                         e
                     ),
                 )
