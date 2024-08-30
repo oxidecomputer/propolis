@@ -7,16 +7,18 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use omicron_common::api::internal::nexus::ProducerEndpoint;
-use omicron_common::api::internal::nexus::ProducerKind;
+use omicron_common::api::internal::nexus::{ProducerEndpoint, ProducerKind};
 use oximeter::{
     types::{ProducerRegistry, Sample},
     MetricsError, Producer,
 };
 use oximeter_instruments::kstat::KstatSampler;
 use oximeter_producer::{Config, Error, Server};
-use propolis_api_types::InstanceProperties;
+use propolis_api_types::{
+    instance_spec::v0::InstanceSpecV0, InstanceProperties,
+};
 use slog::Logger;
+use uuid::Uuid;
 
 use crate::{server::MetricsEndpointConfig, vm::NetworkInterfaceIds};
 
@@ -145,7 +147,7 @@ impl Producer for ServerStats {
 /// task, and will periodically renew that registration. The returned server is
 /// running, and need not be poked or renewed to successfully serve metric data.
 pub fn start_oximeter_server(
-    id: uuid::Uuid,
+    id: Uuid,
     config: &MetricsEndpointConfig,
     log: &Logger,
     registry: &ProducerRegistry,
@@ -187,11 +189,12 @@ pub fn start_oximeter_server(
 /// Create an object that can be used to sample kstat-based metrics.
 pub(crate) fn create_kstat_sampler(
     log: &Logger,
-    n_vcpus: u32,
-    n_interfaces: u32,
+    properties: &InstanceProperties,
+    spec: &InstanceSpecV0,
 ) -> Option<KstatSampler> {
     let kstat_limit = usize::try_from(
-        (n_vcpus * KSTAT_LIMIT_PER_VCPU) + (n_interfaces * SAMPLE_BUFFER),
+        (u32::from(properties.vcpus) * KSTAT_LIMIT_PER_VCPU)
+            + (spec.devices.network_devices.len() as u32 * SAMPLE_BUFFER),
     )
     .unwrap();
 

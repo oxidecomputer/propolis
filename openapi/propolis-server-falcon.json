@@ -1792,7 +1792,7 @@
             "type": "string"
           },
           "interface_id": {
-            "description": "The interface ID of the device from the requested NIC to which we are binding.",
+            "description": "A caller-defined correlation identifier for this interface. If Propolis is configured to collect network interface kstats in its Oximeter metrics, the metric series for this interface will be associated with this identifier.",
             "type": "string",
             "format": "uuid"
           },

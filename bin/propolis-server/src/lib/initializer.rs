@@ -12,8 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::serial::Serial;
 use crate::stats::{
-    create_kstat_sampler, track_network_interface_kstats, track_vcpu_kstats,
-    VirtualDiskProducer, VirtualMachine,
+    track_network_interface_kstats, track_vcpu_kstats, VirtualDiskProducer,
+    VirtualMachine,
 };
 use crate::vm::{
     BlockBackendMap, CrucibleBackendMap, DeviceMap, NetworkInterfaceIds,
@@ -123,6 +123,7 @@ pub struct MachineInitializer<'a> {
     pub(crate) toml_config: &'a crate::server::VmTomlConfig,
     pub(crate) producer_registry: Option<ProducerRegistry>,
     pub(crate) state: MachineInitializerState,
+    pub(crate) kstat_sampler: Option<KstatSampler>,
 }
 
 impl<'a> MachineInitializer<'a> {
@@ -637,11 +638,10 @@ impl<'a> MachineInitializer<'a> {
     pub async fn initialize_network_devices(
         &mut self,
         chipset: &RegisteredChipset,
-        kstat_sampler: &Option<KstatSampler>,
     ) -> Result<(), Error> {
         // Only create the vector if the kstat_sampler exists.
         let mut interface_ids: Option<NetworkInterfaceIds> =
-            kstat_sampler.as_ref().map(|_| Vec::new());
+            self.kstat_sampler.as_ref().map(|_| Vec::new());
 
         for (name, vnic_spec) in &self.spec.devices.network_devices {
             info!(self.log, "Creating vNIC {}", name);
@@ -700,16 +700,14 @@ impl<'a> MachineInitializer<'a> {
             chipset.pci_attach(bdf, viona);
         }
 
-        if let Some(sampler) = kstat_sampler.as_ref() {
-            if let Some(interface_ids) = interface_ids {
-                track_network_interface_kstats(
-                    &self.log,
-                    sampler,
-                    self.properties,
-                    interface_ids,
-                )
-                .await
-            }
+        if let Some(sampler) = self.kstat_sampler.as_ref() {
+            track_network_interface_kstats(
+                &self.log,
+                sampler,
+                self.properties,
+                interface_ids.unwrap(),
+            )
+            .await
         }
 
         Ok(())
@@ -1121,44 +1119,16 @@ impl<'a> MachineInitializer<'a> {
     /// Initialize virtual CPUs by first setting their capabilities, inserting
     /// them into the device map, and then, if a kstat sampler is provided,
     /// tracking their kstats.
-    pub async fn initialize_cpus(
-        &mut self,
-        kstat_sampler: &Option<KstatSampler>,
-    ) -> Result<(), Error> {
+    pub async fn initialize_cpus(&mut self) -> Result<(), Error> {
         for vcpu in self.machine.vcpus.iter() {
             vcpu.set_default_capabs().unwrap();
 
             // The vCPUs behave like devices, so add them to the list as well
             self.devices.insert(format!("vcpu-{}", vcpu.id), vcpu.clone());
         }
-        if let Some(sampler) = kstat_sampler.as_ref() {
+        if let Some(sampler) = self.kstat_sampler.as_ref() {
             track_vcpu_kstats(&self.log, sampler, self.properties).await;
         }
         Ok(())
-    }
-
-    /// Create an object used to sample kstats.
-    pub(crate) fn create_kstat_sampler(&self) -> Option<KstatSampler> {
-        let Some(registry) = &self.producer_registry else {
-            return None;
-        };
-        let sampler = create_kstat_sampler(
-            &self.log,
-            u32::from(self.properties.vcpus),
-            self.spec.devices.network_devices.len() as u32,
-        )?;
-
-        match registry.register_producer(sampler.clone()) {
-            Ok(_) => Some(sampler),
-            Err(e) => {
-                slog::error!(
-                    self.log,
-                    "Failed to register kstat sampler in producer \
-                    registry, no kstat-based metrics will be produced";
-                    "error" => ?e,
-                );
-                None
-            }
-        }
     }
 }

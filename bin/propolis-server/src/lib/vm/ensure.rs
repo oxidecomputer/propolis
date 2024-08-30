@@ -27,10 +27,12 @@
 
 use std::sync::Arc;
 
+use oximeter::types::ProducerRegistry;
+use oximeter_instruments::kstat::KstatSampler;
 use propolis_api_types::{
     instance_spec::{v0::InstanceSpecV0, VersionedInstanceSpec},
     InstanceEnsureResponse, InstanceMigrateInitiateResponse,
-    InstanceSpecEnsureRequest, InstanceState,
+    InstanceProperties, InstanceSpecEnsureRequest, InstanceState,
 };
 use slog::{debug, info};
 
@@ -38,6 +40,7 @@ use crate::{
     initializer::{
         build_instance, MachineInitializer, MachineInitializerState,
     },
+    stats::create_kstat_sampler,
     vm::request_queue::InstanceAutoStart,
 };
 
@@ -178,13 +181,13 @@ impl<'a> VmEnsureNotStarted<'a> {
             toml_config: &options.toml_config,
             producer_registry: options.oximeter_registry.clone(),
             state: MachineInitializerState::default(),
+            kstat_sampler: initialize_kstat_sampler(
+                self.log,
+                properties,
+                v0_spec,
+                options.oximeter_registry.clone(),
+            ),
         };
-
-        // If we are publishing metrics to oximeter, then create a kstat-sampler
-        // now. This is used to track the vCPUs today, but will soon be used to
-        // track instance datalink stats as well. It can be provided to
-        // `initialize_network_devices()` at that time.
-        let maybe_kstat_sampler = init.create_kstat_sampler();
 
         init.initialize_rom(options.toml_config.bootrom.as_path())?;
         let chipset = init.initialize_chipset(
@@ -199,7 +202,7 @@ impl<'a> VmEnsureNotStarted<'a> {
         let ps2ctrl = init.initialize_ps2(&chipset)?;
         init.initialize_qemu_debug_port()?;
         init.initialize_qemu_pvpanic(properties.into())?;
-        init.initialize_network_devices(&chipset, &maybe_kstat_sampler).await?;
+        init.initialize_network_devices(&chipset).await?;
 
         #[cfg(not(feature = "omicron-build"))]
         init.initialize_test_devices(&options.toml_config.devices)?;
@@ -220,7 +223,7 @@ impl<'a> VmEnsureNotStarted<'a> {
 
         let ramfb = init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
 
-        init.initialize_cpus(&maybe_kstat_sampler).await?;
+        init.initialize_cpus().await?;
 
         let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
             &machine,
@@ -367,5 +370,29 @@ impl<'a> VmEnsureActive<'a> {
     /// used to start a state driver loop.
     pub(super) fn into_inner(self) -> (Arc<VmObjects>, Arc<InputQueue>) {
         (self.vm_objects, self.input_queue)
+    }
+}
+
+/// Create an object used to sample kstats.
+fn initialize_kstat_sampler(
+    log: &slog::Logger,
+    properties: &InstanceProperties,
+    spec: &InstanceSpecV0,
+    producer_registry: Option<ProducerRegistry>,
+) -> Option<KstatSampler> {
+    let registry = producer_registry?;
+    let sampler = create_kstat_sampler(log, properties, spec)?;
+
+    match registry.register_producer(sampler.clone()) {
+        Ok(_) => Some(sampler),
+        Err(e) => {
+            slog::error!(
+                log,
+                "Failed to register kstat sampler in producer \
+                registry, no kstat-based metrics will be produced";
+                "error" => ?e,
+            );
+            None
+        }
     }
 }

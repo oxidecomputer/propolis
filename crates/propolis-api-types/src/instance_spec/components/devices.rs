@@ -96,8 +96,10 @@ pub struct VirtioNic {
     /// The name of the device's backend.
     pub backend_name: String,
 
-    /// The interface ID of the device from the requested NIC to which we are
-    /// binding.
+    /// A caller-defined correlation identifier for this interface. If Propolis
+    /// is configured to collect network interface kstats in its Oximeter
+    /// metrics, the metric series for this interface will be associated with
+    /// this identifier.
     pub interface_id: uuid::Uuid,
 
     /// The PCI path at which to attach this device.

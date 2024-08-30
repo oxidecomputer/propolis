@@ -112,6 +112,7 @@ pub(crate) type DeviceMap =
     BTreeMap<String, Arc<dyn propolis::common::Lifecycle>>;
 
 /// Mapping of NIC identifiers to viona device instance IDs.
+/// We use a Vec here due to the limited size of the NIC array.
 pub(crate) type NetworkInterfaceIds = Vec<(uuid::Uuid, KstatInstanceId)>;
 
 /// Maps component names to block backend trait objects.
