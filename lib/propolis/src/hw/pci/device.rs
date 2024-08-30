@@ -195,6 +195,10 @@ impl State {
     fn pio_en(&self) -> bool {
         self.reg_command.contains(RegCmd::IO_EN)
     }
+    /// Given the device state, is decoding enabled for a specified [BarDefine]
+    fn decoding_active(&self, bar: &BarDefine) -> bool {
+        (bar.is_pio() && self.pio_en()) || (bar.is_mmio() && self.mmio_en())
+    }
 }
 
 pub(super) struct Cap {
@@ -391,9 +395,7 @@ impl DeviceState {
                 let mut state = self.state.lock().unwrap();
                 if let Some(res) = state.bars.reg_write(*bar, val) {
                     let attach = state.attached();
-                    if (state.pio_en() && res.def.is_pio())
-                        || (state.mmio_en() && res.def.is_mmio())
-                    {
+                    if state.decoding_active(&res.def) {
                         attach.bar_unregister(res.id);
                         attach.bar_register(res.id, res.def, res.val_new);
                         dev.bar_update(BarState {
@@ -651,9 +653,7 @@ impl DeviceState {
         let attach = inner.attached();
         for n in BarN::iter() {
             if let Some((def, addr)) = inner.bars.get(n) {
-                if (inner.pio_en() && def.is_pio())
-                    || (inner.mmio_en() && def.is_mmio())
-                {
+                if inner.decoding_active(&def) {
                     attach.bar_register(n, def, addr);
                 }
             }
