@@ -15,11 +15,11 @@ use crate::migrate::*;
 use crate::util::regmap::{Flags, RegMap};
 
 use lazy_static::lazy_static;
+use strum::IntoEnumIterator;
 
 pub trait Device: Send + Sync + 'static {
     fn device_state(&self) -> &DeviceState;
 
-    #[allow(unused_variables)]
     fn bar_rw(&self, bar: BarN, rwo: RWOp) {
         match rwo {
             RWOp::Read(ro) => {
@@ -30,7 +30,6 @@ pub trait Device: Send + Sync + 'static {
             }
         }
     }
-    #[allow(unused_variables)]
     fn cfg_rw(&self, region: u8, rwo: RWOp) {
         match rwo {
             RWOp::Read(ro) => {
@@ -46,6 +45,13 @@ pub trait Device: Send + Sync + 'static {
     fn interrupt_mode_change(&self, mode: IntrMode) {}
     #[allow(unused_variables)]
     fn msi_update(&self, info: MsiUpdate) {}
+
+    /// Notification that configuration of BAR(s) has changed, either due to
+    /// writes to the BARs themselves, or an overall status change (via the
+    /// Command register or a device reset).
+    #[allow(unused_variables)]
+    fn bar_update(&self, bstate: BarState) {}
+
     // TODO
     // fn cap_read(&self);
     // fn cap_write(&self);
@@ -180,6 +186,18 @@ impl State {
     }
     fn attached(&self) -> &bus::Attachment {
         self.attach.as_ref().unwrap()
+    }
+    /// Is MMIO access decoding enabled?
+    fn mmio_en(&self) -> bool {
+        self.reg_command.contains(RegCmd::MMIO_EN)
+    }
+    /// Is PIO access decoding enabled?
+    fn pio_en(&self) -> bool {
+        self.reg_command.contains(RegCmd::IO_EN)
+    }
+    /// Given the device state, is decoding enabled for a specified [BarDefine]
+    fn decoding_active(&self, bar: &BarDefine) -> bool {
+        (bar.is_pio() && self.pio_en()) || (bar.is_mmio() && self.mmio_en())
     }
 }
 
@@ -375,15 +393,17 @@ impl DeviceState {
             StdCfgReg::Bar(bar) => {
                 let val = wo.read_u32();
                 let mut state = self.state.lock().unwrap();
-                if let Some((def, _old, new)) = state.bars.reg_write(*bar, val)
-                {
-                    let pio_en = state.reg_command.contains(RegCmd::IO_EN);
-                    let mmio_en = state.reg_command.contains(RegCmd::MMIO_EN);
-
+                if let Some(res) = state.bars.reg_write(*bar, val) {
                     let attach = state.attached();
-                    if (pio_en && def.is_pio()) || (mmio_en && def.is_mmio()) {
-                        attach.bar_unregister(*bar);
-                        attach.bar_register(*bar, def, new);
+                    if state.decoding_active(&res.def) {
+                        attach.bar_unregister(res.id);
+                        attach.bar_register(res.id, res.def, res.val_new);
+                        dev.bar_update(BarState {
+                            id: res.id,
+                            def: res.def,
+                            value: res.val_new,
+                            decode_en: true,
+                        });
                     }
                 }
             }
@@ -425,6 +445,8 @@ impl DeviceState {
 
         // Update BAR registrations
         if diff.intersects(RegCmd::IO_EN | RegCmd::MMIO_EN) {
+            let pio_en = val.contains(RegCmd::IO_EN);
+            let mmio_en = val.contains(RegCmd::MMIO_EN);
             for n in BarN::iter() {
                 let bar = state.bars.get(n);
                 if bar.is_none() {
@@ -433,18 +455,30 @@ impl DeviceState {
                 let (def, v) = bar.unwrap();
 
                 if diff.contains(RegCmd::IO_EN) && def.is_pio() {
-                    if val.contains(RegCmd::IO_EN) {
+                    if pio_en {
                         attach.bar_register(n, def, v);
                     } else {
                         attach.bar_unregister(n);
                     }
+                    dev.bar_update(BarState {
+                        id: n,
+                        def,
+                        value: v,
+                        decode_en: pio_en,
+                    });
                 }
                 if diff.contains(RegCmd::MMIO_EN) && def.is_mmio() {
-                    if val.contains(RegCmd::MMIO_EN) {
+                    if mmio_en {
                         attach.bar_register(n, def, v);
                     } else {
                         attach.bar_unregister(n);
                     }
+                    dev.bar_update(BarState {
+                        id: n,
+                        def,
+                        value: v,
+                        decode_en: mmio_en,
+                    });
                 }
             }
         }
@@ -480,6 +514,17 @@ impl DeviceState {
     pub(crate) fn get_intr_mode(&self) -> IntrMode {
         let state = self.state.lock().unwrap();
         self.which_intr_mode(&state)
+    }
+
+    pub(crate) fn bar(&self, id: BarN) -> Option<BarState> {
+        let state = self.state.lock().unwrap();
+        state.bars.get(id).map(|(def, value)| {
+            let decode_en = match def {
+                BarDefine::Pio(_) => state.pio_en(),
+                BarDefine::Mmio(_) | BarDefine::Mmio64(_) => state.mmio_en(),
+            };
+            BarState { id, def, value, decode_en }
+        })
     }
 
     fn cfg_cap_rw(&self, dev: &dyn Device, id: &CfgReg, rwo: RWOp) {
@@ -608,10 +653,7 @@ impl DeviceState {
         let attach = inner.attached();
         for n in BarN::iter() {
             if let Some((def, addr)) = inner.bars.get(n) {
-                let pio_en = inner.reg_command.contains(RegCmd::IO_EN);
-                let mmio_en = inner.reg_command.contains(RegCmd::MMIO_EN);
-
-                if (pio_en && def.is_pio()) || (mmio_en && def.is_mmio()) {
+                if inner.decoding_active(&def) {
                     attach.bar_register(n, def, addr);
                 }
             }
@@ -1091,6 +1133,15 @@ impl Clone for MsixHdl {
     fn clone(&self) -> Self {
         Self { cfg: Arc::clone(&self.cfg) }
     }
+}
+
+/// Describes the state of a BAR
+pub struct BarState {
+    pub id: BarN,
+    pub def: BarDefine,
+    pub value: u64,
+    /// Is decoding for this BAR enabled in the device control?
+    pub decode_en: bool,
 }
 
 pub struct Builder {
