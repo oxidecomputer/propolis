@@ -27,6 +27,9 @@ use crate::config;
 
 use super::{ParsedNetworkDevice, ParsedStorageDevice};
 
+#[cfg(feature = "falcon")]
+use super::ParsedSoftNpu;
+
 #[derive(Debug, Error)]
 pub(crate) enum ConfigTomlError {
     #[error("unrecognized device type {0:?}")]
@@ -71,17 +74,9 @@ pub(crate) enum ConfigTomlError {
     NoP9Target(String),
 }
 
-#[cfg(feature = "falcon")]
-#[derive(Default)]
-pub(super) struct ParsedSoftNpu {
-    pub(super) pci_ports: Vec<SoftNpuPciPort>,
-    pub(super) ports: Vec<SoftNpuPort>,
-    pub(super) p9_devices: Vec<SoftNpuP9>,
-    pub(super) p9fs: Vec<P9fs>,
-}
-
 #[derive(Default)]
 pub(super) struct ParsedConfig {
+    pub(super) enable_pcie: bool,
     pub(super) disks: Vec<ParsedStorageDevice>,
     pub(super) nics: Vec<ParsedNetworkDevice>,
     pub(super) pci_bridges: Vec<ParsedPciPciBridge>,
@@ -94,7 +89,21 @@ impl TryFrom<&config::Config> for ParsedConfig {
     type Error = ConfigTomlError;
 
     fn try_from(config: &config::Config) -> Result<Self, Self::Error> {
-        let mut parsed = Self::default();
+        let mut parsed = ParsedConfig {
+            enable_pcie: config
+                .chipset
+                .options
+                .get("enable-pcie")
+                .map(|v| {
+                    v.as_bool().ok_or_else(|| {
+                        ConfigTomlError::EnablePcieParseFailed(v.to_string())
+                    })
+                })
+                .transpose()?
+                .unwrap_or(false),
+            ..Default::default()
+        };
+
         for (device_name, device) in config.devices.iter() {
             let driver = device.driver.as_str();
             match driver {

@@ -180,6 +180,12 @@ impl<'a> VmEnsureNotStarted<'a> {
             state: MachineInitializerState::default(),
         };
 
+        // If we are publishing metrics to oximeter, then create a kstat-sampler
+        // now. This is used to track the vCPUs today, but will soon be used to
+        // track instance datalink stats as well. It can be provided to
+        // `initialize_network_devices()` at that time.
+        let maybe_kstat_sampler = init.create_kstat_sampler();
+
         init.initialize_rom(options.toml_config.bootrom.as_path())?;
         let chipset = init.initialize_chipset(
             &(event_queue.clone()
@@ -213,7 +219,7 @@ impl<'a> VmEnsureNotStarted<'a> {
             .await?;
 
         let ramfb = init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
-        init.initialize_cpus()?;
+        init.initialize_cpus(&maybe_kstat_sampler).await?;
         let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
             &machine,
             event_queue.clone()

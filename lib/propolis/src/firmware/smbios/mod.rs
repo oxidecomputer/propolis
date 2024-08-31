@@ -10,7 +10,7 @@ use table::{Table, Type127};
 mod bits;
 pub mod table;
 
-/// Collection of SMBIOS [table](table) instances, which will be rendered out
+/// Collection of SMBIOS [table] instances, which will be rendered out
 /// into two blocks of raw bytes representing the SMBIOS Entry Point and
 /// SMBIOS Structure Table.
 pub struct Tables {

@@ -12,8 +12,10 @@ use propolis_api_types::InstanceProperties;
 use slog::{error, info, Logger};
 
 use crate::{
-    serial::SerialTaskControlMessage, server::MetricsEndpointConfig,
-    stats::virtual_machine::VirtualMachine, vnc::VncServer,
+    serial::SerialTaskControlMessage,
+    server::MetricsEndpointConfig,
+    stats::{virtual_machine::VirtualMachine, ServerStats},
+    vnc::VncServer,
 };
 
 use super::objects::{VmObjects, VmObjectsShared};
@@ -26,7 +28,7 @@ pub(crate) struct OximeterState {
     server: Option<oximeter_producer::Server>,
 
     /// The statistics object used by the API layer to record its metrics.
-    pub stats: Option<crate::stats::ServerStatsOuter>,
+    pub stats: Option<crate::stats::ServerStats>,
 }
 
 /// A collection of services visible to consumers outside this Propolis that
@@ -35,7 +37,10 @@ pub(crate) struct VmServices {
     /// A VM's serial console handler task.
     pub serial_task: tokio::sync::Mutex<Option<crate::serial::SerialTask>>,
 
-    /// A VM's Oximeter server.
+    /// A VM's Oximeter state.
+    ///
+    /// This mostly contains the actual producer server, though the
+    /// "server-level stats" are also included here.
     pub oximeter: tokio::sync::Mutex<OximeterState>,
 
     /// A reference to the VM's host process's VNC server.
@@ -138,26 +143,16 @@ async fn register_oximeter_producer(
     // Assign our own metrics production for this VM instance to the
     // registry, letting the server actually return them to oximeter when
     // polled.
-    oximeter_state.stats = match crate::stats::register_server_metrics(
-        registry,
-        virtual_machine,
-        log,
-    )
-    .await
-    {
-        Ok(stats) => Some(stats),
-        Err(e) => {
-            error!(
-                log,
-                "failed to register our server metrics with \
-                the ProducerRegistry, no server stats will \
-                be produced";
-                "error" => ?e,
-            );
-
-            None
-        }
-    };
+    let stats = ServerStats::new(virtual_machine);
+    if let Err(e) = registry.register_producer(stats.clone()) {
+        error!(
+            log,
+            "failed to register our server metrics with \
+            the ProducerRegistry, no server stats will \
+            be produced";
+            "error" => ?e,
+        );
+    }
 
     oximeter_state
 }

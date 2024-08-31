@@ -60,7 +60,7 @@ impl Machine {
     }
 
     /// Destroy the `Machine` and its associated resources.  Returns the
-    /// underlying [VmmHdl](crate::vmm::VmmHdl) for the caller to do further
+    /// underlying [VmmHdl] for the caller to do further
     /// cleanup, such as destroy the kernel VMM instance.
     pub fn destroy(mut self) -> Arc<VmmHdl> {
         self.do_destroy().expect("machine not already destroyed")

@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 // lives in that repo, at
 // `./omicron/oximeter/oximeter/schema/virtual-machine.toml`.
 oximeter::use_timeseries!("virtual-machine.toml");
+pub use self::virtual_machine::Reset;
 use self::virtual_machine::{
     VcpuUsage, VirtualMachine as VirtualMachineTarget,
 };
@@ -145,14 +146,6 @@ pub struct VirtualMachine {
     // Same for this field, not published as part of the target, but used to
     // find the right kstats.
     vm_name: String,
-}
-
-impl VirtualMachine {
-    /// Return the number of vCPUs in this VM.
-    #[cfg_attr(test, allow(dead_code))]
-    pub(crate) fn n_vcpus(&self) -> u32 {
-        self.n_vcpus
-    }
 }
 
 impl From<&propolis_api_types::InstanceProperties> for VirtualMachine {
