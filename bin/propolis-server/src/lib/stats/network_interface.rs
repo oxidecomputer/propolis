@@ -152,7 +152,7 @@ impl InstanceNetworkInterfaces {
     #[cfg(all(not(test), target_os = "illumos"))]
     pub(crate) fn new(
         properties: &propolis_api_types::InstanceProperties,
-        interface_ids: NetworkInterfaceIds,
+        interface_ids: &NetworkInterfaceIds,
     ) -> Self {
         Self {
             target: InstanceNetworkInterface {

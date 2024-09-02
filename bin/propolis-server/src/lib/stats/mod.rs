@@ -265,17 +265,24 @@ pub(crate) async fn track_network_interface_kstats(
     properties: &InstanceProperties,
     interface_ids: NetworkInterfaceIds,
 ) {
-    let nics = InstanceNetworkInterfaces::new(properties, interface_ids);
+    let nics = InstanceNetworkInterfaces::new(properties, &interface_ids);
     let details = oximeter_instruments::kstat::CollectionDetails::never(
         NETWORK_INTERFACE_SAMPLE_INTERVAL,
     );
-    let interface_id = nics.target.interface_id;
     if let Err(e) = sampler.add_target(nics, details).await {
+        let network_interface_ids = interface_ids
+            .iter()
+            .map(|(uuid, device_id)| {
+                format!("{} (kstat-instance: {})", uuid, device_id)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+
         slog::error!(
             log,
             "failed to add network interface targets, \
             network interface stats will be unavailable";
-            "network_interface_id" => %interface_id,
+            "network_interface_ids" => network_interface_ids,
             "error" => ?e,
         );
     }
