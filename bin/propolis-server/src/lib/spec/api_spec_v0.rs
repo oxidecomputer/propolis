@@ -27,8 +27,8 @@ pub(crate) enum ApiSpecParseError {
     #[error(transparent)]
     BuilderError(#[from] SpecBuilderError),
 
-    #[error("backend {0} not found for device {1}")]
-    BackendNotFound(String, String),
+    #[error("backend {backend} not found for device {device}")]
+    BackendNotFound { backend: String, device: String },
 
     #[error("backend {0} not used by any device")]
     BackendNotUsed(String),
@@ -137,6 +137,9 @@ impl TryFrom<InstanceSpecV0> for Spec {
 
     fn try_from(mut value: InstanceSpecV0) -> Result<Self, Self::Error> {
         let mut builder = SpecBuilder::with_board(value.devices.board);
+
+        // Examine each storage device and peel its backend off of the input
+        // spec.
         for (device_name, device_spec) in value.devices.storage_devices {
             let backend_name = match &device_spec {
                 StorageDeviceV0::VirtioDisk(disk) => &disk.backend_name,
@@ -147,11 +150,9 @@ impl TryFrom<InstanceSpecV0> for Spec {
                 .backends
                 .storage_backends
                 .remove_entry(backend_name)
-                .ok_or_else(|| {
-                    ApiSpecParseError::BackendNotFound(
-                        backend_name.to_owned(),
-                        device_name.clone(),
-                    )
+                .ok_or_else(|| ApiSpecParseError::BackendNotFound {
+                    backend: backend_name.to_owned(),
+                    device: device_name.clone(),
                 })?;
 
             builder.add_storage_device(
@@ -164,10 +165,13 @@ impl TryFrom<InstanceSpecV0> for Spec {
             )?;
         }
 
+        // Once all the devices have been checked, there should be no unpaired
+        // backends remaining.
         if let Some(backend) = value.backends.storage_backends.keys().next() {
             return Err(ApiSpecParseError::BackendNotUsed(backend.to_owned()));
         }
 
+        // Repeat this process for network devices.
         for (device_name, device_spec) in value.devices.network_devices {
             let NetworkDeviceV0::VirtioNic(device_spec) = device_spec;
             let backend_name = &device_spec.backend_name;
@@ -175,11 +179,9 @@ impl TryFrom<InstanceSpecV0> for Spec {
                 .backends
                 .network_backends
                 .remove_entry(backend_name)
-                .ok_or_else(|| {
-                    ApiSpecParseError::BackendNotFound(
-                        backend_name.to_owned(),
-                        device_name.clone(),
-                    )
+                .ok_or_else(|| ApiSpecParseError::BackendNotFound {
+                    backend: backend_name.to_owned(),
+                    device: device_name.clone(),
                 })?;
 
             let NetworkBackendV0::Virtio(backend_spec) = backend_spec else {
@@ -216,11 +218,9 @@ impl TryFrom<InstanceSpecV0> for Spec {
                     .backends
                     .network_backends
                     .remove_entry(&port.backend_name)
-                    .ok_or_else(|| {
-                        ApiSpecParseError::BackendNotFound(
-                            port.backend_name,
-                            port_name.clone(),
-                        )
+                    .ok_or_else(|| ApiSpecParseError::BackendNotFound {
+                        backend: port.backend_name,
+                        device: port_name.clone(),
                     })?;
 
                 let NetworkBackendV0::Dlpi(backend_spec) = backend_spec else {
@@ -238,7 +238,7 @@ impl TryFrom<InstanceSpecV0> for Spec {
             return Err(ApiSpecParseError::BackendNotUsed(backend.to_owned()));
         }
 
-        // TODO(gjc) do more to preserve names
+        // TODO(#735): Serial ports need to have names like other devices.
         for serial_port in value.devices.serial_ports.values() {
             builder.add_serial_port(serial_port.num)?;
         }
