@@ -4,14 +4,15 @@
 
 //! Instance specs describe how to configure a VM and what components it has.
 //!
-//! This module defines an "internal" spec type for the server's instance
-//! initialization code to use. This spec type is not `Serialize` and is not
-//! meant to be sent over the wire in API requests or the migration protocol.
-//! This allows the internal representation to change freely between versions
-//! (so long as it can consistently be converted to and from the wire-format
-//! spec in the [`propolis_api_types`] crate); this, in turn, allows this
-//! representation to take forms that might otherwise be hard to change in a
-//! backward-compatible way.
+//! This module defines a crate-internal instance spec type, [`Spec`], and its
+//! constituent types, like [`Disk`] and [`Nic`]. Unlike the types in
+//! [`propolis_api_types::instance_spec`], these internal types are not
+//! `Serialize` and are never meant to be used over the wire in API requests or
+//! the migration protocol. This allows them to change freely between Propolis
+//! versions, so long as they can consistently be converted to and from the
+//! wire-format types in the [`propolis_api_types`] crate. This, in turn, allows
+//! [`Spec`] and its component types to take forms that might otherwise be hard
+//! to change in a backward-compatible way.
 
 use std::collections::HashMap;
 
@@ -42,6 +43,15 @@ pub(crate) mod api_spec_v0;
 pub(crate) mod builder;
 mod config_toml;
 
+/// An instance specification that describes a VM's configuration and
+/// components.
+///
+/// NOTE: This struct's fields are `pub` to make it convenient to access the
+/// individual parts of a fully-constructed spec. Modules that consume specs may
+/// assert that they are valid (no duplicate component names, no duplicate PCI
+/// device paths, etc.). When constructing a new spec, use the
+/// [`builder::SpecBuilder`] struct to catch requests that violate these
+/// invariants.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Spec {
     pub board: Board,
@@ -57,8 +67,7 @@ pub(crate) struct Spec {
     pub softnpu: SoftNpu,
 }
 
-/// Describes a storage device/backend pair parsed from an input source like an
-/// API request or a config TOML entry.
+/// Describes the device half of a [`Disk`].
 #[derive(Clone, Debug)]
 pub enum StorageDevice {
     Virtio(VirtioDisk),
@@ -92,6 +101,7 @@ impl From<StorageDeviceV0> for StorageDevice {
     }
 }
 
+/// Describes the backend half of a [`Disk`].
 #[derive(Clone, Debug)]
 pub enum StorageBackend {
     Crucible(CrucibleStorageBackend),
