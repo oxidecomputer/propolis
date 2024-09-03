@@ -14,7 +14,7 @@ use slog::{error, info, Logger};
 use crate::{
     serial::SerialTaskControlMessage,
     server::MetricsEndpointConfig,
-    stats::{virtual_machine::VirtualMachine, ServerStats},
+    stats::{ServerStats, VirtualMachine},
     vnc::VncServer,
 };
 

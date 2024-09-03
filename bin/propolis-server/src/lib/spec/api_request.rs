@@ -138,6 +138,7 @@ pub(super) fn parse_nic_from_request(
     let (device_name, backend_name) = super::pci_path_to_nic_names(pci_path);
     let device_spec = NetworkDeviceV0::VirtioNic(VirtioNic {
         backend_name: backend_name.clone(),
+        interface_id: nic.interface_id,
         pci_path,
     });
 
@@ -193,8 +194,11 @@ mod test {
 
     #[test]
     fn parsed_network_devices_point_to_backends() {
-        let req =
-            NetworkInterfaceRequest { name: "vnic".to_string(), slot: Slot(0) };
+        let req = NetworkInterfaceRequest {
+            name: "vnic".to_string(),
+            interface_id: uuid::Uuid::new_v4(),
+            slot: Slot(0),
+        };
 
         let parsed = parse_nic_from_request(&req).unwrap();
         let NetworkDeviceV0::VirtioNic(nic) = &parsed.device_spec;

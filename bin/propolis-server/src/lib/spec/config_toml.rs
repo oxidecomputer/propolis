@@ -300,6 +300,9 @@ pub(super) fn parse_network_device_from_config(
 
     let device_spec = NetworkDeviceV0::VirtioNic(VirtioNic {
         backend_name: backend_name.clone(),
+        // We don't allow for configuration to specify the interface_id, so we
+        // generate a new one.
+        interface_id: uuid::Uuid::nil(),
         pci_path,
     });
 
