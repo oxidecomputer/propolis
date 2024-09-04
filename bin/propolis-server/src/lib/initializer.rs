@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::serial::Serial;
-use crate::spec::{self, StorageBackend};
+use crate::spec::{self, Spec, StorageBackend};
 use crate::stats::{
     track_network_interface_kstats, track_vcpu_kstats, VirtualDiskProducer,
     VirtualMachine,
@@ -47,7 +47,7 @@ use slog::info;
 /// Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
 
-fn get_spec_guest_ram_limits(spec: &spec::Spec) -> (usize, usize) {
+fn get_spec_guest_ram_limits(spec: &Spec) -> (usize, usize) {
     let memsize = spec.board.memory_mb as usize * MB;
     let lowmem = memsize.min(3 * GB);
     let highmem = memsize.saturating_sub(3 * GB);
@@ -56,7 +56,7 @@ fn get_spec_guest_ram_limits(spec: &spec::Spec) -> (usize, usize) {
 
 pub fn build_instance(
     name: &str,
-    spec: &spec::Spec,
+    spec: &Spec,
     use_reservoir: bool,
     _log: slog::Logger,
 ) -> Result<Machine> {
@@ -120,7 +120,7 @@ pub struct MachineInitializer<'a> {
     pub(crate) devices: DeviceMap,
     pub(crate) block_backends: BlockBackendMap,
     pub(crate) crucible_backends: CrucibleBackendMap,
-    pub(crate) spec: &'a spec::Spec,
+    pub(crate) spec: &'a Spec,
     pub(crate) properties: &'a InstanceProperties,
     pub(crate) toml_config: &'a crate::server::VmTomlConfig,
     pub(crate) producer_registry: Option<ProducerRegistry>,

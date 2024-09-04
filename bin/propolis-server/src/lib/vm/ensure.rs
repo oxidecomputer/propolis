@@ -39,7 +39,7 @@ use crate::{
     initializer::{
         build_instance, MachineInitializer, MachineInitializerState,
     },
-    spec,
+    spec::Spec,
     stats::create_kstat_sampler,
     vm::request_queue::InstanceAutoStart,
 };
@@ -55,7 +55,7 @@ use super::{
 pub(crate) struct VmEnsureRequest {
     pub(crate) properties: InstanceProperties,
     pub(crate) migrate: Option<InstanceMigrateInitiateRequest>,
-    pub(crate) instance_spec: spec::Spec,
+    pub(crate) instance_spec: Spec,
 }
 
 /// Holds state about an instance ensure request that has not yet produced any
@@ -88,7 +88,7 @@ impl<'a> VmEnsureNotStarted<'a> {
         }
     }
 
-    pub(crate) fn instance_spec(&self) -> &spec::Spec {
+    pub(crate) fn instance_spec(&self) -> &Spec {
         &self.ensure_request.instance_spec
     }
 
@@ -379,7 +379,7 @@ impl<'a> VmEnsureActive<'a> {
 fn initialize_kstat_sampler(
     log: &slog::Logger,
     properties: &InstanceProperties,
-    spec: &spec::Spec,
+    spec: &Spec,
     producer_registry: Option<ProducerRegistry>,
 ) -> Option<KstatSampler> {
     let registry = producer_registry?;

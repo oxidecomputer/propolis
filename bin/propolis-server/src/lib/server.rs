@@ -16,11 +16,18 @@ use std::net::SocketAddr;
 use std::net::SocketAddrV6;
 use std::sync::Arc;
 
-use crate::serial::history_buffer::SerialHistoryOffset;
-use crate::spec;
-use crate::spec::api_spec_v0::ApiSpecParseError;
-use crate::vm::ensure::VmEnsureRequest;
-use crate::vm::VmError;
+use crate::{
+    serial::history_buffer::SerialHistoryOffset,
+    spec::{
+        self,
+        api_spec_v0::ApiSpecParseError,
+        builder::{SpecBuilder, SpecBuilderError},
+        Spec,
+    },
+    vm::{ensure::VmEnsureRequest, VmError},
+    vnc::{self, VncServer},
+};
+
 use dropshot::{
     channel, endpoint, ApiDescription, HttpError, HttpResponseCreated,
     HttpResponseOk, HttpResponseUpdatedNoContent, Path, Query, RequestContext,
@@ -32,20 +39,17 @@ use internal_dns::ServiceName;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types as api;
-use propolis_api_types::instance_spec::VersionedInstanceSpec;
 use propolis_api_types::instance_spec::{
-    self, components::devices::QemuPvpanic,
+    self, components::devices::QemuPvpanic, VersionedInstanceSpec,
 };
-
 pub use propolis_server_config::Config as VmTomlConfig;
 use rfb::tungstenite::BinaryWs;
 use slog::{error, warn, Logger};
 use tokio::sync::MutexGuard;
-use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
-use tokio_tungstenite::WebSocketStream;
-
-use crate::spec::builder::{SpecBuilder, SpecBuilderError};
-use crate::vnc::{self, VncServer};
+use tokio_tungstenite::{
+    tungstenite::protocol::{Role, WebSocketConfig},
+    WebSocketStream,
+};
 
 /// Configuration used to set this server up to provide Oximeter metrics.
 #[derive(Debug, Clone)]
@@ -112,7 +116,7 @@ impl DropshotEndpointContext {
 fn instance_spec_from_request(
     request: &api::InstanceEnsureRequest,
     toml_config: &VmTomlConfig,
-) -> Result<spec::Spec, SpecBuilderError> {
+) -> Result<Spec, SpecBuilderError> {
     let mut spec_builder = SpecBuilder::new(&request.properties);
 
     spec_builder.add_devices_from_config(toml_config)?;
@@ -231,7 +235,7 @@ async fn instance_ensure_common(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
     properties: api::InstanceProperties,
     migrate: Option<api::InstanceMigrateInitiateRequest>,
-    instance_spec: spec::Spec,
+    instance_spec: Spec,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let server_context = rqctx.context();
     let oximeter_registry = server_context
@@ -321,10 +325,9 @@ async fn instance_spec_ensure(
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let request = request.into_inner();
     let VersionedInstanceSpec::V0(v0_spec) = request.instance_spec;
-    let spec =
-        spec::Spec::try_from(v0_spec).map_err(|e: ApiSpecParseError| {
-            HttpError::for_bad_request(None, e.to_string())
-        })?;
+    let spec = Spec::try_from(v0_spec).map_err(|e: ApiSpecParseError| {
+        HttpError::for_bad_request(None, e.to_string())
+    })?;
 
     instance_ensure_common(rqctx, request.properties, request.migrate, spec)
         .await

@@ -95,7 +95,7 @@ use state_driver::StateDriverOutput;
 use state_publisher::StatePublisher;
 use tokio::sync::{oneshot, watch, RwLock, RwLockReadGuard};
 
-use crate::{server::MetricsEndpointConfig, spec, vnc::VncServer};
+use crate::{server::MetricsEndpointConfig, spec::Spec, vnc::VncServer};
 
 mod active;
 pub(crate) mod ensure;
@@ -219,7 +219,7 @@ struct VmDescription {
     properties: InstanceProperties,
 
     /// The VM's last-known instance specification.
-    spec: spec::Spec,
+    spec: Spec,
 
     /// The runtime on which the VM's state driver is running (or on which it
     /// ran).

@@ -18,7 +18,7 @@ use propolis_api_types::InstanceProperties;
 use slog::Logger;
 use uuid::Uuid;
 
-use crate::spec;
+use crate::spec::Spec;
 use crate::{server::MetricsEndpointConfig, vm::NetworkInterfaceIds};
 
 mod network_interface;
@@ -189,7 +189,7 @@ pub fn start_oximeter_server(
 pub(crate) fn create_kstat_sampler(
     log: &Logger,
     properties: &InstanceProperties,
-    spec: &spec::Spec,
+    spec: &Spec,
 ) -> Option<KstatSampler> {
     let kstat_limit = usize::try_from(
         (u32::from(properties.vcpus) * KSTAT_LIMIT_PER_VCPU)

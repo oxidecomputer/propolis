@@ -20,7 +20,7 @@ use propolis::{
 use slog::{error, info};
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use crate::{serial::Serial, spec, vcpu_tasks::VcpuTaskController};
+use crate::{serial::Serial, spec::Spec, vcpu_tasks::VcpuTaskController};
 
 use super::{
     state_driver::VmStartReason, BlockBackendMap, CrucibleBackendMap, DeviceMap,
@@ -43,7 +43,7 @@ pub(crate) struct VmObjects {
 /// A collection of objects that should eventually be wrapped in a lock and
 /// stored in a `VmObjects` structure. See [`VmObjectsLocked`].
 pub(super) struct InputVmObjects {
-    pub instance_spec: spec::Spec,
+    pub instance_spec: Spec,
     pub vcpu_tasks: Box<dyn VcpuTaskController>,
     pub machine: Machine,
     pub devices: DeviceMap,
@@ -60,7 +60,7 @@ pub(crate) struct VmObjectsLocked {
     log: slog::Logger,
 
     /// The instance spec that describes this collection of objects.
-    instance_spec: spec::Spec,
+    instance_spec: Spec,
 
     /// The set of tasks that run this VM's vCPUs.
     vcpu_tasks: Box<dyn VcpuTaskController>,
@@ -131,12 +131,12 @@ impl VmObjectsLocked {
     }
 
     /// Yields the VM's current instance spec.
-    pub(crate) fn instance_spec(&self) -> &spec::Spec {
+    pub(crate) fn instance_spec(&self) -> &Spec {
         &self.instance_spec
     }
 
     /// Yields a mutable reference to the VM's current instance spec.
-    pub(crate) fn instance_spec_mut(&mut self) -> &mut spec::Spec {
+    pub(crate) fn instance_spec_mut(&mut self) -> &mut Spec {
         &mut self.instance_spec
     }
 
