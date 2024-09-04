@@ -37,6 +37,7 @@ pub enum DiskBackend {
 
 #[derive(Clone, Debug)]
 struct DiskRequest<'a> {
+    name: &'a str,
     interface: DiskInterface,
     backend: DiskBackend,
     source: DiskSource<'a>,
@@ -48,8 +49,8 @@ pub struct VmConfig<'dr> {
     cpus: u8,
     memory_mib: u64,
     bootrom_artifact: String,
-    boot_disk: DiskRequest<'dr>,
-    data_disks: Vec<DiskRequest<'dr>>,
+    boot_order: Option<Vec<&'dr str>>,
+    disks: Vec<DiskRequest<'dr>>,
     devices: BTreeMap<String, propolis_server_config::Device>,
 }
 
@@ -63,22 +64,25 @@ impl<'dr> VmConfig<'dr> {
         bootrom: &str,
         guest_artifact: &'dr str,
     ) -> Self {
-        let boot_disk = DiskRequest {
-            interface: DiskInterface::Nvme,
-            backend: DiskBackend::File,
-            source: DiskSource::Artifact(guest_artifact),
-            pci_device_num: 4,
-        };
-
-        Self {
+        let mut config = Self {
             vm_name: vm_name.to_owned(),
             cpus,
             memory_mib,
             bootrom_artifact: bootrom.to_owned(),
-            boot_disk,
-            data_disks: Vec::new(),
+            boot_order: None,
+            disks: Vec::new(),
             devices: BTreeMap::new(),
-        }
+        };
+
+        config.data_disk(
+            "boot-disk",
+            DiskSource::Artifact(guest_artifact),
+            DiskInterface::Nvme,
+            DiskBackend::File,
+            4,
+        );
+
+        config
     }
 
     pub fn cpus(&mut self, cpus: u8) -> &mut Self {
@@ -119,6 +123,11 @@ impl<'dr> VmConfig<'dr> {
         self
     }
 
+    pub fn boot_order(&mut self, disks: Vec<&'dr str>) -> &mut Self {
+        self.boot_order = Some(disks);
+        self
+    }
+
     pub fn boot_disk(
         &mut self,
         artifact: &'dr str,
@@ -126,7 +135,17 @@ impl<'dr> VmConfig<'dr> {
         backend: DiskBackend,
         pci_device_num: u8,
     ) -> &mut Self {
-        self.boot_disk = DiskRequest {
+        // If you're calling `boot_disk` directly, you're probably not specifying an explicit boot
+        // order. the _implicit_ boot order seems to be the order disks are created in, so preserve
+        // that implied behavior by having a boot disk inserted up front.
+        //
+        // XXX: i thought that the implicit order would be *pci device order*, not disk creation
+        // order?
+        // XXX: figure out what to do if there is both an explicit boot order and a call to
+        // `.boot_disk`.
+
+        self.disks[0] = DiskRequest {
+            name: "boot-disk",
             interface,
             backend,
             source: DiskSource::Artifact(artifact),
@@ -138,12 +157,14 @@ impl<'dr> VmConfig<'dr> {
 
     pub fn data_disk(
         &mut self,
+        name: &'dr str,
         source: DiskSource<'dr>,
         interface: DiskInterface,
         backend: DiskBackend,
         pci_device_num: u8,
     ) -> &mut Self {
-        self.data_disks.push(DiskRequest {
+        self.disks.push(DiskRequest {
+            name,
             interface,
             backend,
             source,
@@ -172,7 +193,10 @@ impl<'dr> VmConfig<'dr> {
             })
             .context("serializing Propolis server config")?;
 
-        let DiskSource::Artifact(boot_artifact) = self.boot_disk.source else {
+        let boot_disk = &self.disks[0];
+
+        // TODO: adapt this to check all listed boot devices
+        let DiskSource::Artifact(boot_artifact) = boot_disk.source else {
             unreachable!("boot disks always use artifacts as sources");
         };
 
@@ -183,16 +207,12 @@ impl<'dr> VmConfig<'dr> {
             .context("getting guest OS kind for boot disk")?;
 
         let mut disk_handles = Vec::new();
-        disk_handles.push(
-            make_disk("boot-disk".to_owned(), framework, &self.boot_disk)
-                .await
-                .context("creating boot disk")?,
-        );
-        for (idx, data_disk) in self.data_disks.iter().enumerate() {
+        for disk in self.disks.iter() {
             disk_handles.push(
-                make_disk(format!("data-disk-{}", idx), framework, data_disk)
+                // format!("data-disk-{}", idx)
+                make_disk(disk.name.to_owned(), framework, disk)
                     .await
-                    .context("creating data disk")?,
+                    .context("creating disk")?,
             );
         }
 
@@ -203,10 +223,7 @@ impl<'dr> VmConfig<'dr> {
         // elements for all of them. This assumes the disk handles were created
         // in the correct order: boot disk first, then in the data disks'
         // iteration order.
-        let all_disks = [&self.boot_disk]
-            .into_iter()
-            .chain(self.data_disks.iter())
-            .zip(disk_handles.iter());
+        let all_disks = self.disks.iter().zip(disk_handles.iter());
         for (idx, (req, hdl)) in all_disks.enumerate() {
             let device_name = format!("disk-device{}", idx);
             let pci_path = PciPath::new(0, req.pci_device_num, 0).unwrap();
@@ -237,6 +254,14 @@ impl<'dr> VmConfig<'dr> {
         spec_builder
             .add_serial_port(SerialPortNumber::Com1)
             .context("adding serial port to spec")?;
+
+        if let Some(boot_order) = self.boot_order.as_ref() {
+            spec_builder
+                .set_boot_order(
+                    boot_order.iter().map(|x| x.to_string()).collect(),
+                )
+                .context("adding boot order to spec")?;
+        }
 
         let instance_spec = spec_builder.finish();
 

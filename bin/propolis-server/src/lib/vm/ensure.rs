@@ -177,6 +177,7 @@ impl<'a> VmEnsureNotStarted<'a> {
             properties,
             toml_config: &options.toml_config,
             producer_registry: options.oximeter_registry.clone(),
+            boot_order: v0_spec.devices.boot_order.clone(),
             state: MachineInitializerState::default(),
         };
 

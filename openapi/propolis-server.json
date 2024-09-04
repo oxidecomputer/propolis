@@ -662,6 +662,13 @@
             "additionalProperties": {
               "$ref": "#/components/schemas/StorageDeviceV0"
             }
+          },
+          "boot_order": {
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BootDeclaration"
+            }
           }
         },
         "required": [
@@ -1461,6 +1468,24 @@
           "completed_already",
           "missing",
           "vcr_matches"
+        ]
+      },
+      "BootDeclaration": {
+        "description": "A boot preference for some device.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "The name of the device to attempt booting from.",
+            "type": "string"
+          },
+          "first_boot_only": {
+            "description": "Should we include this device in the boot order for reboots of a started instance?",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "first_boot_only"
         ]
       },
       "SerialPort": {

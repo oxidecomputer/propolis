@@ -109,6 +109,11 @@ pub struct DeviceSpecV0 {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub qemu_pvpanic: Option<components::devices::QemuPvpanic>,
 
+    // same as above
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boot_order: Option<Vec<BootDeclaration>>,
+
     #[cfg(feature = "falcon")]
     pub softnpu_pci_port: Option<components::devices::SoftNpuPciPort>,
     #[cfg(feature = "falcon")]
@@ -175,6 +180,12 @@ impl DeviceSpecV0 {
 
         Ok(())
     }
+}
+
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+pub struct BootDeclaration {
+    pub name: SpecKey,
+    pub first_boot_only: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]

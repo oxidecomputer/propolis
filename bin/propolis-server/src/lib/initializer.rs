@@ -28,12 +28,18 @@ use propolis::hw::ibmpc;
 use propolis::hw::pci;
 use propolis::hw::ps2::ctrl::PS2Ctrl;
 use propolis::hw::qemu::pvpanic::QemuPvpanic;
-use propolis::hw::qemu::{debug::QemuDebugPort, fwcfg, ramfb};
+use propolis::hw::qemu::{
+    debug::QemuDebugPort,
+    fwcfg::{self, Entry},
+    ramfb,
+};
 use propolis::hw::uart::LpcUart;
 use propolis::hw::{nvme, virtio};
 use propolis::intr_pins;
 use propolis::vmm::{self, Builder, Machine};
-use propolis_api_types::instance_spec::{self, v0::InstanceSpecV0};
+use propolis_api_types::instance_spec::{
+    self, v0::BootDeclaration, v0::InstanceSpecV0,
+};
 use propolis_api_types::InstanceProperties;
 use slog::info;
 
@@ -117,6 +123,7 @@ pub struct MachineInitializer<'a> {
     pub(crate) properties: &'a InstanceProperties,
     pub(crate) toml_config: &'a crate::server::VmTomlConfig,
     pub(crate) producer_registry: Option<ProducerRegistry>,
+    pub(crate) boot_order: Option<Vec<BootDeclaration>>,
     pub(crate) state: MachineInitializerState,
 }
 
@@ -994,6 +1001,121 @@ impl<'a> MachineInitializer<'a> {
         smb_tables.commit()
     }
 
+    fn generate_bootorder(&self) -> Result<Option<Entry>, Error> {
+        eprintln!(
+            "generating bootorder with order: {:?}",
+            self.boot_order.as_ref()
+        );
+        let Some(boot_names) = self.boot_order.as_ref() else {
+            return Ok(None);
+        };
+
+        let mut order = fwcfg::formats::BootOrder::new();
+
+        let parse_bdf =
+            |pci_path: &propolis_api_types::instance_spec::PciPath| {
+                let bdf: Result<pci::Bdf, Error> =
+                    pci_path.to_owned().try_into().map_err(|e| {
+                        Error::new(
+                            ErrorKind::InvalidInput,
+                            format!(
+                                "Couldn't get PCI BDF for {}: {}",
+                                pci_path, e
+                            ),
+                        )
+                    });
+
+                bdf
+            };
+
+        for boot_entry in boot_names.iter() {
+            if boot_entry.first_boot_only {
+                continue;
+            }
+            // names may refer to a storage device or network device.
+            //
+            // realistically we won't be booting from network devices, but leave that as a question
+            // for plumbing on the next layer up.
+
+            let storage_backend = |spec| {
+                let spec: &instance_spec::v0::StorageDeviceV0 = spec;
+                match spec {
+                    instance_spec::v0::StorageDeviceV0::VirtioDisk(disk) => {
+                        &disk.backend_name
+                    }
+                    instance_spec::v0::StorageDeviceV0::NvmeDisk(disk) => {
+                        &disk.backend_name
+                    }
+                }
+            };
+
+            let network_backend = |spec| {
+                let spec: &instance_spec::v0::NetworkDeviceV0 = spec;
+                let instance_spec::v0::NetworkDeviceV0::VirtioNic(vnic_spec) =
+                    spec;
+
+                &vnic_spec.backend_name
+            };
+
+            if let Some(device_spec) =
+                self.spec.devices.storage_devices.iter().find_map(
+                    |(_name, spec)| {
+                        if storage_backend(spec) == &boot_entry.name {
+                            Some(spec)
+                        } else {
+                            None
+                        }
+                    },
+                )
+            {
+                match device_spec {
+                    instance_spec::v0::StorageDeviceV0::VirtioDisk(disk) => {
+                        let bdf = parse_bdf(&disk.pci_path)?;
+                        // TODO: check that bus is 0. only support boot devices
+                        // directly attached to the root bus for now.
+                        order.add_disk(bdf.location);
+                    }
+                    instance_spec::v0::StorageDeviceV0::NvmeDisk(disk) => {
+                        let bdf = parse_bdf(&disk.pci_path)?;
+                        // TODO: check that bus is 0. only support boot devices
+                        // directly attached to the root bus for now.
+                        //
+                        // TODO: separately, propolis-standalone passes an eui64
+                        // of 0, so do that here too. is that.. ok?
+                        order.add_nvme(bdf.location, 0);
+                    }
+                };
+            } else if let Some(vnic_spec) =
+                self.spec.devices.network_devices.iter().find_map(
+                    |(name, spec)| {
+                        if network_backend(spec) == &boot_entry.name {
+                            Some(spec)
+                        } else {
+                            None
+                        }
+                    },
+                )
+            {
+                let instance_spec::v0::NetworkDeviceV0::VirtioNic(vnic_spec) =
+                    vnic_spec;
+
+                let bdf = parse_bdf(&vnic_spec.pci_path)?;
+
+                order.add_pci(bdf.location, "ethernet");
+            } else {
+                eprintln!(
+                    "could not find {:?} in {:?} or {:?}",
+                    boot_entry,
+                    self.spec.devices.storage_devices,
+                    self.spec.devices.network_devices
+                );
+                panic!("TODO: return an error; the device name doesn't exist?");
+            }
+        }
+
+        Ok(Some(order.finish()))
+    }
+
     /// Initialize qemu `fw_cfg` device, and populate it with data including CPU
     /// count, SMBIOS tables, and attached RAM-FB device.
     ///
@@ -1010,6 +1132,13 @@ impl<'a> MachineInitializer<'a> {
             )
             .unwrap();
 
+        // TODO(ixi): extract `generate_smbios` and expect `smbios::TableBytes` as an argument to
+        // initialize_fwcfg. make `generate_smbios` accept rom size as an explicit parameter. this
+        // avoids the implicit panic if these are called out of order (and makes it harder to call
+        // out of order).
+        //
+        // one step towards sharing smbios init code between propolis-standalone and
+        // propolis-server.
         let smbios::TableBytes { entry_point, structure_table } =
             self.generate_smbios();
         fwcfg
@@ -1024,6 +1153,10 @@ impl<'a> MachineInitializer<'a> {
                 fwcfg::Entry::Bytes(entry_point),
             )
             .unwrap();
+
+        if let Some(boot_order) = self.generate_bootorder()? {
+            fwcfg.insert_named("bootorder", boot_order).unwrap();
+        }
 
         let ramfb = ramfb::RamFb::create(
             self.log.new(slog::o!("component" => "ramfb")),

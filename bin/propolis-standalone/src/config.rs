@@ -136,7 +136,9 @@ pub fn block_backend(
     log: &slog::Logger,
 ) -> (Arc<dyn block::Backend>, String) {
     let backend_name = dev.options.get("block_dev").unwrap().as_str().unwrap();
-    let be = config.block_devs.get(backend_name).unwrap();
+    let Some(be) = config.block_devs.get(backend_name) else {
+        panic!("no configured block device named \"{}\"", backend_name);
+    };
     let opts = block::BackendOpts {
         block_size: be.block_opts.block_size,
         read_only: be.block_opts.read_only,

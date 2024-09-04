@@ -4,6 +4,7 @@
 
 pub use phd_testcase;
 
+mod boot_order;
 mod crucible;
 mod disk;
 mod framework;

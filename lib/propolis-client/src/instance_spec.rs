@@ -184,6 +184,35 @@ impl SpecBuilderV0 {
         }
     }
 
+    /// Sets a boot order. Names here refer to devices included in this spec.
+    ///
+    /// Permissible to not this if the implicit boot order is desired, but the implicit boot order
+    /// may be unstable across device addition and removal.
+    ///
+    /// XXX: talk about what happens if names are included that do not name real devices..?
+    ///
+    /// XXX: this should certainly return `&mut Self` - all the builders here should. check if any
+    /// of these are chained..?
+    pub fn set_boot_order(
+        &mut self,
+        boot_order: Vec<String>,
+    ) -> Result<&Self, SpecBuilderError> {
+        let boot_declarations = boot_order
+            .into_iter()
+            .map(|name| crate::types::BootDeclaration {
+                name,
+                first_boot_only: false,
+            })
+            .collect();
+        eprintln!("setting boot order to {:?}", boot_declarations);
+        self.spec.devices.boot_order = Some(boot_declarations);
+
+        // TODO: would be nice to warn if any of the devices named here are not devices in the spec
+        // though.
+
+        Ok(self)
+    }
+
     /// Yields the completed spec, consuming the builder.
     pub fn finish(self) -> InstanceSpecV0 {
         self.spec
