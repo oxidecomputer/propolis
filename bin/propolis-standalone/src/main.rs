@@ -1135,6 +1135,7 @@ fn setup_instance(
 
     let cpuid_profile = config::parse_cpuid(&config)?;
 
+    let cpuid_vendor = cpuid::host_query(cpuid::Ident(0x0, None));
     let cpuid_ident = cpuid_profile
         .as_ref()
         .and_then(|p| p.get(cpuid::Ident(0x1, None)))
@@ -1151,8 +1152,8 @@ fn setup_instance(
     });
 
     // generate SMBIOS data and expose via fw_cfg
-    let smbios::TableBytes { entry_point, structure_table } =
-        generate_smbios(SmbiosParams {
+    let smbios::TableBytes { entry_point, structure_table } = {
+        let smbios_params = propolis::firmware::smbios::SmbiosParams {
             memory_size: memsize,
             rom_size: rom_len,
             rom_version: config
@@ -1160,11 +1161,15 @@ fn setup_instance(
                 .bootrom_version
                 .clone()
                 .unwrap_or_else(|| "v0.0.1-alpha 1".to_string()),
+            rom_release_date: "Bureaucracy 41, 3186 YOLD".to_string(),
             num_cpus: cpus,
+            cpuid_vendor,
             cpuid_ident,
             cpuid_procname,
-        })
-        .unwrap();
+        };
+        smbios_params.generate_table()
+            .unwrap()
+    };
     fwcfg
         .insert_named(
             "etc/smbios/smbios-tables",

@@ -204,6 +204,7 @@ pub struct SmbiosParams {
     pub rom_release_date: String,
     pub rom_version: String,
     pub num_cpus: u8,
+    pub cpuid_vendor: cpuid::Entry,
     pub cpuid_ident: Option<cpuid::Entry>,
     pub cpuid_procname: Option<[cpuid::Entry; 3]>,
 }
@@ -219,7 +220,7 @@ impl SmbiosParams {
         let smb_type0 = table::Type0 {
             vendor: "Oxide".try_into().unwrap(),
             bios_version,
-            bios_release_date: self.rom_release_date.as_str().try_into().unwrap(), // TODO: "Bureaucracy 41, 3186 YOLD".try_into().unwrap(),
+            bios_release_date: self.rom_release_date.as_str().try_into().unwrap(),
             bios_rom_size: ((self.rom_size / (64 * 1024)) - 1) as u8,
             bios_characteristics: type0::BiosCharacteristics::UNSUPPORTED,
             bios_ext_characteristics: type0::BiosExtCharacteristics::ACPI
@@ -235,7 +236,6 @@ impl SmbiosParams {
             ..Default::default()
         };
 
-        let cpuid_vendor = cpuid::host_query(cpuid::Ident(0x0, None));
         let cpuid_ident = self
             .cpuid_ident
             .unwrap_or_else(|| cpuid::host_query(cpuid::Ident(0x1, None)));
@@ -246,7 +246,7 @@ impl SmbiosParams {
             base => base >> 8,
         };
 
-        let vendor = cpuid::VendorKind::try_from(cpuid_vendor);
+        let vendor = cpuid::VendorKind::try_from(self.cpuid_vendor);
         let proc_manufacturer = match vendor {
             Ok(cpuid::VendorKind::Intel) => "Intel",
             Ok(cpuid::VendorKind::Amd) => "Advanced Micro Devices, Inc.",
