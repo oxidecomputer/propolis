@@ -930,9 +930,6 @@ impl<'a> MachineInitializer<'a> {
     }
 
     fn generate_smbios(&self) -> smbios::TableBytes {
-        let memsize_bytes = (self.properties.memory as usize) * MB;
-        let memory_size = memsize_bytes;
-
         let rom_size =
             self.state.rom_size_bytes.expect("ROM is already populated");
 
@@ -942,10 +939,6 @@ impl<'a> MachineInitializer<'a> {
             .as_deref()
             .unwrap_or("v0.8")
             .to_string();
-
-        let rom_release_date: String = "The Aftermath 30, 3185 YOLD".to_string();
-
-        let num_cpus = self.properties.vcpus;
 
         use propolis::cpuid;
 
@@ -959,18 +952,16 @@ impl<'a> MachineInitializer<'a> {
             cpuid::host_query(cpuid::Ident(0x8000_0004, None)),
         ];
 
-        let system_id: uuid::Uuid = self.properties.id;
-
         let smbios_params = propolis::firmware::smbios::SmbiosParams {
-            memory_size,
+            memory_size: (self.properties.memory as usize) * MB,
             rom_size,
-            rom_release_date,
+            rom_release_date: "The Aftermath 30, 3185 YOLD".to_string(),
             rom_version,
-            num_cpus,
+            num_cpus: self.properties.vcpus,
             cpuid_vendor,
             cpuid_ident,
             cpuid_procname,
-            system_id,
+            system_id: self.properties.id,
         };
 
         smbios_params.generate_table()
