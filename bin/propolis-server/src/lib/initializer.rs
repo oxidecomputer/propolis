@@ -930,25 +930,53 @@ impl<'a> MachineInitializer<'a> {
     }
 
     fn generate_smbios(&self) -> smbios::TableBytes {
-        use propolis::cpuid;
-        use smbios::table::{type0, type1, type16, type4};
+        let memsize_bytes = (self.properties.memory as usize) * MB;
+        let memory_size = memsize_bytes;
 
         let rom_size =
             self.state.rom_size_bytes.expect("ROM is already populated");
-        let bios_version = self
+
+        let rom_version: String = self
             .toml_config
             .bootrom_version
             .as_deref()
             .unwrap_or("v0.8")
-            .try_into()
-            .expect("bootrom version string doesn't contain NUL bytes");
+            .to_string();
+
+        let rom_release_date: String = "The Aftermath 30, 3185 YOLD".to_string();
+
+        let num_cpus = self.properties.vcpus;
+
+        use propolis::cpuid;
+
+        // Once CPUID profiles are integrated, these will need to take that into
+        // account, rather than blindly querying from the host
+        let cpuid_vendor = cpuid::host_query(cpuid::Ident(0x0, None));
+        let cpuid_ident = cpuid::host_query(cpuid::Ident(0x1, None));
+        let cpuid_procname = [
+            cpuid::host_query(cpuid::Ident(0x8000_0002, None)),
+            cpuid::host_query(cpuid::Ident(0x8000_0003, None)),
+            cpuid::host_query(cpuid::Ident(0x8000_0004, None)),
+        ];
+
+        let smbios_params = SmbiosParams {
+            memory_size,
+            rom_size,
+            rom_release_date,
+            rom_version,
+            num_cpus,
+            cpuid_vendor,
+            cpuid_ident,
+            cpuid_procname,
+        }
+
+        use smbios::table::{type0, type1, type16, type4};
+
         let smb_type0 = smbios::table::Type0 {
             vendor: "Oxide".try_into().unwrap(),
             bios_version,
-            bios_release_date: "The Aftermath 30, 3185 YOLD"
-                .try_into()
-                .unwrap(),
-            bios_rom_size: ((rom_size / (64 * 1024)) - 1) as u8,
+            bios_release_date: smbios_params.rom_release_date.as_str().try_into().unwrap(),
+            bios_rom_size: ((smbios_params.rom_size / (64 * 1024)) - 1) as u8,
             bios_characteristics: type0::BiosCharacteristics::UNSUPPORTED,
             bios_ext_characteristics: type0::BiosExtCharacteristics::ACPI
                 | type0::BiosExtCharacteristics::UEFI
@@ -971,16 +999,6 @@ impl<'a> MachineInitializer<'a> {
             wake_up_type: type1::WakeUpType::PowerSwitch,
             ..Default::default()
         };
-
-        // Once CPUID profiles are integrated, these will need to take that into
-        // account, rather than blindly querying from the host
-        let cpuid_vendor = cpuid::host_query(cpuid::Ident(0x0, None));
-        let cpuid_ident = cpuid::host_query(cpuid::Ident(0x1, None));
-        let cpuid_procname = [
-            cpuid::host_query(cpuid::Ident(0x8000_0002, None)),
-            cpuid::host_query(cpuid::Ident(0x8000_0003, None)),
-            cpuid::host_query(cpuid::Ident(0x8000_0004, None)),
-        ];
 
         let family = match cpuid_ident.eax & 0xf00 {
             // If family ID is 0xf, extended family is added to it
@@ -1022,15 +1040,14 @@ impl<'a> MachineInitializer<'a> {
             // unknown
             proc_upgrade: 0x2,
             // make core and thread counts equal for now
-            core_count: self.properties.vcpus,
-            core_enabled: self.properties.vcpus,
-            thread_count: self.properties.vcpus,
+            core_count: smbios_params.num_cpus,
+            core_enabled: smbios_params.num_cpus,
+            thread_count: smbios_params.num_cpus,
             proc_characteristics: type4::Characteristics::IS_64_BIT
                 | type4::Characteristics::MULTI_CORE,
             ..Default::default()
         };
 
-        let memsize_bytes = (self.properties.memory as usize) * MB;
         let mut smb_type16 = smbios::table::Type16 {
             location: type16::Location::SystemBoard,
             array_use: type16::ArrayUse::System,
@@ -1038,7 +1055,7 @@ impl<'a> MachineInitializer<'a> {
             num_mem_devices: 1,
             ..Default::default()
         };
-        smb_type16.set_max_capacity(memsize_bytes);
+        smb_type16.set_max_capacity(self.memory_size);
         let phys_mem_array_handle = 0x1600.into();
 
         let mut smb_type17 = smbios::table::Type17 {
@@ -1049,7 +1066,7 @@ impl<'a> MachineInitializer<'a> {
             memory_type: 0x2,
             ..Default::default()
         };
-        smb_type17.set_size(Some(memsize_bytes));
+        smb_type17.set_size(Some(self.memory_size));
 
         let smb_type32 = smbios::table::Type32::default();
 
