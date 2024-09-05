@@ -969,7 +969,7 @@ impl<'a> MachineInitializer<'a> {
             num_cpus,
             cpuid_vendor,
             cpuid_ident,
-            cpuid_procname: Some(cpuid_procname),
+            cpuid_procname,
             system_id,
         };
 

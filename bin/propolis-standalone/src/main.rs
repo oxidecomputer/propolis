@@ -1155,6 +1155,22 @@ fn setup_instance(
     let smbios::TableBytes { entry_point, structure_table } = {
         let cpuid_ident = cpuid_ident
             .unwrap_or_else(|| cpuid::host_query(cpuid::Ident(0x1, None)));
+        let cpuid_procname = cpuid_procname.unwrap_or_else(|| {
+            if cpuid::host_query(cpuid::Ident(0x8000_0000, None)).eax >= 0x8000_0004
+            {
+                [
+                    cpuid::host_query(cpuid::Ident(0x8000_0002, None)),
+                    cpuid::host_query(cpuid::Ident(0x8000_0003, None)),
+                    cpuid::host_query(cpuid::Ident(0x8000_0004, None)),
+                ]
+            } else {
+                [
+                    cpuid::Entry::zero(),
+                    cpuid::Entry::zero(),
+                    cpuid::Entry::zero(),
+                ]
+            }
+        });
         let smbios_params = propolis::firmware::smbios::SmbiosParams {
             memory_size: memsize,
             rom_size: rom_len,

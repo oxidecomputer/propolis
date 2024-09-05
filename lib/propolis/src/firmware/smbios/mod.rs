@@ -206,7 +206,7 @@ pub struct SmbiosParams {
     pub num_cpus: u8,
     pub cpuid_vendor: cpuid::Entry,
     pub cpuid_ident: cpuid::Entry,
-    pub cpuid_procname: Option<[cpuid::Entry; 3]>,
+    pub cpuid_procname: [cpuid::Entry; 3],
     pub system_id: uuid::Uuid,
 }
 
@@ -263,21 +263,9 @@ impl SmbiosParams {
             _ => 0x2,
         };
         let proc_id = u64::from(self.cpuid_ident.eax) | u64::from(self.cpuid_ident.edx) << 32;
-        let procname_entries = self.cpuid_procname.or_else(|| {
-            if cpuid::host_query(cpuid::Ident(0x8000_0000, None)).eax >= 0x8000_0004
-            {
-                Some([
-                    cpuid::host_query(cpuid::Ident(0x8000_0002, None)),
-                    cpuid::host_query(cpuid::Ident(0x8000_0003, None)),
-                    cpuid::host_query(cpuid::Ident(0x8000_0004, None)),
-                ])
-            } else {
-                None
-            }
-        });
-        let proc_version = procname_entries
-            .and_then(|e| cpuid::parse_brand_string(e).ok())
-            .unwrap_or("".to_string());
+        // TODO(ixi): do not ignore the error here
+        let proc_version = cpuid::parse_brand_string(self.cpuid_procname)
+            .unwrap_or_else(|_| "".to_string());
 
         let smb_type4 = table::Type4 {
             proc_type: type4::ProcType::Central,
@@ -319,6 +307,11 @@ impl SmbiosParams {
 
         let smb_type32 = table::Type32::default();
 
+        // With "only" types 0, 1, 4, 16, 17, and 32, we are technically missing
+        // some (types 3, 7, 9, 19) of the data required by the 2.7 spec.  The
+        // data provided here were what we determined was a reasonable
+        // collection to start with.  Should further requirements arise, we may
+        // expand on it.
         let mut smb_tables = Tables::new(0x7f00.into());
         smb_tables.add(0x0000.into(), &smb_type0).unwrap();
         smb_tables.add(0x0100.into(), &smb_type1).unwrap();
