@@ -137,7 +137,7 @@ pub fn block_backend(
 ) -> (Arc<dyn block::Backend>, String) {
     let backend_name = dev.options.get("block_dev").unwrap().as_str().unwrap();
     let Some(be) = config.block_devs.get(backend_name) else {
-        panic!("no configured block device named \"{}\"", backend_name);
+        panic!("No configured block device named \"{}\"", backend_name);
     };
     let opts = block::BackendOpts {
         block_size: be.block_opts.block_size,
@@ -151,7 +151,14 @@ pub fn block_backend(
 
             // Check if raw device is being used and gripe if it isn't
             let meta = std::fs::metadata(&parsed.path)
+                .with_context(|| {
+                    format!(
+                        "opening {} for block device \"{}\"",
+                        parsed.path, backend_name
+                    )
+                })
                 .expect("file device path is valid");
+
             if meta.file_type().is_block_device() {
                 slog::warn!(log, "Block backend using standard device rather than raw";
                     "path" => &parsed.path);

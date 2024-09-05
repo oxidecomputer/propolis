@@ -91,7 +91,6 @@ impl Inner {
 pub struct PciVirtioViona {
     virtio_state: PciVirtioState,
     pci_state: pci::DeviceState,
-
     dev_features: u32,
     mac_addr: [u8; ETHERADDRL],
     mtu: Option<u16>,
@@ -155,6 +154,11 @@ impl PciVirtioViona {
         drop(inner);
 
         Ok(this)
+    }
+
+    /// Get the minor instance number of the viona device.
+    pub fn instance_id(&self) -> io::Result<u32> {
+        self.hdl.instance_id()
     }
 
     fn process_interrupts(&self) {
@@ -646,6 +650,12 @@ impl VionaHdl {
     fn ring_intr_clear(&self, idx: u16) -> io::Result<()> {
         self.0.ioctl_usize(viona_api::VNA_IOC_RING_INTR_CLR, idx as usize)?;
         Ok(())
+    }
+
+    /// Get the minor instance number of the viona device.
+    /// This is used for matching kernal statistic entries to the viona device.
+    fn instance_id(&self) -> io::Result<u32> {
+        self.0.instance_id()
     }
 
     /// Set the desired promiscuity level on this interface.

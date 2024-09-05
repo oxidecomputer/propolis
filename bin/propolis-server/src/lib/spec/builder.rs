@@ -6,29 +6,51 @@
 
 use std::collections::BTreeSet;
 
-use propolis_api_types::instance_spec::{
-    components::{
-        board::Board,
-        devices::{PciPciBridge, QemuPvpanic, SerialPort, SerialPortNumber},
+use propolis_api_types::{
+    instance_spec::{
+        components::{
+            board::{Board, Chipset, I440Fx},
+            devices::{
+                PciPciBridge, QemuPvpanic, SerialPort, SerialPortNumber,
+            },
+        },
+        v0::{DeviceSpecV0, InstanceSpecV0, NetworkDeviceV0, StorageDeviceV0},
+        PciPath,
     },
-    v0::{
-        DeviceSpecV0, InstanceSpecV0, NetworkBackendV0, NetworkDeviceV0,
-        StorageBackendV0, StorageDeviceV0,
-    },
-    PciPath,
+    DiskRequest, InstanceProperties, NetworkInterfaceRequest,
 };
 use thiserror::Error;
 
 #[cfg(feature = "falcon")]
-use propolis_api_types::instance_spec::components::{
-    backends::DlpiNetworkBackend,
-    devices::{P9fs, SoftNpuP9, SoftNpuPciPort, SoftNpuPort},
+use propolis_api_types::instance_spec::{
+    components::{
+        backends::DlpiNetworkBackend,
+        devices::{P9fs, SoftNpuP9, SoftNpuPciPort, SoftNpuPort},
+    },
+    v0::NetworkBackendV0,
 };
+
+use crate::config;
+
+use super::{
+    api_request::{self, DeviceRequestError},
+    config_toml::{ConfigTomlError, ParsedConfig},
+    ParsedNetworkDevice, ParsedStorageDevice,
+};
+
+#[cfg(feature = "falcon")]
+use super::ParsedSoftNpu;
 
 /// Errors that can arise while building an instance spec from component parts.
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, Error)]
 pub(crate) enum SpecBuilderError {
+    #[error("error parsing config TOML")]
+    ConfigToml(#[from] ConfigTomlError),
+
+    #[error("error parsing device in ensure request")]
+    DeviceRequest(#[from] DeviceRequestError),
+
     #[error("A device with name {0} already exists")]
     DeviceNameInUse(String),
 
@@ -46,7 +68,7 @@ pub(crate) enum SpecBuilderError {
     SoftNpuPortInUse(String),
 }
 
-pub(super) struct SpecBuilder {
+pub(crate) struct SpecBuilder {
     spec: InstanceSpecV0,
     pci_paths: BTreeSet<PciPath>,
 }
@@ -73,7 +95,13 @@ impl PciComponent for NetworkDeviceV0 {
 }
 
 impl SpecBuilder {
-    pub(super) fn new(board: Board) -> Self {
+    pub fn new(properties: &InstanceProperties) -> Self {
+        let board = Board {
+            cpus: properties.vcpus,
+            memory_mb: properties.memory,
+            chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
+        };
+
         Self {
             spec: InstanceSpecV0 {
                 devices: DeviceSpecV0 { board, ..Default::default() },
@@ -81,6 +109,92 @@ impl SpecBuilder {
             },
             pci_paths: Default::default(),
         }
+    }
+
+    /// Converts an HTTP API request to add a NIC to an instance into
+    /// device/backend entries in the spec under construction.
+    pub fn add_nic_from_request(
+        &mut self,
+        nic: &NetworkInterfaceRequest,
+    ) -> Result<(), SpecBuilderError> {
+        self.add_network_device(api_request::parse_nic_from_request(nic)?)?;
+        Ok(())
+    }
+
+    /// Converts an HTTP API request to add a disk to an instance into
+    /// device/backend entries in the spec under construction.
+    pub fn add_disk_from_request(
+        &mut self,
+        disk: &DiskRequest,
+    ) -> Result<(), SpecBuilderError> {
+        self.add_storage_device(api_request::parse_disk_from_request(disk)?)?;
+        Ok(())
+    }
+
+    /// Converts an HTTP API request to add a cloud-init disk to an instance
+    /// into device/backend entries in the spec under construction.
+    pub fn add_cloud_init_from_request(
+        &mut self,
+        base64: String,
+    ) -> Result<(), SpecBuilderError> {
+        self.add_storage_device(api_request::parse_cloud_init_from_request(
+            base64,
+        )?)?;
+
+        Ok(())
+    }
+
+    /// Adds all the devices and backends specified in the supplied
+    /// configuration TOML to the spec under construction.
+    pub fn add_devices_from_config(
+        &mut self,
+        config: &config::Config,
+    ) -> Result<(), SpecBuilderError> {
+        let parsed = ParsedConfig::try_from(config)?;
+
+        let Chipset::I440Fx(ref mut i440fx) = self.spec.devices.board.chipset;
+        i440fx.enable_pcie = parsed.enable_pcie;
+
+        for disk in parsed.disks {
+            self.add_storage_device(disk)?;
+        }
+
+        for nic in parsed.nics {
+            self.add_network_device(nic)?;
+        }
+
+        for bridge in parsed.pci_bridges {
+            self.add_pci_bridge(bridge.name, bridge.bridge)?;
+        }
+
+        #[cfg(feature = "falcon")]
+        self.add_parsed_softnpu_devices(parsed.softnpu)?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "falcon")]
+    fn add_parsed_softnpu_devices(
+        &mut self,
+        devices: ParsedSoftNpu,
+    ) -> Result<(), SpecBuilderError> {
+        for pci_port in devices.pci_ports {
+            self.set_softnpu_pci_port(pci_port)?;
+        }
+
+        for port in devices.ports {
+            self.add_softnpu_port(port.name.clone(), port)?;
+        }
+
+        for p9 in devices.p9_devices {
+            self.set_softnpu_p9(p9)?;
+        }
+
+        for p9fs in devices.p9fs {
+            self.set_p9fs(p9fs)?;
+        }
+
+        Ok(())
     }
 
     /// Adds a PCI path to this builder's record of PCI locations with an
@@ -100,10 +214,12 @@ impl SpecBuilder {
     /// Adds a storage device with an associated backend.
     pub(super) fn add_storage_device(
         &mut self,
-        device_name: String,
-        device_spec: StorageDeviceV0,
-        backend_name: String,
-        backend_spec: StorageBackendV0,
+        ParsedStorageDevice {
+            device_name,
+            device_spec,
+            backend_name,
+            backend_spec,
+        }: ParsedStorageDevice,
     ) -> Result<&Self, SpecBuilderError> {
         if self.spec.devices.storage_devices.contains_key(&device_name) {
             return Err(SpecBuilderError::DeviceNameInUse(device_name));
@@ -128,12 +244,14 @@ impl SpecBuilder {
     }
 
     /// Adds a network device with an associated backend.
-    pub fn add_network_device(
+    pub(super) fn add_network_device(
         &mut self,
-        device_name: String,
-        device_spec: NetworkDeviceV0,
-        backend_name: String,
-        backend_spec: NetworkBackendV0,
+        ParsedNetworkDevice {
+            device_name,
+            device_spec,
+            backend_name,
+            backend_spec,
+        }: ParsedNetworkDevice,
     ) -> Result<&Self, SpecBuilderError> {
         if self.spec.devices.network_devices.contains_key(&device_name) {
             return Err(SpecBuilderError::DeviceNameInUse(device_name));
@@ -268,5 +386,100 @@ impl SpecBuilder {
     /// Yields the completed spec, consuming the builder.
     pub fn finish(self) -> InstanceSpecV0 {
         self.spec
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use propolis_api_types::{
+        InstanceMetadata, Slot, VolumeConstructionRequest,
+    };
+    use uuid::Uuid;
+
+    use super::*;
+
+    fn test_metadata() -> InstanceMetadata {
+        InstanceMetadata {
+            silo_id: uuid::uuid!("556a67f8-8b14-4659-bd9f-d8f85ecd36bf"),
+            project_id: uuid::uuid!("75f60038-daeb-4a1d-916a-5fa5b7237299"),
+            sled_id: uuid::uuid!("43a789ac-a0dd-4e1e-ac33-acdada142faa"),
+            sled_serial: "some-gimlet".into(),
+            sled_revision: 1,
+            sled_model: "abcd".into(),
+        }
+    }
+
+    fn test_builder() -> SpecBuilder {
+        SpecBuilder::new(&InstanceProperties {
+            id: Default::default(),
+            name: Default::default(),
+            description: Default::default(),
+            metadata: test_metadata(),
+            image_id: Default::default(),
+            bootrom_id: Default::default(),
+            memory: 512,
+            vcpus: 4,
+        })
+    }
+
+    #[test]
+    fn duplicate_pci_slot() {
+        let mut builder = test_builder();
+        // Adding the same disk device twice should fail.
+        assert!(builder
+            .add_disk_from_request(&DiskRequest {
+                name: "disk1".to_string(),
+                slot: Slot(0),
+                read_only: true,
+                device: "nvme".to_string(),
+                volume_construction_request: VolumeConstructionRequest::File {
+                    id: Uuid::new_v4(),
+                    block_size: 512,
+                    path: "disk1.img".to_string()
+                },
+            })
+            .is_ok());
+
+        assert!(builder
+            .add_disk_from_request(&DiskRequest {
+                name: "disk2".to_string(),
+                slot: Slot(0),
+                read_only: true,
+                device: "virtio".to_string(),
+                volume_construction_request: VolumeConstructionRequest::File {
+                    id: Uuid::new_v4(),
+                    block_size: 512,
+                    path: "disk2.img".to_string()
+                },
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn duplicate_serial_port() {
+        let mut builder = test_builder();
+        assert!(builder.add_serial_port(SerialPortNumber::Com1).is_ok());
+        assert!(builder.add_serial_port(SerialPortNumber::Com2).is_ok());
+        assert!(builder.add_serial_port(SerialPortNumber::Com3).is_ok());
+        assert!(builder.add_serial_port(SerialPortNumber::Com4).is_ok());
+        assert!(builder.add_serial_port(SerialPortNumber::Com1).is_err());
+    }
+
+    #[test]
+    fn unknown_storage_device_type() {
+        let mut builder = test_builder();
+        assert!(builder
+            .add_disk_from_request(&DiskRequest {
+                name: "disk3".to_string(),
+                slot: Slot(0),
+                read_only: true,
+                device: "virtio-scsi".to_string(),
+                volume_construction_request: VolumeConstructionRequest::File {
+                    id: Uuid::new_v4(),
+                    block_size: 512,
+                    path: "disk3.img".to_string()
+                },
+            })
+            .is_err());
     }
 }

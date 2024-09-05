@@ -38,7 +38,11 @@ enum Cmds {
     /// (Crudely) Check for appropriate license headers
     License,
     /// Preform pre-push checks (clippy, license, fmt, etc)
-    Prepush,
+    Prepush {
+        /// Suppress non-essential output
+        #[arg(short, long)]
+        quiet: bool,
+    },
     /// Run the PHD test suite
     Phd {
         #[clap(subcommand)]
@@ -61,8 +65,8 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmds::Phd { cmd } => cmd.run(),
-        Cmds::Prepush => {
-            task_prepush::cmd_prepush()?;
+        Cmds::Prepush { quiet } => {
+            task_prepush::cmd_prepush(quiet)?;
 
             println!("Pre-push checks pass");
             Ok(())

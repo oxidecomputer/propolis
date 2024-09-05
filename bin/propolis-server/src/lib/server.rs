@@ -29,17 +29,17 @@ use internal_dns::ServiceName;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types as api;
+use propolis_api_types::instance_spec::components::devices::QemuPvpanic;
 use propolis_api_types::instance_spec::{self, VersionedInstanceSpec};
 
 pub use propolis_server_config::Config as VmTomlConfig;
 use rfb::tungstenite::BinaryWs;
 use slog::{error, warn, Logger};
-use thiserror::Error;
 use tokio::sync::MutexGuard;
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use tokio_tungstenite::WebSocketStream;
 
-use crate::spec::{ServerSpecBuilder, ServerSpecBuilderError};
+use crate::spec::builder::{SpecBuilder, SpecBuilderError};
 use crate::vnc::{self, VncServer};
 
 /// Configuration used to set this server up to provide Oximeter metrics.
@@ -102,20 +102,15 @@ impl DropshotEndpointContext {
     }
 }
 
-#[derive(Debug, Error)]
-enum SpecCreationError {
-    #[error(transparent)]
-    SpecBuilderError(#[from] ServerSpecBuilderError),
-}
-
 /// Creates an instance spec from an ensure request. (Both types are foreign to
 /// this crate, so implementing TryFrom for them is not allowed.)
 fn instance_spec_from_request(
     request: &api::InstanceEnsureRequest,
     toml_config: &VmTomlConfig,
-) -> Result<VersionedInstanceSpec, SpecCreationError> {
-    let mut spec_builder =
-        ServerSpecBuilder::new(&request.properties, toml_config)?;
+) -> Result<VersionedInstanceSpec, SpecBuilderError> {
+    let mut spec_builder = SpecBuilder::new(&request.properties);
+
+    spec_builder.add_devices_from_config(toml_config)?;
 
     for nic in &request.nics {
         spec_builder.add_nic_from_request(nic)?;
@@ -129,7 +124,6 @@ fn instance_spec_from_request(
         spec_builder.add_cloud_init_from_request(base64.clone())?;
     }
 
-    spec_builder.add_devices_from_config(toml_config)?;
     for port in [
         instance_spec::components::devices::SerialPortNumber::Com1,
         instance_spec::components::devices::SerialPortNumber::Com2,
@@ -141,6 +135,7 @@ fn instance_spec_from_request(
         spec_builder.add_serial_port(port)?;
     }
 
+    spec_builder.add_pvpanic_device(QemuPvpanic { enable_isa: true })?;
     Ok(VersionedInstanceSpec::V0(spec_builder.finish()))
 }
 
@@ -286,7 +281,7 @@ async fn instance_ensure(
                 HttpError::for_bad_request(
                     None,
                     format!(
-                        "failed to generate instance spec from request: {}",
+                        "failed to generate instance spec from request: {:#?}",
                         e
                     ),
                 )

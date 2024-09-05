@@ -6,19 +6,22 @@ use anyhow::{bail, Result};
 
 use crate::{task_clippy, task_fmt, task_license, task_style};
 
-pub(crate) fn cmd_prepush() -> Result<()> {
+pub(crate) fn cmd_prepush(quiet: bool) -> Result<()> {
     let mut errs = Vec::new();
-    if task_clippy::cmd_clippy(true, true).is_err() {
-        errs.push("clippy");
-    }
-    if task_fmt::cmd_fmt().is_err() {
-        errs.push("fmt");
-    }
-    if task_license::cmd_license().is_err() {
-        errs.push("license");
-    }
-    if task_style::cmd_style().is_err() {
-        errs.push("style");
+    let checks: [(&str, &dyn Fn() -> bool); 4] = [
+        ("clippy", &|| task_clippy::cmd_clippy(true, quiet).is_err()),
+        ("fmt", &|| task_fmt::cmd_fmt().is_err()),
+        ("license", &|| task_license::cmd_license().is_err()),
+        ("style", &|| task_style::cmd_style().is_err()),
+    ];
+
+    for (name, func) in checks {
+        if !quiet {
+            println!("Checking {name}...");
+        }
+        if func() {
+            errs.push(name);
+        }
     }
 
     if !errs.is_empty() {

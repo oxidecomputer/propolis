@@ -11,13 +11,18 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::serial::Serial;
-use crate::stats::virtual_machine::VirtualMachine;
-use crate::vm::{BlockBackendMap, CrucibleBackendMap, DeviceMap};
+use crate::stats::{
+    track_network_interface_kstats, track_vcpu_kstats, VirtualDiskProducer,
+    VirtualMachine,
+};
+use crate::vm::{
+    BlockBackendMap, CrucibleBackendMap, DeviceMap, NetworkInterfaceIds,
+};
 use anyhow::{Context, Result};
 use crucible_client_types::VolumeConstructionRequest;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
-
+use oximeter_instruments::kstat::KstatSampler;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::{Lifecycle, GB, MB, PAGE_SIZE};
@@ -43,7 +48,7 @@ use propolis_api_types::instance_spec::{
 use propolis_api_types::InstanceProperties;
 use slog::info;
 
-// Arbitrary ROM limit for now
+/// Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
 
 fn get_spec_guest_ram_limits(spec: &InstanceSpecV0) -> (usize, usize) {
@@ -125,6 +130,7 @@ pub struct MachineInitializer<'a> {
     pub(crate) producer_registry: Option<ProducerRegistry>,
     pub(crate) boot_order: Option<Vec<BootDeclaration>>,
     pub(crate) state: MachineInitializerState,
+    pub(crate) kstat_sampler: Option<KstatSampler>,
 }
 
 impl<'a> MachineInitializer<'a> {
@@ -498,7 +504,8 @@ impl<'a> MachineInitializer<'a> {
             Nvme,
         }
 
-        for (name, device_spec) in &self.spec.devices.storage_devices {
+        'devloop: for (name, device_spec) in &self.spec.devices.storage_devices
+        {
             info!(
                 self.log,
                 "Creating storage device {} with properties {:?}",
@@ -549,14 +556,15 @@ impl<'a> MachineInitializer<'a> {
                 .await?;
 
             self.block_backends.insert(backend_name.clone(), backend.clone());
-            match device_interface {
+            let block_dev: Arc<dyn block::Device> = match device_interface {
                 DeviceInterface::Virtio => {
                     let vioblk = virtio::PciVirtioBlock::new(0x100);
 
                     self.devices
                         .insert(format!("pci-virtio-{}", bdf), vioblk.clone());
                     block::attach(vioblk.clone(), backend).unwrap();
-                    chipset.pci_attach(bdf, vioblk);
+                    chipset.pci_attach(bdf, vioblk.clone());
+                    vioblk
                 }
                 DeviceInterface::Nvme => {
                     // Limit data transfers to 1MiB (2^8 * 4k) in size
@@ -571,27 +579,77 @@ impl<'a> MachineInitializer<'a> {
                     self.devices
                         .insert(format!("pci-nvme-{bdf}"), nvme.clone());
                     block::attach(nvme.clone(), backend).unwrap();
-                    chipset.pci_attach(bdf, nvme);
+                    chipset.pci_attach(bdf, nvme.clone());
+                    nvme
                 }
             };
 
-            if let Some((id, backend)) = crucible {
-                let prev = self.crucible_backends.insert(id, backend);
+            if let Some((disk_id, backend)) = crucible {
+                let block_size = backend.block_size().await;
+                let prev = self.crucible_backends.insert(disk_id, backend);
                 if prev.is_some() {
                     return Err(Error::new(
                         ErrorKind::InvalidInput,
-                        format!("multiple disks with id {}", id),
+                        format!("multiple disks with id {}", disk_id),
                     ));
                 }
+
+                let Some(block_size) = block_size else {
+                    slog::error!(
+                        self.log,
+                        "Could not get Crucible backend block size, \
+                        virtual disk metrics can't be reported for it";
+                        "disk_id" => %disk_id,
+                    );
+                    continue 'devloop;
+                };
+
+                // Register the block device as a metric producer, if we've been
+                // setup to do so. Note we currently only do this for the Crucible
+                // backend, in which case we have the disk ID.
+                if let Some(registry) = &self.producer_registry {
+                    let stats = VirtualDiskProducer::new(
+                        block_size,
+                        self.properties.id,
+                        disk_id,
+                        &self.properties.metadata,
+                    );
+                    if let Err(e) = registry.register_producer(stats.clone()) {
+                        slog::error!(
+                            self.log,
+                            "Could not register virtual disk producer, \
+                            metrics will not be produced";
+                            "disk_id" => %disk_id,
+                            "error" => ?e,
+                        );
+                        continue 'devloop;
+                    };
+
+                    // Set the on-completion callback for the block device, to
+                    // update stats.
+                    let callback = move |op, result, duration| {
+                        stats.on_completion(op, result, duration);
+                    };
+                    block_dev.on_completion(Box::new(callback));
+                };
             }
         }
         Ok(())
     }
 
-    pub fn initialize_network_devices(
+    /// Initialize network devices, add them to the device map, and attach them
+    /// to the chipset.
+    ///
+    /// If a KstatSampler is provided, this function will also track network
+    /// interface statistics.
+    pub async fn initialize_network_devices(
         &mut self,
         chipset: &RegisteredChipset,
     ) -> Result<(), Error> {
+        // Only create the vector if the kstat_sampler exists.
+        let mut interface_ids: Option<NetworkInterfaceIds> =
+            self.kstat_sampler.as_ref().map(|_| Vec::new());
+
         for (name, vnic_spec) in &self.spec.devices.network_devices {
             info!(self.log, "Creating vNIC {}", name);
             let instance_spec::v0::NetworkDeviceV0::VirtioNic(vnic_spec) =
@@ -640,8 +698,25 @@ impl<'a> MachineInitializer<'a> {
             )?;
             self.devices
                 .insert(format!("pci-virtio-viona-{}", bdf), viona.clone());
+
+            // Only push to interface_ids if kstat_sampler exists
+            if let Some(ref mut ids) = interface_ids {
+                ids.push((vnic_spec.interface_id, viona.instance_id()?));
+            }
+
             chipset.pci_attach(bdf, viona);
         }
+
+        if let Some(sampler) = self.kstat_sampler.as_ref() {
+            track_network_interface_kstats(
+                &self.log,
+                sampler,
+                self.properties,
+                interface_ids.unwrap(),
+            )
+            .await
+        }
+
         Ok(())
     }
 
@@ -1174,12 +1249,18 @@ impl<'a> MachineInitializer<'a> {
         Ok(ramfb)
     }
 
-    pub fn initialize_cpus(&mut self) -> Result<(), Error> {
+    /// Initialize virtual CPUs by first setting their capabilities, inserting
+    /// them into the device map, and then, if a kstat sampler is provided,
+    /// tracking their kstats.
+    pub async fn initialize_cpus(&mut self) -> Result<(), Error> {
         for vcpu in self.machine.vcpus.iter() {
             vcpu.set_default_capabs().unwrap();
 
             // The vCPUs behave like devices, so add them to the list as well
             self.devices.insert(format!("vcpu-{}", vcpu.id), vcpu.clone());
+        }
+        if let Some(sampler) = self.kstat_sampler.as_ref() {
+            track_vcpu_kstats(&self.log, sampler, self.properties).await;
         }
         Ok(())
     }

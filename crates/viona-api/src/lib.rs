@@ -5,6 +5,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Error, ErrorKind, Result};
 use std::os::fd::*;
+use std::os::unix::fs::MetadataExt;
 
 pub use viona_api_sys::*;
 
@@ -63,6 +64,15 @@ impl VionaFd {
         // VNA_IOC_VERSION interface.
         assert!(vers > 0);
         Ok(vers as u32)
+    }
+
+    /// Retrieve the minor number of the viona device instance.
+    /// This is used for matching kernal statistic entries to the viona device.
+    pub fn instance_id(&self) -> Result<u32> {
+        let meta = self.0.metadata()?;
+        let rdev = meta.rdev();
+        let minor = unsafe { libc::minor(rdev) };
+        Ok(minor)
     }
 
     /// Check VMM ioctl command against those known to not require any

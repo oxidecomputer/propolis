@@ -1385,6 +1385,10 @@
       "NetworkInterfaceRequest": {
         "type": "object",
         "properties": {
+          "interface_id": {
+            "type": "string",
+            "format": "uuid"
+          },
           "name": {
             "type": "string"
           },
@@ -1393,6 +1397,7 @@
           }
         },
         "required": [
+          "interface_id",
           "name",
           "slot"
         ]
@@ -1786,6 +1791,11 @@
             "description": "The name of the device's backend.",
             "type": "string"
           },
+          "interface_id": {
+            "description": "A caller-defined correlation identifier for this interface. If Propolis is configured to collect network interface kstats in its Oximeter metrics, the metric series for this interface will be associated with this identifier.",
+            "type": "string",
+            "format": "uuid"
+          },
           "pci_path": {
             "description": "The PCI path at which to attach this device.",
             "allOf": [
@@ -1797,6 +1807,7 @@
         },
         "required": [
           "backend_name",
+          "interface_id",
           "pci_path"
         ],
         "additionalProperties": false

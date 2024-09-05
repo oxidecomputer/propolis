@@ -41,6 +41,27 @@ implementation details, consumed by Propolis components.
   to the `propolis` library
 - viona-api: API (ioctls & structs) for the illumos viona driver
 
+## xtasks
+
+Propolis uses the `cargo xtask` pattern in order to conveniently expose certain
+tasks to developers.
+
+- `clippy`: Run suite of clippy checks.  This performs more than a simple
+  `cargo clippy`, since there are several combinations of feature flags which
+  must be checked.
+- `fmt`: Check style according to `rustfmt`
+- `license`:  Check (crudely) that files bear appropriate license headers
+- `phd`: Run the PHD test suite
+- `style`: Perform miscellaneous style checks
+- `prepush`: Preform pre-push checks (`clippy`, `fmt`, `license`, `style`) in a
+  manner which resembles (but does not exactly match) how they are run in CI.
+  Running tests (unit, integration, or phd) are not included and are left to
+  the user.
+
+It is recommended that developers run the `prepush` test before pushing a
+branch which will be subsequently checked by CI.  Doing so currently requires
+an x86\_64 UNIX/Linux machine.
+
 ## License
 
 Unless otherwise noted, all components are licensed under the [Mozilla Public

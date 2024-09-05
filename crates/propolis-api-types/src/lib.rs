@@ -209,7 +209,6 @@ pub struct InstanceProperties {
     pub description: String,
     /// Metadata used to track statistics for this Instance.
     pub metadata: InstanceMetadata,
-
     /// ID of the image used to initialize this Instance.
     pub image_id: Uuid,
     /// ID of the bootrom used to initialize this Instance.
@@ -231,7 +230,6 @@ impl InstanceProperties {
 pub struct Instance {
     pub properties: InstanceProperties,
     pub state: InstanceState,
-
     pub disks: Vec<DiskAttachment>,
     pub nics: Vec<NetworkInterface>,
 }
@@ -394,6 +392,7 @@ pub struct Slot(pub u8);
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct NetworkInterfaceRequest {
+    pub interface_id: Uuid,
     pub name: String,
     pub slot: Slot,
 }
