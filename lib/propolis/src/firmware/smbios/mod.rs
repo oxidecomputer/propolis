@@ -257,9 +257,13 @@ impl SmbiosParams {
         .try_into()
         .unwrap();
         let proc_family = match (vendor, family) {
-            // Zen
+            // Explicitly match for Zen-based CPUs
+            //
+            // Although this family identifier is not valid in SMBIOS 2.7,
+            // having been defined in 3.x, we pass it through anyways.
             (Ok(cpuid::VendorKind::Amd), family) if family >= 0x17 => 0x6b,
-            //unknown
+
+            // Emit Unknown for everything else
             _ => 0x2,
         };
         let proc_id = u64::from(self.cpuid_ident.eax) | u64::from(self.cpuid_ident.edx) << 32;
