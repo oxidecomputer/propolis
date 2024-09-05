@@ -1153,6 +1153,8 @@ fn setup_instance(
 
     // generate SMBIOS data and expose via fw_cfg
     let smbios::TableBytes { entry_point, structure_table } = {
+        let cpuid_ident = cpuid_ident
+            .unwrap_or_else(|| cpuid::host_query(cpuid::Ident(0x1, None)));
         let smbios_params = propolis::firmware::smbios::SmbiosParams {
             memory_size: memsize,
             rom_size: rom_len,
@@ -1166,6 +1168,7 @@ fn setup_instance(
             cpuid_vendor,
             cpuid_ident,
             cpuid_procname,
+            system_id: uuid::Uuid::default(),
         };
         smbios_params.generate_table()
             .unwrap()

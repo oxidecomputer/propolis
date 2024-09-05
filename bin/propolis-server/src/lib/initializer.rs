@@ -959,7 +959,9 @@ impl<'a> MachineInitializer<'a> {
             cpuid::host_query(cpuid::Ident(0x8000_0004, None)),
         ];
 
-        let smbios_params = SmbiosParams {
+        let system_id: uuid::Uuid = self.properties.id;
+
+        let smbios_params = propolis::firmware::smbios::SmbiosParams {
             memory_size,
             rom_size,
             rom_release_date,
@@ -967,11 +969,17 @@ impl<'a> MachineInitializer<'a> {
             num_cpus,
             cpuid_vendor,
             cpuid_ident,
-            cpuid_procname,
-        }
+            cpuid_procname: Some(cpuid_procname),
+            system_id,
+        };
 
         use smbios::table::{type0, type1, type16, type4};
 
+        let bios_version = smbios_params
+            .rom_version
+            .as_str()
+            .try_into()
+            .expect("bootrom version string doesn't contain NUL bytes");
         let smb_type0 = smbios::table::Type0 {
             vendor: "Oxide".try_into().unwrap(),
             bios_version,
@@ -988,13 +996,8 @@ impl<'a> MachineInitializer<'a> {
             manufacturer: "Oxide".try_into().unwrap(),
             product_name: "OxVM".try_into().unwrap(),
 
-            serial_number: self
-                .properties
-                .id
-                .to_string()
-                .try_into()
-                .unwrap_or_default(),
-            uuid: self.properties.id.to_bytes_le(),
+            serial_number: smbios_params.system_id.to_string().try_into().unwrap_or_default(),
+            uuid: smbios_params.system_id.to_bytes_le(),
 
             wake_up_type: type1::WakeUpType::PowerSwitch,
             ..Default::default()
@@ -1055,7 +1058,7 @@ impl<'a> MachineInitializer<'a> {
             num_mem_devices: 1,
             ..Default::default()
         };
-        smb_type16.set_max_capacity(self.memory_size);
+        smb_type16.set_max_capacity(smbios_params.memory_size);
         let phys_mem_array_handle = 0x1600.into();
 
         let mut smb_type17 = smbios::table::Type17 {
@@ -1066,7 +1069,7 @@ impl<'a> MachineInitializer<'a> {
             memory_type: 0x2,
             ..Default::default()
         };
-        smb_type17.set_size(Some(self.memory_size));
+        smb_type17.set_size(Some(smbios_params.memory_size));
 
         let smb_type32 = smbios::table::Type32::default();
 

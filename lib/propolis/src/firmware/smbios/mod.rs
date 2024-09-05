@@ -205,8 +205,9 @@ pub struct SmbiosParams {
     pub rom_version: String,
     pub num_cpus: u8,
     pub cpuid_vendor: cpuid::Entry,
-    pub cpuid_ident: Option<cpuid::Entry>,
+    pub cpuid_ident: cpuid::Entry,
     pub cpuid_procname: Option<[cpuid::Entry; 3]>,
+    pub system_id: uuid::Uuid,
 }
 
 impl SmbiosParams {
@@ -232,16 +233,17 @@ impl SmbiosParams {
         let smb_type1 = table::Type1 {
             manufacturer: "Oxide".try_into().unwrap(),
             product_name: "OxVM".try_into().unwrap(),
+
+            serial_number: self.system_id.to_string().try_into().unwrap_or_default(),
+            uuid: self.system_id.to_bytes_le(),
+
             wake_up_type: type1::WakeUpType::PowerSwitch,
             ..Default::default()
         };
 
-        let cpuid_ident = self
-            .cpuid_ident
-            .unwrap_or_else(|| cpuid::host_query(cpuid::Ident(0x1, None)));
-        let family = match cpuid_ident.eax & 0xf00 {
+        let family = match self.cpuid_ident.eax & 0xf00 {
             // If family ID is 0xf, extended family is added to it
-            0xf00 => (cpuid_ident.eax >> 20 & 0xff) + 0xf,
+            0xf00 => (self.cpuid_ident.eax >> 20 & 0xff) + 0xf,
             // ... otherwise base family ID is used
             base => base >> 8,
         };
@@ -260,7 +262,7 @@ impl SmbiosParams {
             //unknown
             _ => 0x2,
         };
-        let proc_id = u64::from(cpuid_ident.eax) | u64::from(cpuid_ident.edx) << 32;
+        let proc_id = u64::from(self.cpuid_ident.eax) | u64::from(self.cpuid_ident.edx) << 32;
         let procname_entries = self.cpuid_procname.or_else(|| {
             if cpuid::host_query(cpuid::Ident(0x8000_0000, None)).eax >= 0x8000_0004
             {
