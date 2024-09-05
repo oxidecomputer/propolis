@@ -1003,9 +1003,9 @@ impl<'a> MachineInitializer<'a> {
             ..Default::default()
         };
 
-        let family = match cpuid_ident.eax & 0xf00 {
+        let family = match smbios_params.cpuid_ident.eax & 0xf00 {
             // If family ID is 0xf, extended family is added to it
-            0xf00 => (cpuid_ident.eax >> 20 & 0xff) + 0xf,
+            0xf00 => (smbios_params.cpuid_ident.eax >> 20 & 0xff) + 0xf,
             // ... otherwise base family ID is used
             base => base >> 8,
         };
@@ -1029,7 +1029,7 @@ impl<'a> MachineInitializer<'a> {
             _ => 0x2,
         };
         let proc_id =
-            u64::from(cpuid_ident.eax) | u64::from(cpuid_ident.edx) << 32;
+            u64::from(smbios_params.cpuid_ident.eax) | u64::from(smbios_params.cpuid_ident.edx) << 32;
         let proc_version =
             cpuid::parse_brand_string(cpuid_procname).unwrap_or("".to_string());
 
