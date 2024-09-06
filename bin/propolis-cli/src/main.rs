@@ -595,7 +595,7 @@ async fn migrate_instance(
         .collect::<Result<Vec<_>, _>>()?
         // Then any errors from polling the source/destination
         .into_iter()
-        .collect::<anyhow::Result<_>>()?;
+        .collect::<anyhow::Result<()>>()?;
 
     Ok(())
 }
