@@ -1188,11 +1188,6 @@ fn setup_instance(
             system_id: uuid::Uuid::default(),
         };
 
-        // With "only" types 0, 1, 4, 16, 17, and 32, we are technically missing
-        // some (types 3, 7, 9, 19) of the data required by the 2.7 spec.  The
-        // data provided here were what we determined was a reasonable
-        // collection to start with.  Should further requirements arise, we may
-        // expand on it.
         let mut smb_tables = smbios::Tables::new(0x7f00.into());
         smb_tables.add(0x0000.into(), &smbios_params.table_type0()).unwrap();
         smb_tables.add(0x0100.into(), &smbios_params.table_type1()).unwrap();
