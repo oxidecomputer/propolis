@@ -211,14 +211,15 @@ pub struct SmbiosParams {
 }
 
 impl SmbiosParams {
-    pub fn generate_table(&self) -> anyhow::Result<TableBytes> {
-        use table::{type0, type1, type16, type4};
+    pub fn table_type0(&self) -> table::Type0 {
+        use table::type0;
+
         let bios_version = self
             .rom_version
             .as_str()
             .try_into()
             .expect("bootrom version string doesn't contain NUL bytes");
-        let smb_type0 = table::Type0 {
+        table::Type0 {
             vendor: "Oxide".try_into().unwrap(),
             bios_version,
             bios_release_date: self
@@ -232,9 +233,13 @@ impl SmbiosParams {
                 | type0::BiosExtCharacteristics::UEFI
                 | type0::BiosExtCharacteristics::IS_VM,
             ..Default::default()
-        };
+        }
+    }
 
-        let smb_type1 = table::Type1 {
+    pub fn table_type1(&self) -> table::Type1 {
+        use table::type1;
+
+        table::Type1 {
             manufacturer: "Oxide".try_into().unwrap(),
             product_name: "OxVM".try_into().unwrap(),
 
@@ -247,7 +252,11 @@ impl SmbiosParams {
 
             wake_up_type: type1::WakeUpType::PowerSwitch,
             ..Default::default()
-        };
+        }
+    }
+
+    pub fn table_type4(&self) -> table::Type4 {
+        use table::type4;
 
         let family = match self.cpuid_ident.eax & 0xf00 {
             // If family ID is 0xf, extended family is added to it
@@ -280,7 +289,7 @@ impl SmbiosParams {
         let proc_version = cpuid::parse_brand_string(self.cpuid_procname)
             .unwrap_or_else(|_| "".to_string());
 
-        let smb_type4 = table::Type4 {
+        table::Type4 {
             proc_type: type4::ProcType::Central,
             proc_family,
             proc_manufacturer,
@@ -296,7 +305,11 @@ impl SmbiosParams {
             proc_characteristics: type4::Characteristics::IS_64_BIT
                 | type4::Characteristics::MULTI_CORE,
             ..Default::default()
-        };
+        }
+    }
+
+    pub fn table_type16(&self) -> table::Type16 {
+        use table::type16;
 
         let mut smb_type16 = table::Type16 {
             location: type16::Location::SystemBoard,
@@ -306,7 +319,11 @@ impl SmbiosParams {
             ..Default::default()
         };
         smb_type16.set_max_capacity(self.memory_size);
-        let phys_mem_array_handle = 0x1600.into();
+        smb_type16
+    }
+
+    pub fn table_type17(&self, table16_handle: Handle) -> table::Type17 {
+        let phys_mem_array_handle = table16_handle.into();
 
         let mut smb_type17 = table::Type17 {
             phys_mem_array_handle,
@@ -317,22 +334,11 @@ impl SmbiosParams {
             ..Default::default()
         };
         smb_type17.set_size(Some(self.memory_size));
+        smb_type17
+    }
 
-        let smb_type32 = table::Type32::default();
-
-        // With "only" types 0, 1, 4, 16, 17, and 32, we are technically missing
-        // some (types 3, 7, 9, 19) of the data required by the 2.7 spec.  The
-        // data provided here were what we determined was a reasonable
-        // collection to start with.  Should further requirements arise, we may
-        // expand on it.
-        let mut smb_tables = Tables::new(0x7f00.into());
-        smb_tables.add(0x0000.into(), &smb_type0).unwrap();
-        smb_tables.add(0x0100.into(), &smb_type1).unwrap();
-        smb_tables.add(0x0300.into(), &smb_type4).unwrap();
-        smb_tables.add(phys_mem_array_handle, &smb_type16).unwrap();
-        smb_tables.add(0x1700.into(), &smb_type17).unwrap();
-        smb_tables.add(0x3200.into(), &smb_type32).unwrap();
-
-        Ok(smb_tables.commit())
+    pub fn table_type32(&self) -> table::Type32 {
+        // We don't yet set anything interesting into table type 32.
+        table::Type32::default()
     }
 }

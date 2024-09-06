@@ -954,7 +954,23 @@ impl<'a> MachineInitializer<'a> {
             system_id: self.properties.id,
         };
 
-        smbios_params.generate_table().expect("can generate smbios tables")
+        let mut smb_tables = smbios::Tables::new(0x7f00.into());
+        smb_tables.add(0x0000.into(), &smbios_params.table_type0()).unwrap();
+        smb_tables.add(0x0100.into(), &smbios_params.table_type1()).unwrap();
+        smb_tables.add(0x0300.into(), &smbios_params.table_type4()).unwrap();
+        let phys_mem_array_handle = 0x1600.into();
+        smb_tables
+            .add(phys_mem_array_handle, &smbios_params.table_type16())
+            .unwrap();
+        smb_tables
+            .add(
+                0x1700.into(),
+                &smbios_params.table_type17(phys_mem_array_handle),
+            )
+            .unwrap();
+        smb_tables.add(0x3200.into(), &smbios_params.table_type32()).unwrap();
+
+        smb_tables.commit()
     }
 
     /// Initialize qemu `fw_cfg` device, and populate it with data including CPU
