@@ -954,8 +954,7 @@ impl<'a> MachineInitializer<'a> {
             system_id: self.properties.id,
         };
 
-        smbios_params.generate_table()
-            .expect("can generate smbios tables")
+        smbios_params.generate_table().expect("can generate smbios tables")
     }
 
     /// Initialize qemu `fw_cfg` device, and populate it with data including CPU

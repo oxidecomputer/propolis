@@ -1156,7 +1156,8 @@ fn setup_instance(
         let cpuid_ident = cpuid_ident
             .unwrap_or_else(|| cpuid::host_query(cpuid::Ident(0x1, None)));
         let cpuid_procname = cpuid_procname.unwrap_or_else(|| {
-            if cpuid::host_query(cpuid::Ident(0x8000_0000, None)).eax >= 0x8000_0004
+            if cpuid::host_query(cpuid::Ident(0x8000_0000, None)).eax
+                >= 0x8000_0004
             {
                 [
                     cpuid::host_query(cpuid::Ident(0x8000_0002, None)),
@@ -1186,8 +1187,7 @@ fn setup_instance(
             cpuid_procname,
             system_id: uuid::Uuid::default(),
         };
-        smbios_params.generate_table()
-            .unwrap()
+        smbios_params.generate_table().unwrap()
     };
     fwcfg
         .insert_named(

@@ -221,7 +221,11 @@ impl SmbiosParams {
         let smb_type0 = table::Type0 {
             vendor: "Oxide".try_into().unwrap(),
             bios_version,
-            bios_release_date: self.rom_release_date.as_str().try_into().unwrap(),
+            bios_release_date: self
+                .rom_release_date
+                .as_str()
+                .try_into()
+                .unwrap(),
             bios_rom_size: ((self.rom_size / (64 * 1024)) - 1) as u8,
             bios_characteristics: type0::BiosCharacteristics::UNSUPPORTED,
             bios_ext_characteristics: type0::BiosExtCharacteristics::ACPI
@@ -234,7 +238,11 @@ impl SmbiosParams {
             manufacturer: "Oxide".try_into().unwrap(),
             product_name: "OxVM".try_into().unwrap(),
 
-            serial_number: self.system_id.to_string().try_into().unwrap_or_default(),
+            serial_number: self
+                .system_id
+                .to_string()
+                .try_into()
+                .unwrap_or_default(),
             uuid: self.system_id.to_bytes_le(),
 
             wake_up_type: type1::WakeUpType::PowerSwitch,
@@ -266,7 +274,8 @@ impl SmbiosParams {
             // Emit Unknown for everything else
             _ => 0x2,
         };
-        let proc_id = u64::from(self.cpuid_ident.eax) | u64::from(self.cpuid_ident.edx) << 32;
+        let proc_id = u64::from(self.cpuid_ident.eax)
+            | u64::from(self.cpuid_ident.edx) << 32;
         // TODO(ixi): do not ignore the error here
         let proc_version = cpuid::parse_brand_string(self.cpuid_procname)
             .unwrap_or_else(|_| "".to_string());
