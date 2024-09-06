@@ -107,11 +107,6 @@ struct StorageBackendInstance {
     crucible: Option<(uuid::Uuid, Arc<block::CrucibleBackend>)>,
 }
 
-#[derive(Default)]
-pub struct MachineInitializerState {
-    rom_size_bytes: Option<usize>,
-}
-
 pub struct MachineInitializer<'a> {
     pub(crate) log: slog::Logger,
     pub(crate) machine: &'a Machine,
@@ -122,7 +117,6 @@ pub struct MachineInitializer<'a> {
     pub(crate) properties: &'a InstanceProperties,
     pub(crate) toml_config: &'a crate::server::VmTomlConfig,
     pub(crate) producer_registry: Option<ProducerRegistry>,
-    pub(crate) state: MachineInitializerState,
     pub(crate) kstat_sampler: Option<KstatSampler>,
 }
 
@@ -130,7 +124,7 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_rom(
         &mut self,
         path: &std::path::Path,
-    ) -> Result<(), Error> {
+    ) -> Result<usize, Error> {
         fn open_bootrom(path: &std::path::Path) -> Result<(File, usize)> {
             let fp = File::open(path)?;
             let len = fp.metadata()?.len();
@@ -162,8 +156,7 @@ impl<'a> MachineInitializer<'a> {
             // TODO: Handle short read
             return Err(Error::new(ErrorKind::InvalidData, "short read"));
         }
-        self.state.rom_size_bytes = Some(rom_len);
-        Ok(())
+        Ok(rom_len)
     }
 
     pub fn initialize_rtc(
@@ -929,10 +922,7 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
-    fn generate_smbios(&self) -> smbios::TableBytes {
-        let rom_size =
-            self.state.rom_size_bytes.expect("ROM is already populated");
-
+    fn generate_smbios(&self, rom_size: usize) -> smbios::TableBytes {
         let rom_version: String = self
             .toml_config
             .bootrom_version
@@ -970,11 +960,10 @@ impl<'a> MachineInitializer<'a> {
 
     /// Initialize qemu `fw_cfg` device, and populate it with data including CPU
     /// count, SMBIOS tables, and attached RAM-FB device.
-    ///
-    /// Should not be called before [`Self::initialize_rom()`].
     pub fn initialize_fwcfg(
         &mut self,
         cpus: u8,
+        rom_size: usize,
     ) -> Result<Arc<ramfb::RamFb>, Error> {
         let fwcfg = fwcfg::FwCfg::new();
         fwcfg
@@ -985,7 +974,7 @@ impl<'a> MachineInitializer<'a> {
             .unwrap();
 
         let smbios::TableBytes { entry_point, structure_table } =
-            self.generate_smbios();
+            self.generate_smbios(rom_size);
         fwcfg
             .insert_named(
                 "etc/smbios/smbios-tables",
