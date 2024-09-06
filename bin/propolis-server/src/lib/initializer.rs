@@ -46,7 +46,7 @@ use propolis_api_types::instance_spec::{
     self, v0::BootDeclaration, v0::InstanceSpecV0,
 };
 use propolis_api_types::InstanceProperties;
-use slog::info;
+use slog::{info, warn};
 
 /// Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
@@ -1077,8 +1077,9 @@ impl<'a> MachineInitializer<'a> {
     }
 
     fn generate_bootorder(&self) -> Result<Option<Entry>, Error> {
-        eprintln!(
-            "generating bootorder with order: {:?}",
+        info!(
+            self.log,
+            "Generating bootorder with order: {:?}",
             self.boot_order.as_ref()
         );
         let Some(boot_names) = self.boot_order.as_ref() else {
@@ -1178,13 +1179,14 @@ impl<'a> MachineInitializer<'a> {
 
                 order.add_pci(bdf.location, "ethernet");
             } else {
-                eprintln!(
-                    "could not find {:?} in {:?} or {:?}",
-                    boot_entry,
-                    self.spec.devices.storage_devices,
-                    self.spec.devices.network_devices
+                let message = format!(
+                    "Instance spec included boot entry which does not refer to an existing device: `{}`",
+                    boot_entry.name.as_str(),
                 );
-                panic!("TODO: return an error; the device name doesn't exist?");
+                // TODO(ixi): this is actually duplicative with the top-level `error!` that this
+                // unhandled `error` will bubble out to. Maybe just don't log here?
+                warn!(self.log, message);
+                return Err(Error::new(ErrorKind::Other, message));
             }
         }
 

@@ -961,11 +961,13 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
 
 fn generate_bootorder(
     config: &config::Config,
+    log: &slog::Logger,
 ) -> anyhow::Result<Option<fwcfg::Entry>> {
-    eprintln!("bootorder declared as {:?}", config.main.boot_order.as_ref());
     let Some(names) = config.main.boot_order.as_ref() else {
         return Ok(None);
     };
+
+    slog::info!(log, "Bootorder declared as {:?}", config.main.boot_order.as_ref());
 
     let mut order = fwcfg::formats::BootOrder::new();
     for name in names.iter() {
@@ -1312,7 +1314,7 @@ fn setup_instance(
     // It is "safe" to generate bootorder (if requested) now, given that PCI
     // device configuration has been validated by preceding logic
     if let Some(boot_config) =
-        generate_bootorder(&config).context("Failed to generate boot order")?
+        generate_bootorder(&config, log).context("Failed to generate boot order")?
     {
         fwcfg.insert_named("bootorder", boot_config).unwrap();
     }
