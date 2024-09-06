@@ -16,17 +16,17 @@ fn create_vm() -> anyhow::Result<VmmFd> {
     let ctl = VmmCtlFd::open()?;
     let _ = unsafe { ctl.ioctl(bhyve_api::VMM_CREATE_VM, &mut req) }?;
 
-    let vm = VmmFd::open(&name).map_err(|e| {
+    let vm = VmmFd::open(&name).inspect_err(|_e| {
         // Attempt to manually destroy the VM if we cannot open it
         let _ = ctl.vm_destroy(name.as_bytes());
-        e
     })?;
 
-    vm.ioctl_usize(bhyve_api::ioctls::VM_SET_AUTODESTRUCT, 1).map_err(|e| {
-        // Destroy instance if auto-destruct cannot be set
-        let _ = vm.ioctl_usize(bhyve_api::VM_DESTROY_SELF, 0);
-        e
-    })?;
+    vm.ioctl_usize(bhyve_api::ioctls::VM_SET_AUTODESTRUCT, 1).inspect_err(
+        |_e| {
+            // Destroy instance if auto-destruct cannot be set
+            let _ = vm.ioctl_usize(bhyve_api::VM_DESTROY_SELF, 0);
+        },
+    )?;
 
     Ok(vm)
 }
