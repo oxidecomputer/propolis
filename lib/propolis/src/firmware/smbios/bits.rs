@@ -161,7 +161,7 @@ pub(crate) struct Type2 {
 }
 raw_table_impl!(Type2, 2);
 
-// We don't create type 2 tables yet, but it's nice to have the definition on hand.
+// We don't create type 3 tables yet, but it's nice to have the definition on hand.
 /// Type 3 (System Enclosure) - Version 2.7
 #[derive(Copy, Clone)]
 #[repr(C, packed)]
