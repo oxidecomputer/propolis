@@ -1482,15 +1482,10 @@
           "name": {
             "description": "The name of the device to attempt booting from.",
             "type": "string"
-          },
-          "first_boot_only": {
-            "description": "Should we include this device in the boot order for reboots of a started instance?",
-            "type": "boolean"
           }
         },
         "required": [
-          "name",
-          "first_boot_only"
+          "name"
         ]
       },
       "SerialPort": {

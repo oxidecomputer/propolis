@@ -201,7 +201,6 @@ impl SpecBuilderV0 {
             .into_iter()
             .map(|name| crate::types::BootDeclaration {
                 name,
-                first_boot_only: false,
             })
             .collect();
         eprintln!("setting boot order to {:?}", boot_declarations);

@@ -185,7 +185,6 @@ impl DeviceSpecV0 {
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 pub struct BootDeclaration {
     pub name: SpecKey,
-    pub first_boot_only: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]

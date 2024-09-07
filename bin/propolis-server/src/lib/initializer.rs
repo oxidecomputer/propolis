@@ -1105,9 +1105,6 @@ impl<'a> MachineInitializer<'a> {
             };
 
         for boot_entry in boot_names.iter() {
-            if boot_entry.first_boot_only {
-                continue;
-            }
             // names may refer to a storage device or network device.
             //
             // realistically we won't be booting from network devices, but leave that as a question
