@@ -37,9 +37,7 @@ use propolis_api_types::{
 use slog::{debug, info};
 
 use crate::{
-    initializer::{
-        build_instance, MachineInitializer, MachineInitializerState,
-    },
+    initializer::{build_instance, MachineInitializer},
     stats::create_kstat_sampler,
     vm::request_queue::InstanceAutoStart,
 };
@@ -180,7 +178,6 @@ impl<'a> VmEnsureNotStarted<'a> {
             properties,
             toml_config: &options.toml_config,
             producer_registry: options.oximeter_registry.clone(),
-            state: MachineInitializerState::default(),
             kstat_sampler: initialize_kstat_sampler(
                 self.log,
                 properties,
@@ -189,7 +186,8 @@ impl<'a> VmEnsureNotStarted<'a> {
             ),
         };
 
-        init.initialize_rom(options.toml_config.bootrom.as_path())?;
+        let rom_size =
+            init.initialize_rom(options.toml_config.bootrom.as_path())?;
         let chipset = init.initialize_chipset(
             &(event_queue.clone()
                 as Arc<dyn super::guest_event::ChipsetEventHandler>),
@@ -221,7 +219,8 @@ impl<'a> VmEnsureNotStarted<'a> {
         init.initialize_storage_devices(&chipset, options.nexus_client.clone())
             .await?;
 
-        let ramfb = init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
+        let ramfb =
+            init.initialize_fwcfg(v0_spec.devices.board.cpus, rom_size)?;
 
         init.initialize_cpus().await?;
 

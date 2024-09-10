@@ -833,132 +833,6 @@ fn populate_rom(
     Ok(())
 }
 
-struct SmbiosParams {
-    memory_size: usize,
-    rom_size: usize,
-    rom_version: String,
-    num_cpus: u8,
-    cpuid_ident: Option<cpuid::Entry>,
-    cpuid_procname: Option<[cpuid::Entry; 3]>,
-}
-fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
-    use smbios::table::{type0, type1, type16, type4};
-    let bios_version = params
-        .rom_version
-        .try_into()
-        .expect("bootrom version string doesn't contain NUL bytes");
-    let smb_type0 = smbios::table::Type0 {
-        vendor: "Oxide".try_into().unwrap(),
-        bios_version,
-        bios_release_date: "Bureaucracy 41, 3186 YOLD".try_into().unwrap(),
-        bios_rom_size: ((params.rom_size / (64 * 1024)) - 1) as u8,
-        bios_characteristics: type0::BiosCharacteristics::UNSUPPORTED,
-        bios_ext_characteristics: type0::BiosExtCharacteristics::ACPI
-            | type0::BiosExtCharacteristics::UEFI
-            | type0::BiosExtCharacteristics::IS_VM,
-        ..Default::default()
-    };
-
-    let smb_type1 = smbios::table::Type1 {
-        manufacturer: "Oxide".try_into().unwrap(),
-        product_name: "OxVM".try_into().unwrap(),
-        wake_up_type: type1::WakeUpType::PowerSwitch,
-        ..Default::default()
-    };
-
-    let cpuid_vendor = cpuid::host_query(cpuid::Ident(0x0, None));
-    let cpuid_ident = params
-        .cpuid_ident
-        .unwrap_or_else(|| cpuid::host_query(cpuid::Ident(0x1, None)));
-    let family = match cpuid_ident.eax & 0xf00 {
-        // If family ID is 0xf, extended family is added to it
-        0xf00 => (cpuid_ident.eax >> 20 & 0xff) + 0xf,
-        // ... otherwise base family ID is used
-        base => base >> 8,
-    };
-
-    let vendor = cpuid::VendorKind::try_from(cpuid_vendor);
-    let proc_manufacturer = match vendor {
-        Ok(cpuid::VendorKind::Intel) => "Intel",
-        Ok(cpuid::VendorKind::Amd) => "Advanced Micro Devices, Inc.",
-        _ => "",
-    }
-    .try_into()
-    .unwrap();
-    let proc_family = match (vendor, family) {
-        // Zen
-        (Ok(cpuid::VendorKind::Amd), family) if family >= 0x17 => 0x6b,
-        //unknown
-        _ => 0x2,
-    };
-    let proc_id = u64::from(cpuid_ident.eax) | u64::from(cpuid_ident.edx) << 32;
-    let procname_entries = params.cpuid_procname.or_else(|| {
-        if cpuid::host_query(cpuid::Ident(0x8000_0000, None)).eax >= 0x8000_0004
-        {
-            Some([
-                cpuid::host_query(cpuid::Ident(0x8000_0002, None)),
-                cpuid::host_query(cpuid::Ident(0x8000_0003, None)),
-                cpuid::host_query(cpuid::Ident(0x8000_0004, None)),
-            ])
-        } else {
-            None
-        }
-    });
-    let proc_version = procname_entries
-        .and_then(|e| cpuid::parse_brand_string(e).ok())
-        .unwrap_or("".to_string());
-
-    let smb_type4 = smbios::table::Type4 {
-        proc_type: type4::ProcType::Central,
-        proc_family,
-        proc_manufacturer,
-        proc_id,
-        proc_version: proc_version.as_str().try_into().unwrap_or_default(),
-        status: type4::ProcStatus::Enabled,
-        // unknown
-        proc_upgrade: 0x2,
-        // make core and thread counts equal for now
-        core_count: params.num_cpus,
-        core_enabled: params.num_cpus,
-        thread_count: params.num_cpus,
-        proc_characteristics: type4::Characteristics::IS_64_BIT
-            | type4::Characteristics::MULTI_CORE,
-        ..Default::default()
-    };
-
-    let mut smb_type16 = smbios::table::Type16 {
-        location: type16::Location::SystemBoard,
-        array_use: type16::ArrayUse::System,
-        error_correction: type16::ErrorCorrection::Unknown,
-        num_mem_devices: 1,
-        ..Default::default()
-    };
-    smb_type16.set_max_capacity(params.memory_size);
-    let phys_mem_array_handle = 0x1600.into();
-
-    let mut smb_type17 = smbios::table::Type17 {
-        phys_mem_array_handle,
-        // Unknown
-        form_factor: 0x2,
-        // Unknown
-        memory_type: 0x2,
-        ..Default::default()
-    };
-    smb_type17.set_size(Some(params.memory_size));
-
-    let smb_type32 = smbios::table::Type32::default();
-
-    let mut smb_tables = smbios::Tables::new(0x7f00.into());
-    smb_tables.add(0x0000.into(), &smb_type0).unwrap();
-    smb_tables.add(0x0100.into(), &smb_type1).unwrap();
-    smb_tables.add(0x0300.into(), &smb_type4).unwrap();
-    smb_tables.add(phys_mem_array_handle, &smb_type16).unwrap();
-    smb_tables.add(0x1700.into(), &smb_type17).unwrap();
-    smb_tables.add(0x3200.into(), &smb_type32).unwrap();
-
-    Ok(smb_tables.commit())
-}
-
 fn generate_bootorder(config: &config::Config) -> anyhow::Result<fwcfg::Entry> {
     let names = config.main.boot_order.as_ref().unwrap();
 
@@ -1261,6 +1135,7 @@ fn setup_instance(
 
     let cpuid_profile = config::parse_cpuid(&config)?;
 
+    let cpuid_vendor = cpuid::host_query(cpuid::Ident(0x0, None));
     let cpuid_ident = cpuid_profile
         .as_ref()
         .and_then(|p| p.get(cpuid::Ident(0x1, None)))
@@ -1277,8 +1152,27 @@ fn setup_instance(
     });
 
     // generate SMBIOS data and expose via fw_cfg
-    let smbios::TableBytes { entry_point, structure_table } =
-        generate_smbios(SmbiosParams {
+    let smbios::TableBytes { entry_point, structure_table } = {
+        let cpuid_ident = cpuid_ident
+            .unwrap_or_else(|| cpuid::host_query(cpuid::Ident(0x1, None)));
+        let cpuid_procname = cpuid_procname.unwrap_or_else(|| {
+            if cpuid::host_query(cpuid::Ident(0x8000_0000, None)).eax
+                >= 0x8000_0004
+            {
+                [
+                    cpuid::host_query(cpuid::Ident(0x8000_0002, None)),
+                    cpuid::host_query(cpuid::Ident(0x8000_0003, None)),
+                    cpuid::host_query(cpuid::Ident(0x8000_0004, None)),
+                ]
+            } else {
+                [
+                    cpuid::Entry::zero(),
+                    cpuid::Entry::zero(),
+                    cpuid::Entry::zero(),
+                ]
+            }
+        });
+        let smbios_params = propolis::firmware::smbios::SmbiosParams {
             memory_size: memsize,
             rom_size: rom_len,
             rom_version: config
@@ -1286,11 +1180,32 @@ fn setup_instance(
                 .bootrom_version
                 .clone()
                 .unwrap_or_else(|| "v0.0.1-alpha 1".to_string()),
+            rom_release_date: "Bureaucracy 41, 3186 YOLD".to_string(),
             num_cpus: cpus,
+            cpuid_vendor,
             cpuid_ident,
             cpuid_procname,
-        })
-        .unwrap();
+            system_id: uuid::Uuid::default(),
+        };
+
+        let mut smb_tables = smbios::Tables::new(0x7f00.into());
+        smb_tables.add(0x0000.into(), &smbios_params.table_type0()).unwrap();
+        smb_tables.add(0x0100.into(), &smbios_params.table_type1()).unwrap();
+        smb_tables.add(0x0300.into(), &smbios_params.table_type4()).unwrap();
+        let phys_mem_array_handle = 0x1600.into();
+        smb_tables
+            .add(phys_mem_array_handle, &smbios_params.table_type16())
+            .unwrap();
+        smb_tables
+            .add(
+                0x1700.into(),
+                &smbios_params.table_type17(phys_mem_array_handle),
+            )
+            .unwrap();
+        smb_tables.add(0x3200.into(), &smbios_params.table_type32()).unwrap();
+
+        smb_tables.commit()
+    };
     fwcfg
         .insert_named(
             "etc/smbios/smbios-tables",

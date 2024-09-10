@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use crate::cpuid;
 use table::{Table, Type127};
 
 mod bits;
@@ -196,3 +197,148 @@ impl TryFrom<String> for SmbString {
 #[derive(thiserror::Error, Debug)]
 #[error("String contains NUL byte")]
 pub struct SmbStringNulError();
+
+pub struct SmbiosParams {
+    pub memory_size: usize,
+    pub rom_size: usize,
+    pub rom_release_date: String,
+    pub rom_version: String,
+    pub num_cpus: u8,
+    pub cpuid_vendor: cpuid::Entry,
+    pub cpuid_ident: cpuid::Entry,
+    pub cpuid_procname: [cpuid::Entry; 3],
+    pub system_id: uuid::Uuid,
+}
+
+impl SmbiosParams {
+    pub fn table_type0(&self) -> table::Type0 {
+        use table::type0;
+
+        let bios_version = self
+            .rom_version
+            .as_str()
+            .try_into()
+            .expect("bootrom version string doesn't contain NUL bytes");
+        table::Type0 {
+            vendor: "Oxide".try_into().unwrap(),
+            bios_version,
+            bios_release_date: self
+                .rom_release_date
+                .as_str()
+                .try_into()
+                .unwrap(),
+            bios_rom_size: ((self.rom_size / (64 * 1024)) - 1) as u8,
+            bios_characteristics: type0::BiosCharacteristics::UNSUPPORTED,
+            bios_ext_characteristics: type0::BiosExtCharacteristics::ACPI
+                | type0::BiosExtCharacteristics::UEFI
+                | type0::BiosExtCharacteristics::IS_VM,
+            ..Default::default()
+        }
+    }
+
+    pub fn table_type1(&self) -> table::Type1 {
+        use table::type1;
+
+        table::Type1 {
+            manufacturer: "Oxide".try_into().unwrap(),
+            product_name: "OxVM".try_into().unwrap(),
+
+            serial_number: self
+                .system_id
+                .to_string()
+                .try_into()
+                .unwrap_or_default(),
+            uuid: self.system_id.to_bytes_le(),
+
+            wake_up_type: type1::WakeUpType::PowerSwitch,
+            ..Default::default()
+        }
+    }
+
+    pub fn table_type4(&self) -> table::Type4 {
+        use table::type4;
+
+        let family = match self.cpuid_ident.eax & 0xf00 {
+            // If family ID is 0xf, extended family is added to it
+            0xf00 => (self.cpuid_ident.eax >> 20 & 0xff) + 0xf,
+            // ... otherwise base family ID is used
+            base => base >> 8,
+        };
+
+        let vendor = cpuid::VendorKind::try_from(self.cpuid_vendor);
+        let proc_manufacturer = match vendor {
+            Ok(cpuid::VendorKind::Intel) => "Intel",
+            Ok(cpuid::VendorKind::Amd) => "Advanced Micro Devices, Inc.",
+            _ => "",
+        }
+        .try_into()
+        .unwrap();
+        let proc_family = match (vendor, family) {
+            // Explicitly match for Zen-based CPUs
+            //
+            // Although this family identifier is not valid in SMBIOS 2.7,
+            // having been defined in 3.x, we pass it through anyways.
+            (Ok(cpuid::VendorKind::Amd), family) if family >= 0x17 => 0x6b,
+
+            // Emit Unknown for everything else
+            _ => 0x2,
+        };
+        let proc_id = u64::from(self.cpuid_ident.eax)
+            | u64::from(self.cpuid_ident.edx) << 32;
+        // TODO(ixi): do not ignore the error here
+        let proc_version = cpuid::parse_brand_string(self.cpuid_procname)
+            .unwrap_or_else(|_| "".to_string());
+
+        table::Type4 {
+            proc_type: type4::ProcType::Central,
+            proc_family,
+            proc_manufacturer,
+            proc_id,
+            proc_version: proc_version.as_str().try_into().unwrap_or_default(),
+            status: type4::ProcStatus::Enabled,
+            // unknown
+            proc_upgrade: 0x2,
+            // make core and thread counts equal for now
+            core_count: self.num_cpus,
+            core_enabled: self.num_cpus,
+            thread_count: self.num_cpus,
+            proc_characteristics: type4::Characteristics::IS_64_BIT
+                | type4::Characteristics::MULTI_CORE,
+            ..Default::default()
+        }
+    }
+
+    pub fn table_type16(&self) -> table::Type16 {
+        use table::type16;
+
+        let mut smb_type16 = table::Type16 {
+            location: type16::Location::SystemBoard,
+            array_use: type16::ArrayUse::System,
+            error_correction: type16::ErrorCorrection::Unknown,
+            num_mem_devices: 1,
+            ..Default::default()
+        };
+        smb_type16.set_max_capacity(self.memory_size);
+        smb_type16
+    }
+
+    pub fn table_type17(&self, table16_handle: Handle) -> table::Type17 {
+        let phys_mem_array_handle = table16_handle.into();
+
+        let mut smb_type17 = table::Type17 {
+            phys_mem_array_handle,
+            // Unknown
+            form_factor: 0x2,
+            // Unknown
+            memory_type: 0x2,
+            ..Default::default()
+        };
+        smb_type17.set_size(Some(self.memory_size));
+        smb_type17
+    }
+
+    pub fn table_type32(&self) -> table::Type32 {
+        // We don't yet set anything interesting into table type 32.
+        table::Type32::default()
+    }
+}

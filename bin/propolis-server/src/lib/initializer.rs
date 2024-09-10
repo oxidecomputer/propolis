@@ -107,11 +107,6 @@ struct StorageBackendInstance {
     crucible: Option<(uuid::Uuid, Arc<block::CrucibleBackend>)>,
 }
 
-#[derive(Default)]
-pub struct MachineInitializerState {
-    rom_size_bytes: Option<usize>,
-}
-
 pub struct MachineInitializer<'a> {
     pub(crate) log: slog::Logger,
     pub(crate) machine: &'a Machine,
@@ -122,7 +117,6 @@ pub struct MachineInitializer<'a> {
     pub(crate) properties: &'a InstanceProperties,
     pub(crate) toml_config: &'a crate::server::VmTomlConfig,
     pub(crate) producer_registry: Option<ProducerRegistry>,
-    pub(crate) state: MachineInitializerState,
     pub(crate) kstat_sampler: Option<KstatSampler>,
 }
 
@@ -130,7 +124,7 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_rom(
         &mut self,
         path: &std::path::Path,
-    ) -> Result<(), Error> {
+    ) -> Result<usize, Error> {
         fn open_bootrom(path: &std::path::Path) -> Result<(File, usize)> {
             let fp = File::open(path)?;
             let len = fp.metadata()?.len();
@@ -162,8 +156,7 @@ impl<'a> MachineInitializer<'a> {
             // TODO: Handle short read
             return Err(Error::new(ErrorKind::InvalidData, "short read"));
         }
-        self.state.rom_size_bytes = Some(rom_len);
-        Ok(())
+        Ok(rom_len)
     }
 
     pub fn initialize_rtc(
@@ -929,48 +922,15 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
-    fn generate_smbios(&self) -> smbios::TableBytes {
-        use propolis::cpuid;
-        use smbios::table::{type0, type1, type16, type4};
-
-        let rom_size =
-            self.state.rom_size_bytes.expect("ROM is already populated");
-        let bios_version = self
+    fn generate_smbios(&self, rom_size: usize) -> smbios::TableBytes {
+        let rom_version: String = self
             .toml_config
             .bootrom_version
             .as_deref()
             .unwrap_or("v0.8")
-            .try_into()
-            .expect("bootrom version string doesn't contain NUL bytes");
-        let smb_type0 = smbios::table::Type0 {
-            vendor: "Oxide".try_into().unwrap(),
-            bios_version,
-            bios_release_date: "The Aftermath 30, 3185 YOLD"
-                .try_into()
-                .unwrap(),
-            bios_rom_size: ((rom_size / (64 * 1024)) - 1) as u8,
-            bios_characteristics: type0::BiosCharacteristics::UNSUPPORTED,
-            bios_ext_characteristics: type0::BiosExtCharacteristics::ACPI
-                | type0::BiosExtCharacteristics::UEFI
-                | type0::BiosExtCharacteristics::IS_VM,
-            ..Default::default()
-        };
+            .to_string();
 
-        let smb_type1 = smbios::table::Type1 {
-            manufacturer: "Oxide".try_into().unwrap(),
-            product_name: "OxVM".try_into().unwrap(),
-
-            serial_number: self
-                .properties
-                .id
-                .to_string()
-                .try_into()
-                .unwrap_or_default(),
-            uuid: self.properties.id.to_bytes_le(),
-
-            wake_up_type: type1::WakeUpType::PowerSwitch,
-            ..Default::default()
-        };
+        use propolis::cpuid;
 
         // Once CPUID profiles are integrated, these will need to take that into
         // account, rather than blindly querying from the host
@@ -982,76 +942,17 @@ impl<'a> MachineInitializer<'a> {
             cpuid::host_query(cpuid::Ident(0x8000_0004, None)),
         ];
 
-        let family = match cpuid_ident.eax & 0xf00 {
-            // If family ID is 0xf, extended family is added to it
-            0xf00 => (cpuid_ident.eax >> 20 & 0xff) + 0xf,
-            // ... otherwise base family ID is used
-            base => base >> 8,
+        let smbios_params = propolis::firmware::smbios::SmbiosParams {
+            memory_size: (self.properties.memory as usize) * MB,
+            rom_size,
+            rom_release_date: "The Aftermath 30, 3185 YOLD".to_string(),
+            rom_version,
+            num_cpus: self.properties.vcpus,
+            cpuid_vendor,
+            cpuid_ident,
+            cpuid_procname,
+            system_id: self.properties.id,
         };
-
-        let vendor = cpuid::VendorKind::try_from(cpuid_vendor);
-        let proc_manufacturer = match vendor {
-            Ok(cpuid::VendorKind::Intel) => "Intel",
-            Ok(cpuid::VendorKind::Amd) => "Advanced Micro Devices, Inc.",
-            _ => "",
-        }
-        .try_into()
-        .unwrap();
-        let proc_family = match (vendor, family) {
-            // Explicitly match for Zen-based CPUs
-            //
-            // Although this family identifier is not valid in SMBIOS 2.7,
-            // having been defined in 3.x, we pass it through anyways.
-            (Ok(cpuid::VendorKind::Amd), family) if family >= 0x17 => 0x6b,
-
-            // Emit Unknown for everything else
-            _ => 0x2,
-        };
-        let proc_id =
-            u64::from(cpuid_ident.eax) | u64::from(cpuid_ident.edx) << 32;
-        let proc_version =
-            cpuid::parse_brand_string(cpuid_procname).unwrap_or("".to_string());
-
-        let smb_type4 = smbios::table::Type4 {
-            proc_type: type4::ProcType::Central,
-            proc_family,
-            proc_manufacturer,
-            proc_id,
-            proc_version: proc_version.try_into().unwrap_or_default(),
-            status: type4::ProcStatus::Enabled,
-            // unknown
-            proc_upgrade: 0x2,
-            // make core and thread counts equal for now
-            core_count: self.properties.vcpus,
-            core_enabled: self.properties.vcpus,
-            thread_count: self.properties.vcpus,
-            proc_characteristics: type4::Characteristics::IS_64_BIT
-                | type4::Characteristics::MULTI_CORE,
-            ..Default::default()
-        };
-
-        let memsize_bytes = (self.properties.memory as usize) * MB;
-        let mut smb_type16 = smbios::table::Type16 {
-            location: type16::Location::SystemBoard,
-            array_use: type16::ArrayUse::System,
-            error_correction: type16::ErrorCorrection::Unknown,
-            num_mem_devices: 1,
-            ..Default::default()
-        };
-        smb_type16.set_max_capacity(memsize_bytes);
-        let phys_mem_array_handle = 0x1600.into();
-
-        let mut smb_type17 = smbios::table::Type17 {
-            phys_mem_array_handle,
-            // Unknown
-            form_factor: 0x2,
-            // Unknown
-            memory_type: 0x2,
-            ..Default::default()
-        };
-        smb_type17.set_size(Some(memsize_bytes));
-
-        let smb_type32 = smbios::table::Type32::default();
 
         // With "only" types 0, 1, 4, 16, 17, and 32, we are technically missing
         // some (types 3, 7, 9, 19) of the data required by the 2.7 spec.  The
@@ -1059,23 +960,30 @@ impl<'a> MachineInitializer<'a> {
         // collection to start with.  Should further requirements arise, we may
         // expand on it.
         let mut smb_tables = smbios::Tables::new(0x7f00.into());
-        smb_tables.add(0x0000.into(), &smb_type0).unwrap();
-        smb_tables.add(0x0100.into(), &smb_type1).unwrap();
-        smb_tables.add(0x0300.into(), &smb_type4).unwrap();
-        smb_tables.add(phys_mem_array_handle, &smb_type16).unwrap();
-        smb_tables.add(0x1700.into(), &smb_type17).unwrap();
-        smb_tables.add(0x3200.into(), &smb_type32).unwrap();
+        smb_tables.add(0x0000.into(), &smbios_params.table_type0()).unwrap();
+        smb_tables.add(0x0100.into(), &smbios_params.table_type1()).unwrap();
+        smb_tables.add(0x0300.into(), &smbios_params.table_type4()).unwrap();
+        let phys_mem_array_handle = 0x1600.into();
+        smb_tables
+            .add(phys_mem_array_handle, &smbios_params.table_type16())
+            .unwrap();
+        smb_tables
+            .add(
+                0x1700.into(),
+                &smbios_params.table_type17(phys_mem_array_handle),
+            )
+            .unwrap();
+        smb_tables.add(0x3200.into(), &smbios_params.table_type32()).unwrap();
 
         smb_tables.commit()
     }
 
     /// Initialize qemu `fw_cfg` device, and populate it with data including CPU
     /// count, SMBIOS tables, and attached RAM-FB device.
-    ///
-    /// Should not be called before [`Self::initialize_rom()`].
     pub fn initialize_fwcfg(
         &mut self,
         cpus: u8,
+        rom_size: usize,
     ) -> Result<Arc<ramfb::RamFb>, Error> {
         let fwcfg = fwcfg::FwCfg::new();
         fwcfg
@@ -1086,7 +994,7 @@ impl<'a> MachineInitializer<'a> {
             .unwrap();
 
         let smbios::TableBytes { entry_point, structure_table } =
-            self.generate_smbios();
+            self.generate_smbios(rom_size);
         fwcfg
             .insert_named(
                 "etc/smbios/smbios-tables",
