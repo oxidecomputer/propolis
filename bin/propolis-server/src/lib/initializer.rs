@@ -46,7 +46,7 @@ use propolis_api_types::instance_spec::{
     self, v0::BootDeclaration, v0::InstanceSpecV0,
 };
 use propolis_api_types::InstanceProperties;
-use slog::{info, warn};
+use slog::{error, info};
 
 /// Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
@@ -1130,16 +1130,19 @@ impl<'a> MachineInitializer<'a> {
                 &vnic_spec.backend_name
             };
 
-            if let Some(device_spec) =
-                self.spec.devices.storage_devices.iter().find_map(
-                    |(_name, spec)| {
-                        if storage_backend(spec) == &boot_entry.name {
-                            Some(spec)
-                        } else {
-                            None
-                        }
-                    },
-                )
+            if let Some(device_spec) = self
+                .spec
+                .devices
+                .storage_devices
+                .iter()
+                .find_map(|(_name, spec)| {
+                    eprintln!("checking name \"{}\", spec {:?}", _name, spec);
+                    if storage_backend(spec) == &boot_entry.name {
+                        Some(spec)
+                    } else {
+                        None
+                    }
+                })
             {
                 match device_spec {
                     instance_spec::v0::StorageDeviceV0::VirtioDisk(disk) => {
@@ -1160,7 +1163,7 @@ impl<'a> MachineInitializer<'a> {
                 };
             } else if let Some(vnic_spec) =
                 self.spec.devices.network_devices.iter().find_map(
-                    |(name, spec)| {
+                    |(_name, spec)| {
                         if network_backend(spec) == &boot_entry.name {
                             Some(spec)
                         } else {
@@ -1182,7 +1185,7 @@ impl<'a> MachineInitializer<'a> {
                 );
                 // TODO(ixi): this is actually duplicative with the top-level `error!` that this
                 // unhandled `error` will bubble out to. Maybe just don't log here?
-                warn!(self.log, message);
+                error!(self.log, "{}", message);
                 return Err(Error::new(ErrorKind::Other, message));
             }
         }

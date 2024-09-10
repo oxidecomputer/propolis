@@ -199,9 +199,7 @@ impl SpecBuilderV0 {
     ) -> Result<&Self, SpecBuilderError> {
         let boot_declarations = boot_order
             .into_iter()
-            .map(|name| crate::types::BootDeclaration {
-                name,
-            })
+            .map(|name| crate::types::BootDeclaration { name })
             .collect();
         eprintln!("setting boot order to {:?}", boot_declarations);
         self.spec.devices.boot_order = Some(boot_declarations);
