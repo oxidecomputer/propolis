@@ -3679,6 +3679,8 @@ dependencies = [
 name = "phd-tests"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "byteorder",
  "futures",
  "http 0.2.12",
  "phd-testcase",
