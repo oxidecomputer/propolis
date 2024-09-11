@@ -44,38 +44,43 @@ pub(crate) enum ApiSpecError {
 impl From<Spec> for InstanceSpecV0 {
     fn from(val: Spec) -> Self {
         let mut spec = InstanceSpecV0::default();
-
         spec.devices.board = val.board;
+
+        // Internal instance specs (the inputs to this function) should assign
+        // a unique name to each component they describe. This invariant is
+        // enforced by the spec builder. Since component names are globally
+        // unique, they should never collide when inserted into an API spec's
+        // device and backend maps.
         for (disk_name, disk) in val.disks {
-            let _old = spec
+            let old = spec
                 .devices
                 .storage_devices
                 .insert(disk_name, disk.device_spec.into());
 
-            assert!(_old.is_none());
+            assert!(old.is_none(), "{old:?}");
 
-            let _old = spec
+            let old = spec
                 .backends
                 .storage_backends
                 .insert(disk.backend_name, disk.backend_spec.into());
 
-            assert!(_old.is_none());
+            assert!(old.is_none(), "{old:?}");
         }
 
         for (nic_name, nic) in val.nics {
-            let _old = spec
+            let old = spec
                 .devices
                 .network_devices
                 .insert(nic_name, NetworkDeviceV0::VirtioNic(nic.device_spec));
 
-            assert!(_old.is_none());
+            assert!(old.is_none(), "{old:?}");
 
-            let _old = spec.backends.network_backends.insert(
+            let old = spec.backends.network_backends.insert(
                 nic.backend_name,
                 NetworkBackendV0::Virtio(nic.backend_spec),
             );
 
-            assert!(_old.is_none());
+            assert!(old.is_none(), "{old:?}");
         }
 
         for (num, user) in val.serial.iter() {
@@ -87,18 +92,18 @@ impl From<Spec> for InstanceSpecV0 {
                     SerialPortNumber::Com4 => "com4",
                 };
 
-                let _old = spec
+                let old = spec
                     .devices
                     .serial_ports
                     .insert(name.to_owned(), SerialPortDesc { num: *num });
 
-                assert!(_old.is_none());
+                assert!(old.is_none(), "{old:?}");
             }
         }
 
         for (bridge_name, bridge) in val.pci_pci_bridges {
-            let _old = spec.devices.pci_pci_bridges.insert(bridge_name, bridge);
-            assert!(_old.is_none());
+            let old = spec.devices.pci_pci_bridges.insert(bridge_name, bridge);
+            assert!(old.is_none(), "{old:?}");
         }
 
         spec.devices.qemu_pvpanic = val.pvpanic.map(|pvpanic| pvpanic.spec);
@@ -109,7 +114,7 @@ impl From<Spec> for InstanceSpecV0 {
             spec.devices.softnpu_p9 = val.softnpu.p9_device;
             spec.devices.p9fs = val.softnpu.p9fs;
             for (port_name, port) in val.softnpu.ports {
-                let _old = spec.devices.softnpu_ports.insert(
+                let old = spec.devices.softnpu_ports.insert(
                     port_name.clone(),
                     SoftNpuPortSpec {
                         name: port_name,
@@ -117,14 +122,14 @@ impl From<Spec> for InstanceSpecV0 {
                     },
                 );
 
-                assert!(_old.is_none());
+                assert!(old.is_none(), "{old:?}");
 
-                let _old = spec.backends.network_backends.insert(
+                let old = spec.backends.network_backends.insert(
                     port.backend_name,
                     NetworkBackendV0::Dlpi(port.backend_spec),
                 );
 
-                assert!(_old.is_none());
+                assert!(old.is_none(), "{old:?}");
             }
         }
 
