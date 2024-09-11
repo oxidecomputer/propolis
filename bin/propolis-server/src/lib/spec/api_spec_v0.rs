@@ -5,6 +5,8 @@
 //! Conversions from version-0 instance specs in the [`propolis_api_types`]
 //! crate to the internal [`super::Spec`] representation.
 
+use std::collections::HashMap;
+
 use propolis_api_types::instance_spec::{
     components::devices::{SerialPort as SerialPortDesc, SerialPortNumber},
     v0::{InstanceSpecV0, NetworkBackendV0, NetworkDeviceV0, StorageDeviceV0},
@@ -43,44 +45,53 @@ pub(crate) enum ApiSpecError {
 
 impl From<Spec> for InstanceSpecV0 {
     fn from(val: Spec) -> Self {
+        // Inserts a component entry into the supplied map, asserting first that
+        // the supplied key is not present in that map.
+        //
+        // This assertion is valid because internal instance specs should assign
+        // a unique name to each component they describe. The spec builder
+        // upholds this invariant at spec creation time.
+        fn insert_component<T>(
+            map: &mut HashMap<String, T>,
+            key: String,
+            val: T,
+        ) {
+            assert!(
+                !map.contains_key(&key),
+                "component name {} already exists in output spec",
+                &key
+            );
+            map.insert(key, val);
+        }
+
         let mut spec = InstanceSpecV0::default();
         spec.devices.board = val.board;
-
-        // Internal instance specs (the inputs to this function) should assign
-        // a unique name to each component they describe. This invariant is
-        // enforced by the spec builder. Since component names are globally
-        // unique, they should never collide when inserted into an API spec's
-        // device and backend maps.
         for (disk_name, disk) in val.disks {
-            let old = spec
-                .devices
-                .storage_devices
-                .insert(disk_name, disk.device_spec.into());
+            insert_component(
+                &mut spec.devices.storage_devices,
+                disk_name,
+                disk.device_spec.into(),
+            );
 
-            assert!(old.is_none(), "{old:?}");
-
-            let old = spec
-                .backends
-                .storage_backends
-                .insert(disk.backend_name, disk.backend_spec.into());
-
-            assert!(old.is_none(), "{old:?}");
+            insert_component(
+                &mut spec.backends.storage_backends,
+                disk.backend_name,
+                disk.backend_spec.into(),
+            );
         }
 
         for (nic_name, nic) in val.nics {
-            let old = spec
-                .devices
-                .network_devices
-                .insert(nic_name, NetworkDeviceV0::VirtioNic(nic.device_spec));
+            insert_component(
+                &mut spec.devices.network_devices,
+                nic_name,
+                NetworkDeviceV0::VirtioNic(nic.device_spec),
+            );
 
-            assert!(old.is_none(), "{old:?}");
-
-            let old = spec.backends.network_backends.insert(
+            insert_component(
+                &mut spec.backends.network_backends,
                 nic.backend_name,
                 NetworkBackendV0::Virtio(nic.backend_spec),
             );
-
-            assert!(old.is_none(), "{old:?}");
         }
 
         for (num, user) in val.serial.iter() {
@@ -92,18 +103,20 @@ impl From<Spec> for InstanceSpecV0 {
                     SerialPortNumber::Com4 => "com4",
                 };
 
-                let old = spec
-                    .devices
-                    .serial_ports
-                    .insert(name.to_owned(), SerialPortDesc { num: *num });
-
-                assert!(old.is_none(), "{old:?}");
+                insert_component(
+                    &mut spec.devices.serial_ports,
+                    name.to_owned(),
+                    SerialPortDesc { num: *num },
+                );
             }
         }
 
         for (bridge_name, bridge) in val.pci_pci_bridges {
-            let old = spec.devices.pci_pci_bridges.insert(bridge_name, bridge);
-            assert!(old.is_none(), "{old:?}");
+            insert_component(
+                &mut spec.devices.pci_pci_bridges,
+                bridge_name,
+                bridge,
+            );
         }
 
         spec.devices.qemu_pvpanic = val.pvpanic.map(|pvpanic| pvpanic.spec);
@@ -114,7 +127,8 @@ impl From<Spec> for InstanceSpecV0 {
             spec.devices.softnpu_p9 = val.softnpu.p9_device;
             spec.devices.p9fs = val.softnpu.p9fs;
             for (port_name, port) in val.softnpu.ports {
-                let old = spec.devices.softnpu_ports.insert(
+                insert_component(
+                    &mut spec.devices.softnpu_ports,
                     port_name.clone(),
                     SoftNpuPortSpec {
                         name: port_name,
@@ -122,14 +136,11 @@ impl From<Spec> for InstanceSpecV0 {
                     },
                 );
 
-                assert!(old.is_none(), "{old:?}");
-
-                let old = spec.backends.network_backends.insert(
+                insert_component(
+                    &mut spec.backends.network_backends,
                     port.backend_name,
                     NetworkBackendV0::Dlpi(port.backend_spec),
                 );
-
-                assert!(old.is_none(), "{old:?}");
             }
         }
 
