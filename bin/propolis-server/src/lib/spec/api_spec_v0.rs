@@ -51,6 +51,7 @@ impl From<Spec> for InstanceSpecV0 {
         // This assertion is valid because internal instance specs should assign
         // a unique name to each component they describe. The spec builder
         // upholds this invariant at spec creation time.
+        #[track_caller]
         fn insert_component<T>(
             map: &mut HashMap<String, T>,
             key: String,
