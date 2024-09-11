@@ -298,8 +298,11 @@ impl<'a> MachineInitializer<'a> {
         chipset: &RegisteredChipset,
     ) -> Result<Serial<LpcUart>, Error> {
         let mut com1 = None;
+
+        // Create UART devices for all of the serial ports in the spec that
+        // requested one.
         for (num, user) in self.spec.serial.iter() {
-            if *user != spec::SerialPortUser::Standard {
+            if *user != spec::SerialPortDevice::Uart {
                 continue;
             }
 
@@ -509,12 +512,12 @@ impl<'a> MachineInitializer<'a> {
             Nvme,
         }
 
-        'devloop: for (disk_name, disk) in &self.spec.disks {
+        for (disk_name, disk) in &self.spec.disks {
             info!(
                 self.log,
-                "Creating storage device {} with properties {:?}",
-                disk_name,
-                disk.device_spec
+                "Creating storage device";
+                "name" => disk_name,
+                "spec" => ?disk.device_spec
             );
 
             let (device_interface, backend_name, pci_path) = match &disk
@@ -591,7 +594,7 @@ impl<'a> MachineInitializer<'a> {
                         virtual disk metrics can't be reported for it";
                         "disk_id" => %disk_id,
                     );
-                    continue 'devloop;
+                    continue;
                 };
 
                 // Register the block device as a metric producer, if we've been
@@ -612,7 +615,7 @@ impl<'a> MachineInitializer<'a> {
                             "disk_id" => %disk_id,
                             "error" => ?e,
                         );
-                        continue 'devloop;
+                        continue;
                     };
 
                     // Set the on-completion callback for the block device, to

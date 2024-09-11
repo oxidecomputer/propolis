@@ -20,7 +20,7 @@ use crate::{
     serial::history_buffer::SerialHistoryOffset,
     spec::{
         self,
-        api_spec_v0::ApiSpecParseError,
+        api_spec_v0::ApiSpecError,
         builder::{SpecBuilder, SpecBuilderError},
         Spec,
     },
@@ -325,7 +325,7 @@ async fn instance_spec_ensure(
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let request = request.into_inner();
     let VersionedInstanceSpec::V0(v0_spec) = request.instance_spec;
-    let spec = Spec::try_from(v0_spec).map_err(|e: ApiSpecParseError| {
+    let spec = Spec::try_from(v0_spec).map_err(|e: ApiSpecError| {
         HttpError::for_bad_request(None, e.to_string())
     })?;
 

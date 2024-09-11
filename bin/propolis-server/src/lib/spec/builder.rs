@@ -23,7 +23,7 @@ use propolis_api_types::instance_spec::components::devices::{
     P9fs, SoftNpuP9, SoftNpuPciPort,
 };
 
-use crate::{config, spec::SerialPortUser};
+use crate::{config, spec::SerialPortDevice};
 
 use super::{
     api_request::{self, DeviceRequestError},
@@ -251,7 +251,7 @@ impl SpecBuilder {
         &mut self,
         port: SerialPortNumber,
     ) -> Result<&Self, SpecBuilderError> {
-        if self.spec.serial.insert(port, SerialPortUser::Standard).is_some() {
+        if self.spec.serial.insert(port, SerialPortDevice::Uart).is_some() {
             Err(SpecBuilderError::SerialPortInUse(port))
         } else {
             Ok(self)
@@ -273,7 +273,7 @@ impl SpecBuilder {
     #[cfg(feature = "falcon")]
     pub fn set_softnpu_com4(&mut self) -> Result<&Self, SpecBuilderError> {
         let port = SerialPortNumber::Com4;
-        if self.spec.serial.insert(port, SerialPortUser::SoftNpu).is_some() {
+        if self.spec.serial.insert(port, SerialPortDevice::SoftNpu).is_some() {
             Err(SpecBuilderError::SerialPortInUse(port))
         } else {
             Ok(self)

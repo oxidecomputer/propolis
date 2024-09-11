@@ -58,7 +58,7 @@ pub(crate) struct Spec {
     pub disks: HashMap<String, Disk>,
     pub nics: HashMap<String, Nic>,
 
-    pub serial: HashMap<SerialPortNumber, SerialPortUser>,
+    pub serial: HashMap<SerialPortNumber, SerialPortDevice>,
 
     pub pci_pci_bridges: HashMap<String, PciPciBridge>,
     pub pvpanic: Option<QemuPvpanic>,
@@ -143,9 +143,10 @@ pub struct Nic {
     pub backend_spec: VirtioNetworkBackend,
 }
 
+/// A kind of device to install as the listener on a COM port.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SerialPortUser {
-    Standard,
+pub enum SerialPortDevice {
+    Uart,
 
     #[cfg(feature = "falcon")]
     SoftNpu,

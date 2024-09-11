@@ -19,13 +19,13 @@ use crate::spec::SoftNpuPort;
 
 use super::{
     builder::{SpecBuilder, SpecBuilderError},
-    Disk, Nic, QemuPvpanic, SerialPortUser, Spec,
+    Disk, Nic, QemuPvpanic, SerialPortDevice, Spec,
 };
 
 #[derive(Debug, Error)]
-pub(crate) enum ApiSpecParseError {
+pub(crate) enum ApiSpecError {
     #[error(transparent)]
-    BuilderError(#[from] SpecBuilderError),
+    Builder(#[from] SpecBuilderError),
 
     #[error("backend {backend} not found for device {device}")]
     BackendNotFound { backend: String, device: String },
@@ -79,7 +79,7 @@ impl From<Spec> for InstanceSpecV0 {
         }
 
         for (num, user) in val.serial.iter() {
-            if *user == SerialPortUser::Standard {
+            if *user == SerialPortDevice::Uart {
                 let name = match num {
                     SerialPortNumber::Com1 => "com1",
                     SerialPortNumber::Com2 => "com2",
@@ -133,7 +133,7 @@ impl From<Spec> for InstanceSpecV0 {
 }
 
 impl TryFrom<InstanceSpecV0> for Spec {
-    type Error = ApiSpecParseError;
+    type Error = ApiSpecError;
 
     fn try_from(mut value: InstanceSpecV0) -> Result<Self, Self::Error> {
         let mut builder = SpecBuilder::with_board(value.devices.board);
@@ -150,7 +150,7 @@ impl TryFrom<InstanceSpecV0> for Spec {
                 .backends
                 .storage_backends
                 .remove_entry(backend_name)
-                .ok_or_else(|| ApiSpecParseError::BackendNotFound {
+                .ok_or_else(|| ApiSpecError::BackendNotFound {
                     backend: backend_name.to_owned(),
                     device: device_name.clone(),
                 })?;
@@ -168,7 +168,7 @@ impl TryFrom<InstanceSpecV0> for Spec {
         // Once all the devices have been checked, there should be no unpaired
         // backends remaining.
         if let Some(backend) = value.backends.storage_backends.keys().next() {
-            return Err(ApiSpecParseError::BackendNotUsed(backend.to_owned()));
+            return Err(ApiSpecError::BackendNotUsed(backend.to_owned()));
         }
 
         // Repeat this process for network devices.
@@ -179,15 +179,13 @@ impl TryFrom<InstanceSpecV0> for Spec {
                 .backends
                 .network_backends
                 .remove_entry(backend_name)
-                .ok_or_else(|| ApiSpecParseError::BackendNotFound {
+                .ok_or_else(|| ApiSpecError::BackendNotFound {
                     backend: backend_name.to_owned(),
                     device: device_name.clone(),
                 })?;
 
             let NetworkBackendV0::Virtio(backend_spec) = backend_spec else {
-                return Err(ApiSpecParseError::GuestNicInvalidBackend(
-                    device_name,
-                ));
+                return Err(ApiSpecError::GuestNicInvalidBackend(device_name));
             };
 
             builder.add_network_device(
@@ -218,13 +216,13 @@ impl TryFrom<InstanceSpecV0> for Spec {
                     .backends
                     .network_backends
                     .remove_entry(&port.backend_name)
-                    .ok_or_else(|| ApiSpecParseError::BackendNotFound {
+                    .ok_or_else(|| ApiSpecError::BackendNotFound {
                         backend: port.backend_name,
                         device: port_name.clone(),
                     })?;
 
                 let NetworkBackendV0::Dlpi(backend_spec) = backend_spec else {
-                    return Err(ApiSpecParseError::NotDlpiBackend(port_name));
+                    return Err(ApiSpecError::NotDlpiBackend(port_name));
                 };
 
                 builder.add_softnpu_port(
@@ -235,7 +233,7 @@ impl TryFrom<InstanceSpecV0> for Spec {
         }
 
         if let Some(backend) = value.backends.network_backends.keys().next() {
-            return Err(ApiSpecParseError::BackendNotUsed(backend.to_owned()));
+            return Err(ApiSpecError::BackendNotUsed(backend.to_owned()));
         }
 
         // TODO(#735): Serial ports need to have names like other devices.
