@@ -468,7 +468,7 @@ impl<'vm, T: MigrateConn> RonV0Runner<'vm, T> {
     async fn sync(&mut self) -> Result<(), MigrateError> {
         self.update_state(MigrationState::Sync);
         let preamble = Preamble::new(VersionedInstanceSpec::V0(
-            self.vm.lock_shared().await.instance_spec().clone(),
+            self.vm.lock_shared().await.instance_spec().clone().into(),
         ));
         let s = ron::ser::to_string(&preamble)
             .map_err(codec::ProtocolError::from)?;
