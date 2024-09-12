@@ -18,6 +18,12 @@ use oximeter::{types::Cumulative, FieldType, FieldValue, Sample, Target};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use super::kstat_types::{
+    hrtime_to_utc, ConvertNamedData, Data, Error, Kstat, NamedData,
+};
+#[cfg(all(not(test), target_os = "illumos"))]
+use super::kstat_types::{KstatList, KstatTarget};
+
 // NOTE: TOML definitions of timeseries are centralized in Omicron, so this file
 // lives in that repo, at
 // `./omicron/oximeter/oximeter/schema/virtual-machine.toml`.
@@ -26,102 +32,6 @@ pub use self::virtual_machine::Reset;
 use self::virtual_machine::{
     VcpuUsage, VirtualMachine as VirtualMachineTarget,
 };
-
-#[cfg(all(not(test), target_os = "illumos"))]
-mod kstat_types {
-    pub use kstat_rs::Data;
-    pub use kstat_rs::Kstat;
-    pub use kstat_rs::NamedData;
-    pub use oximeter_instruments::kstat::hrtime_to_utc;
-    pub use oximeter_instruments::kstat::ConvertNamedData;
-    pub use oximeter_instruments::kstat::Error;
-    pub use oximeter_instruments::kstat::KstatList;
-    pub use oximeter_instruments::kstat::KstatTarget;
-}
-
-// Mock the relevant subset of `kstat-rs` types needed for tests.
-#[cfg(not(all(not(test), target_os = "illumos")))]
-mod kstat_types {
-    use chrono::DateTime;
-    use chrono::Utc;
-
-    #[derive(Debug)]
-    pub enum Data<'a> {
-        Named(Vec<Named<'a>>),
-        #[allow(dead_code)]
-        Null,
-    }
-
-    #[derive(Debug)]
-    pub enum NamedData<'a> {
-        UInt32(u32),
-        UInt64(u64),
-        String(&'a str),
-    }
-
-    #[derive(Debug)]
-    pub struct Kstat<'a> {
-        pub ks_module: &'a str,
-        pub ks_instance: i32,
-        pub ks_name: &'a str,
-        pub ks_snaptime: i64,
-    }
-
-    #[derive(Debug)]
-    pub struct Named<'a> {
-        pub name: &'a str,
-        pub value: NamedData<'a>,
-    }
-
-    pub trait ConvertNamedData {
-        fn as_i32(&self) -> Result<i32, Error>;
-        fn as_u32(&self) -> Result<u32, Error>;
-        fn as_i64(&self) -> Result<i64, Error>;
-        fn as_u64(&self) -> Result<u64, Error>;
-    }
-
-    impl<'a> ConvertNamedData for NamedData<'a> {
-        fn as_i32(&self) -> Result<i32, Error> {
-            unimplemented!()
-        }
-
-        fn as_u32(&self) -> Result<u32, Error> {
-            if let NamedData::UInt32(x) = self {
-                Ok(*x)
-            } else {
-                panic!()
-            }
-        }
-
-        fn as_i64(&self) -> Result<i64, Error> {
-            unimplemented!()
-        }
-
-        fn as_u64(&self) -> Result<u64, Error> {
-            if let NamedData::UInt64(x) = self {
-                Ok(*x)
-            } else {
-                panic!()
-            }
-        }
-    }
-
-    #[derive(thiserror::Error, Clone, Debug)]
-    pub enum Error {
-        #[error("No such kstat")]
-        NoSuchKstat,
-        #[error("Expected a named kstat")]
-        ExpectedNamedKstat,
-        #[error("Metrics error")]
-        Metrics(#[from] oximeter::MetricsError),
-    }
-
-    pub fn hrtime_to_utc(_: i64) -> Result<DateTime<Utc>, Error> {
-        Ok(Utc::now())
-    }
-}
-
-pub use kstat_types::*;
 
 /// A wrapper around the `oximeter::Target` representing a VM instance.
 ///
@@ -135,16 +45,19 @@ pub struct VirtualMachine {
     /// timeseries.
     pub target: VirtualMachineTarget,
 
-    // This field is not published as part of the target field definitions. It
-    // is needed because the hypervisor currently creates kstats for each vCPU,
-    // regardless of whether they're activated. There is no way to tell from
-    // userland today which vCPU kstats are "real". We include this value here,
-    // and implement `oximeter::Target` manually, so that this field is not
-    // published as a field on the timeseries.
+    /// This field is needed because the hypervisor currently creates kstats for
+    /// each vCPU, regardless of whether they're activated. There is no way to
+    /// tell from userland today which vCPU kstats are "real".
+    ///
+    /// This field is not published as part of the target field definitions.
+    /// We include this value here, and implement `oximeter::Target` manually,
+    /// so that this field is not published as a field on the timeseries.
     n_vcpus: u32,
 
-    // Same for this field, not published as part of the target, but used to
-    // find the right kstats.
+    /// Used to find the right kstats for this VM instance.
+    ///
+    /// This field is also not published as part of the target, but used to
+    /// find the right kstats.
     vm_name: String,
 }
 
@@ -220,7 +133,7 @@ const OXIMETER_STATES: [&str; 4] = [
 /// This is used to preallocate data structures for holding samples, and to
 /// limit the number of samples in the `KstatSampler`, if it is not pulled
 /// quickly enough by `oximeter`.
-pub(crate) const N_VCPU_MICROSTATES: u32 = OXIMETER_STATES.len() as _;
+pub const N_VCPU_MICROSTATES: u32 = OXIMETER_STATES.len() as _;
 
 // The name of the kstat module containing virtual machine kstats.
 const VMM_KSTAT_MODULE_NAME: &str = "vmm";
@@ -393,10 +306,6 @@ mod test {
     use super::kstat_instance_from_instance_id;
     use super::kstat_microstate_to_state_name;
     use super::produce_vcpu_usage;
-    use super::Data;
-    use super::Kstat;
-    use super::Named;
-    use super::NamedData;
     use super::Utc;
     use super::VcpuUsage;
     use super::VirtualMachine;
@@ -405,6 +314,10 @@ mod test {
     use super::VMM_KSTAT_MODULE_NAME;
     use super::VM_KSTAT_NAME;
     use super::VM_NAME_KSTAT;
+    use crate::stats::kstat_types::Data;
+    use crate::stats::kstat_types::Kstat;
+    use crate::stats::kstat_types::Named;
+    use crate::stats::kstat_types::NamedData;
     use crate::stats::virtual_machine::N_VCPU_MICROSTATES;
     use crate::stats::virtual_machine::OXIMETER_EMULATION_STATE;
     use crate::stats::virtual_machine::OXIMETER_IDLE_STATE;

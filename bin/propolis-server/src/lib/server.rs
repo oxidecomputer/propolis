@@ -16,8 +16,18 @@ use std::net::SocketAddr;
 use std::net::SocketAddrV6;
 use std::sync::Arc;
 
-use crate::serial::history_buffer::SerialHistoryOffset;
-use crate::vm::VmError;
+use crate::{
+    serial::history_buffer::SerialHistoryOffset,
+    spec::{
+        self,
+        api_spec_v0::ApiSpecError,
+        builder::{SpecBuilder, SpecBuilderError},
+        Spec,
+    },
+    vm::{ensure::VmEnsureRequest, VmError},
+    vnc::{self, VncServer},
+};
+
 use dropshot::{
     channel, endpoint, ApiDescription, HttpError, HttpResponseCreated,
     HttpResponseOk, HttpResponseUpdatedNoContent, Path, Query, RequestContext,
@@ -29,18 +39,17 @@ use internal_dns::ServiceName;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types as api;
-use propolis_api_types::instance_spec::components::devices::QemuPvpanic;
-use propolis_api_types::instance_spec::{self, VersionedInstanceSpec};
-
+use propolis_api_types::instance_spec::{
+    self, components::devices::QemuPvpanic, VersionedInstanceSpec,
+};
 pub use propolis_server_config::Config as VmTomlConfig;
 use rfb::tungstenite::BinaryWs;
 use slog::{error, warn, Logger};
 use tokio::sync::MutexGuard;
-use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
-use tokio_tungstenite::WebSocketStream;
-
-use crate::spec::builder::{SpecBuilder, SpecBuilderError};
-use crate::vnc::{self, VncServer};
+use tokio_tungstenite::{
+    tungstenite::protocol::{Role, WebSocketConfig},
+    WebSocketStream,
+};
 
 /// Configuration used to set this server up to provide Oximeter metrics.
 #[derive(Debug, Clone)]
@@ -107,7 +116,7 @@ impl DropshotEndpointContext {
 fn instance_spec_from_request(
     request: &api::InstanceEnsureRequest,
     toml_config: &VmTomlConfig,
-) -> Result<VersionedInstanceSpec, SpecBuilderError> {
+) -> Result<Spec, SpecBuilderError> {
     let mut spec_builder = SpecBuilder::new(&request.properties);
 
     spec_builder.add_devices_from_config(toml_config)?;
@@ -135,8 +144,15 @@ fn instance_spec_from_request(
         spec_builder.add_serial_port(port)?;
     }
 
-    spec_builder.add_pvpanic_device(QemuPvpanic { enable_isa: true })?;
-    Ok(VersionedInstanceSpec::V0(spec_builder.finish()))
+    #[cfg(feature = "falcon")]
+    spec_builder.set_softnpu_com4()?;
+
+    spec_builder.add_pvpanic_device(spec::QemuPvpanic {
+        name: "pvpanic".to_string(),
+        spec: QemuPvpanic { enable_isa: true },
+    })?;
+
+    Ok(spec_builder.finish())
 }
 
 /// Wrapper around a [`NexusClient`] object, which allows deferring
@@ -217,14 +233,16 @@ async fn find_local_nexus_client(
 
 async fn instance_ensure_common(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    request: api::InstanceSpecEnsureRequest,
+    properties: api::InstanceProperties,
+    migrate: Option<api::InstanceMigrateInitiateRequest>,
+    instance_spec: Spec,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let server_context = rqctx.context();
     let oximeter_registry = server_context
         .static_config
         .metrics
         .as_ref()
-        .map(|_| ProducerRegistry::with_id(request.properties.id));
+        .map(|_| ProducerRegistry::with_id(properties.id));
 
     let nexus_client =
         find_local_nexus_client(rqctx.server.local_addr, rqctx.log.clone())
@@ -240,6 +258,7 @@ async fn instance_ensure_common(
         local_server_addr: rqctx.server.local_addr,
     };
 
+    let request = VmEnsureRequest { properties, migrate, instance_spec };
     server_context
         .vm
         .ensure(&server_context.log, request, ensure_options)
@@ -289,11 +308,9 @@ async fn instance_ensure(
 
     instance_ensure_common(
         rqctx,
-        api::InstanceSpecEnsureRequest {
-            properties: request.properties,
-            instance_spec,
-            migrate: request.migrate,
-        },
+        request.properties,
+        request.migrate,
+        instance_spec,
     )
     .await
 }
@@ -306,7 +323,14 @@ async fn instance_spec_ensure(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
     request: TypedBody<api::InstanceSpecEnsureRequest>,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
-    instance_ensure_common(rqctx, request.into_inner()).await
+    let request = request.into_inner();
+    let VersionedInstanceSpec::V0(v0_spec) = request.instance_spec;
+    let spec = Spec::try_from(v0_spec).map_err(|e: ApiSpecError| {
+        HttpError::for_bad_request(None, e.to_string())
+    })?;
+
+    instance_ensure_common(rqctx, request.properties, request.migrate, spec)
+        .await
 }
 
 async fn instance_get_common(

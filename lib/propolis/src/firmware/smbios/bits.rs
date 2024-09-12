@@ -140,9 +140,11 @@ pub(crate) struct Type1 {
 }
 raw_table_impl!(Type1, 1);
 
+// We don't create type 2 tables yet, but it's nice to have the definition on hand.
 /// Type 2 (Baseboard Information)
 #[derive(Copy, Clone)]
 #[repr(C, packed)]
+#[allow(dead_code)]
 pub(crate) struct Type2 {
     pub header: StructureHeader,
     pub manufacturer: u8,
@@ -159,9 +161,11 @@ pub(crate) struct Type2 {
 }
 raw_table_impl!(Type2, 2);
 
+// We don't create type 3 tables yet, but it's nice to have the definition on hand.
 /// Type 3 (System Enclosure) - Version 2.7
 #[derive(Copy, Clone)]
 #[repr(C, packed)]
+#[allow(dead_code)]
 pub(crate) struct Type3 {
     pub header: StructureHeader,
     pub manufacturer: u8,
