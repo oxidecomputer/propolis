@@ -49,26 +49,72 @@ pub(crate) async fn run_long_command(
     vm.run_shell_command(". cmd").await
 }
 
+// This test checks that with a specified boot order, the guest boots whichever disk we wanted to
+// come first. This is simple enough, until you want to know "what you booted from"..
+//
+// For live CDs, such as Alpine's, the system boots into a tmpfs loaded from a boot disk, but
+// there's no clear line to what disk that live image *came from*. If you had two Alpine 3.20.3
+// images attached to one VM, you'd ceretainly boot into Alpine 3.20.3, but I don't see a way to
+// tell *which disk* that Alpine would be sourced from, from Alpine alone.
+//
+// So instead, check EFI variables. To do this, then, we have to.. parse EFI variables. That is
+// what this test does below, but it's probably not fully robust to what we might do with PCI
+// devices in the future.
+//
+// A more "future-proof" setup might be to just boot an OS, see that we ended up in the OS we
+// expected, and check some attribute about it like that the kernel version is what we expected the
+// booted OS to be. That's still a good fallback if we discover that parsing EFI variables is
+// difficult to stick with for any reason. It has a downside though: we'd have to keep a specific
+// image around with a specific kernel version as either the "we expect to boot into this" image
+// or the "we expected to boot into not this" cases.
+//
+// The simplest case: show that we can configure the guest's boot order from outside the machine.
+// This is the most likely common case, where Propolis is told what the boot order should be by
+// Nexus and we simply make it happen.
+//
+// Unlike later tests, this test does not manipulate boot configuration from inside the guest OS.
 #[phd_testcase]
 async fn configurable_boot_order(ctx: &Framework) {
     let mut cfg = ctx.vm_config_builder("configurable_boot_order");
-    cfg.data_disk(
-        "alpine-3-20",
-        DiskSource::Artifact("alpine-3-20"),
+    cfg.boot_disk(
+        ctx.default_guest_os_artifact(),
         DiskInterface::Virtio,
         DiskBackend::File,
-        16,
+        4,
     );
 
+    // Create a second disk backed by the same guest OS. This way we'll boot to the same
+    // environment regardless of which disk is used; we'll check EFI variables to figure out if the
+    // right disk was booted.
     cfg.data_disk(
-        "alpine-3-16",
-        DiskSource::Artifact("alpine-3-16"),
+        "alt-boot",
+        DiskSource::Artifact(ctx.default_guest_os_artifact()),
         DiskInterface::Virtio,
         DiskBackend::File,
         24,
     );
 
-    cfg.boot_order(vec!["alpine-3-16", "alpine-3-20"]);
+    // We haven't specified a boot order. So, we'll expect that we boot to the lower-numbered PCI
+    // device (4) and end up in Alpine 3.20.
+    let mut vm = ctx.spawn_vm(&cfg, None).await?;
+    vm.launch().await?;
+    vm.wait_to_boot().await?;
+
+    let boot_num_bytes = read_efivar(&vm, BOOT_CURRENT_VAR).await?;
+
+    let boot_num: u16 = u16::from_le_bytes(boot_num_bytes.try_into().unwrap());
+
+    let boot_option_bytes = read_efivar(&vm, &bootvar(boot_num)).await?;
+
+    let mut cursor = Cursor::new(boot_option_bytes.as_slice());
+
+    let load_option = EfiLoadOption::parse_from(&mut cursor).unwrap();
+
+    assert!(load_option.path.matches_pci_device_function(4, 0));
+
+    // Now specify a boot order and do the whole thing again. Note that this order puts the later
+    // PCI device first, so this changes the boot order!
+    cfg.boot_order(vec!["alt-boot", "boot-disk"]);
 
     let mut vm = ctx.spawn_vm(&cfg, None).await?;
     vm.launch().await?;
@@ -87,7 +133,7 @@ async fn configurable_boot_order(ctx: &Framework) {
     // If we were going to test the PCI bus number too, we'd check the AHCI Device Path entry that
     // precedes these PCI values. But we only use PCI bus 0 today, and the mapping from an AHCI
     // Device Path to a PCI root is not immediately obvious?
-    assert!(load_option.path.matches_pci_device_function(16, 0));
+    assert!(load_option.path.matches_pci_device_function(24, 0));
 }
 
 // This is very similar to the `in_memory_backend_smoke_test` test, but specifically asserts that
