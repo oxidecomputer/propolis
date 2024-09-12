@@ -131,7 +131,7 @@ owo-colors = "4"
 pin-project-lite = "0.2.13"
 proc-macro2 = "1.0"
 proc-macro-error = "1"
-progenitor = { git = "https://github.com/oxidecomputer/progenitor", branch = "main" }
+progenitor = { git = "https://github.com/oxidecomputer/progenitor", branch = "dependabot/cargo/reqwest-0.12.4" }
 quote = "1.0"
 rand = "0.8"
 reqwest = { version = "0.11.18", default-features = false }
