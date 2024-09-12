@@ -43,6 +43,9 @@ pub(crate) enum SpecBuilderError {
     #[error("error parsing device in ensure request")]
     DeviceRequest(#[from] DeviceRequestError),
 
+    #[error("device {0} has the same name as its backend")]
+    DeviceAndBackendNamesIdentical(String),
+
     #[error("A component with name {0} already exists")]
     ComponentNameInUse(String),
 
@@ -191,6 +194,12 @@ impl SpecBuilder {
         disk_name: String,
         disk: Disk,
     ) -> Result<&Self, SpecBuilderError> {
+        if disk_name == disk.device_spec.backend_name() {
+            return Err(SpecBuilderError::DeviceAndBackendNamesIdentical(
+                disk_name,
+            ));
+        }
+
         if self.component_names.contains(&disk_name) {
             return Err(SpecBuilderError::ComponentNameInUse(disk_name));
         }
@@ -215,6 +224,12 @@ impl SpecBuilder {
         nic_name: String,
         nic: Nic,
     ) -> Result<&Self, SpecBuilderError> {
+        if nic_name == nic.device_spec.backend_name {
+            return Err(SpecBuilderError::DeviceAndBackendNamesIdentical(
+                nic_name,
+            ));
+        }
+
         if self.component_names.contains(&nic_name) {
             return Err(SpecBuilderError::ComponentNameInUse(nic_name));
         }
@@ -342,6 +357,12 @@ impl SpecBuilder {
         port_name: String,
         port: SoftNpuPort,
     ) -> Result<&Self, SpecBuilderError> {
+        if port_name == port.backend_name {
+            return Err(SpecBuilderError::DeviceAndBackendNamesIdentical(
+                port_name,
+            ));
+        }
+
         if self.component_names.contains(&port_name) {
             return Err(SpecBuilderError::ComponentNameInUse(port_name));
         }
@@ -366,9 +387,15 @@ impl SpecBuilder {
 #[cfg(test)]
 mod test {
     use propolis_api_types::{
+        instance_spec::components::{
+            backends::{BlobStorageBackend, VirtioNetworkBackend},
+            devices::{VirtioDisk, VirtioNic},
+        },
         InstanceMetadata, Slot, VolumeConstructionRequest,
     };
     use uuid::Uuid;
+
+    use crate::spec::{StorageBackend, StorageDevice};
 
     use super::*;
 
@@ -464,6 +491,42 @@ mod test {
                     path: "disk3.img".to_string()
                 },
             })
+            .is_err());
+    }
+
+    #[test]
+    fn device_with_same_name_as_backend() {
+        let mut builder = test_builder();
+        assert!(builder
+            .add_storage_device(
+                "storage".to_owned(),
+                Disk {
+                    device_spec: StorageDevice::Virtio(VirtioDisk {
+                        backend_name: "storage".to_owned(),
+                        pci_path: PciPath::new(0, 4, 0).unwrap()
+                    }),
+                    backend_spec: StorageBackend::Blob(BlobStorageBackend {
+                        base64: "".to_string(),
+                        readonly: false
+                    })
+                }
+            )
+            .is_err());
+
+        assert!(builder
+            .add_network_device(
+                "network".to_owned(),
+                Nic {
+                    device_spec: VirtioNic {
+                        backend_name: "network".to_owned(),
+                        interface_id: Uuid::nil(),
+                        pci_path: PciPath::new(0, 5, 0).unwrap()
+                    },
+                    backend_spec: VirtioNetworkBackend {
+                        vnic_name: "vnic0".to_owned()
+                    }
+                }
+            )
             .is_err());
     }
 }
