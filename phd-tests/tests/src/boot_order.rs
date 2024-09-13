@@ -381,5 +381,122 @@ async fn guest_can_adjust_boot_order(ctx: &Framework) {
     assert_eq!(boot_option_bytes, boot_option_bytes_after_reboot);
 }
 
-// and then one more test about what happens if configure the boot order in the guest, stop the VM,
-// change the configured boot order, and start the VM again...
+// This test is less demonstrating specific desired behavior, and more the observed behavior of
+// OVMF with configuration we can offer today. If Propolis or other changes break this test, the
+// test may well be what needs changing.
+//
+// If a `bootorder` file is present in fwcfg, there two relevant consequences demonstrated here:
+// * The order of devices in `bootorder` is the order that will be used; on reboot any persisted
+// configuration will be replaced with one derived from `bootorder` and corresponding OVMF logic.
+// * Guests cannot meaningfully change boot order. If an entry is in `bootorder`, that determines
+// its' order. If it is not in `bootorder` but is retained for booting, it is appended to the end
+// of the boot order in what seems to be the order that OVMF discovers the device.
+//
+// If `bootorder` is removed for subsequent reboots, the EFI System Partition's store of NvVar
+// variables is the source of boot order, and guests can control their boot fates.
+#[phd_testcase]
+async fn boot_order_source_priority(ctx: &Framework) {
+    let mut cfg = ctx.vm_config_builder("boot_order_source_priority");
+
+    cfg.data_disk(
+        "unbootable",
+        DiskSource::FatFilesystem(FatFilesystem::new()),
+        DiskInterface::Virtio,
+        DiskBackend::InMemory { readonly: true },
+        16,
+    );
+
+    cfg.data_disk(
+        "unbootable-2",
+        DiskSource::FatFilesystem(FatFilesystem::new()),
+        DiskInterface::Virtio,
+        DiskBackend::InMemory { readonly: true },
+        20,
+    );
+
+    let mut vm_no_bootorder = ctx.spawn_vm(&cfg, None).await?;
+    vm_no_bootorder.launch().await?;
+    vm_no_bootorder.wait_to_boot().await?;
+
+    // If the guest doesn't have an EFI partition then there's no way for boot order preferences to
+    // be persisted.
+    let mountline = vm_no_bootorder.run_shell_command("mount | grep /boot/efi").await?;
+
+    if !mountline.contains(" on /boot/efi type vfat") {
+        warn!("guest doesn't have an EFI partition, cannot manage boot order");
+    }
+
+    let boot_option_numbers = discover_boot_option_numbers(
+        &vm_no_bootorder,
+        &[
+            ((4, 0), "boot-disk"),
+            ((16, 0), "unbootable"),
+            ((20, 0), "unbootable-2"),
+        ],
+    )
+    .await?;
+
+    // `unbootable` should be somewhere in the middle of the boot order: definitely between
+    // `boot-disk` and `unbootable-2`, for the options enumerated from PCI devices.
+    let unbootable_num = boot_option_numbers["unbootable"];
+
+    let unbootable_idx = remove_boot_entry(&vm_no_bootorder, unbootable_num)
+        .await?
+        .expect("unbootable was in the boot order");
+
+    vm_no_bootorder.run_shell_command("reboot").await?;
+    vm_no_bootorder.wait_to_boot().await?;
+
+    let reloaded_order = read_efivar(&vm_no_bootorder, BOOT_ORDER_VAR).await?;
+
+    // Somewhat unexpected, but where OVMF gets us: `unbootable` is back in the boot order, but at
+    // the end of the list. One might hope it would be entirely removed from the boot order now,
+    // but no such luck. The good news is that we can in fact influence the boot order.
+    let unbootable_idx_after_reboot =
+        find_option_in_boot_order(&reloaded_order, unbootable_num)
+        .expect("unbootable is back in the order");
+
+    let last_boot_option = &reloaded_order[reloaded_order.len() - 2..];
+    assert_eq!(last_boot_option, &unbootable_num.to_le_bytes());
+
+    // But this new position for `unbootable` definitely should be different from before.
+    assert_ne!(unbootable_idx, unbootable_idx_after_reboot);
+
+    // And if we do the whole dance again with an explicit boot order provided to the guest, we'll
+    // get different results!
+    drop(vm_no_bootorder);
+    cfg.boot_order(vec!["boot-disk", "unbootable", "unbootable-2"]);
+
+    let mut vm = ctx.spawn_vm(&cfg, None).await?;
+    vm.launch().await?;
+    vm.wait_to_boot().await?;
+
+    let boot_option_numbers = discover_boot_option_numbers(
+        &vm,
+        &[
+            ((4, 0), "boot-disk"),
+            ((16, 0), "unbootable"),
+            ((20, 0), "unbootable-2"),
+        ],
+    )
+    .await?;
+
+    let unbootable_num = boot_option_numbers["unbootable"];
+
+    // Try removing a fw_cfg-defined boot option.
+    let unbootable_idx = remove_boot_entry(&vm, unbootable_num)
+        .await?
+        .expect("unbootable was in the boot order");
+
+    vm.run_shell_command("reboot").await?;
+    vm.wait_to_boot().await?;
+
+    let reloaded_order = read_efivar(&vm, BOOT_ORDER_VAR).await?;
+
+    // The option will be back in the boot order, where it was before! This is because fwcfg still
+    // has a `bootorder` file.
+    assert_eq!(
+        find_option_in_boot_order(&reloaded_order, unbootable_num),
+        Some(unbootable_idx)
+    );
+}

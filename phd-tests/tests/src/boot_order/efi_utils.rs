@@ -488,5 +488,3 @@ pub(crate) async fn remove_boot_entry(
 
     Ok(Some(option_idx))
 }
-
-// And finally, actual test cases using the above!
