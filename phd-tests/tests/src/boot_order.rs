@@ -76,16 +76,10 @@ pub(crate) async fn run_long_command(
 #[phd_testcase]
 async fn configurable_boot_order(ctx: &Framework) {
     let mut cfg = ctx.vm_config_builder("configurable_boot_order");
-    cfg.boot_disk(
-        ctx.default_guest_os_artifact(),
-        DiskInterface::Virtio,
-        DiskBackend::File,
-        4,
-    );
 
-    // Create a second disk backed by the same guest OS. This way we'll boot to the same
-    // environment regardless of which disk is used; we'll check EFI variables to figure out if the
-    // right disk was booted.
+    // Create a second disk backed by the same artifact as the default `boot-disk`. This way we'll
+    // boot to the same environment regardless of which disk is used; we'll check EFI variables to
+    // figure out if the right disk was booted.
     cfg.data_disk(
         "alt-boot",
         DiskSource::Artifact(ctx.default_guest_os_artifact()),
