@@ -135,14 +135,11 @@ async fn configurable_boot_order(ctx: &Framework) {
 // respected and a non-bootable disk does not wedge startup.
 #[phd_testcase]
 async fn unbootable_disk_skipped(ctx: &Framework) {
-    const HELLO_MSG: &str = "hello oxide!";
-
     let mut cfg = ctx.vm_config_builder("unbootable_disk_skipped");
-    let mut unbootable = FatFilesystem::new();
-    unbootable.add_file_from_str("hello_oxide.txt", HELLO_MSG)?;
+
     cfg.data_disk(
         "unbootable",
-        DiskSource::FatFilesystem(unbootable),
+        DiskSource::FatFilesystem(FatFilesystem::new()),
         DiskInterface::Virtio,
         DiskBackend::InMemory { readonly: true },
         16,
@@ -253,30 +250,19 @@ async fn unbootable_disk_skipped(ctx: &Framework) {
 // Start with the boot order being `["boot-disk", "unbootable"]`, then change it so that next boot
 // we'll boot from `unbootable` first. Then reboot and verify that the boot order is still
 // "boot-disk" first.
-//
-// TODO(ixi): This would be a bit nicer if there was a secondary image to confirm we've booted into
-// instead...
 #[phd_testcase]
 async fn guest_can_adjust_boot_order(ctx: &Framework) {
-    const HELLO_MSG: &str = "hello oxide!";
-
     let mut cfg = ctx.vm_config_builder("guest_can_adjust_boot_order");
-    let mut unbootable = FatFilesystem::new();
-    unbootable.add_file_from_str("hello_oxide.txt", HELLO_MSG)?;
-    cfg.boot_disk("ubuntu-noble", DiskInterface::Virtio, DiskBackend::File, 4);
 
     cfg.data_disk(
         "unbootable",
-        DiskSource::FatFilesystem(unbootable),
+        DiskSource::FatFilesystem(FatFilesystem::new()),
         DiskInterface::Virtio,
         DiskBackend::InMemory { readonly: true },
         16,
     );
 
-    // `boot-disk` is the implicitly-created boot disk made from the default guest OS artifact.
-    //
-    // explicitly boot from it later, so OVMF has to try and fail to boot `unbootable`.
-    cfg.boot_order(vec!["boot-disk"]); //, "unbootable"]);
+    cfg.boot_order(vec!["boot-disk", "unbootable"]);
 
     let mut vm = ctx.spawn_vm(&cfg, None).await?;
     vm.launch().await?;
