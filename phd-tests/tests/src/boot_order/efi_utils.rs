@@ -378,7 +378,7 @@ pub(crate) async fn discover_boot_option_numbers(
     let mut option_mappings: HashMap<String, u16> = HashMap::new();
 
     let boot_order_bytes = read_efivar(&vm, BOOT_ORDER_VAR).await?;
-    warn!("initial boot order var: {:?}", boot_order_bytes);
+    info!("Initial boot order var: {:?}", boot_order_bytes);
 
     for chunk in boot_order_bytes.chunks(2) {
         assert_eq!(chunk.len(), 2);
@@ -391,7 +391,7 @@ pub(crate) async fn discover_boot_option_numbers(
         let load_option = match EfiLoadOption::parse_from(&mut cursor) {
             Ok(option) => option,
             Err(e) => {
-                warn!("unhandled boot option: {:?}", e);
+                warn!("Unhandled boot option: {:?}", e);
                 continue;
             }
         };
@@ -423,10 +423,10 @@ pub(crate) async fn discover_boot_option_numbers(
             if let Some(description) = description {
                 option_mappings.insert(description.to_string(), option_num);
             } else {
-                warn!("unknown PCI boot device {:#x}.{:#x}", device, function);
+                warn!("Unknown PCI boot device {:#x}.{:#x}", device, function);
             }
         } else {
-            warn!("unknown boot option: {:?}", load_option);
+            warn!("Unknown boot option: {:?}", load_option);
 
             let prev = option_mappings
                 .insert(load_option.description.to_string(), option_num);
@@ -434,7 +434,7 @@ pub(crate) async fn discover_boot_option_numbers(
         }
     }
 
-    info!("found boot options: {:?}", option_mappings);
+    info!("Found boot options: {:?}", option_mappings);
 
     Ok(option_mappings)
 }
