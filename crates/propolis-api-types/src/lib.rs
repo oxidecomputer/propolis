@@ -388,8 +388,10 @@ pub struct DiskAttachment {
     pub state: DiskAttachmentState,
 }
 
+/// A boot preference for some device.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct BootDeclaration {
+    /// The name of the device to attempt booting from.
     pub name: String,
 }
 

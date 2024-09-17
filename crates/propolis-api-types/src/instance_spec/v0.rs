@@ -112,7 +112,7 @@ pub struct DeviceSpecV0 {
     // same as above
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub boot_order: Option<Vec<BootDeclaration>>,
+    pub boot_order: Option<Vec<crate::BootDeclaration>>,
 
     #[cfg(feature = "falcon")]
     pub softnpu_pci_port: Option<components::devices::SoftNpuPciPort>,
@@ -180,11 +180,6 @@ impl DeviceSpecV0 {
 
         Ok(())
     }
-}
-
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
-pub struct BootDeclaration {
-    pub name: SpecKey,
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]

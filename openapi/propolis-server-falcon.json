@@ -529,6 +529,19 @@
         ],
         "additionalProperties": false
       },
+      "BootDeclaration": {
+        "description": "A boot preference for some device.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "The name of the device to attempt booting from.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
       "Chipset": {
         "description": "A kind of virtual chipset.",
         "oneOf": [
@@ -885,6 +898,7 @@
         "properties": {
           "boot_order": {
             "nullable": true,
+            "default": null,
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/BootDeclaration"
@@ -1545,19 +1559,6 @@
           "completed_already",
           "missing",
           "vcr_matches"
-        ]
-      },
-      "BootDeclaration": {
-        "description": "A boot preference for some device.",
-        "type": "object",
-        "properties": {
-          "name": {
-            "description": "The name of the device to attempt booting from.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
         ]
       },
       "SerialPort": {
