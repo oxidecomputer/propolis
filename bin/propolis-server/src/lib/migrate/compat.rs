@@ -17,26 +17,18 @@ use propolis_api_types::instance_spec::{
 };
 use thiserror::Error;
 
-trait CompatComponent {
-    fn is_compatible_with(
-        &self,
-        other: &Self,
-    ) -> Result<(), ComponentIncompatibility>;
-}
+trait CompatCheck {
+    type Error;
 
-trait CompatCollection {
-    fn is_compatible_with(
-        &self,
-        other: &Self,
-    ) -> Result<(), CollectionIncompatibility>;
+    fn is_compatible_with(&self, other: &Self) -> Result<(), Self::Error>;
 }
 
 #[derive(Debug, Error)]
 pub enum CompatibilityError {
-    #[error("specs have incompatible boards")]
+    #[error(transparent)]
     Board(#[from] BoardIncompatibility),
 
-    #[error("specs have incompatible pvpanic settings")]
+    #[error(transparent)]
     Pvpanic(#[from] PvpanicIncompatibility),
 
     #[error("collection {0} incompatible")]
@@ -74,7 +66,7 @@ pub enum DiskIncompatibility {
     PciPath { this: PciPath, other: PciPath },
 
     #[error(
-        "disks have different backend names (self: {this}, other: {other})"
+        "disks have different backend names (self: {this:?}, other: {other:?})"
     )]
     BackendName { this: String, other: String },
 
@@ -124,7 +116,7 @@ pub enum PvpanicIncompatibility {
     Presence { this: bool, other: bool },
 
     #[error(
-        "pvpanic devices have different names (self: {this}, other: {other})"
+        "pvpanic devices have different names (self: {this:?}, other: {other:?})"
     )]
     Name { this: String, other: String },
 
@@ -166,7 +158,11 @@ pub enum CollectionIncompatibility {
     Component(String, #[source] ComponentIncompatibility),
 }
 
-impl<T: CompatComponent> CompatCollection for HashMap<String, T> {
+impl<T: CompatCheck<Error = ComponentIncompatibility>> CompatCheck
+    for HashMap<String, T>
+{
+    type Error = CollectionIncompatibility;
+
     fn is_compatible_with(
         &self,
         other: &Self,
@@ -238,22 +234,22 @@ impl spec::Spec {
         other: &Self,
     ) -> Result<(), PvpanicIncompatibility> {
         match (&self.pvpanic, &other.pvpanic) {
-            (Some(this), Some(other)) => {
-                if this.name != other.name {
-                    Err(PvpanicIncompatibility::Name {
-                        this: this.name.clone(),
-                        other: other.name.clone(),
-                    })
-                } else if this.spec.enable_isa != other.spec.enable_isa {
-                    Err(PvpanicIncompatibility::EnableIsa {
-                        this: this.spec.enable_isa,
-                        other: other.spec.enable_isa,
-                    })
-                } else {
-                    Ok(())
-                }
-            }
             (None, None) => Ok(()),
+            (Some(this), Some(other)) if this.name != other.name => {
+                Err(PvpanicIncompatibility::Name {
+                    this: this.name.clone(),
+                    other: other.name.clone(),
+                })
+            }
+            (Some(this), Some(other))
+                if this.spec.enable_isa != other.spec.enable_isa =>
+            {
+                Err(PvpanicIncompatibility::EnableIsa {
+                    this: this.spec.enable_isa,
+                    other: other.spec.enable_isa,
+                })
+            }
+            (Some(_), Some(_)) => Ok(()),
             (this, other) => Err(PvpanicIncompatibility::Presence {
                 this: this.is_some(),
                 other: other.is_some(),
@@ -342,7 +338,9 @@ impl spec::StorageBackend {
     }
 }
 
-impl CompatComponent for spec::Disk {
+impl CompatCheck for spec::Disk {
+    type Error = ComponentIncompatibility;
+
     fn is_compatible_with(
         &self,
         other: &Self,
@@ -353,7 +351,9 @@ impl CompatComponent for spec::Disk {
     }
 }
 
-impl CompatComponent for spec::Nic {
+impl CompatCheck for spec::Nic {
+    type Error = ComponentIncompatibility;
+
     fn is_compatible_with(
         &self,
         other: &Self,
@@ -377,7 +377,9 @@ impl CompatComponent for spec::Nic {
     }
 }
 
-impl CompatComponent for spec::SerialPort {
+impl CompatCheck for spec::SerialPort {
+    type Error = ComponentIncompatibility;
+
     fn is_compatible_with(
         &self,
         other: &Self,
@@ -401,7 +403,9 @@ impl CompatComponent for spec::SerialPort {
     }
 }
 
-impl CompatComponent for PciPciBridge {
+impl CompatCheck for PciPciBridge {
+    type Error = ComponentIncompatibility;
+
     fn is_compatible_with(
         &self,
         other: &Self,
