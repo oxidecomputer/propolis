@@ -631,6 +631,13 @@
           "board": {
             "$ref": "#/components/schemas/Board"
           },
+          "boot_order": {
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BootDeclaration"
+            }
+          },
           "network_devices": {
             "type": "object",
             "additionalProperties": {
@@ -876,6 +883,13 @@
       "InstanceEnsureRequest": {
         "type": "object",
         "properties": {
+          "boot_order": {
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BootDeclaration"
+            }
+          },
           "cloud_init_bytes": {
             "nullable": true,
             "type": "string"
@@ -1531,6 +1545,19 @@
           "completed_already",
           "missing",
           "vcr_matches"
+        ]
+      },
+      "BootDeclaration": {
+        "description": "A boot preference for some device.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "The name of the device to attempt booting from.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
         ]
       },
       "SerialPort": {
