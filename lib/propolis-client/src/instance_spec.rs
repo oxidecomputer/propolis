@@ -189,7 +189,8 @@ impl SpecBuilderV0 {
     /// Permissible to not this if the implicit boot order is desired, but the implicit boot order
     /// may be unstable across device addition and removal.
     ///
-    /// XXX: talk about what happens if names are included that do not name real devices..?
+    /// If any devices named in this order are not actually present in the constructed spec,
+    /// Propolis will return an error when the spec is provided.
     ///
     /// XXX: this should certainly return `&mut Self` - all the builders here should. check if any
     /// of these are chained..?
@@ -201,11 +202,8 @@ impl SpecBuilderV0 {
             .into_iter()
             .map(|name| crate::types::BootDeclaration { name })
             .collect();
-        eprintln!("setting boot order to {:?}", boot_declarations);
-        self.spec.devices.boot_order = Some(boot_declarations);
 
-        // TODO: would be nice to warn if any of the devices named here are not devices in the spec
-        // though.
+        self.spec.devices.boot_order = Some(boot_declarations);
 
         Ok(self)
     }
