@@ -1078,7 +1078,7 @@ impl<'a> MachineInitializer<'a> {
                 };
             } else if let Some(vnic_spec) =
                 self.spec.nics.iter().find_map(|(_name, spec)| {
-                    if &spec.backend_name == &boot_entry.name {
+                    if spec.backend_name == boot_entry.name {
                         Some(spec)
                     } else {
                         None

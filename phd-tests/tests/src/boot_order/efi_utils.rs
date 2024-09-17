@@ -15,6 +15,7 @@ use anyhow::{bail, Error};
 use byteorder::{LittleEndian, ReadBytesExt};
 use phd_testcase::*;
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::io::{Cursor, Read};
 use tracing::{info, warn};
 
@@ -35,15 +36,15 @@ use super::run_long_command;
 // EFI Internal Shell: https://github.com/tianocore/edk2/blob/a445e1a/ShellPkg/ShellPkg.dec#L59-L60
 // UiApp:
 // https://github.com/tianocore/edk2/blob/a445e1a/MdeModulePkg/Application/UiApp/UiApp.inf#L13
-pub(crate) const EDK2_FIRMWARE_VOL_GUID: &'static [u8; 16] = &[
+pub(crate) const EDK2_FIRMWARE_VOL_GUID: &[u8; 16] = &[
     0xc9, 0xbd, 0xb8, 0x7c, 0xeb, 0xf8, 0x34, 0x4f, 0xaa, 0xea, 0x3e, 0xe4,
     0xaf, 0x65, 0x16, 0xa1,
 ];
-pub(crate) const EDK2_UI_APP_GUID: &'static [u8; 16] = &[
+pub(crate) const EDK2_UI_APP_GUID: &[u8; 16] = &[
     0x21, 0xaa, 0x2c, 0x46, 0x14, 0x76, 0x03, 0x45, 0x83, 0x6e, 0x8a, 0xb6,
     0xf4, 0x66, 0x23, 0x31,
 ];
-pub(crate) const EDK2_EFI_SHELL_GUID: &'static [u8; 16] = &[
+pub(crate) const EDK2_EFI_SHELL_GUID: &[u8; 16] = &[
     0x83, 0xa5, 0x04, 0x7c, 0x3e, 0x9e, 0x1c, 0x4f, 0xad, 0x65, 0xe0, 0x52,
     0x68, 0xd0, 0xb4, 0xd1,
 ];
@@ -53,9 +54,9 @@ pub(crate) const EDK2_EFI_SHELL_GUID: &'static [u8; 16] = &[
 // `/sys/firmware/efi/efivars/`, are both Linux `efivars`-isms.
 //
 // These tests likely will not pass when run with other guest OSes.
-pub(crate) const BOOT_CURRENT_VAR: &'static str =
+pub(crate) const BOOT_CURRENT_VAR: &str =
     "BootCurrent-8be4df61-93ca-11d2-aa0d-00e098032b8c";
-pub(crate) const BOOT_ORDER_VAR: &'static str =
+pub(crate) const BOOT_ORDER_VAR: &str =
     "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c";
 
 pub(crate) fn bootvar(num: u16) -> String {
@@ -292,7 +293,7 @@ fn unhex(s: &str) -> Vec<u8> {
 
         res.push(b);
     }
-    return res;
+    res
 }
 
 /// Read the EFI variable `varname` from inside the VM, and return the data therein as a byte
@@ -350,13 +351,16 @@ pub(crate) async fn write_efivar(
     // ```
     // where AAAAAAAA are the attribute bytes and DDDDDDDD are caller-provided data.
     let escaped: String =
-        new_value.into_iter().map(|b| format!("\\x{:02x}", b)).collect();
+        new_value.into_iter().fold(String::new(), |mut out, b| {
+            write!(out, "\\x{:02x}", b).expect("can append to String");
+            out
+        });
 
     let cmd = format!("printf \"{}\" > {}", escaped, efipath(varname));
 
     let res = run_long_command(vm, &cmd).await?;
     // If something went sideways and the write failed with something like `invalid argument`...
-    if res.len() != 0 {
+    if !res.is_empty() {
         bail!("writing efi produced unexpected output: {}", res);
     }
 
@@ -377,14 +381,14 @@ pub(crate) async fn discover_boot_option_numbers(
 ) -> Result<HashMap<String, u16>> {
     let mut option_mappings: HashMap<String, u16> = HashMap::new();
 
-    let boot_order_bytes = read_efivar(&vm, BOOT_ORDER_VAR).await?;
+    let boot_order_bytes = read_efivar(vm, BOOT_ORDER_VAR).await?;
     info!("Initial boot order var: {:?}", boot_order_bytes);
 
     for chunk in boot_order_bytes.chunks(2) {
         assert_eq!(chunk.len(), 2);
         let option_num = u16::from_le_bytes(chunk.try_into().unwrap());
 
-        let option_bytes = read_efivar(&vm, &bootvar(option_num)).await?;
+        let option_bytes = read_efivar(vm, &bootvar(option_num)).await?;
 
         let mut cursor = Cursor::new(option_bytes.as_slice());
 
@@ -460,7 +464,7 @@ pub(crate) async fn remove_boot_entry(
     vm: &phd_framework::TestVm,
     boot_option_num: u16,
 ) -> Result<Option<usize>> {
-    let mut without_option = read_efivar(&vm, BOOT_ORDER_VAR).await?;
+    let mut without_option = read_efivar(vm, BOOT_ORDER_VAR).await?;
 
     let Some(option_idx) =
         find_option_in_boot_order(&without_option, boot_option_num)
@@ -484,7 +488,7 @@ pub(crate) async fn remove_boot_entry(
         None
     );
 
-    write_efivar(&vm, BOOT_ORDER_VAR, &without_option).await?;
+    write_efivar(vm, BOOT_ORDER_VAR, &without_option).await?;
 
     Ok(Some(option_idx))
 }
