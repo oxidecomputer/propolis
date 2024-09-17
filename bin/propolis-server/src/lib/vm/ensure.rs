@@ -30,9 +30,8 @@ use std::sync::Arc;
 use oximeter::types::ProducerRegistry;
 use oximeter_instruments::kstat::KstatSampler;
 use propolis_api_types::{
-    instance_spec::{v0::InstanceSpecV0, VersionedInstanceSpec},
-    InstanceEnsureResponse, InstanceMigrateInitiateResponse,
-    InstanceProperties, InstanceSpecEnsureRequest, InstanceState,
+    InstanceEnsureResponse, InstanceMigrateInitiateRequest,
+    InstanceMigrateInitiateResponse, InstanceProperties, InstanceState,
 };
 use slog::{debug, info};
 
@@ -40,6 +39,7 @@ use crate::{
     initializer::{
         build_instance, MachineInitializer, MachineInitializerState,
     },
+    spec::Spec,
     stats::create_kstat_sampler,
     vm::request_queue::InstanceAutoStart,
 };
@@ -52,12 +52,18 @@ use super::{
     EnsureOptions, InstanceEnsureResponseTx, VmError,
 };
 
+pub(crate) struct VmEnsureRequest {
+    pub(crate) properties: InstanceProperties,
+    pub(crate) migrate: Option<InstanceMigrateInitiateRequest>,
+    pub(crate) instance_spec: Spec,
+}
+
 /// Holds state about an instance ensure request that has not yet produced any
 /// VM objects or driven the VM state machine to the `ActiveVm` state.
 pub(crate) struct VmEnsureNotStarted<'a> {
     log: &'a slog::Logger,
     vm: &'a Arc<super::Vm>,
-    ensure_request: &'a InstanceSpecEnsureRequest,
+    ensure_request: &'a VmEnsureRequest,
     ensure_options: &'a EnsureOptions,
     ensure_response_tx: InstanceEnsureResponseTx,
     state_publisher: &'a mut StatePublisher,
@@ -67,7 +73,7 @@ impl<'a> VmEnsureNotStarted<'a> {
     pub(super) fn new(
         log: &'a slog::Logger,
         vm: &'a Arc<super::Vm>,
-        ensure_request: &'a InstanceSpecEnsureRequest,
+        ensure_request: &'a VmEnsureRequest,
         ensure_options: &'a EnsureOptions,
         ensure_response_tx: InstanceEnsureResponseTx,
         state_publisher: &'a mut StatePublisher,
@@ -82,9 +88,8 @@ impl<'a> VmEnsureNotStarted<'a> {
         }
     }
 
-    pub(crate) fn instance_spec(&self) -> &InstanceSpecV0 {
-        let VersionedInstanceSpec::V0(v0) = &self.ensure_request.instance_spec;
-        v0
+    pub(crate) fn instance_spec(&self) -> &Spec {
+        &self.ensure_request.instance_spec
     }
 
     pub(crate) fn state_publisher(&mut self) -> &mut StatePublisher {
@@ -162,10 +167,9 @@ impl<'a> VmEnsureNotStarted<'a> {
 
         // Set up the 'shell' instance into which the rest of this routine will
         // add components.
-        let VersionedInstanceSpec::V0(v0_spec) = &spec;
         let machine = build_instance(
             &properties.vm_name(),
-            v0_spec,
+            spec,
             options.use_reservoir,
             vmm_log,
         )?;
@@ -176,16 +180,15 @@ impl<'a> VmEnsureNotStarted<'a> {
             devices: Default::default(),
             block_backends: Default::default(),
             crucible_backends: Default::default(),
-            spec: v0_spec,
+            spec,
             properties,
             toml_config: &options.toml_config,
             producer_registry: options.oximeter_registry.clone(),
-            boot_order: v0_spec.devices.boot_order.clone(),
             state: MachineInitializerState::default(),
             kstat_sampler: initialize_kstat_sampler(
                 self.log,
                 properties,
-                v0_spec,
+                self.instance_spec(),
                 options.oximeter_registry.clone(),
             ),
         };
@@ -222,10 +225,8 @@ impl<'a> VmEnsureNotStarted<'a> {
         init.initialize_storage_devices(&chipset, options.nexus_client.clone())
             .await?;
 
-        let ramfb = init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
-
+        let ramfb = init.initialize_fwcfg(self.instance_spec().board.cpus)?;
         init.initialize_cpus().await?;
-
         let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
             &machine,
             event_queue.clone()
@@ -241,7 +242,7 @@ impl<'a> VmEnsureNotStarted<'a> {
         } = init;
 
         Ok(InputVmObjects {
-            instance_spec: v0_spec.clone(),
+            instance_spec: spec.clone(),
             vcpu_tasks,
             machine,
             devices,
@@ -260,7 +261,7 @@ impl<'a> VmEnsureNotStarted<'a> {
 pub(crate) struct VmEnsureObjectsCreated<'a> {
     log: &'a slog::Logger,
     vm: &'a Arc<super::Vm>,
-    ensure_request: &'a InstanceSpecEnsureRequest,
+    ensure_request: &'a VmEnsureRequest,
     ensure_options: &'a EnsureOptions,
     ensure_response_tx: InstanceEnsureResponseTx,
     state_publisher: &'a mut StatePublisher,
@@ -378,7 +379,7 @@ impl<'a> VmEnsureActive<'a> {
 fn initialize_kstat_sampler(
     log: &slog::Logger,
     properties: &InstanceProperties,
-    spec: &InstanceSpecV0,
+    spec: &Spec,
     producer_registry: Option<ProducerRegistry>,
 ) -> Option<KstatSampler> {
     let registry = producer_registry?;

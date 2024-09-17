@@ -125,7 +125,7 @@ impl MigrationElement for VirtioNic {
 /// A serial port identifier, which determines what I/O ports a guest can use to
 /// access a port.
 #[derive(
-    Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema,
+    Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema, Hash,
 )]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub enum SerialPortNumber {

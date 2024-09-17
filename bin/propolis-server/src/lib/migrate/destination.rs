@@ -346,8 +346,8 @@ impl<T: MigrateConn> RonV0<T> {
         }?;
         info!(self.log(), "Destination read Preamble: {:?}", preamble);
 
-        if let Err(e) =
-            preamble.is_migration_compatible(ensure_ctx.instance_spec())
+        if let Err(e) = preamble
+            .is_migration_compatible(&ensure_ctx.instance_spec().clone().into())
         {
             error!(
                 self.log(),

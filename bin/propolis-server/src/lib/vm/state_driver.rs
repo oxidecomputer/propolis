@@ -11,10 +11,8 @@ use std::{
 
 use anyhow::Context;
 use propolis_api_types::{
-    instance_spec::{
-        components::backends::CrucibleStorageBackend, v0::StorageBackendV0,
-    },
-    InstanceSpecEnsureRequest, InstanceState, MigrationState,
+    instance_spec::components::backends::CrucibleStorageBackend, InstanceState,
+    MigrationState,
 };
 use slog::{error, info};
 use tokio::sync::Notify;
@@ -24,11 +22,12 @@ use crate::{
     migrate::{
         destination::DestinationProtocol, source::SourceProtocol, MigrateRole,
     },
+    spec::StorageBackend,
     vm::state_publisher::ExternalStateUpdate,
 };
 
 use super::{
-    ensure::{VmEnsureActive, VmEnsureNotStarted},
+    ensure::{VmEnsureActive, VmEnsureNotStarted, VmEnsureRequest},
     guest_event::{self, GuestEvent},
     objects::VmObjects,
     request_queue::{self, ExternalRequest, InstanceAutoStart},
@@ -261,7 +260,7 @@ pub(super) async fn run_state_driver(
     log: slog::Logger,
     vm: Arc<super::Vm>,
     mut state_publisher: StatePublisher,
-    ensure_request: InstanceSpecEnsureRequest,
+    ensure_request: VmEnsureRequest,
     ensure_result_tx: InstanceEnsureResponseTx,
     ensure_options: super::EnsureOptions,
 ) -> StateDriverOutput {
@@ -308,7 +307,7 @@ async fn create_and_activate_vm<'a>(
     log: &'a slog::Logger,
     vm: &'a Arc<super::Vm>,
     state_publisher: &'a mut StatePublisher,
-    ensure_request: &'a InstanceSpecEnsureRequest,
+    ensure_request: &'a VmEnsureRequest,
     ensure_result_tx: InstanceEnsureResponseTx,
     ensure_options: &'a super::EnsureOptions,
 ) -> anyhow::Result<VmEnsureActive<'a>> {
@@ -661,50 +660,42 @@ impl StateDriver {
         }
 
         let mut objects = self.objects.lock_exclusive().await;
-        let (readonly, old_vcr_json) = {
-            let StorageBackendV0::Crucible(bes) = objects
-                .instance_spec()
-                .backends
-                .storage_backends
-                .get(&disk_name)
-                .ok_or_else(|| spec_element_not_found(&disk_name))?
-            else {
-                return Err(spec_element_not_found(&disk_name));
-            };
+        let backend = objects
+            .crucible_backends()
+            .get(backend_id)
+            .ok_or_else(|| {
+                let msg = format!("No crucible backend for id {backend_id}");
+                dropshot::HttpError::for_not_found(Some(msg.clone()), msg)
+            })?
+            .clone();
 
-            (bes.readonly, &bes.request_json)
+        let Some(disk) = objects.instance_spec_mut().disks.get_mut(&disk_name)
+        else {
+            return Err(spec_element_not_found(&disk_name));
         };
 
-        let replace_result = {
-            let backend = objects
-                .crucible_backends()
-                .get(backend_id)
-                .ok_or_else(|| {
-                    let msg =
-                        format!("No crucible backend for id {backend_id}");
-                    dropshot::HttpError::for_not_found(Some(msg.clone()), msg)
-                })?;
-
-            backend.vcr_replace(old_vcr_json, &new_vcr_json).await.map_err(
-                |e| {
-                    dropshot::HttpError::for_bad_request(
-                        Some(e.to_string()),
-                        e.to_string(),
-                    )
-                },
-            )
-        }?;
-
-        let new_bes = StorageBackendV0::Crucible(CrucibleStorageBackend {
+        let StorageBackend::Crucible(CrucibleStorageBackend {
+            request_json: old_vcr_json,
             readonly,
+        }) = &disk.backend_spec
+        else {
+            return Err(spec_element_not_found(&disk_name));
+        };
+
+        let replace_result = backend
+            .vcr_replace(old_vcr_json, &new_vcr_json)
+            .await
+            .map_err(|e| {
+                dropshot::HttpError::for_bad_request(
+                    Some(e.to_string()),
+                    e.to_string(),
+                )
+            })?;
+
+        disk.backend_spec = StorageBackend::Crucible(CrucibleStorageBackend {
+            readonly: *readonly,
             request_json: new_vcr_json,
         });
-
-        objects
-            .instance_spec_mut()
-            .backends
-            .storage_backends
-            .insert(disk_name, new_bes);
 
         info!(self.log, "replaced Crucible VCR"; "backend_id" => %backend_id);
 

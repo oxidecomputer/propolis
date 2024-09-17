@@ -53,7 +53,7 @@ pub struct InstanceEnsureRequest {
     pub disks: Vec<DiskRequest>,
 
     #[serde(default)]
-    pub boot_order: Option<BootDeclaration>,
+    pub boot_order: Option<Vec<BootDeclaration>>,
 
     pub migrate: Option<InstanceMigrateInitiateRequest>,
 
