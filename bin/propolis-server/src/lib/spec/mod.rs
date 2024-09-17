@@ -58,7 +58,7 @@ pub(crate) struct Spec {
     pub disks: HashMap<String, Disk>,
     pub nics: HashMap<String, Nic>,
 
-    pub serial: HashMap<SerialPortNumber, SerialPortDevice>,
+    pub serial: HashMap<String, SerialPort>,
 
     pub pci_pci_bridges: HashMap<String, PciPciBridge>,
     pub pvpanic: Option<QemuPvpanic>,
@@ -79,6 +79,13 @@ impl StorageDevice {
         match self {
             StorageDevice::Virtio(disk) => disk.pci_path,
             StorageDevice::Nvme(disk) => disk.pci_path,
+        }
+    }
+
+    pub fn backend_name(&self) -> &str {
+        match self {
+            StorageDevice::Virtio(disk) => &disk.backend_name,
+            StorageDevice::Nvme(disk) => &disk.backend_name,
         }
     }
 }
@@ -132,14 +139,12 @@ impl From<StorageBackendV0> for StorageBackend {
 #[derive(Clone, Debug)]
 pub struct Disk {
     pub device_spec: StorageDevice,
-    pub backend_name: String,
     pub backend_spec: StorageBackend,
 }
 
 #[derive(Clone, Debug)]
 pub struct Nic {
     pub device_spec: VirtioNic,
-    pub backend_name: String,
     pub backend_spec: VirtioNetworkBackend,
 }
 
@@ -150,6 +155,12 @@ pub enum SerialPortDevice {
 
     #[cfg(feature = "falcon")]
     SoftNpu,
+}
+
+#[derive(Clone, Debug)]
+pub struct SerialPort {
+    pub num: SerialPortNumber,
+    pub device: SerialPortDevice,
 }
 
 #[derive(Clone, Debug)]
