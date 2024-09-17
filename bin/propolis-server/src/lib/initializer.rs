@@ -1119,13 +1119,6 @@ impl<'a> MachineInitializer<'a> {
             )
             .unwrap();
 
-        // TODO(ixi): extract `generate_smbios` and expect `smbios::TableBytes` as an argument to
-        // initialize_fwcfg. make `generate_smbios` accept rom size as an explicit parameter. this
-        // avoids the implicit panic if these are called out of order (and makes it harder to call
-        // out of order).
-        //
-        // one step towards sharing smbios init code between propolis-standalone and
-        // propolis-server.
         let smbios::TableBytes { entry_point, structure_table } =
             self.generate_smbios();
         fwcfg
