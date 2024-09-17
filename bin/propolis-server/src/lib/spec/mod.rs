@@ -182,16 +182,16 @@ pub enum SerialPortDevice {
     SoftNpu,
 }
 
-impl std::fmt::Display for SerialPortUser {
+impl std::fmt::Display for SerialPortDevice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{}",
             match self {
-                SerialPortUser::Standard => "standard",
+                SerialPortDevice::Uart => "uart",
 
                 #[cfg(feature = "falcon")]
-                SerialPortUser::SoftNpu => "softnpu",
+                SerialPortDevice::SoftNpu => "softnpu",
             }
         )
     }

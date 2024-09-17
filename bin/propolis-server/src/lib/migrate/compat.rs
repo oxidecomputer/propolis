@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::spec::{self, SerialPortUser};
+use crate::spec::{self, SerialPortDevice};
 
 use propolis_api_types::instance_spec::{
     components::{
@@ -49,73 +49,89 @@ pub enum CompatibilityError {
 
 #[derive(Debug, Error)]
 pub enum BoardIncompatibility {
-    #[error("boards have different CPU counts (self: {0}, other: {1})")]
-    CpuCount(u8, u8),
+    #[error("boards have different CPU counts (self: {this}, other: {other})")]
+    CpuCount { this: u8, other: u8 },
 
-    #[error("boards have different memory sizes (self: {0}, other: {1})")]
-    MemorySize(u64, u64),
+    #[error(
+        "boards have different memory sizes (self: {this}, other: {other})"
+    )]
+    MemorySize { this: u64, other: u64 },
 
-    #[error("chipsets have different PCIe settings (self: {0}, other: {1})")]
-    PcieEnabled(bool, bool),
+    #[error(
+        "chipsets have different PCIe settings (self: {this}, other: {other})"
+    )]
+    PcieEnabled { this: bool, other: bool },
 }
 
 #[derive(Debug, Error)]
 pub enum DiskIncompatibility {
-    #[error("disks have different device interfaces (self: {0}, other: {1})")]
-    Interface(&'static str, &'static str),
+    #[error(
+        "disks have different device interfaces (self: {this}, other: {other})"
+    )]
+    Interface { this: &'static str, other: &'static str },
 
-    #[error("disks have different PCI paths (self: {0}, other: {1}")]
-    PciPath(PciPath, PciPath),
+    #[error("disks have different PCI paths (self: {this}, other: {other})")]
+    PciPath { this: PciPath, other: PciPath },
 
-    #[error("disks have different backend names (self: {0}, other: {1}")]
-    BackendName(String, String),
+    #[error(
+        "disks have different backend names (self: {this}, other: {other})"
+    )]
+    BackendName { this: String, other: String },
 
-    #[error("disks have different backend kinds (self: {0}, other: {1}")]
-    BackendKind(&'static str, &'static str),
+    #[error(
+        "disks have different backend kinds (self: {this}, other: {other})"
+    )]
+    BackendKind { this: &'static str, other: &'static str },
 
-    #[error("disks have different read-only settings (self: {0}, other: {1}")]
-    ReadOnly(bool, bool),
+    #[error(
+        "disks have different read-only settings (self: {this}, other: {other})"
+    )]
+    ReadOnly { this: bool, other: bool },
 }
 
 #[derive(Debug, Error)]
 pub enum NicIncompatibility {
-    #[error("NICs have different PCI paths (self: {0}, other: {1})")]
-    PciPath(PciPath, PciPath),
+    #[error("NICs have different PCI paths (self: {this}, other: {other})")]
+    PciPath { this: PciPath, other: PciPath },
 
-    #[error("NICs have different backend names (self: {0}, other: {1}")]
-    BackendName(String, String),
+    #[error(
+        "NICs have different backend names (self: {this}, other: {other})"
+    )]
+    BackendName { this: String, other: String },
 }
 
 #[derive(Debug, Error)]
 pub enum SerialPortIncompatibility {
-    #[error("ports have different numbers (self: {0:?}, other: {1:?})")]
-    Number(SerialPortNumber, SerialPortNumber),
+    #[error("ports have different numbers (self: {this:?}, other: {other:?})")]
+    Number { this: SerialPortNumber, other: SerialPortNumber },
 
-    #[error("ports have different consumers (self: {0}, other: {1})")]
-    User(SerialPortUser, SerialPortUser),
+    #[error("ports have different devices (self: {this}, other: {other})")]
+    Device { this: SerialPortDevice, other: SerialPortDevice },
 }
 
 #[derive(Debug, Error)]
 pub enum BridgeIncompatibility {
-    #[error("bridges have different PCI paths (self: {0}, other: {1})")]
-    PciPath(PciPath, PciPath),
+    #[error("bridges have different PCI paths (self: {this}, other: {other})")]
+    PciPath { this: PciPath, other: PciPath },
 
-    #[error("bridges have different downstream buses (self: {0}, other: {1})")]
-    DownstreamBus(u8, u8),
+    #[error("bridges have different downstream buses (self: {this}, other: {other})")]
+    DownstreamBus { this: u8, other: u8 },
 }
 
 #[derive(Debug, Error)]
 pub enum PvpanicIncompatibility {
-    #[error("pvpanic presence differs (self: {0}, other: {1})")]
-    Presence(bool, bool),
-
-    #[error("pvpanic devices have different names (self: {0}, other: {1})")]
-    Name(String, String),
+    #[error("pvpanic presence differs (self: {this}, other: {other})")]
+    Presence { this: bool, other: bool },
 
     #[error(
-        "pvpanic devices have different ISA settings (self: {0}, other: {1})"
+        "pvpanic devices have different names (self: {this}, other: {other})"
     )]
-    EnableIsa(bool, bool),
+    Name { this: String, other: String },
+
+    #[error(
+        "pvpanic devices have different ISA settings (self: {this}, other: {other})"
+    )]
+    EnableIsa { this: bool, other: bool },
 }
 
 #[derive(Debug, Error)]
@@ -138,8 +154,10 @@ pub enum ComponentIncompatibility {
 
 #[derive(Debug, Error)]
 pub enum CollectionIncompatibility {
-    #[error("collections have different lengths (self: {0}, other: {1})")]
-    Length(usize, usize),
+    #[error(
+        "collections have different lengths (self: {this}, other: {other})"
+    )]
+    Length { this: usize, other: usize },
 
     #[error("collection key {0} present in self but not other")]
     KeyAbsent(String),
@@ -154,10 +172,10 @@ impl<T: CompatComponent> CompatCollection for HashMap<String, T> {
         other: &Self,
     ) -> Result<(), CollectionIncompatibility> {
         if self.len() != other.len() {
-            return Err(CollectionIncompatibility::Length(
-                self.len(),
-                other.len(),
-            ));
+            return Err(CollectionIncompatibility::Length {
+                this: self.len(),
+                other: other.len(),
+            });
         }
 
         for (key, this_val) in self.iter() {
@@ -184,12 +202,15 @@ impl spec::Spec {
         let this = &self.board;
         let other = &other.board;
         if this.cpus != other.cpus {
-            Err(BoardIncompatibility::CpuCount(this.cpus, other.cpus))
+            Err(BoardIncompatibility::CpuCount {
+                this: this.cpus,
+                other: other.cpus,
+            })
         } else if this.memory_mb != other.memory_mb {
-            Err(BoardIncompatibility::MemorySize(
-                this.memory_mb,
-                other.memory_mb,
-            ))
+            Err(BoardIncompatibility::MemorySize {
+                this: this.memory_mb,
+                other: other.memory_mb,
+            })
         } else {
             Ok(())
         }
@@ -203,10 +224,10 @@ impl spec::Spec {
         let Chipset::I440Fx(other) = other.board.chipset;
 
         if this.enable_pcie != other.enable_pcie {
-            Err(BoardIncompatibility::PcieEnabled(
-                this.enable_pcie,
-                other.enable_pcie,
-            ))
+            Err(BoardIncompatibility::PcieEnabled {
+                this: this.enable_pcie,
+                other: other.enable_pcie,
+            })
         } else {
             Ok(())
         }
@@ -219,24 +240,24 @@ impl spec::Spec {
         match (&self.pvpanic, &other.pvpanic) {
             (Some(this), Some(other)) => {
                 if this.name != other.name {
-                    Err(PvpanicIncompatibility::Name(
-                        this.name.clone(),
-                        other.name.clone(),
-                    ))
+                    Err(PvpanicIncompatibility::Name {
+                        this: this.name.clone(),
+                        other: other.name.clone(),
+                    })
                 } else if this.spec.enable_isa != other.spec.enable_isa {
-                    Err(PvpanicIncompatibility::EnableIsa(
-                        this.spec.enable_isa,
-                        other.spec.enable_isa,
-                    ))
+                    Err(PvpanicIncompatibility::EnableIsa {
+                        this: this.spec.enable_isa,
+                        other: other.spec.enable_isa,
+                    })
                 } else {
                     Ok(())
                 }
             }
             (None, None) => Ok(()),
-            (this, other) => Err(PvpanicIncompatibility::Presence(
-                this.is_some(),
-                other.is_some(),
-            )),
+            (this, other) => Err(PvpanicIncompatibility::Presence {
+                this: this.is_some(),
+                other: other.is_some(),
+            }),
         }
     }
 
@@ -280,14 +301,20 @@ impl spec::StorageDevice {
         other: &Self,
     ) -> Result<(), DiskIncompatibility> {
         if std::mem::discriminant(self) != std::mem::discriminant(other) {
-            Err(DiskIncompatibility::Interface(self.kind(), other.kind()))
+            Err(DiskIncompatibility::Interface {
+                this: self.kind(),
+                other: other.kind(),
+            })
         } else if self.pci_path() != other.pci_path() {
-            Err(DiskIncompatibility::PciPath(self.pci_path(), other.pci_path()))
+            Err(DiskIncompatibility::PciPath {
+                this: self.pci_path(),
+                other: other.pci_path(),
+            })
         } else if self.backend_name() != other.backend_name() {
-            Err(DiskIncompatibility::BackendName(
-                self.backend_name().to_owned(),
-                other.backend_name().to_owned(),
-            ))
+            Err(DiskIncompatibility::BackendName {
+                this: self.backend_name().to_owned(),
+                other: other.backend_name().to_owned(),
+            })
         } else {
             Ok(())
         }
@@ -300,12 +327,15 @@ impl spec::StorageBackend {
         other: &Self,
     ) -> Result<(), DiskIncompatibility> {
         if std::mem::discriminant(self) != std::mem::discriminant(other) {
-            Err(DiskIncompatibility::BackendKind(self.kind(), other.kind()))
+            Err(DiskIncompatibility::BackendKind {
+                this: self.kind(),
+                other: other.kind(),
+            })
         } else if self.read_only() != other.read_only() {
-            Err(DiskIncompatibility::ReadOnly(
-                self.read_only(),
-                other.read_only(),
-            ))
+            Err(DiskIncompatibility::ReadOnly {
+                this: self.read_only(),
+                other: other.read_only(),
+            })
         } else {
             Ok(())
         }
@@ -329,17 +359,17 @@ impl CompatComponent for spec::Nic {
         other: &Self,
     ) -> Result<(), ComponentIncompatibility> {
         if self.device_spec.pci_path != other.device_spec.pci_path {
-            Err(NicIncompatibility::PciPath(
-                self.device_spec.pci_path,
-                other.device_spec.pci_path,
-            ))
+            Err(NicIncompatibility::PciPath {
+                this: self.device_spec.pci_path,
+                other: other.device_spec.pci_path,
+            })
         } else if self.device_spec.backend_name
             != other.device_spec.backend_name
         {
-            Err(NicIncompatibility::BackendName(
-                self.device_spec.backend_name.clone(),
-                other.device_spec.backend_name.clone(),
-            ))
+            Err(NicIncompatibility::BackendName {
+                this: self.device_spec.backend_name.clone(),
+                other: other.device_spec.backend_name.clone(),
+            })
         } else {
             Ok(())
         }
@@ -353,11 +383,17 @@ impl CompatComponent for spec::SerialPort {
         other: &Self,
     ) -> Result<(), ComponentIncompatibility> {
         if self.num != other.num {
-            Err(SerialPortIncompatibility::Number(self.num, other.num))
-        } else if std::mem::discriminant(&self.user)
-            != std::mem::discriminant(&other.user)
+            Err(SerialPortIncompatibility::Number {
+                this: self.num,
+                other: other.num,
+            })
+        } else if std::mem::discriminant(&self.device)
+            != std::mem::discriminant(&other.device)
         {
-            Err(SerialPortIncompatibility::User(self.user, other.user))
+            Err(SerialPortIncompatibility::Device {
+                this: self.device,
+                other: other.device,
+            })
         } else {
             Ok(())
         }
@@ -371,12 +407,15 @@ impl CompatComponent for PciPciBridge {
         other: &Self,
     ) -> Result<(), ComponentIncompatibility> {
         if self.pci_path != other.pci_path {
-            Err(BridgeIncompatibility::PciPath(self.pci_path, other.pci_path))
+            Err(BridgeIncompatibility::PciPath {
+                this: self.pci_path,
+                other: other.pci_path,
+            })
         } else if self.downstream_bus != other.downstream_bus {
-            Err(BridgeIncompatibility::DownstreamBus(
-                self.downstream_bus,
-                other.downstream_bus,
-            ))
+            Err(BridgeIncompatibility::DownstreamBus {
+                this: self.downstream_bus,
+                other: other.downstream_bus,
+            })
         } else {
             Ok(())
         }
@@ -437,7 +476,7 @@ mod test {
     fn serial_port() -> spec::SerialPort {
         spec::SerialPort {
             num: SerialPortNumber::Com1,
-            user: SerialPortUser::Standard,
+            device: SerialPortDevice::Uart,
         }
     }
 

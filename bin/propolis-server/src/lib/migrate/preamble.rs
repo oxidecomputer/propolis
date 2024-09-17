@@ -5,7 +5,7 @@
 use propolis_api_types::instance_spec::VersionedInstanceSpec;
 use serde::{Deserialize, Serialize};
 
-use crate::spec::{self, api_spec_v0::ApiSpecParseError};
+use crate::spec::{self, api_spec_v0::ApiSpecError};
 
 use super::MigrateError;
 
@@ -30,7 +30,7 @@ impl Preamble {
     ) -> Result<(), MigrateError> {
         let VersionedInstanceSpec::V0(v0_spec) = self.instance_spec;
         let this_spec: spec::Spec =
-            v0_spec.try_into().map_err(|e: ApiSpecParseError| {
+            v0_spec.try_into().map_err(|e: ApiSpecError| {
                 MigrateError::PreambleParse(e.to_string())
             })?;
 
