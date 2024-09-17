@@ -863,6 +863,13 @@
               "$ref": "#/components/schemas/DiskRequest"
             }
           },
+          "boot_order": {
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BootDeclaration"
+            }
+          },
           "migrate": {
             "nullable": true,
             "allOf": [

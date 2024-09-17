@@ -266,6 +266,7 @@ async fn new_instance(
         // TODO: Allow specifying NICs
         nics: vec![],
         disks,
+        boot_order: None,
         migrate: None,
         cloud_init_bytes,
     };
@@ -517,6 +518,7 @@ async fn migrate_instance(
         // TODO: Handle migrating NICs
         nics: vec![],
         disks,
+        boot_order: None,
         migrate: Some(InstanceMigrateInitiateRequest {
             migration_id: Uuid::new_v4(),
             src_addr: src_addr.to_string(),

@@ -213,10 +213,10 @@ impl EfiLoadOption {
 
         loop {
             let c = bytes.read_u16::<LittleEndian>()?;
-            description_chars.push(c);
             if c == 0 {
                 break;
             }
+            description_chars.push(c);
         }
 
         let description = String::from_utf16(&description_chars)

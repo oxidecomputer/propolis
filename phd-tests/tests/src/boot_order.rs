@@ -400,7 +400,8 @@ async fn boot_order_source_priority(ctx: &Framework) {
 
     // If the guest doesn't have an EFI partition then there's no way for boot order preferences to
     // be persisted.
-    let mountline = vm_no_bootorder.run_shell_command("mount | grep /boot/efi").await?;
+    let mountline =
+        vm_no_bootorder.run_shell_command("mount | grep /boot/efi").await?;
 
     if !mountline.contains(" on /boot/efi type vfat") {
         warn!("guest doesn't have an EFI partition, cannot manage boot order");
@@ -434,7 +435,7 @@ async fn boot_order_source_priority(ctx: &Framework) {
     // but no such luck. The good news is that we can in fact influence the boot order.
     let unbootable_idx_after_reboot =
         find_option_in_boot_order(&reloaded_order, unbootable_num)
-        .expect("unbootable is back in the order");
+            .expect("unbootable is back in the order");
 
     let last_boot_option = &reloaded_order[reloaded_order.len() - 2..];
     assert_eq!(last_boot_option, &unbootable_num.to_le_bytes());

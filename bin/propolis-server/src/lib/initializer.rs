@@ -1130,19 +1130,16 @@ impl<'a> MachineInitializer<'a> {
                 &vnic_spec.backend_name
             };
 
-            if let Some(device_spec) = self
-                .spec
-                .devices
-                .storage_devices
-                .iter()
-                .find_map(|(_name, spec)| {
-                    eprintln!("checking name \"{}\", spec {:?}", _name, spec);
-                    if storage_backend(spec) == &boot_entry.name {
-                        Some(spec)
-                    } else {
-                        None
-                    }
-                })
+            if let Some(device_spec) =
+                self.spec.devices.storage_devices.iter().find_map(
+                    |(_name, spec)| {
+                        if storage_backend(spec) == &boot_entry.name {
+                            Some(spec)
+                        } else {
+                            None
+                        }
+                    },
+                )
             {
                 match device_spec {
                     instance_spec::v0::StorageDeviceV0::VirtioDisk(disk) => {

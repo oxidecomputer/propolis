@@ -52,6 +52,9 @@ pub struct InstanceEnsureRequest {
     #[serde(default)]
     pub disks: Vec<DiskRequest>,
 
+    #[serde(default)]
+    pub boot_order: Option<BootDeclaration>,
+
     pub migrate: Option<InstanceMigrateInitiateRequest>,
 
     // base64 encoded cloud-init ISO
@@ -383,6 +386,11 @@ pub struct DiskAttachment {
     pub generation_id: u64,
     pub disk_id: Uuid,
     pub state: DiskAttachmentState,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct BootDeclaration {
+    pub name: String,
 }
 
 /// A stable index which is translated by Propolis
