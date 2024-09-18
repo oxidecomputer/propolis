@@ -253,6 +253,12 @@ impl TryFrom<InstanceSpecV0> for Spec {
             return Err(ApiSpecError::BackendNotUsed(backend.to_owned()));
         }
 
+        if let Some(boot_order) = value.devices.boot_order.as_ref() {
+            for item in boot_order.iter() {
+                builder.add_boot_option(item)?;
+            }
+        }
+
         // TODO(#735): Serial ports need to have names like other devices.
         for serial_port in value.devices.serial_ports.values() {
             builder.add_serial_port(serial_port.num)?;

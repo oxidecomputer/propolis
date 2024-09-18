@@ -130,7 +130,9 @@ fn instance_spec_from_request(
     }
 
     if let Some(boot_order) = request.boot_order.as_ref() {
-        spec_builder.add_boot_order_from_request(boot_order)?;
+        for item in boot_order.iter() {
+            spec_builder.add_boot_option(item)?;
+        }
     }
 
     if let Some(base64) = &request.cloud_init_bytes {

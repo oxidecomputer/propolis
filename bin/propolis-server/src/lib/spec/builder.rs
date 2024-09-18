@@ -57,9 +57,6 @@ pub(crate) enum SpecBuilderError {
 
     #[error("Boot option {0} is not an attached device")]
     BootOptionMissing(String),
-
-    #[error("An item named {0} exists but it is not bootable")]
-    UnbootableItem(String),
 }
 
 #[derive(Debug, Default)]
@@ -112,34 +109,34 @@ impl SpecBuilder {
         Ok(())
     }
 
-    /// Converts an HTTP API request to add a disk to an instance into
-    /// device/backend entries in the spec under construction.
-    pub fn add_boot_order_from_request(
+    /// Add a boot option to the boot option list of the spec under construction.
+    pub fn add_boot_option(
         &mut self,
-        boot_order: &[BootDeclaration],
+        item: &BootDeclaration,
     ) -> Result<(), SpecBuilderError> {
-        let mut parsed_bootorder = Vec::new();
+        let boot_order = self.spec.boot_order.get_or_insert(Vec::new());
 
-        for item in boot_order.iter() {
-            if !self.spec.disks.contains_key(&item.name)
-                && !self.spec.nics.contains_key(&item.name)
-            {
-                if self.component_names.contains(&item.name) {
-                    return Err(SpecBuilderError::UnbootableItem(
-                        item.name.clone(),
-                    ));
-                } else {
-                    return Err(SpecBuilderError::BootOptionMissing(
-                        item.name.clone(),
-                    ));
-                }
-            }
+        let is_disk = self
+            .spec
+            .disks
+            .values()
+            .find(|v| v.backend_name.as_str() == item.name)
+            .is_some();
 
-            parsed_bootorder
-                .push(crate::spec::BootDeclaration { name: item.name.clone() });
+        let is_nic = self
+            .spec
+            .nics
+            .values()
+            .find(|v| v.backend_name.as_str() == item.name)
+            .is_some();
+
+        if !is_disk && !is_nic {
+            return Err(SpecBuilderError::BootOptionMissing(item.name.clone()));
         }
 
-        self.spec.boot_order = Some(parsed_bootorder);
+        boot_order
+            .push(crate::spec::BootDeclaration { name: item.name.clone() });
+
         Ok(())
     }
 
