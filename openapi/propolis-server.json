@@ -1598,6 +1598,7 @@
         "additionalProperties": false
       },
       "P9fs": {
+        "description": "Describes a filesystem to expose through a P9 device.\n\nThis is only supported by Propolis servers compiled with the `falcon` feature.",
         "type": "object",
         "properties": {
           "chunk_size": {
@@ -1740,6 +1741,7 @@
         "minimum": 0
       },
       "SoftNpuP9": {
+        "description": "Describes a PCI device that shares host files with the guest using the P9 protocol.\n\nThis is only supported by Propolis servers compiled with the `falcon` feature.",
         "type": "object",
         "properties": {
           "pci_path": {
@@ -1757,6 +1759,7 @@
         "additionalProperties": false
       },
       "SoftNpuPciPort": {
+        "description": "Describes a SoftNPU PCI device.\n\nThis is only supported by Propolis servers compiled with the `falcon` feature.",
         "type": "object",
         "properties": {
           "pci_path": {
@@ -1774,6 +1777,7 @@
         "additionalProperties": false
       },
       "SoftNpuPort": {
+        "description": "Describes a SoftNPU network port.\n\nThis is only supported by Propolis servers compiled with the `falcon` feature.",
         "type": "object",
         "properties": {
           "backend_name": {

@@ -108,6 +108,10 @@ pub struct QemuPvpanic {
 // Structs for Falcon devices. These devices don't support live migration.
 //
 
+/// Describes a SoftNPU PCI device.
+///
+/// This is only supported by Propolis servers compiled with the `falcon`
+/// feature.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuPciPort {
@@ -115,6 +119,10 @@ pub struct SoftNpuPciPort {
     pub pci_path: PciPath,
 }
 
+/// Describes a SoftNPU network port.
+///
+/// This is only supported by Propolis servers compiled with the `falcon`
+/// feature.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuPort {
@@ -125,6 +133,11 @@ pub struct SoftNpuPort {
     pub backend_name: String,
 }
 
+/// Describes a PCI device that shares host files with the guest using the P9
+/// protocol.
+///
+/// This is only supported by Propolis servers compiled with the `falcon`
+/// feature.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuP9 {
@@ -132,6 +145,10 @@ pub struct SoftNpuP9 {
     pub pci_path: PciPath,
 }
 
+/// Describes a filesystem to expose through a P9 device.
+///
+/// This is only supported by Propolis servers compiled with the `falcon`
+/// feature.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct P9fs {
