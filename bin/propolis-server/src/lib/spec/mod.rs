@@ -228,11 +228,12 @@ pub struct SoftNpu {
 
 #[cfg(feature = "falcon")]
 impl SoftNpu {
-    pub fn is_empty(&self) -> bool {
-        self.pci_port.is_none()
-            && self.p9_device.is_none()
-            && self.p9fs.is_none()
-            && self.ports.is_empty()
+    /// Returns `true` if this struct specifies at least one SoftNPU component.
+    pub fn has_components(&self) -> bool {
+        self.pci_port.is_some()
+            || self.p9_device.is_some()
+            || self.p9fs.is_some()
+            || !self.ports.is_empty()
     }
 }
 

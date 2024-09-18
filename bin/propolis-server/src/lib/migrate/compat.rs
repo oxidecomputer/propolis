@@ -283,7 +283,7 @@ impl spec::Spec {
         self.is_pvpanic_compatible(other)?;
 
         #[cfg(feature = "falcon")]
-        if !self.softnpu.is_empty() || !other.softnpu.is_empty() {
+        if self.softnpu.has_components() || other.softnpu.has_components() {
             return Err(CompatibilityError::SoftNpu);
         }
 
