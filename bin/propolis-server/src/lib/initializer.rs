@@ -1039,6 +1039,10 @@ impl<'a> MachineInitializer<'a> {
             //
             // realistically we won't be booting from network devices, but leave that as a question
             // for plumbing on the next layer up.
+            //
+            // NOTE: as of #761 the only name that sticks around is the derived name for the backend
+            //
+            // maybe we should make this just the provided name?
             let expected_name = format!("{}-backend", boot_entry.name.as_str());
 
             if let Some(spec) =
