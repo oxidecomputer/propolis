@@ -14,7 +14,7 @@ use propolis_api_types::{
         },
         PciPath,
     },
-    BootDeclaration, DiskRequest, InstanceProperties, NetworkInterfaceRequest,
+    BootOrderEntry, DiskRequest, InstanceProperties, NetworkInterfaceRequest,
 };
 use thiserror::Error;
 
@@ -112,7 +112,7 @@ impl SpecBuilder {
     /// Add a boot option to the boot option list of the spec under construction.
     pub fn add_boot_option(
         &mut self,
-        item: &BootDeclaration,
+        item: &BootOrderEntry,
     ) -> Result<(), SpecBuilderError> {
         let boot_order = self.spec.boot_order.get_or_insert(Vec::new());
 
@@ -135,7 +135,7 @@ impl SpecBuilder {
         }
 
         boot_order
-            .push(crate::spec::BootDeclaration { name: item.name.clone() });
+            .push(crate::spec::BootOrderEntry { name: item.name.clone() });
 
         Ok(())
     }

@@ -253,8 +253,8 @@ impl TryFrom<InstanceSpecV0> for Spec {
             return Err(ApiSpecError::BackendNotUsed(backend.to_owned()));
         }
 
-        if let Some(boot_order) = value.devices.boot_order.as_ref() {
-            for item in boot_order.iter() {
+        if let Some(boot_settings) = value.devices.boot_settings.as_ref() {
+            for item in boot_settings.order.iter() {
                 builder.add_boot_option(item)?;
             }
         }

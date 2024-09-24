@@ -53,7 +53,7 @@ pub struct InstanceEnsureRequest {
     pub disks: Vec<DiskRequest>,
 
     #[serde(default)]
-    pub boot_order: Option<Vec<BootDeclaration>>,
+    pub boot_settings: Option<BootSettings>,
 
     pub migrate: Option<InstanceMigrateInitiateRequest>,
 
@@ -388,9 +388,14 @@ pub struct DiskAttachment {
     pub state: DiskAttachmentState,
 }
 
-/// A boot preference for some device.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct BootDeclaration {
+pub struct BootSettings {
+    pub order: Vec<BootOrderEntry>,
+}
+
+/// An entry in a list of boot options.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct BootOrderEntry {
     /// The name of the device to attempt booting from.
     pub name: String,
 }

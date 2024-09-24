@@ -18,6 +18,8 @@ progenitor::generate_api!(
 
         // Some Crucible-related bits are re-exported through simulated
         // sled-agent and thus require JsonSchema
+        BootOrderEntry = { derives = [schemars::JsonSchema] },
+        BootSettings = { derives = [schemars::JsonSchema] },
         DiskRequest = { derives = [schemars::JsonSchema] },
         VolumeConstructionRequest = { derives = [schemars::JsonSchema] },
         CrucibleOpts = { derives = [schemars::JsonSchema] },

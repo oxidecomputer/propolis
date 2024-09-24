@@ -57,7 +57,7 @@ pub(crate) struct Spec {
     pub board: Board,
     pub disks: HashMap<String, Disk>,
     pub nics: HashMap<String, Nic>,
-    pub boot_order: Option<Vec<BootDeclaration>>,
+    pub boot_order: Option<Vec<BootOrderEntry>>,
 
     pub serial: HashMap<SerialPortNumber, SerialPortDevice>,
 
@@ -69,7 +69,7 @@ pub(crate) struct Spec {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct BootDeclaration {
+pub(crate) struct BootOrderEntry {
     pub name: String,
 }
 

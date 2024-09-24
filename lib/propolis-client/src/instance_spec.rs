@@ -198,12 +198,14 @@ impl SpecBuilderV0 {
         &mut self,
         boot_order: Vec<String>,
     ) -> Result<&Self, SpecBuilderError> {
-        let boot_declarations = boot_order
+        let boot_order = boot_order
             .into_iter()
-            .map(|name| crate::types::BootDeclaration { name })
+            .map(|name| crate::types::BootOrderEntry { name })
             .collect();
 
-        self.spec.devices.boot_order = Some(boot_declarations);
+        let settings = crate::types::BootSettings { order: boot_order };
+
+        self.spec.devices.boot_settings = Some(settings);
 
         Ok(self)
     }
