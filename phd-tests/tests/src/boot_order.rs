@@ -270,10 +270,11 @@ async fn guest_can_adjust_boot_order(ctx: &Framework) {
 
     // If the guest doesn't have an EFI partition then there's no way for boot order preferences to
     // be persisted.
-    let mountline = vm.run_shell_command("mount | grep /boot/efi").await?;
+    let mountline = vm.run_shell_command("mount | grep efivarfs").await?;
 
-    if !mountline.contains(" on /boot/efi type vfat") {
-        warn!("guest doesn't have an EFI partition, cannot manage boot order");
+    if !mountline.starts_with("efivarfs on ") {
+        warn!("guest doesn't have an efivarfs, cannot manage boot order! exiting test WITHOUT VALIDATING ANYTHING");
+        return Ok(());
     }
 
     // Try adding a few new boot options, then add them to the boot order, reboot, and make sure
@@ -316,6 +317,26 @@ async fn guest_can_adjust_boot_order(ctx: &Framework) {
     // ambitious change: insert the duplicate boot options in the order directly after the option
     // they are duplicates of. This seems to not get reordered.
     let boot_option_bytes = read_efivar(&vm, &bootvar(boot_num)).await?;
+
+    // Finally, seeing a read-write `efivarfs` is not sufficient to know that writes to EFI
+    // variables will actually stick. For example, an Alpine live image backed by an ISO 9660
+    // filesystem may have an EFI System Partition and `efivarfs`, but certainly cannot persist
+    // state and will drop writes to EFI variables.
+    //
+    // Check for this condition and exit early if the guest OS configuration will not let us
+    // perform a useful test.
+    write_efivar(&vm, &bootvar(0xfff0), &boot_option_bytes).await?;
+    let reread = read_efivar(&vm, &bootvar(0xfff0)).await?;
+    if reread.len() == 0 {
+        warn!("guest environment drops EFI variable writes! exiting test WITHOUT VALIDATING ANYTHING");
+        return Ok(());
+    } else {
+        assert_eq!(
+            boot_option_bytes,
+            read_efivar(&vm, &bootvar(0xfff0)).await?,
+            "EFI variable write wrote something, but not what we expected?"
+        );
+    }
 
     let boot_order_bytes = read_efivar(&vm, BOOT_ORDER_VAR).await?;
 
