@@ -21,14 +21,7 @@
 
 use std::collections::HashMap;
 
-use crate::instance_spec::{
-    components,
-    migration::{
-        ElementCompatibilityError, MigrationCollection,
-        MigrationCompatibilityError, MigrationElement,
-    },
-    SpecKey,
-};
+use crate::instance_spec::{components, SpecKey};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -39,51 +32,10 @@ pub enum StorageDeviceV0 {
     NvmeDisk(components::devices::NvmeDisk),
 }
 
-impl MigrationElement for StorageDeviceV0 {
-    fn kind(&self) -> &'static str {
-        match self {
-            StorageDeviceV0::VirtioDisk(_) => "StorageDevice(VirtioDisk)",
-            StorageDeviceV0::NvmeDisk(_) => "StorageDevice(NvmeDisk)",
-        }
-    }
-
-    fn can_migrate_from_element(
-        &self,
-        other: &Self,
-    ) -> Result<(), super::migration::ElementCompatibilityError> {
-        match (self, other) {
-            (Self::VirtioDisk(this), Self::VirtioDisk(other)) => {
-                this.can_migrate_from_element(other)
-            }
-            (Self::NvmeDisk(this), Self::NvmeDisk(other)) => {
-                this.can_migrate_from_element(other)
-            }
-            (_, _) => Err(ElementCompatibilityError::ComponentsIncomparable(
-                self.kind(),
-                other.kind(),
-            )),
-        }
-    }
-}
-
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields, tag = "type", content = "component")]
 pub enum NetworkDeviceV0 {
     VirtioNic(components::devices::VirtioNic),
-}
-
-impl MigrationElement for NetworkDeviceV0 {
-    fn kind(&self) -> &'static str {
-        "NetworkDevice(VirtioNic)"
-    }
-
-    fn can_migrate_from_element(
-        &self,
-        other: &Self,
-    ) -> Result<(), ElementCompatibilityError> {
-        let (Self::VirtioNic(this), Self::VirtioNic(other)) = (self, other);
-        this.can_migrate_from_element(other)
-    }
 }
 
 #[derive(Default, Clone, Deserialize, Serialize, Debug, JsonSchema)]
@@ -122,64 +74,6 @@ pub struct DeviceSpecV0 {
     pub softnpu_p9: Option<components::devices::SoftNpuP9>,
     #[cfg(feature = "falcon")]
     pub p9fs: Option<components::devices::P9fs>,
-}
-
-impl DeviceSpecV0 {
-    pub fn can_migrate_devices_from(
-        &self,
-        other: &Self,
-    ) -> Result<(), MigrationCompatibilityError> {
-        self.board.can_migrate_from_element(&other.board).map_err(|e| {
-            MigrationCompatibilityError::ElementMismatch("board".to_string(), e)
-        })?;
-
-        self.storage_devices
-            .can_migrate_from_collection(&other.storage_devices)
-            .map_err(|e| {
-                MigrationCompatibilityError::CollectionMismatch(
-                    "storage devices".to_string(),
-                    e,
-                )
-            })?;
-
-        self.network_devices
-            .can_migrate_from_collection(&other.network_devices)
-            .map_err(|e| {
-                MigrationCompatibilityError::CollectionMismatch(
-                    "storage devices".to_string(),
-                    e,
-                )
-            })?;
-
-        self.serial_ports
-            .can_migrate_from_collection(&other.serial_ports)
-            .map_err(|e| {
-                MigrationCompatibilityError::CollectionMismatch(
-                    "serial ports".to_string(),
-                    e,
-                )
-            })?;
-
-        self.pci_pci_bridges
-            .can_migrate_from_collection(&other.pci_pci_bridges)
-            .map_err(|e| {
-                MigrationCompatibilityError::CollectionMismatch(
-                    "PCI bridges".to_string(),
-                    e,
-                )
-            })?;
-
-        self.qemu_pvpanic
-            .can_migrate_from_element(&other.qemu_pvpanic)
-            .map_err(|e| {
-                MigrationCompatibilityError::ElementMismatch(
-                    "QEMU PVPANIC device".to_string(),
-                    e,
-                )
-            })?;
-
-        Ok(())
-    }
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]

@@ -139,19 +139,19 @@ fn instance_spec_from_request(
         spec_builder.add_cloud_init_from_request(base64.clone())?;
     }
 
-    for port in [
-        instance_spec::components::devices::SerialPortNumber::Com1,
-        instance_spec::components::devices::SerialPortNumber::Com2,
-        instance_spec::components::devices::SerialPortNumber::Com3,
+    for (name, port) in [
+        ("com1", instance_spec::components::devices::SerialPortNumber::Com1),
+        ("com2", instance_spec::components::devices::SerialPortNumber::Com2),
+        ("com3", instance_spec::components::devices::SerialPortNumber::Com3),
         // SoftNpu uses this port for ASIC management.
         #[cfg(not(feature = "falcon"))]
-        instance_spec::components::devices::SerialPortNumber::Com4,
+        ("com4", instance_spec::components::devices::SerialPortNumber::Com4),
     ] {
-        spec_builder.add_serial_port(port)?;
+        spec_builder.add_serial_port(name.to_owned(), port)?;
     }
 
     #[cfg(feature = "falcon")]
-    spec_builder.set_softnpu_com4()?;
+    spec_builder.set_softnpu_com4("com4".to_owned())?;
 
     spec_builder.add_pvpanic_device(spec::QemuPvpanic {
         name: "pvpanic".to_string(),

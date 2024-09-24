@@ -346,14 +346,15 @@ impl<T: MigrateConn> RonV0<T> {
         }?;
         info!(self.log(), "Destination read Preamble: {:?}", preamble);
 
-        if let Err(e) = preamble
-            .is_migration_compatible(&ensure_ctx.instance_spec().clone().into())
+        if let Err(e) =
+            preamble.check_compatibility(&ensure_ctx.instance_spec().clone())
         {
             error!(
                 self.log(),
-                "Source and destination instance specs incompatible: {}", e
+                "source and destination instance specs incompatible";
+                "error" => #%e
             );
-            return Err(MigrateError::InvalidInstanceState);
+            return Err(MigrateError::InstanceSpecsIncompatible(e.to_string()));
         }
 
         self.send_msg(codec::Message::Okay).await

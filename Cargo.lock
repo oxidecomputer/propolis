@@ -754,7 +754,7 @@ checksum = "248e3bacc7dc6baa3b21e405ee045c3047101a49145e7e9eca583ab4c2ca5345"
 [[package]]
 name = "crucible"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=9d82a99058e7f4d76ccc2141dcd78e7d4730cc78#9d82a99058e7f4d76ccc2141dcd78e7d4730cc78"
+source = "git+https://github.com/oxidecomputer/crucible?rev=a551f245e8a26f52098382903ccf0a982b7c54fa#a551f245e8a26f52098382903ccf0a982b7c54fa"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -807,7 +807,7 @@ dependencies = [
 [[package]]
 name = "crucible-client-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=9d82a99058e7f4d76ccc2141dcd78e7d4730cc78#9d82a99058e7f4d76ccc2141dcd78e7d4730cc78"
+source = "git+https://github.com/oxidecomputer/crucible?rev=a551f245e8a26f52098382903ccf0a982b7c54fa#a551f245e8a26f52098382903ccf0a982b7c54fa"
 dependencies = [
  "base64 0.22.1",
  "crucible-workspace-hack",
@@ -820,7 +820,7 @@ dependencies = [
 [[package]]
 name = "crucible-common"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=9d82a99058e7f4d76ccc2141dcd78e7d4730cc78#9d82a99058e7f4d76ccc2141dcd78e7d4730cc78"
+source = "git+https://github.com/oxidecomputer/crucible?rev=a551f245e8a26f52098382903ccf0a982b7c54fa#a551f245e8a26f52098382903ccf0a982b7c54fa"
 dependencies = [
  "anyhow",
  "atty",
@@ -850,7 +850,7 @@ dependencies = [
 [[package]]
 name = "crucible-protocol"
 version = "0.0.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=9d82a99058e7f4d76ccc2141dcd78e7d4730cc78#9d82a99058e7f4d76ccc2141dcd78e7d4730cc78"
+source = "git+https://github.com/oxidecomputer/crucible?rev=a551f245e8a26f52098382903ccf0a982b7c54fa#a551f245e8a26f52098382903ccf0a982b7c54fa"
 dependencies = [
  "anyhow",
  "bincode",
@@ -2444,9 +2444,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.28.0"
+version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c10584274047cb335c23d3e61bcef8e323adae7c5c8c760540f73610177fc3f"
+checksum = "2e99fb7a497b1e3339bc746195567ed8d3e24945ecd636e3619d20b9de9e9149"
 dependencies = [
  "pkg-config",
  "vcpkg",
@@ -4556,9 +4556,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.31.0"
+version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b838eba278d213a8beaf485bd313fd580ca4505a00d5871caeb1457c55322cae"
+checksum = "7753b721174eb8ff87a9a0e799e2d7bc3749323e773db92e0984debb00019d6e"
 dependencies = [
  "bitflags 2.6.0",
  "fallible-iterator",
