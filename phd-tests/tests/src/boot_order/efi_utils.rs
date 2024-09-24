@@ -17,7 +17,7 @@ use phd_testcase::*;
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::io::{Cursor, Read};
-use tracing::{info, warn};
+use tracing::{trace, info, warn};
 
 use super::run_long_command;
 
@@ -282,7 +282,7 @@ impl EfiLoadOption {
 
 fn unhex(s: &str) -> Vec<u8> {
     let s = s.replace("\n", "");
-    eprintln!("unhexing {}", s);
+    trace!("unhexing {}", s);
     let mut res = Vec::new();
     for chunk in s.as_bytes().chunks(2) {
         assert_eq!(chunk.len(), 2);
