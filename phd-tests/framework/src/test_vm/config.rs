@@ -211,7 +211,7 @@ impl<'dr> VmConfig<'dr> {
         //
         // If there are multiple bootable disks in the boot order, we'll assume they're all
         // the same guest OS kind. So look for `boot-disk` - if there isn't a disk named
-        // `boot-disk` then fall back to hoping the first disk in the boot orrder is a bootable
+        // `boot-disk` then fall back to hoping the first disk in the boot order is a bootable
         // disk, and if *that* isn't a bootable disk, maybe the first disk is.
         //
         // TODO: theoretically we might want to accept configuration of a specific guest OS adapter
