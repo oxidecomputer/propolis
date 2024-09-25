@@ -415,6 +415,10 @@ async fn boot_order_source_priority(ctx: &Framework) {
         20,
     );
 
+    // For the first stage of this test, we want to leave the boot procedure up to whatever the
+    // guest firmware will do.
+    cfg.clear_boot_order();
+
     let mut vm_no_bootorder = ctx.spawn_vm(&cfg, None).await?;
     vm_no_bootorder.launch().await?;
     vm_no_bootorder.wait_to_boot().await?;

@@ -203,10 +203,25 @@ impl<'dr> VmConfig<'dr> {
             })
             .context("serializing Propolis server config")?;
 
-        let boot_disk_name = self.boot_order.as_ref().map(|order| order[0]).unwrap_or("boot-disk");
-        let boot_disk = self.disks.iter().find(|d| d.name == boot_disk_name)
-            .or_else(|| self.disks.get(0))
-            .expect("VM config includes at least one disk (and maybe a boot order)?");
+        // The first disk in the boot list might not be the disk a test *actually* expects to boot.
+        //
+        // If there are multiple bootable disks in the boot order, we'll assume they're all
+        // the same guest OS kind. So look for `boot-disk` - if there isn't a disk named
+        // `boot-disk` then fall back to hoping the first disk in the boot orrder is a bootable
+        // disk, and if *that* isn't a bootable disk, maybe the first disk is.
+        //
+        // TODO: theoretically we might want to accept configuration of a specific guest OS adapter
+        // and avoid the guessing games. So far the above supports existing tests and makes them
+        // "Just Work", but a more complicated test may want more control here.
+        let boot_disk =
+            self.disks.iter().find(|d| d.name == "boot-disk")
+                .or_else(|| if let Some(boot_order) = self.boot_order.as_ref() {
+                    boot_order.get(0).and_then(|name| self.disks.iter().find(|d| &d.name == name))
+                } else {
+                    None
+                })
+                .or_else(|| self.disks.get(0))
+                .expect("VM config includes at least one disk (and maybe a boot order)?");
 
         // XXX: assuming all bootable images are equivalent to the first, or at least the same
         // guest OS kind.
