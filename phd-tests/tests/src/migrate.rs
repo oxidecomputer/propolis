@@ -90,7 +90,16 @@ mod from_base {
 
         let mut env = ctx.environment_builder();
         env.propolis(artifacts::BASE_PROPOLIS_ARTIFACT);
-        let cfg = ctx.vm_config_builder(name);
+        let mut cfg = ctx.vm_config_builder(name);
+        // TODO: not strictly necessary, but as of #756 PHD began adding a
+        // `boot_settings` key by default to new instances. This is not
+        // understood by older Propolis, so migration tests would fail because
+        // the test changed, rather than a migration issue.
+        //
+        // At some point after landing #756, stop clearing the boot order,
+        // because a newer base Propolis will understand `boot_settings` just
+        // fine.
+        cfg.clear_boot_order();
         ctx.spawn_vm(&cfg, Some(&env)).await
     }
 }
