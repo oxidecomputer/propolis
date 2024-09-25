@@ -74,9 +74,8 @@ impl<'dr> VmConfig<'dr> {
             devices: BTreeMap::new(),
         };
 
-        config.data_disk(
-            "boot-disk",
-            DiskSource::Artifact(guest_artifact),
+        config.boot_disk(
+            guest_artifact,
             DiskInterface::Nvme,
             DiskBackend::File,
             4,
@@ -128,6 +127,15 @@ impl<'dr> VmConfig<'dr> {
         self
     }
 
+    pub fn clear_boot_order(&mut self) -> &mut Self {
+        self.boot_order = None;
+        self
+    }
+
+    /// Add a new disk to the VM config, and add it to the front of the VM's boot order.
+    ///
+    /// The added disk will have the name `boot-disk`, and replace the previous existing
+    /// `boot-disk`.
     pub fn boot_disk(
         &mut self,
         artifact: &'dr str,
@@ -135,22 +143,24 @@ impl<'dr> VmConfig<'dr> {
         backend: DiskBackend,
         pci_device_num: u8,
     ) -> &mut Self {
-        // If you're calling `boot_disk` directly, you're probably not specifying an explicit boot
-        // order. the _implicit_ boot order seems to be the order disks are created in, so preserve
-        // that implied behavior by having a boot disk inserted up front.
-        //
-        // XXX: i thought that the implicit order would be *pci device order*, not disk creation
-        // order?
-        // XXX: figure out what to do if there is both an explicit boot order and a call to
-        // `.boot_disk`.
+        let boot_order = self.boot_order.get_or_insert(Vec::new());
+        if let Some(prev_boot_item) = boot_order.iter().position(|d| *d == "boot-disk") {
+            boot_order.remove(prev_boot_item);
+        }
 
-        self.disks[0] = DiskRequest {
-            name: "boot-disk",
+        if let Some(prev_boot_disk) = self.disks.iter().position(|d| d.name == "boot-disk") {
+            self.disks.remove(prev_boot_disk);
+        }
+
+        boot_order.insert(0, "boot-disk");
+
+        self.data_disk(
+            "boot-disk",
+            DiskSource::Artifact(artifact),
             interface,
             backend,
-            source: DiskSource::Artifact(artifact),
             pci_device_num,
-        };
+        );
 
         self
     }
@@ -193,9 +203,13 @@ impl<'dr> VmConfig<'dr> {
             })
             .context("serializing Propolis server config")?;
 
-        let boot_disk = &self.disks[0];
+        let boot_disk_name = self.boot_order.as_ref().map(|order| order[0]).unwrap_or("boot-disk");
+        let boot_disk = self.disks.iter().find(|d| d.name == boot_disk_name)
+            .or_else(|| self.disks.get(0))
+            .expect("VM config includes at least one disk (and maybe a boot order)?");
 
-        // TODO: adapt this to check all listed boot devices
+        // XXX: assuming all bootable images are equivalent to the first, or at least the same
+        // guest OS kind.
         let DiskSource::Artifact(boot_artifact) = boot_disk.source else {
             unreachable!("boot disks always use artifacts as sources");
         };
