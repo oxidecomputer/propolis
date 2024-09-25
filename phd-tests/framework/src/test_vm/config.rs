@@ -144,11 +144,15 @@ impl<'dr> VmConfig<'dr> {
         pci_device_num: u8,
     ) -> &mut Self {
         let boot_order = self.boot_order.get_or_insert(Vec::new());
-        if let Some(prev_boot_item) = boot_order.iter().position(|d| *d == "boot-disk") {
+        if let Some(prev_boot_item) =
+            boot_order.iter().position(|d| *d == "boot-disk")
+        {
             boot_order.remove(prev_boot_item);
         }
 
-        if let Some(prev_boot_disk) = self.disks.iter().position(|d| d.name == "boot-disk") {
+        if let Some(prev_boot_disk) =
+            self.disks.iter().position(|d| d.name == "boot-disk")
+        {
             self.disks.remove(prev_boot_disk);
         }
 

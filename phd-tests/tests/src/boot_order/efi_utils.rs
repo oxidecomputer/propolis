@@ -17,7 +17,7 @@ use phd_testcase::*;
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::io::{Cursor, Read};
-use tracing::{trace, info, warn};
+use tracing::{info, trace, warn};
 
 use super::run_long_command;
 
