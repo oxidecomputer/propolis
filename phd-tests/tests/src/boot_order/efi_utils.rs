@@ -4,10 +4,11 @@
 
 //! EFI variable parsing and manipulation utilities.
 //!
-//! Conceptually, this would be a separate crate. Something like `uefi`, or maybe more accurately,
-//! `uefi-raw`. Those crates are very oriented towards *being* the platform firmware though - it's
-//! not clear how to use them to parse a boot option into a device path, for example, though they
-//! clearly are able to support processing device paths.
+//! Conceptually, this would be a separate crate. Something like `uefi`, or
+//! maybe more accurately, `uefi-raw`. Those crates are very oriented towards
+//! *being* the platform firmware though - it's not clear how to use them to
+//! parse a boot option into a device path, for example, though they clearly are
+//! able to support processing device paths.
 //!
 //! So instead, this is enough supporting logic for our tests in Propolis.
 
@@ -21,19 +22,23 @@ use tracing::{info, trace, warn};
 
 use super::run_long_command;
 
-// First, some GUIDs. These GUIDs come from EDK2, and OVMF reuses them. Notably these are the raw
-// bytes of the GUID: textual values will have slightly different ordering of bytes.
+// First, some GUIDs. These GUIDs come from EDK2, and OVMF reuses them. Notably
+// these are the raw bytes of the GUID: textual values will have slightly
+// different ordering of bytes.
 //
-// Some source references, as you won't find these GUIDs in a UEFI or related spec document.. The
-// firmware volume is identified by what seems to be the DXE firmware volume:
+// Some source references, as you won't find these GUIDs in a UEFI or related
+// spec document.. The firmware volume is identified by what seems to be the DXE
+// firmware volume:
 // https://github.com/tianocore/edk2/blob/712797c/OvmfPkg/OvmfPkgIa32.fdf#L181
 // introduced in
-// https://github.com/tianocore/edk2/commit/16f26de663967b5a64140b6abba2c145ea50194c, note this
-// is the DXEFV entry.
+// https://github.com/tianocore/edk2/commit/16f26de663967b5a64140b6abba2c145ea50194c,
+// note this is the DXEFV entry.
 //
-// The *files* we'll care about in this test are identified by other GUIDs in the above *volume*.
+// The *files* we'll care about in this test are identified by other GUIDs in
+// the above *volume*.
 //
-// EFI Internal Shell: https://github.com/tianocore/edk2/blob/a445e1a/ShellPkg/ShellPkg.dec#L59-L60
+// EFI Internal Shell:
+// https://github.com/tianocore/edk2/blob/a445e1a/ShellPkg/ShellPkg.dec#L59-L60
 // UiApp:
 // https://github.com/tianocore/edk2/blob/a445e1a/MdeModulePkg/Application/UiApp/UiApp.inf#L13
 pub(crate) const EDK2_FIRMWARE_VOL_GUID: &[u8; 16] = &[
@@ -49,9 +54,10 @@ pub(crate) const EDK2_EFI_SHELL_GUID: &[u8; 16] = &[
     0x68, 0xd0, 0xb4, 0xd1,
 ];
 
-// The variable namespace `8be4df61-93ca-11d2-aa0d-00e098032b8c` comes from UEFI, as do the
-// variable names here. The presentation as `{varname}-{namespace}`, and at a path like
-// `/sys/firmware/efi/efivars/`, are both Linux `efivars`-isms.
+// The variable namespace `8be4df61-93ca-11d2-aa0d-00e098032b8c` comes from
+// UEFI, as do the variable names here. The presentation as
+// `{varname}-{namespace}`, and at a path like `/sys/firmware/efi/efivars/`, are
+// both Linux `efivars`-isms.
 //
 // These tests likely will not pass when run with other guest OSes.
 pub(crate) const BOOT_CURRENT_VAR: &str =
@@ -126,15 +132,17 @@ impl EfiLoadPath {
     }
 }
 
+// The `Acpi` fields are not explicitly used (yet), but are useful for `Debug`
+// purposes.
 #[allow(dead_code)]
-// The `Acpi` fields are not explicitly used (yet), but are useful for `Debug` purposes.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum DevicePath {
     Acpi { hid: u32, uid: u32 },
     Pci { device: u8, function: u8 },
 
-    // These two are described in sections 8.2 and 8.3 of the UEFI PI spec, respectively.
-    // Version 1.6 can be found at https://uefi.org/sites/default/files/resources/PI_Spec_1.6.pdf
+    // These two are described in sections 8.2 and 8.3 of the UEFI PI spec,
+    // respectively. Version 1.6 can be found at
+    // https://uefi.org/sites/default/files/resources/PI_Spec_1.6.pdf
     FirmwareVolume { guid: [u8; 16] },
     FirmwareFile { guid: [u8; 16] },
 }
@@ -238,7 +246,11 @@ impl EfiLoadOption {
                     DevicePath::parse_from(&mut device_path_cursor)
                         .expect("can read device path element");
                 if !matches!(pci_device, DevicePath::Pci { .. }) {
-                    bail!("expected ACPI Device Path entry to be followed by a PCI Device Path, but was {:?}", pci_device);
+                    bail!(
+                        "expected ACPI Device Path entry to be followed by \
+                        a PCI Device Path, but was {:?}",
+                        pci_device
+                    );
                 }
 
                 EfiLoadPath::Device { acpi_root, pci_device }
@@ -247,7 +259,11 @@ impl EfiLoadOption {
                 let file = DevicePath::parse_from(&mut device_path_cursor)
                     .expect("can read device path element");
                 if !matches!(file, DevicePath::FirmwareFile { .. }) {
-                    bail!("expected Firmware Volume entry to be followed by a Firmware File, but was {:?}", file);
+                    bail!(
+                        "expected Firmware Volume entry to be followed by \
+                        a Firmware File, but was {:?}",
+                        file
+                    );
                 }
 
                 EfiLoadPath::FirmwareFile { volume, file }
@@ -257,9 +273,9 @@ impl EfiLoadOption {
             }
         };
 
-        // Not strictly necessary, but advance `bytes` by the number of bytes we read from
-        // `device_path_cursor`. To callers, this keeps it as if we had just been reading `bytes`
-        // all along.
+        // Not strictly necessary, but advance `bytes` by the number of bytes we
+        // read from `device_path_cursor`. To callers, this keeps it as if we
+        // had just been reading `bytes` all along.
         bytes.set_position(bytes.position() + device_path_cursor.position());
 
         Ok(EfiLoadOption { description, path: load_path })
@@ -296,8 +312,8 @@ fn unhex(s: &str) -> Vec<u8> {
     res
 }
 
-/// Read the EFI variable `varname` from inside the VM, and return the data therein as a byte
-/// array.
+/// Read the EFI variable `varname` from inside the VM, and return the data
+/// therein as a byte array.
 pub(crate) async fn read_efivar(
     vm: &phd_framework::TestVm,
     varname: &str,
@@ -315,8 +331,8 @@ pub(crate) async fn read_efivar(
 
 /// Write the provided bytes to the EFI variable `varname`.
 ///
-/// For Linux guests: variables automatically have their prior attributes prepended. Provide only
-/// the variable's data.
+/// For Linux guests: variables automatically have their prior attributes
+/// prepended. Provide only the variable's data.
 pub(crate) async fn write_efivar(
     vm: &phd_framework::TestVm,
     varname: &str,
@@ -329,9 +345,10 @@ pub(crate) async fn write_efivar(
 
     let attr_read_bytes = run_long_command(vm, &attr_cmd).await?;
     let attrs = if attr_read_bytes.ends_with(": No such file or directory") {
-        // Default attributes if the variable does not exist yet. We expect it to be non-volatile
-        // because we are writing it, we expect it to be available to boot services (not strictly
-        // required, but for boot configuration we need it), and we expect it to be available at
+        // Default attributes if the variable does not exist yet. We expect it
+        // to be non-volatile because we are writing it, we expect it to be
+        // available to boot services (not strictly required, but for boot
+        // configuration we need it), and we expect it to be available at
         // runtime (e.g. where we are reading and writing it).
         //
         // so:
@@ -349,7 +366,8 @@ pub(crate) async fn write_efivar(
     // ```
     // printf "\xAA\xAA\xAA\xAA\xDD\xDD\xDD\xDD" > /sys/firmware/efi/efivars/...
     // ```
-    // where AAAAAAAA are the attribute bytes and DDDDDDDD are caller-provided data.
+    // where AAAAAAAA are the attribute bytes and DDDDDDDD are caller-provided
+    // data.
     let escaped: String =
         new_value.into_iter().fold(String::new(), |mut out, b| {
             write!(out, "\\x{:02x}", b).expect("can append to String");
@@ -359,7 +377,8 @@ pub(crate) async fn write_efivar(
     let cmd = format!("printf \"{}\" > {}", escaped, efipath(varname));
 
     let res = run_long_command(vm, &cmd).await?;
-    // If something went sideways and the write failed with something like `invalid argument`...
+    // If something went sideways and the write failed with something like
+    // `invalid argument`...
     if !res.is_empty() {
         bail!("writing efi produced unexpected output: {}", res);
     }
@@ -367,14 +386,15 @@ pub(crate) async fn write_efivar(
     Ok(())
 }
 
-/// Learn the boot option numbers associated with various boot options that may or should
-/// exist.
+/// Learn the boot option numbers associated with various boot options that may
+/// or should exist.
 ///
-/// The fundamental wrinkle here is that we don't necessarily know what `Boot####` entries
-/// exist, or which numbers they have, because NvVar is handled through persistence in guest
-/// disks. This means a guest image may have some prior NvVar state with `Boot####` entries
-/// that aren't removed, and cause entries reflecting the current system to have later numbers
-/// than a fully blank initial set of variables.
+/// The fundamental wrinkle here is that we don't necessarily know what
+/// `Boot####` entries exist, or which numbers they have, because NvVar is
+/// handled through persistence in guest disks. This means a guest image may
+/// have some prior NvVar state with `Boot####` entries that aren't removed, and
+/// cause entries reflecting the current system to have later numbers than a
+/// fully blank initial set of variables.
 pub(crate) async fn discover_boot_option_numbers(
     vm: &phd_framework::TestVm,
     device_names: &[((u8, u8), &'static str)],
@@ -455,11 +475,12 @@ pub(crate) fn find_option_in_boot_order(
         .map(|(i, _chunk)| i)
 }
 
-/// Remove the boot option from `vm`'s EFI BootOrder variable. `boot_option_num` is assumed to
-/// refer to a boot option named like `format!("Boot{boot_option_num:4X}-*")`.
+/// Remove the boot option from `vm`'s EFI BootOrder variable. `boot_option_num`
+/// is assumed to refer to a boot option named like
+/// `format!("Boot{boot_option_num:4X}-*")`.
 ///
-/// If the boot order was actually modified, returns the index that `boot_option_num` was
-/// removed at.
+/// If the boot order was actually modified, returns the index that
+/// `boot_option_num` was removed at.
 pub(crate) async fn remove_boot_entry(
     vm: &phd_framework::TestVm,
     boot_option_num: u16,
@@ -480,9 +501,10 @@ pub(crate) async fn remove_boot_entry(
     without_option.remove(option_idx * 2);
     without_option.remove(option_idx * 2);
 
-    // Technically it's fine if an option is present multiple times, but typically an option is
-    // present only once. This function intends to remove all copies of the specified option,
-    // so assert that we have done so in the new order.
+    // Technically it's fine if an option is present multiple times, but
+    // typically an option is present only once. This function intends to remove
+    // all copies of the specified option, so assert that we have done so in the
+    // new order.
     assert_eq!(
         find_option_in_boot_order(&without_option, boot_option_num),
         None
