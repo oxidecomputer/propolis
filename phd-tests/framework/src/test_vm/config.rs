@@ -220,11 +220,11 @@ impl<'dr> VmConfig<'dr> {
         let boot_disk =
             self.disks.iter().find(|d| d.name == "boot-disk")
                 .or_else(|| if let Some(boot_order) = self.boot_order.as_ref() {
-                    boot_order.get(0).and_then(|name| self.disks.iter().find(|d| &d.name == name))
+                    boot_order.first().and_then(|name| self.disks.iter().find(|d| &d.name == name))
                 } else {
                     None
                 })
-                .or_else(|| self.disks.get(0))
+                .or_else(|| self.disks.first())
                 .expect("VM config includes at least one disk (and maybe a boot order)?");
 
         // XXX: assuming all bootable images are equivalent to the first, or at least the same

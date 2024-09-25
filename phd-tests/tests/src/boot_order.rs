@@ -352,7 +352,7 @@ async fn guest_can_adjust_boot_order(ctx: &Framework) {
     // will not let us perform a useful test.
     write_efivar(&vm, &bootvar(0xfff0), &boot_option_bytes).await?;
     let reread = read_efivar(&vm, &bootvar(0xfff0)).await?;
-    if reread.len() == 0 {
+    if reread.is_empty() {
         warn!(
             "guest environment drops EFI variable writes! \
             exiting test WITHOUT VALIDATING ANYTHING"
