@@ -152,13 +152,24 @@ impl DevicePath {
         let ty = bytes.read_u8()?;
         let subtype = bytes.read_u8()?;
 
+        macro_rules! check_size {
+            ($desc:expr, $size: expr, $expect:expr) => {
+                if $size != $expect {
+                    bail!(
+                        "{} size is wrong (was {:#04x}, not {:#04x}",
+                        $desc,
+                        $size,
+                        $expect,
+                    );
+                }
+            }
+        }
+
         match (ty, subtype) {
             (2, 1) => {
                 // ACPI Device Path
                 let size = bytes.read_u16::<LittleEndian>()?;
-                if size != 0xc {
-                    bail!("ACPI Device Path size is wrong (was {:#04x}, not 0x000c)", size);
-                }
+                check_size!("ACPI Device Path", size, 0xc);
                 let hid = bytes.read_u32::<LittleEndian>().unwrap();
                 let uid = bytes.read_u32::<LittleEndian>().unwrap();
                 Ok(DevicePath::Acpi { hid, uid })
@@ -166,9 +177,7 @@ impl DevicePath {
             (1, 1) => {
                 // PCI device path
                 let size = bytes.read_u16::<LittleEndian>()?;
-                if size != 0x6 {
-                    bail!("PCI Device Path size is wrong (was {:#04x}, not 0x0006)", size);
-                }
+                check_size!("PCI Device Path", size, 0x6);
                 let function = bytes.read_u8().unwrap();
                 let device = bytes.read_u8().unwrap();
                 Ok(DevicePath::Pci { device, function })
@@ -176,12 +185,7 @@ impl DevicePath {
             (4, 6) => {
                 // "PIWG Firmware File" aka "Firmware File" in UEFI PI spec
                 let size = bytes.read_u16::<LittleEndian>()?;
-                if size != 0x14 {
-                    bail!(
-                        "Firmware File size is wrong (was {:#04x}, not 0x0014)",
-                        size
-                    );
-                }
+                check_size!("Firmware File", size, 0x14);
                 let mut guid = [0u8; 16];
                 bytes.read_exact(&mut guid)?;
                 Ok(DevicePath::FirmwareFile { guid })
@@ -189,9 +193,7 @@ impl DevicePath {
             (4, 7) => {
                 // "PIWG Firmware Volume" aka "Firmware Volume" in UEFI PI spec
                 let size = bytes.read_u16::<LittleEndian>()?;
-                if size != 0x14 {
-                    bail!("Firmware Volume size is wrong (was {:#04x}, not 0x0014)", size);
-                }
+                check_size!("Firmware Volume", size, 0x14);
                 let mut guid = [0u8; 16];
                 bytes.read_exact(&mut guid)?;
                 Ok(DevicePath::FirmwareVolume { guid })
