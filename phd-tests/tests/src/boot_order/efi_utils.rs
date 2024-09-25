@@ -162,7 +162,7 @@ impl DevicePath {
                         $expect,
                     );
                 }
-            }
+            };
         }
 
         match (ty, subtype) {
