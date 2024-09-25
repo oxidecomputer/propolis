@@ -2606,7 +2606,7 @@ dependencies = [
  "dlpi 0.2.0 (git+https://github.com/oxidecomputer/dlpi-sys)",
  "libc",
  "num_enum 0.5.11",
- "nvpair",
+ "nvpair 0.5.0",
  "nvpair-sys",
  "oxnet",
  "rand",
@@ -3206,6 +3206,14 @@ checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
 name = "nvpair"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "nvpair_sys",
+]
+
+[[package]]
+name = "nvpair"
 version = "0.5.0"
 source = "git+https://github.com/jmesmon/rust-libzfs?branch=master#ecd5a922247a6c5acef55d76c5b8d115572bc850"
 dependencies = [
@@ -3218,6 +3226,13 @@ dependencies = [
 name = "nvpair-sys"
 version = "0.4.0"
 source = "git+https://github.com/jmesmon/rust-libzfs?branch=master#ecd5a922247a6c5acef55d76c5b8d115572bc850"
+
+[[package]]
+name = "nvpair_sys"
+version = "0.0.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "object"
@@ -6816,6 +6831,7 @@ name = "viona_api"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "nvpair 0.0.0",
  "viona_api_sys",
 ]
 

@@ -713,10 +713,38 @@ impl<'a> MachineInitializer<'a> {
             info!(self.log, "Creating vNIC {}", device_name);
             let bdf: pci::Bdf = nic.device_spec.pci_path.into();
 
+            // Set viona device parameters if possible.
+            //
+            // The values chosen here are tuned to maximize performance when
+            // Propolis is used with OPTE in a full Oxide rack deployment,
+            // although they should not negatively impact use outside those
+            // conditions.  These parameters and their effects (save for
+            // performance delta) are not guest-visible.
+            let params = if virtio::viona::api_version()
+                .expect("can query viona version")
+                >= virtio::viona::ApiVersion::V3
+            {
+                Some(virtio::viona::DeviceParams {
+                    // Use guest memory "loaning", rather than copying and
+                    // allocating entire transmitted packets
+                    copy_data: false,
+                    // Leave room for underlay encapsulation:
+                    // - ethernet: 14
+                    // - IPv6: 40
+                    // - UDP: 8
+                    // - Geneve: 8
+                    // - (and then round up to nearest 8)
+                    header_pad: 72,
+                })
+            } else {
+                None
+            };
+
             let viona = virtio::PciVirtioViona::new(
                 &nic.backend_spec.vnic_name,
                 0x100,
                 &self.machine.hdl,
+                params,
             )
             .with_context(|| {
                 format!("failed to create viona device {device_name:?}")

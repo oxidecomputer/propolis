@@ -1192,8 +1192,24 @@ fn setup_instance(
                         dev.options.get("vnic").unwrap().as_str().unwrap();
                     let bdf = bdf.unwrap();
 
+                    let viona_params =
+                        config::VionaDeviceParams::from_opts(&dev.options)
+                            .expect("viona params are valid");
+
+                    if viona_params.is_some()
+                        && hw::virtio::viona::api_version()
+                            .expect("can query viona version")
+                            < hw::virtio::viona::ApiVersion::V3
+                    {
+                        // lazy cop-out for now
+                        panic!("can't set viona params on too-old version");
+                    }
+
                     let viona = hw::virtio::PciVirtioViona::new(
-                        vnic_name, 0x100, &hdl,
+                        vnic_name,
+                        0x100,
+                        &hdl,
+                        viona_params,
                     )?;
                     guard.inventory.register_instance(&viona, &bdf.to_string());
                     chipset_pci_attach(bdf, viona);

@@ -23,6 +23,7 @@ default-members = [
 
 exclude = [
   "crates/bhyve-api/header-check",
+  "crates/nvpair/header-check",
   "crates/viona-api/header-check",
   "phd-tests/buildomat",
 ]
@@ -46,6 +47,8 @@ bhyve_api_sys = { path = "crates/bhyve-api/sys" }
 cpuid_utils = { path = "crates/cpuid-utils" }
 cpuid_profile_config = { path = "crates/cpuid-profile-config" }
 dladm = { path = "crates/dladm" }
+nvpair = { path = "crates/nvpair" }
+nvpair_sys = { path = "crates/nvpair/sys" }
 propolis-server-config = { path = "crates/propolis-server-config" }
 propolis_api_types = { path = "crates/propolis-api-types" }
 propolis_types = { path = "crates/propolis-types" }
