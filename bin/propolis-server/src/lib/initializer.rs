@@ -46,7 +46,7 @@ use propolis::vmm::{self, Builder, Machine};
 use propolis_api_types::instance_spec;
 use propolis_api_types::instance_spec::components::devices::SerialPortNumber;
 use propolis_api_types::InstanceProperties;
-use slog::{error, info};
+use slog::info;
 
 /// Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
@@ -1068,9 +1068,6 @@ impl<'a> MachineInitializer<'a> {
                     "Instance spec included boot entry which does not refer to an existing disk: `{}`",
                     boot_entry.name.as_str(),
                 );
-                // TODO(ixi): this is actually duplicative with the top-level `error!` that this
-                // unhandled `error` will bubble out to. Maybe just don't log here?
-                error!(self.log, "{}", message);
                 return Err(Error::new(ErrorKind::Other, message));
             }
         }
