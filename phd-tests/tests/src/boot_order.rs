@@ -454,15 +454,6 @@ async fn boot_order_source_priority(ctx: &Framework) {
     vm_no_bootorder.launch().await?;
     vm_no_bootorder.wait_to_boot().await?;
 
-    // If the guest doesn't have an EFI partition then there's no way for boot
-    // order preferences to be persisted.
-    let mountline =
-        vm_no_bootorder.run_shell_command("mount | grep /boot/efi").await?;
-
-    if !mountline.contains(" on /boot/efi type vfat") {
-        warn!("guest doesn't have an EFI partition, cannot manage boot order");
-    }
-
     let boot_option_numbers = discover_boot_option_numbers(
         &vm_no_bootorder,
         &[
