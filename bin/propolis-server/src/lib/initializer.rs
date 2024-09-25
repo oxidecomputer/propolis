@@ -1035,18 +1035,16 @@ impl<'a> MachineInitializer<'a> {
 
 
         for boot_entry in boot_names.iter() {
-            // names may refer to a storage device or network device.
-            //
-            // realistically we won't be booting from network devices, but leave that as a question
-            // for plumbing on the next layer up.
-            //
-            // NOTE: as of #761 the only name that sticks around is the derived name for the backend
-            //
-            // maybe we should make this just the provided name?
-            let expected_name = format!("{}-backend", boot_entry.name.as_str());
-
+            // Theoretically we could support booting from network devices by
+            // matching them here and adding their PCI paths, but exactly what
+            // would happen is ill-understood and device names are not plumbed
+            // in a way that supports it. So, only check disks here.
             if let Some(spec) =
-                self.spec.disks.iter().find_map(|(name, spec)| if name == &expected_name { Some(spec) } else { None })
+                self.spec.disks.iter().find(|(_name, spec)| match &spec.device_spec {
+                    StorageDevice::Nvme(disk) => { disk.backend_name.as_str() == boot_entry.name.as_str() },
+                    StorageDevice::Virtio(disk) => { disk.backend_name.as_str() == boot_entry.name.as_str() },
+                })
+                .map(|(_name, spec)| spec)
             {
                 match &spec.device_spec {
                     StorageDevice::Virtio(disk) => {
@@ -1065,15 +1063,9 @@ impl<'a> MachineInitializer<'a> {
                         order.add_nvme(bdf.location, 0);
                     }
                 };
-            } else if let Some(vnic_spec) =
-                self.spec.nics.iter().find_map(|(name, spec)| if name == &expected_name { Some(spec) } else { None })
-            {
-                let bdf = parse_bdf(&vnic_spec.device_spec.pci_path)?;
-
-                order.add_pci(bdf.location, "ethernet");
             } else {
                 let message = format!(
-                    "Instance spec included boot entry which does not refer to an existing device: `{}`",
+                    "Instance spec included boot entry which does not refer to an existing disk: `{}`",
                     boot_entry.name.as_str(),
                 );
                 // TODO(ixi): this is actually duplicative with the top-level `error!` that this

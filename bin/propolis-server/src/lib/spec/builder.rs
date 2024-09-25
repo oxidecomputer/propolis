@@ -120,22 +120,20 @@ impl SpecBuilder {
     ) -> Result<(), SpecBuilderError> {
         let boot_order = self.spec.boot_order.get_or_insert(Vec::new());
 
-        // NOTE: as of #761 the only name that sticks around is the derived name for the backend
-        //
-        // maybe we should make this just the provided name?
-        let expected_name = format!("{}-backend", item.name.as_str());
+        use crate::spec::StorageDevice;
+        use crate::spec::{NvmeDisk, VirtioDisk};
 
         let is_disk = self
             .spec
             .disks
-            .contains_key(&expected_name);
+            .values()
+            .find(|disk| match &disk.device_spec {
+                StorageDevice::Virtio(VirtioDisk { backend_name, .. }) => backend_name == item.name.as_str(),
+                StorageDevice::Nvme(NvmeDisk { backend_name, .. }) => backend_name == item.name.as_str(),
+            })
+            .is_some();
 
-        let is_nic = self
-            .spec
-            .nics
-            .contains_key(&expected_name);
-
-        if !is_disk && !is_nic {
+        if !is_disk {
             return Err(SpecBuilderError::BootOptionMissing(item.name.clone()));
         }
 
