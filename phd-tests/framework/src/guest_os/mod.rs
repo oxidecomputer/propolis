@@ -13,7 +13,6 @@ mod alpine;
 mod debian11_nocloud;
 mod shell_commands;
 mod ubuntu22_04;
-mod ubuntu24_04;
 mod windows;
 mod windows_server_2016;
 mod windows_server_2019;
@@ -89,7 +88,6 @@ pub enum GuestOsKind {
     Alpine,
     Debian11NoCloud,
     Ubuntu2204,
-    Ubuntu2404,
     WindowsServer2016,
     WindowsServer2019,
     WindowsServer2022,
@@ -103,7 +101,6 @@ impl FromStr for GuestOsKind {
             "alpine" => Ok(Self::Alpine),
             "debian11nocloud" => Ok(Self::Debian11NoCloud),
             "ubuntu2204" => Ok(Self::Ubuntu2204),
-            "ubuntu2404" => Ok(Self::Ubuntu2404),
             "windowsserver2016" => Ok(Self::WindowsServer2016),
             "windowsserver2019" => Ok(Self::WindowsServer2019),
             "windowsserver2022" => Ok(Self::WindowsServer2022),
@@ -122,7 +119,6 @@ pub(super) fn get_guest_os_adapter(kind: GuestOsKind) -> Box<dyn GuestOs> {
             Box::new(debian11_nocloud::Debian11NoCloud)
         }
         GuestOsKind::Ubuntu2204 => Box::new(ubuntu22_04::Ubuntu2204),
-        GuestOsKind::Ubuntu2404 => Box::new(ubuntu24_04::Ubuntu2404),
         GuestOsKind::WindowsServer2016 => {
             Box::new(windows_server_2016::WindowsServer2016)
         }
