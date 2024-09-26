@@ -106,8 +106,7 @@ clap = "4.2"
 const_format = "0.2"
 crossbeam-channel = "0.5"
 ctrlc = "3.2"
-# dropshot = { git = "https://github.com/oxidecomputer/dropshot", branch = "main" }
-dropshot = { git = "https://github.com/seanmonstar/dropshot", branch = "hyper-v1-2.4-own-body" }
+dropshot = { git = "https://github.com/oxidecomputer/dropshot", branch = "main" }
 erased-serde = "0.4"
 errno = "0.2.8"
 escargot = "0.5.8"
@@ -131,7 +130,7 @@ owo-colors = "4"
 pin-project-lite = "0.2.13"
 proc-macro2 = "1.0"
 proc-macro-error = "1"
-progenitor = { git = "https://github.com/oxidecomputer/progenitor", branch = "dependabot/cargo/reqwest-0.12.4" }
+progenitor = { git = "https://github.com/oxidecomputer/progenitor", branch = "main" }
 quote = "1.0"
 rand = "0.8"
 reqwest = { version = "0.12.0", default-features = false }

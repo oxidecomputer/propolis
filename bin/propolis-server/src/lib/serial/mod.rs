@@ -14,7 +14,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::serial::history_buffer::{HistoryBuffer, SerialHistoryOffset};
-use dropshot::WebsocketConnectionRaw;
 use futures::future::Fuse;
 use futures::stream::SplitSink;
 use futures::{FutureExt, SinkExt, StreamExt};
@@ -101,7 +100,9 @@ pub async fn instance_serial_task<Device: Sink + Source>(
     > = HashMap::new();
     let mut ws_streams: HashMap<
         usize,
-        futures::stream::SplitStream<WebSocketStream<WebsocketConnectionRaw>>,
+        futures::stream::SplitStream<
+            WebSocketStream<dropshot::WebsocketConnectionRaw>,
+        >,
     > = HashMap::new();
 
     let (send_ch, mut recv_ch) = mpsc::channel(4);
