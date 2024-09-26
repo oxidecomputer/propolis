@@ -58,7 +58,7 @@ pub(crate) struct Spec {
     pub disks: HashMap<String, Disk>,
     pub nics: HashMap<String, Nic>,
 
-    pub serial: HashMap<SerialPortNumber, SerialPortDevice>,
+    pub serial: HashMap<String, SerialPort>,
 
     pub pci_pci_bridges: HashMap<String, PciPciBridge>,
     pub pvpanic: Option<QemuPvpanic>,
@@ -75,10 +75,24 @@ pub enum StorageDevice {
 }
 
 impl StorageDevice {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            StorageDevice::Virtio(_) => "virtio",
+            StorageDevice::Nvme(_) => "nvme",
+        }
+    }
+
     pub fn pci_path(&self) -> PciPath {
         match self {
             StorageDevice::Virtio(disk) => disk.pci_path,
             StorageDevice::Nvme(disk) => disk.pci_path,
+        }
+    }
+
+    pub fn backend_name(&self) -> &str {
+        match self {
+            StorageDevice::Virtio(disk) => &disk.backend_name,
+            StorageDevice::Nvme(disk) => &disk.backend_name,
         }
     }
 }
@@ -109,6 +123,24 @@ pub enum StorageBackend {
     Blob(BlobStorageBackend),
 }
 
+impl StorageBackend {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            StorageBackend::Crucible(_) => "crucible",
+            StorageBackend::File(_) => "file",
+            StorageBackend::Blob(_) => "backend",
+        }
+    }
+
+    pub fn read_only(&self) -> bool {
+        match self {
+            StorageBackend::Crucible(be) => be.readonly,
+            StorageBackend::File(be) => be.readonly,
+            StorageBackend::Blob(be) => be.readonly,
+        }
+    }
+}
+
 impl From<StorageBackend> for StorageBackendV0 {
     fn from(value: StorageBackend) -> Self {
         match value {
@@ -132,14 +164,12 @@ impl From<StorageBackendV0> for StorageBackend {
 #[derive(Clone, Debug)]
 pub struct Disk {
     pub device_spec: StorageDevice,
-    pub backend_name: String,
     pub backend_spec: StorageBackend,
 }
 
 #[derive(Clone, Debug)]
 pub struct Nic {
     pub device_spec: VirtioNic,
-    pub backend_name: String,
     pub backend_spec: VirtioNetworkBackend,
 }
 
@@ -150,6 +180,27 @@ pub enum SerialPortDevice {
 
     #[cfg(feature = "falcon")]
     SoftNpu,
+}
+
+impl std::fmt::Display for SerialPortDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                SerialPortDevice::Uart => "uart",
+
+                #[cfg(feature = "falcon")]
+                SerialPortDevice::SoftNpu => "softnpu",
+            }
+        )
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SerialPort {
+    pub num: SerialPortNumber,
+    pub device: SerialPortDevice,
 }
 
 #[derive(Clone, Debug)]
@@ -173,6 +224,17 @@ pub struct SoftNpu {
     pub ports: HashMap<String, SoftNpuPort>,
     pub p9_device: Option<SoftNpuP9>,
     pub p9fs: Option<P9fs>,
+}
+
+#[cfg(feature = "falcon")]
+impl SoftNpu {
+    /// Returns `true` if this struct specifies at least one SoftNPU component.
+    pub fn has_components(&self) -> bool {
+        self.pci_port.is_some()
+            || self.p9_device.is_some()
+            || self.p9fs.is_some()
+            || !self.ports.is_empty()
+    }
 }
 
 struct ParsedDiskRequest {

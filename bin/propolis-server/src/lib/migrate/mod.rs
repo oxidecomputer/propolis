@@ -12,6 +12,7 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 mod codec;
+mod compat;
 pub mod destination;
 mod memx;
 mod preamble;
@@ -87,6 +88,14 @@ pub enum MigrateError {
     /// Incomplete WebSocket upgrade request
     #[error("expected connection upgrade")]
     UpgradeExpected,
+
+    /// Error parsing the contents of the preamble
+    #[error("failed to parse preamble: {0}")]
+    PreambleParse(String),
+
+    /// Source and target decided their configurations are incompatible
+    #[error("instance specs incompatible: {0}")]
+    InstanceSpecsIncompatible(String),
 
     /// Attempted to migrate an uninitialized instance
     #[error("failed to initialize the target VM: {0}")]
@@ -172,6 +181,8 @@ impl From<MigrateError> for HttpError {
             | MigrateError::ProtocolParse(_, _)
             | MigrateError::NoMatchingProtocol(_, _)
             | MigrateError::TargetInstanceInitializationFailed(_)
+            | MigrateError::PreambleParse(_)
+            | MigrateError::InstanceSpecsIncompatible(_)
             | MigrateError::InvalidInstanceState
             | MigrateError::Codec(_)
             | MigrateError::UnexpectedMessage

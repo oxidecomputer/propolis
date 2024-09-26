@@ -4,7 +4,7 @@
 
 //! A builder for instance specs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use propolis_api_types::{
     instance_spec::{
@@ -28,7 +28,7 @@ use crate::{config, spec::SerialPortDevice};
 use super::{
     api_request::{self, DeviceRequestError},
     config_toml::{ConfigTomlError, ParsedConfig},
-    Disk, Nic, QemuPvpanic,
+    Disk, Nic, QemuPvpanic, SerialPort,
 };
 
 #[cfg(feature = "falcon")]
@@ -42,6 +42,9 @@ pub(crate) enum SpecBuilderError {
 
     #[error("error parsing device in ensure request")]
     DeviceRequest(#[from] DeviceRequestError),
+
+    #[error("device {0} has the same name as its backend")]
+    DeviceAndBackendNamesIdentical(String),
 
     #[error("A component with name {0} already exists")]
     ComponentNameInUse(String),
@@ -60,6 +63,7 @@ pub(crate) enum SpecBuilderError {
 pub(crate) struct SpecBuilder {
     spec: super::Spec,
     pci_paths: BTreeSet<PciPath>,
+    serial_ports: HashSet<SerialPortNumber>,
     component_names: BTreeSet<String>,
 }
 
@@ -190,19 +194,25 @@ impl SpecBuilder {
         disk_name: String,
         disk: Disk,
     ) -> Result<&Self, SpecBuilderError> {
+        if disk_name == disk.device_spec.backend_name() {
+            return Err(SpecBuilderError::DeviceAndBackendNamesIdentical(
+                disk_name,
+            ));
+        }
+
         if self.component_names.contains(&disk_name) {
             return Err(SpecBuilderError::ComponentNameInUse(disk_name));
         }
 
-        if self.component_names.contains(&disk.backend_name) {
+        if self.component_names.contains(disk.device_spec.backend_name()) {
             return Err(SpecBuilderError::ComponentNameInUse(
-                disk.backend_name,
+                disk.device_spec.backend_name().to_owned(),
             ));
         }
 
         self.register_pci_device(disk.device_spec.pci_path())?;
         self.component_names.insert(disk_name.clone());
-        self.component_names.insert(disk.backend_name.clone());
+        self.component_names.insert(disk.device_spec.backend_name().to_owned());
         let _old = self.spec.disks.insert(disk_name, disk);
         assert!(_old.is_none());
         Ok(self)
@@ -214,17 +224,25 @@ impl SpecBuilder {
         nic_name: String,
         nic: Nic,
     ) -> Result<&Self, SpecBuilderError> {
+        if nic_name == nic.device_spec.backend_name {
+            return Err(SpecBuilderError::DeviceAndBackendNamesIdentical(
+                nic_name,
+            ));
+        }
+
         if self.component_names.contains(&nic_name) {
             return Err(SpecBuilderError::ComponentNameInUse(nic_name));
         }
 
-        if self.component_names.contains(&nic.backend_name) {
-            return Err(SpecBuilderError::ComponentNameInUse(nic.backend_name));
+        if self.component_names.contains(&nic.device_spec.backend_name) {
+            return Err(SpecBuilderError::ComponentNameInUse(
+                nic.device_spec.backend_name,
+            ));
         }
 
         self.register_pci_device(nic.device_spec.pci_path)?;
         self.component_names.insert(nic_name.clone());
-        self.component_names.insert(nic.backend_name.clone());
+        self.component_names.insert(nic.device_spec.backend_name.clone());
         let _old = self.spec.nics.insert(nic_name, nic);
         assert!(_old.is_none());
         Ok(self)
@@ -241,6 +259,7 @@ impl SpecBuilder {
         }
 
         self.register_pci_device(bridge.pci_path)?;
+        self.component_names.insert(name.clone());
         let _old = self.spec.pci_pci_bridges.insert(name, bridge);
         assert!(_old.is_none());
         Ok(self)
@@ -249,35 +268,60 @@ impl SpecBuilder {
     /// Adds a serial port.
     pub fn add_serial_port(
         &mut self,
-        port: SerialPortNumber,
+        name: String,
+        num: SerialPortNumber,
     ) -> Result<&Self, SpecBuilderError> {
-        if self.spec.serial.insert(port, SerialPortDevice::Uart).is_some() {
-            Err(SpecBuilderError::SerialPortInUse(port))
-        } else {
-            Ok(self)
+        if self.component_names.contains(&name) {
+            return Err(SpecBuilderError::ComponentNameInUse(name));
         }
+
+        if self.serial_ports.contains(&num) {
+            return Err(SpecBuilderError::SerialPortInUse(num));
+        }
+
+        let desc = SerialPort { num, device: SerialPortDevice::Uart };
+        self.spec.serial.insert(name.clone(), desc);
+        self.component_names.insert(name);
+        self.serial_ports.insert(num);
+        Ok(self)
     }
 
     pub fn add_pvpanic_device(
         &mut self,
         pvpanic: QemuPvpanic,
     ) -> Result<&Self, SpecBuilderError> {
+        if self.component_names.contains(&pvpanic.name) {
+            return Err(SpecBuilderError::ComponentNameInUse(pvpanic.name));
+        }
+
         if self.spec.pvpanic.is_some() {
             return Err(SpecBuilderError::PvpanicInUse);
         }
 
+        self.component_names.insert(pvpanic.name.clone());
         self.spec.pvpanic = Some(pvpanic);
         Ok(self)
     }
 
     #[cfg(feature = "falcon")]
-    pub fn set_softnpu_com4(&mut self) -> Result<&Self, SpecBuilderError> {
-        let port = SerialPortNumber::Com4;
-        if self.spec.serial.insert(port, SerialPortDevice::SoftNpu).is_some() {
-            Err(SpecBuilderError::SerialPortInUse(port))
-        } else {
-            Ok(self)
+    pub fn set_softnpu_com4(
+        &mut self,
+        name: String,
+    ) -> Result<&Self, SpecBuilderError> {
+        if self.component_names.contains(&name) {
+            return Err(SpecBuilderError::ComponentNameInUse(name));
         }
+
+        let num = SerialPortNumber::Com4;
+        if self.serial_ports.contains(&num) {
+            return Err(SpecBuilderError::SerialPortInUse(num));
+        }
+
+        let desc = SerialPort { num, device: SerialPortDevice::SoftNpu };
+        self.spec.serial.insert(name.clone(), desc);
+        self.component_names.insert(name);
+        self.serial_ports.insert(num);
+        Ok(self)
     }
 
     #[cfg(feature = "falcon")]
@@ -313,6 +357,12 @@ impl SpecBuilder {
         port_name: String,
         port: SoftNpuPort,
     ) -> Result<&Self, SpecBuilderError> {
+        if port_name == port.backend_name {
+            return Err(SpecBuilderError::DeviceAndBackendNamesIdentical(
+                port_name,
+            ));
+        }
+
         if self.component_names.contains(&port_name) {
             return Err(SpecBuilderError::ComponentNameInUse(port_name));
         }
@@ -337,9 +387,15 @@ impl SpecBuilder {
 #[cfg(test)]
 mod test {
     use propolis_api_types::{
+        instance_spec::components::{
+            backends::{BlobStorageBackend, VirtioNetworkBackend},
+            devices::{VirtioDisk, VirtioNic},
+        },
         InstanceMetadata, Slot, VolumeConstructionRequest,
     };
     use uuid::Uuid;
+
+    use crate::spec::{StorageBackend, StorageDevice};
 
     use super::*;
 
@@ -403,11 +459,21 @@ mod test {
     #[test]
     fn duplicate_serial_port() {
         let mut builder = test_builder();
-        assert!(builder.add_serial_port(SerialPortNumber::Com1).is_ok());
-        assert!(builder.add_serial_port(SerialPortNumber::Com2).is_ok());
-        assert!(builder.add_serial_port(SerialPortNumber::Com3).is_ok());
-        assert!(builder.add_serial_port(SerialPortNumber::Com4).is_ok());
-        assert!(builder.add_serial_port(SerialPortNumber::Com1).is_err());
+        assert!(builder
+            .add_serial_port("com1".to_owned(), SerialPortNumber::Com1)
+            .is_ok());
+        assert!(builder
+            .add_serial_port("com2".to_owned(), SerialPortNumber::Com2)
+            .is_ok());
+        assert!(builder
+            .add_serial_port("com3".to_owned(), SerialPortNumber::Com3)
+            .is_ok());
+        assert!(builder
+            .add_serial_port("com4".to_owned(), SerialPortNumber::Com4)
+            .is_ok());
+        assert!(builder
+            .add_serial_port("com1".to_owned(), SerialPortNumber::Com1)
+            .is_err());
     }
 
     #[test]
@@ -425,6 +491,42 @@ mod test {
                     path: "disk3.img".to_string()
                 },
             })
+            .is_err());
+    }
+
+    #[test]
+    fn device_with_same_name_as_backend() {
+        let mut builder = test_builder();
+        assert!(builder
+            .add_storage_device(
+                "storage".to_owned(),
+                Disk {
+                    device_spec: StorageDevice::Virtio(VirtioDisk {
+                        backend_name: "storage".to_owned(),
+                        pci_path: PciPath::new(0, 4, 0).unwrap()
+                    }),
+                    backend_spec: StorageBackend::Blob(BlobStorageBackend {
+                        base64: "".to_string(),
+                        readonly: false
+                    })
+                }
+            )
+            .is_err());
+
+        assert!(builder
+            .add_network_device(
+                "network".to_owned(),
+                Nic {
+                    device_spec: VirtioNic {
+                        backend_name: "network".to_owned(),
+                        interface_id: Uuid::nil(),
+                        pci_path: PciPath::new(0, 5, 0).unwrap()
+                    },
+                    backend_spec: VirtioNetworkBackend {
+                        vnic_name: "vnic0".to_owned()
+                    }
+                }
+            )
             .is_err());
     }
 }

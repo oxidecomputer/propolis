@@ -298,34 +298,23 @@ impl<'a> MachineInitializer<'a> {
         chipset: &RegisteredChipset,
     ) -> Result<Serial<LpcUart>, Error> {
         let mut com1 = None;
-
-        // Create UART devices for all of the serial ports in the spec that
-        // requested one.
-        for (num, user) in self.spec.serial.iter() {
-            if *user != spec::SerialPortDevice::Uart {
+        for (name, desc) in self.spec.serial.iter() {
+            if desc.device != spec::SerialPortDevice::Uart {
                 continue;
             }
 
-            let (name, irq, port) = match num {
-                SerialPortNumber::Com1 => {
-                    ("com1", ibmpc::IRQ_COM1, ibmpc::PORT_COM1)
-                }
-                SerialPortNumber::Com2 => {
-                    ("com2", ibmpc::IRQ_COM2, ibmpc::PORT_COM2)
-                }
-                SerialPortNumber::Com3 => {
-                    ("com3", ibmpc::IRQ_COM3, ibmpc::PORT_COM3)
-                }
-                SerialPortNumber::Com4 => {
-                    ("com4", ibmpc::IRQ_COM4, ibmpc::PORT_COM4)
-                }
+            let (irq, port) = match desc.num {
+                SerialPortNumber::Com1 => (ibmpc::IRQ_COM1, ibmpc::PORT_COM1),
+                SerialPortNumber::Com2 => (ibmpc::IRQ_COM2, ibmpc::PORT_COM2),
+                SerialPortNumber::Com3 => (ibmpc::IRQ_COM3, ibmpc::PORT_COM3),
+                SerialPortNumber::Com4 => (ibmpc::IRQ_COM4, ibmpc::PORT_COM4),
             };
 
             let dev = LpcUart::new(chipset.irq_pin(irq).unwrap());
             dev.set_autodiscard(true);
             LpcUart::attach(&dev, &self.machine.bus_pio, port);
             self.devices.insert(name.to_owned(), dev.clone());
-            if *num == SerialPortNumber::Com1 {
+            if desc.num == SerialPortNumber::Com1 {
                 assert!(com1.is_none());
                 com1 = Some(dev);
             }

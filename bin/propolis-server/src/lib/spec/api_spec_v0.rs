@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use propolis_api_types::instance_spec::{
-    components::devices::{SerialPort as SerialPortDesc, SerialPortNumber},
+    components::devices::SerialPort as SerialPortDesc,
     v0::{InstanceSpecV0, NetworkBackendV0, NetworkDeviceV0, StorageDeviceV0},
 };
 use thiserror::Error;
@@ -68,6 +68,7 @@ impl From<Spec> for InstanceSpecV0 {
         let mut spec = InstanceSpecV0::default();
         spec.devices.board = val.board;
         for (disk_name, disk) in val.disks {
+            let backend_name = disk.device_spec.backend_name().to_owned();
             insert_component(
                 &mut spec.devices.storage_devices,
                 disk_name,
@@ -76,12 +77,13 @@ impl From<Spec> for InstanceSpecV0 {
 
             insert_component(
                 &mut spec.backends.storage_backends,
-                disk.backend_name,
+                backend_name,
                 disk.backend_spec.into(),
             );
         }
 
         for (nic_name, nic) in val.nics {
+            let backend_name = nic.device_spec.backend_name.clone();
             insert_component(
                 &mut spec.devices.network_devices,
                 nic_name,
@@ -90,24 +92,17 @@ impl From<Spec> for InstanceSpecV0 {
 
             insert_component(
                 &mut spec.backends.network_backends,
-                nic.backend_name,
+                backend_name,
                 NetworkBackendV0::Virtio(nic.backend_spec),
             );
         }
 
-        for (num, user) in val.serial.iter() {
-            if *user == SerialPortDevice::Uart {
-                let name = match num {
-                    SerialPortNumber::Com1 => "com1",
-                    SerialPortNumber::Com2 => "com2",
-                    SerialPortNumber::Com3 => "com3",
-                    SerialPortNumber::Com4 => "com4",
-                };
-
+        for (name, desc) in val.serial {
+            if desc.device == SerialPortDevice::Uart {
                 insert_component(
                     &mut spec.devices.serial_ports,
-                    name.to_owned(),
-                    SerialPortDesc { num: *num },
+                    name,
+                    SerialPortDesc { num: desc.num },
                 );
             }
         }
@@ -163,7 +158,7 @@ impl TryFrom<InstanceSpecV0> for Spec {
                 StorageDeviceV0::NvmeDisk(disk) => &disk.backend_name,
             };
 
-            let (backend_name, backend_spec) = value
+            let (_, backend_spec) = value
                 .backends
                 .storage_backends
                 .remove_entry(backend_name)
@@ -176,7 +171,6 @@ impl TryFrom<InstanceSpecV0> for Spec {
                 device_name,
                 Disk {
                     device_spec: device_spec.into(),
-                    backend_name,
                     backend_spec: backend_spec.into(),
                 },
             )?;
@@ -192,7 +186,7 @@ impl TryFrom<InstanceSpecV0> for Spec {
         for (device_name, device_spec) in value.devices.network_devices {
             let NetworkDeviceV0::VirtioNic(device_spec) = device_spec;
             let backend_name = &device_spec.backend_name;
-            let (backend_name, backend_spec) = value
+            let (_, backend_spec) = value
                 .backends
                 .network_backends
                 .remove_entry(backend_name)
@@ -207,7 +201,7 @@ impl TryFrom<InstanceSpecV0> for Spec {
 
             builder.add_network_device(
                 device_name,
-                Nic { device_spec, backend_name, backend_spec },
+                Nic { device_spec, backend_spec },
             )?;
         }
 
@@ -253,9 +247,8 @@ impl TryFrom<InstanceSpecV0> for Spec {
             return Err(ApiSpecError::BackendNotUsed(backend.to_owned()));
         }
 
-        // TODO(#735): Serial ports need to have names like other devices.
-        for serial_port in value.devices.serial_ports.values() {
-            builder.add_serial_port(serial_port.num)?;
+        for (name, serial_port) in value.devices.serial_ports {
+            builder.add_serial_port(name, serial_port.num)?;
         }
 
         for (name, bridge) in value.devices.pci_pci_bridges {
