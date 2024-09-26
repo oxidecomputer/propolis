@@ -71,14 +71,14 @@ p9ds = { git = "https://github.com/oxidecomputer/p9fs" }
 softnpu = { git = "https://github.com/oxidecomputer/softnpu" }
 
 # Omicron-related
-internal-dns = { git = "https://github.com/oxidecomputer/omicron", branch = "hyper-v1" }
-nexus-client = { git = "https://github.com/oxidecomputer/omicron", branch = "hyper-v1" }
-omicron-common = { git = "https://github.com/oxidecomputer/omicron", branch = "hyper-v1" }
+internal-dns = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+nexus-client = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+omicron-common = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 omicron-zone-package = "0.9.0"
-oximeter-instruments = { git = "https://github.com/oxidecomputer/omicron", branch = "hyper-v1", default-features = false, features = ["kstat"] }
-oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", branch = "hyper-v1" }
-oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "hyper-v1" }
-sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", branch = "hyper-v1" }
+oximeter-instruments = { git = "https://github.com/oxidecomputer/omicron", branch = "main", default-features = false, features = ["kstat"] }
+oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 
 # Crucible
 crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "a551f245e8a26f52098382903ccf0a982b7c54fa" }
