@@ -7,6 +7,7 @@ use std::io::{Error, ErrorKind, Result};
 use std::os::fd::*;
 use std::os::unix::fs::MetadataExt;
 
+use libc::dev_t;
 pub use viona_api_sys::*;
 
 pub const VIONA_DEV_PATH: &str = "/dev/viona";
