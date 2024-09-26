@@ -337,7 +337,7 @@ dependencies = [
 [[package]]
 name = "bhyve_api"
 version = "0.0.0"
-source = "git+https://github.com/oxidecomputer/propolis?branch=hyper-v1#305d83abd979528515d782747e46b16413c97e66"
+source = "git+https://github.com/oxidecomputer/propolis?branch=hyper-v1#5b65dc6923420c2bfe0863825be7bcbee895ca09"
 dependencies = [
  "bhyve_api_sys 0.0.0 (git+https://github.com/oxidecomputer/propolis?branch=hyper-v1)",
  "libc",
@@ -365,7 +365,7 @@ dependencies = [
 [[package]]
 name = "bhyve_api_sys"
 version = "0.0.0"
-source = "git+https://github.com/oxidecomputer/propolis?branch=hyper-v1#305d83abd979528515d782747e46b16413c97e66"
+source = "git+https://github.com/oxidecomputer/propolis?branch=hyper-v1#5b65dc6923420c2bfe0863825be7bcbee895ca09"
 dependencies = [
  "libc",
  "strum",
@@ -855,7 +855,7 @@ dependencies = [
  "omicron-uuid-kinds 0.1.0 (git+https://github.com/oxidecomputer/omicron?branch=main)",
  "oximeter 0.1.0 (git+https://github.com/oxidecomputer/omicron?branch=main)",
  "oximeter-producer 0.1.0 (git+https://github.com/oxidecomputer/omicron?branch=main)",
- "progenitor-client",
+ "progenitor-client 0.7.0",
  "rand",
  "rand_chacha",
  "rayon",
@@ -943,7 +943,7 @@ dependencies = [
 [[package]]
 name = "crucible-smf"
 version = "0.0.0"
-source = "git+https://github.com/oxidecomputer/crucible?branch=hyper-v1#4ba298400a46805449da56b41a53aaac0a7c3830"
+source = "git+https://github.com/oxidecomputer/crucible?branch=hyper-v1#ae04a547472eeda7c8c939c642c7cb152a4244c1"
 dependencies = [
  "crucible-workspace-hack",
  "libc",
@@ -1244,7 +1244,7 @@ dependencies = [
  "expectorate",
  "http 1.1.0",
  "omicron-workspace-hack",
- "progenitor",
+ "progenitor 0.7.0",
  "reqwest 0.12.5",
  "schemars",
  "serde",
@@ -1261,7 +1261,7 @@ dependencies = [
  "expectorate",
  "http 0.2.12",
  "omicron-workspace-hack",
- "progenitor",
+ "progenitor 0.7.0",
  "reqwest 0.11.27",
  "schemars",
  "serde",
@@ -1301,7 +1301,7 @@ checksum = "1435fa1053d8b2fbbe9be7e97eca7f33d37b28409959813daefc1446a14247f1"
 [[package]]
 name = "dropshot"
 version = "0.11.1-dev"
-source = "git+https://github.com/oxidecomputer/dropshot?branch=main#a8f3f97a2eec06765893d43ede6f811ccc7949ea"
+source = "git+https://github.com/oxidecomputer/dropshot?branch=main#e257f44fd36e358ff88793363aed6bf2108910de"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1314,8 +1314,10 @@ dependencies = [
  "form_urlencoded",
  "futures",
  "hostname 0.4.0",
- "http 0.2.12",
- "hyper 0.14.28",
+ "http 1.1.0",
+ "http-body-util",
+ "hyper 1.4.1",
+ "hyper-util",
  "indexmap 2.5.0",
  "multer",
  "openapiv3",
@@ -1347,7 +1349,7 @@ dependencies = [
 [[package]]
 name = "dropshot_endpoint"
 version = "0.11.1-dev"
-source = "git+https://github.com/oxidecomputer/dropshot?branch=main#a8f3f97a2eec06765893d43ede6f811ccc7949ea"
+source = "git+https://github.com/oxidecomputer/dropshot?branch=main#e257f44fd36e358ff88793363aed6bf2108910de"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -1757,7 +1759,7 @@ dependencies = [
  "chrono",
  "gateway-messages 0.1.0 (git+https://github.com/oxidecomputer/management-gateway-service?rev=9bbac475dcaac88286c07a20b6bd3e94fc81d7f0)",
  "omicron-workspace-hack",
- "progenitor",
+ "progenitor 0.7.0",
  "rand",
  "reqwest 0.12.5",
  "schemars",
@@ -1776,7 +1778,7 @@ dependencies = [
  "chrono",
  "gateway-messages 0.1.0 (git+https://github.com/oxidecomputer/management-gateway-service?rev=319e7b92db69792ab8efa4c68554ad0cf83adf93)",
  "omicron-workspace-hack",
- "progenitor",
+ "progenitor 0.7.0",
  "rand",
  "reqwest 0.11.27",
  "schemars",
@@ -2220,6 +2222,7 @@ dependencies = [
  "http 1.1.0",
  "http-body 1.0.1",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -2290,9 +2293,9 @@ dependencies = [
 
 [[package]]
 name = "hyper-util"
-version = "0.1.7"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cde7055719c54e36e95e8719f95883f22072a48ede39db7fc17a4e1d5281e9b9"
+checksum = "41296eb09f183ac68eec06e03cdbea2e759633d4067b2f6552fc2e009bcad08b"
 dependencies = [
  "bytes",
  "futures-channel",
@@ -2303,7 +2306,6 @@ dependencies = [
  "pin-project-lite",
  "socket2",
  "tokio",
- "tower",
  "tower-service",
  "tracing",
 ]
@@ -2900,7 +2902,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "percent-encoding",
- "progenitor",
+ "progenitor 0.7.0",
  "reqwest 0.12.5",
  "schemars",
  "serde",
@@ -2916,7 +2918,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "percent-encoding",
- "progenitor",
+ "progenitor 0.7.0",
  "reqwest 0.11.27",
  "schemars",
  "serde",
@@ -3057,7 +3059,7 @@ dependencies = [
  "omicron-uuid-kinds 0.1.0 (git+https://github.com/oxidecomputer/omicron?branch=hyper-v1)",
  "omicron-workspace-hack",
  "oxnet",
- "progenitor",
+ "progenitor 0.7.0",
  "regress 0.9.1",
  "reqwest 0.12.5",
  "schemars",
@@ -3081,7 +3083,7 @@ dependencies = [
  "omicron-uuid-kinds 0.1.0 (git+https://github.com/oxidecomputer/omicron?branch=main)",
  "omicron-workspace-hack",
  "oxnet",
- "progenitor",
+ "progenitor 0.7.0",
  "regress 0.9.1",
  "reqwest 0.11.27",
  "schemars",
@@ -3483,8 +3485,8 @@ dependencies = [
  "once_cell",
  "oxnet",
  "parse-display",
- "progenitor",
- "progenitor-client",
+ "progenitor 0.7.0",
+ "progenitor-client 0.7.0",
  "rand",
  "regress 0.9.1",
  "reqwest 0.12.5",
@@ -3525,8 +3527,8 @@ dependencies = [
  "once_cell",
  "oxnet",
  "parse-display",
- "progenitor",
- "progenitor-client",
+ "progenitor 0.7.0",
+ "progenitor-client 0.7.0",
  "rand",
  "regress 0.9.1",
  "reqwest 0.11.27",
@@ -4393,26 +4395,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pin-project"
-version = "1.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6bf43b791c5b9e34c3d182969b4abb522f9343702850a2e57f460d00d09b4b3"
-dependencies = [
- "pin-project-internal",
-]
-
-[[package]]
-name = "pin-project-internal"
-version = "1.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f38a4412a78282e09a2cf38d195ea5420d15ba0602cb375210efbc877243965"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.77",
-]
-
-[[package]]
 name = "pin-project-lite"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4592,15 +4574,41 @@ name = "progenitor"
 version = "0.7.0"
 source = "git+https://github.com/oxidecomputer/progenitor?branch=main#ab69e4e7f5147f0f12deb84d03aa145e144d9e53"
 dependencies = [
- "progenitor-client",
- "progenitor-impl",
- "progenitor-macro",
+ "progenitor-client 0.7.0",
+ "progenitor-impl 0.7.0",
+ "progenitor-macro 0.7.0",
+]
+
+[[package]]
+name = "progenitor"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "293df5b79211fbf0c1ebad6513ba451d267e9c15f5f19ee5d3da775e2dd27331"
+dependencies = [
+ "progenitor-client 0.8.0",
+ "progenitor-impl 0.8.0",
+ "progenitor-macro 0.8.0",
 ]
 
 [[package]]
 name = "progenitor-client"
 version = "0.7.0"
 source = "git+https://github.com/oxidecomputer/progenitor?branch=main#ab69e4e7f5147f0f12deb84d03aa145e144d9e53"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "percent-encoding",
+ "reqwest 0.12.5",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+]
+
+[[package]]
+name = "progenitor-client"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4a5db54eac3cae7007a0785854bc3e89fd418cca7dfc2207b99b43979154c1b"
 dependencies = [
  "bytes",
  "futures-core",
@@ -4628,7 +4636,29 @@ dependencies = [
  "serde_json",
  "syn 2.0.77",
  "thiserror",
- "typify",
+ "typify 0.1.0",
+ "unicode-ident",
+]
+
+[[package]]
+name = "progenitor-impl"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d85934a440963a69f9f04f48507ff6e7aa2952a5b2d8f96cc37fa3dd5c270f66"
+dependencies = [
+ "heck 0.5.0",
+ "http 1.1.0",
+ "indexmap 2.5.0",
+ "openapiv3",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "schemars",
+ "serde",
+ "serde_json",
+ "syn 2.0.77",
+ "thiserror",
+ "typify 0.2.0",
  "unicode-ident",
 ]
 
@@ -4639,7 +4669,25 @@ source = "git+https://github.com/oxidecomputer/progenitor?branch=main#ab69e4e7f5
 dependencies = [
  "openapiv3",
  "proc-macro2",
- "progenitor-impl",
+ "progenitor-impl 0.7.0",
+ "quote",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_tokenstream 0.2.2",
+ "serde_yaml",
+ "syn 2.0.77",
+]
+
+[[package]]
+name = "progenitor-macro"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d99a5a259e2d65a4933054aa51717c70b6aba0522695731ac354a522124efc9b"
+dependencies = [
+ "openapiv3",
+ "proc-macro2",
+ "progenitor-impl 0.8.0",
  "quote",
  "schemars",
  "serde",
@@ -4724,7 +4772,7 @@ dependencies = [
  "async-trait",
  "base64 0.21.7",
  "futures",
- "progenitor",
+ "progenitor 0.8.0",
  "rand",
  "reqwest 0.12.5",
  "schemars",
@@ -4748,7 +4796,7 @@ dependencies = [
  "dropshot",
  "futures",
  "hyper 1.4.1",
- "progenitor",
+ "progenitor 0.8.0",
  "propolis_types",
  "rand",
  "reqwest 0.12.5",
@@ -6692,27 +6740,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tower"
-version = "0.4.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8fa9be0de6cf49e536ce1851f987bd21a43b771b09473c3549a6c853db37c1c"
-dependencies = [
- "futures-core",
- "futures-util",
- "pin-project",
- "pin-project-lite",
- "tokio",
- "tower-layer",
- "tower-service",
-]
-
-[[package]]
-name = "tower-layer"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "121c2a6cda46980bb0fcd1647ffaf6cd3fc79a013de288782836f6df9c48780e"
-
-[[package]]
 name = "tower-service"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6874,14 +6901,44 @@ name = "typify"
 version = "0.1.0"
 source = "git+https://github.com/oxidecomputer/typify#0ef24964a92b600a82f07a980067d8dac5600e40"
 dependencies = [
- "typify-impl",
- "typify-macro",
+ "typify-impl 0.1.0",
+ "typify-macro 0.1.0",
+]
+
+[[package]]
+name = "typify"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4c644dda9862f0fef3a570d8ddb3c2cfb1d5ac824a1f2ddfa7bc8f071a5ad8a"
+dependencies = [
+ "typify-impl 0.2.0",
+ "typify-macro 0.2.0",
 ]
 
 [[package]]
 name = "typify-impl"
 version = "0.1.0"
 source = "git+https://github.com/oxidecomputer/typify#0ef24964a92b600a82f07a980067d8dac5600e40"
+dependencies = [
+ "heck 0.5.0",
+ "log",
+ "proc-macro2",
+ "quote",
+ "regress 0.10.1",
+ "schemars",
+ "semver 1.0.23",
+ "serde",
+ "serde_json",
+ "syn 2.0.77",
+ "thiserror",
+ "unicode-ident",
+]
+
+[[package]]
+name = "typify-impl"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d59ab345b6c0d8ae9500b9ff334a4c7c0d316c1c628dc55726b95887eb8dbd11"
 dependencies = [
  "heck 0.5.0",
  "log",
@@ -6910,7 +6967,24 @@ dependencies = [
  "serde_json",
  "serde_tokenstream 0.2.2",
  "syn 2.0.77",
- "typify-impl",
+ "typify-impl 0.1.0",
+]
+
+[[package]]
+name = "typify-macro"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "785e2cdcef0df8160fdd762ed548a637aaec1e83704fdbc14da0df66013ee8d0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "schemars",
+ "semver 1.0.23",
+ "serde",
+ "serde_json",
+ "serde_tokenstream 0.2.2",
+ "syn 2.0.77",
+ "typify-impl 0.2.0",
 ]
 
 [[package]]

@@ -130,7 +130,7 @@ owo-colors = "4"
 pin-project-lite = "0.2.13"
 proc-macro2 = "1.0"
 proc-macro-error = "1"
-progenitor = { git = "https://github.com/oxidecomputer/progenitor", branch = "main" }
+progenitor = "0.8.0"
 quote = "1.0"
 rand = "0.8"
 reqwest = { version = "0.12.0", default-features = false }
