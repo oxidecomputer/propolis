@@ -67,11 +67,14 @@ impl VionaFd {
     }
 
     /// Retrieve the minor number of the viona device instance.
-    /// This is used for matching kernal statistic entries to the viona device.
+    /// This is used for matching kernel statistic entries to the viona device.
     pub fn instance_id(&self) -> Result<u32> {
         let meta = self.0.metadata()?;
         let rdev = meta.rdev();
+        #[cfg(not(target_os = "macos"))]
         let minor = unsafe { libc::minor(rdev) };
+        #[cfg(target_os = "macos")]
+        let minor = unsafe { libc::minor(rdev as libc::dev_t) as u32 };
         Ok(minor)
     }
 
