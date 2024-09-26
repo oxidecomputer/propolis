@@ -106,7 +106,7 @@ clap = "4.2"
 const_format = "0.2"
 crossbeam-channel = "0.5"
 ctrlc = "3.2"
-dropshot = { git = "https://github.com/oxidecomputer/dropshot", branch = "main" }
+dropshot = "0.12.0"
 erased-serde = "0.4"
 errno = "0.2.8"
 escargot = "0.5.8"
