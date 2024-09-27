@@ -257,10 +257,14 @@ impl<'dr> VmConfig<'dr> {
         // in the correct order: boot disk first, then in the data disks'
         // iteration order.
         let all_disks = self.disks.iter().zip(disk_handles.iter());
-        for (idx, (req, hdl)) in all_disks.enumerate() {
-            let device_name = format!("disk-device{}", idx);
+        for (req, hdl) in all_disks {
             let pci_path = PciPath::new(0, req.pci_device_num, 0).unwrap();
-            let (backend_name, backend_spec) = hdl.backend_spec();
+            let (device_name, backend_spec) = hdl.backend_spec();
+            // propolis-server uses a disk's name from the API as its device
+            // name. It then derives a backend name from the disk name. Match
+            // that name derivation here so PHD tests match the API as used by
+            // Nexus.
+            let backend_name = format!("{}-backend", device_name);
             let device_spec = match req.interface {
                 DiskInterface::Virtio => {
                     StorageDeviceV0::VirtioDisk(VirtioDisk {

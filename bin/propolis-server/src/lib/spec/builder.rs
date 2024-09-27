@@ -118,24 +118,11 @@ impl SpecBuilder {
         &mut self,
         item: &BootOrderEntry,
     ) -> Result<(), SpecBuilderError> {
-        let boot_order = self.spec.boot_order.get_or_insert(Vec::new());
-
-        use crate::spec::StorageDevice;
-        use crate::spec::{NvmeDisk, VirtioDisk};
-
-        let is_disk =
-            self.spec.disks.values().any(|disk| match &disk.device_spec {
-                StorageDevice::Virtio(VirtioDisk { backend_name, .. }) => {
-                    backend_name == item.name.as_str()
-                }
-                StorageDevice::Nvme(NvmeDisk { backend_name, .. }) => {
-                    backend_name == item.name.as_str()
-                }
-            });
-
-        if !is_disk {
+        if !self.spec.disks.contains_key(item.name.as_str()) {
             return Err(SpecBuilderError::BootOptionMissing(item.name.clone()));
         }
+
+        let boot_order = self.spec.boot_order.get_or_insert(Vec::new());
 
         boot_order
             .push(crate::spec::BootOrderEntry { name: item.name.clone() });

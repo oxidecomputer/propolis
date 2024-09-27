@@ -1036,22 +1036,8 @@ impl<'a> MachineInitializer<'a> {
         for boot_entry in boot_names.iter() {
             // Theoretically we could support booting from network devices by
             // matching them here and adding their PCI paths, but exactly what
-            // would happen is ill-understood and device names are not plumbed
-            // in a way that supports it. So, only check disks here.
-            if let Some(spec) = self
-                .spec
-                .disks
-                .iter()
-                .find(|(_name, spec)| match &spec.device_spec {
-                    StorageDevice::Nvme(disk) => {
-                        disk.backend_name.as_str() == boot_entry.name.as_str()
-                    }
-                    StorageDevice::Virtio(disk) => {
-                        disk.backend_name.as_str() == boot_entry.name.as_str()
-                    }
-                })
-                .map(|(_name, spec)| spec)
-            {
+            // would happen is ill-understood. So, only check disks here.
+            if let Some(spec) = self.spec.disks.get(boot_entry.name.as_str()) {
                 match &spec.device_spec {
                     StorageDevice::Virtio(disk) => {
                         let bdf = parse_bdf(&disk.pci_path)?;
