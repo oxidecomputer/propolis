@@ -397,15 +397,15 @@ mod serial {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
+    use dropshot::WebsocketConnectionRaw;
     use futures::StreamExt;
-    use hyper::upgrade::Upgraded;
     use tokio::sync::{mpsc, Notify};
     use tokio_tungstenite::tungstenite::protocol::{
         frame::coding::CloseCode, CloseFrame,
     };
     use tokio_tungstenite::WebSocketStream;
 
-    type WsConn = WebSocketStream<Upgraded>;
+    type WsConn = WebSocketStream<WebsocketConnectionRaw>;
 
     const DEFAULT_MAX_LEN: usize = 1024;
 

@@ -20,7 +20,6 @@ fatfs.workspace = true
 futures.workspace = true
 flate2.workspace = true
 hex.workspace = true
-http.workspace = true
 libc.workspace = true
 newtype_derive.workspace = true
 propolis-client.workspace = true

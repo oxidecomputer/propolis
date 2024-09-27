@@ -37,15 +37,15 @@ async fn instance_stop_causes_destroy_test(ctx: &Framework) {
 
     assert!(matches!(
         vm.run().await.unwrap_err().status().unwrap(),
-        http::status::StatusCode::FAILED_DEPENDENCY
+        reqwest::StatusCode::FAILED_DEPENDENCY
     ));
     assert!(matches!(
         vm.stop().await.unwrap_err().status().unwrap(),
-        http::status::StatusCode::FAILED_DEPENDENCY
+        reqwest::StatusCode::FAILED_DEPENDENCY
     ));
     assert!(matches!(
         vm.reset().await.unwrap_err().status().unwrap(),
-        http::status::StatusCode::FAILED_DEPENDENCY
+        reqwest::StatusCode::FAILED_DEPENDENCY
     ));
 }
 

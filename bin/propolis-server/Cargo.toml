@@ -30,7 +30,6 @@ crucible-client-types.workspace = true
 dropshot = { workspace = true, features = ["usdt-probes"] }
 erased-serde.workspace = true
 futures.workspace = true
-http.workspace = true
 hyper.workspace = true
 internal-dns.workspace = true
 kstat-rs.workspace = true

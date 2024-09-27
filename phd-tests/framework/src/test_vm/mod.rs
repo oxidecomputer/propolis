@@ -1049,7 +1049,7 @@ async fn try_ensure_vm_destroyed(client: &Client) {
         // nothing else that *can* be done, but the error is unusual and should
         // be logged.
         match error.status() {
-            Some(http::status::StatusCode::FAILED_DEPENDENCY) => {}
+            Some(reqwest::StatusCode::FAILED_DEPENDENCY) => {}
             _ => {
                 error!(
                     %error,

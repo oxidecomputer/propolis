@@ -433,7 +433,7 @@ impl Drop for ExternalRequestQueue {
                                 "VM destroyed before request could be handled"
                                     .to_string(),
                             ),
-                            http::StatusCode::GONE,
+                            hyper::StatusCode::GONE,
                         )));
                 }
 

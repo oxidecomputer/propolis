@@ -272,7 +272,7 @@ async fn instance_ensure_common(
             | VmError::AlreadyInitialized
             | VmError::RundownInProgress => HttpError::for_client_error(
                 Some(api::ErrorCode::AlreadyInitialized.to_string()),
-                http::StatusCode::CONFLICT,
+                hyper::StatusCode::CONFLICT,
                 "instance already initialized".to_string(),
             ),
             VmError::InitializationFailed(e) => HttpError::for_internal_error(
@@ -409,7 +409,7 @@ async fn instance_state_monitor(
         state_watcher.changed().await.map_err(|_| {
             HttpError::for_client_error(
                 Some(api::ErrorCode::NoInstance.to_string()),
-                http::status::StatusCode::GONE,
+                hyper::StatusCode::GONE,
                 format!(
                     "No instance present; will never reach generation {}",
                     gen
@@ -439,7 +439,7 @@ async fn instance_state_put(
             }
             VmError::ForbiddenStateChange(reason) => HttpError::for_status(
                 Some(format!("instance state change not allowed: {}", reason)),
-                http::status::StatusCode::FORBIDDEN,
+                hyper::StatusCode::FORBIDDEN,
             ),
             _ => HttpError::for_internal_error(format!(
                 "unexpected error from VM controller: {e}"
@@ -693,7 +693,7 @@ async fn instance_issue_crucible_vcr_request(
         .map_err(|e| match e {
             VmError::ForbiddenStateChange(reason) => HttpError::for_status(
                 Some(format!("instance state change not allowed: {}", reason)),
-                http::status::StatusCode::FORBIDDEN,
+                hyper::StatusCode::FORBIDDEN,
             ),
             _ => HttpError::for_internal_error(format!(
                 "unexpected error from VM controller: {e}"
@@ -749,7 +749,7 @@ pub fn api() -> ApiDescription<Arc<DropshotEndpointContext>> {
 fn not_created_error() -> HttpError {
     HttpError::for_client_error(
         Some(api::ErrorCode::NoInstance.to_string()),
-        http::StatusCode::FAILED_DEPENDENCY,
+        hyper::StatusCode::FAILED_DEPENDENCY,
         "Server not initialized (no instance)".to_string(),
     )
 }
