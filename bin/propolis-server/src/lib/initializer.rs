@@ -1041,26 +1041,38 @@ impl<'a> MachineInitializer<'a> {
                 match &spec.device_spec {
                     StorageDevice::Virtio(disk) => {
                         let bdf = parse_bdf(&disk.pci_path)?;
-                        // TODO: check that bus is 0. only support boot devices
-                        // directly attached to the root bus for now.
+                        if bdf.bus.get() != 0 {
+                            return Err(Error::new(
+                                ErrorKind::InvalidInput,
+                                "Boot device currently must be on PCI bus 0",
+                            ));
+                        }
+
                         order.add_disk(bdf.location);
                     }
                     StorageDevice::Nvme(disk) => {
                         let bdf = parse_bdf(&disk.pci_path)?;
-                        // TODO: check that bus is 0. only support boot devices
-                        // directly attached to the root bus for now.
-                        //
+                        if bdf.bus.get() != 0 {
+                            return Err(Error::new(
+                                ErrorKind::InvalidInput,
+                                "Boot device currently must be on PCI bus 0",
+                            ));
+                        }
+
                         // TODO: separately, propolis-standalone passes an eui64
                         // of 0, so do that here too. is that.. ok?
                         order.add_nvme(bdf.location, 0);
                     }
                 };
             } else {
+                // This should be unreachable - we check that the boot disk is
+                // valid when constructing the spec we're initializing from.
                 let message = format!(
-                    "Instance spec included boot entry which does not refer to an existing disk: `{}`",
+                    "Instance spec included boot entry which does not refer \
+                    to an existing disk: `{}`",
                     boot_entry.name.as_str(),
                 );
-                return Err(Error::new(ErrorKind::Other, message));
+                return Err(Error::new(ErrorKind::InvalidInput, message));
             }
         }
 

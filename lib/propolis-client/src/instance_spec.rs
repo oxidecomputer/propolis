@@ -186,14 +186,16 @@ impl SpecBuilderV0 {
 
     /// Sets a boot order. Names here refer to devices included in this spec.
     ///
-    /// Permissible to not this if the implicit boot order is desired, but the implicit boot order
-    /// may be unstable across device addition and removal.
+    /// Permissible to not set this if the implicit boot order is desired, but
+    /// the implicit boot order may be unstable across device addition and
+    /// removal.
     ///
-    /// If any devices named in this order are not actually present in the constructed spec,
-    /// Propolis will return an error when the spec is provided.
+    /// If any devices named in this order are not actually present in the
+    /// constructed spec, Propolis will return an error when the spec is
+    /// provided.
     ///
-    /// XXX: this should certainly return `&mut Self` - all the builders here should. check if any
-    /// of these are chained..?
+    /// XXX: this should certainly return `&mut Self` - all the builders here
+    /// should. check if any of these are chained..?
     pub fn set_boot_order(
         &mut self,
         boot_order: Vec<String>,

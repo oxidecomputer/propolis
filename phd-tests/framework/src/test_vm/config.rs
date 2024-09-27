@@ -132,10 +132,11 @@ impl<'dr> VmConfig<'dr> {
         self
     }
 
-    /// Add a new disk to the VM config, and add it to the front of the VM's boot order.
+    /// Add a new disk to the VM config, and add it to the front of the VM's
+    /// boot order.
     ///
-    /// The added disk will have the name `boot-disk`, and replace the previous existing
-    /// `boot-disk`.
+    /// The added disk will have the name `boot-disk`, and replace the previous
+    /// existing `boot-disk`.
     pub fn boot_disk(
         &mut self,
         artifact: &'dr str,
@@ -207,28 +208,37 @@ impl<'dr> VmConfig<'dr> {
             })
             .context("serializing Propolis server config")?;
 
-        // The first disk in the boot list might not be the disk a test *actually* expects to boot.
+        // The first disk in the boot list might not be the disk a test
+        // *actually* expects to boot.
         //
-        // If there are multiple bootable disks in the boot order, we'll assume they're all
-        // the same guest OS kind. So look for `boot-disk` - if there isn't a disk named
-        // `boot-disk` then fall back to hoping the first disk in the boot order is a bootable
-        // disk, and if *that* isn't a bootable disk, maybe the first disk is.
+        // If there are multiple bootable disks in the boot order, we'll assume
+        // they're all the same guest OS kind. So look for `boot-disk` - if
+        // there isn't a disk named `boot-disk` then fall back to hoping the
+        // first disk in the boot order is a bootable disk, and if *that* isn't
+        // a bootable disk, maybe the first disk is.
         //
-        // TODO: theoretically we might want to accept configuration of a specific guest OS adapter
-        // and avoid the guessing games. So far the above supports existing tests and makes them
-        // "Just Work", but a more complicated test may want more control here.
-        let boot_disk =
-            self.disks.iter().find(|d| d.name == "boot-disk")
-                .or_else(|| if let Some(boot_order) = self.boot_order.as_ref() {
-                    boot_order.first().and_then(|name| self.disks.iter().find(|d| &d.name == name))
+        // TODO: theoretically we might want to accept configuration of a
+        // specific guest OS adapter and avoid the guessing games. So far the
+        // above supports existing tests and makes them "Just Work", but a more
+        // complicated test may want more control here.
+        let boot_disk = self
+            .disks
+            .iter()
+            .find(|d| d.name == "boot-disk")
+            .or_else(|| {
+                if let Some(boot_order) = self.boot_order.as_ref() {
+                    boot_order.first().and_then(|name| {
+                        self.disks.iter().find(|d| &d.name == name)
+                    })
                 } else {
                     None
-                })
-                .or_else(|| self.disks.first())
-                .expect("VM config includes at least one disk (and maybe a boot order)?");
+                }
+            })
+            .or_else(|| self.disks.first())
+            .expect("VM config includes at least one disk");
 
-        // XXX: assuming all bootable images are equivalent to the first, or at least the same
-        // guest OS kind.
+        // XXX: assuming all bootable images are equivalent to the first, or at
+        // least the same guest OS kind.
         let DiskSource::Artifact(boot_artifact) = boot_disk.source else {
             unreachable!("boot disks always use artifacts as sources");
         };
@@ -242,7 +252,6 @@ impl<'dr> VmConfig<'dr> {
         let mut disk_handles = Vec::new();
         for disk in self.disks.iter() {
             disk_handles.push(
-                // format!("data-disk-{}", idx)
                 make_disk(disk.name.to_owned(), framework, disk)
                     .await
                     .context("creating disk")?,
