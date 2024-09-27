@@ -67,10 +67,54 @@ impl BlockSize {
     }
 }
 
+/// The name for the device implementing a disk. This is the name provided for a
+/// disk in constructing a VM spec for PHD tests. The disk by this name likely
+/// also has a [`BackendName`] derived from this device name.
+///
+/// TODO: This exists largely to ensure that PHD matches the same spec
+/// construction conventions as `propolis-server` when handling API requests: it
+/// is another piece of glue that could reasonably be deleted if/when PHD and
+/// sled-agent use the same code to build InstanceEnsureRequest. Until then,
+/// carefully match the relationship between names with these newtypes.
+///
+/// Alternatively, `DeviceName` and `BackendName` could be pulled into
+/// `propolis-api-types`.
+#[derive(Clone, Debug)]
+pub struct DeviceName(String);
+
+impl DeviceName {
+    pub fn new(name: String) -> Self {
+        DeviceName(name)
+    }
+
+    pub fn into_backend_name(self) -> BackendName {
+        // This must match `api_request.rs`' `parse_disk_from_request`.
+        BackendName(format!("{}-backend", self.0))
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+/// The name for a backend implementing storage for a disk. This is derived
+/// exclusively from a corresponding [`DeviceName`].
+#[derive(Clone, Debug)]
+pub struct BackendName(String);
+
+impl BackendName {
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
 /// A trait for functions exposed by all disk backends (files, Crucible, etc.).
 pub trait DiskConfig: std::fmt::Debug + Send + Sync {
+    /// Yields the device name for this disk.
+    fn device_name(&self) -> &DeviceName;
+
     /// Yields the backend spec for this disk's storage backend.
-    fn backend_spec(&self) -> (String, StorageBackendV0);
+    fn backend_spec(&self) -> StorageBackendV0;
 
     /// Yields the guest OS kind of the guest image the disk was created from,
     /// or `None` if the disk was not created from a guest image.
@@ -182,7 +226,7 @@ impl DiskFactory {
     /// by `source`.
     pub(crate) async fn create_file_backed_disk<'d>(
         &self,
-        name: String,
+        name: DeviceName,
         source: &DiskSource<'d>,
     ) -> Result<Arc<FileBackedDisk>, DiskError> {
         let artifact_name = match source {
@@ -226,7 +270,7 @@ impl DiskFactory {
     /// - block_size: The disk's block size.
     pub(crate) async fn create_crucible_disk<'d>(
         &self,
-        name: String,
+        name: DeviceName,
         source: &DiskSource<'d>,
         mut min_disk_size_gib: u64,
         block_size: BlockSize,
@@ -278,7 +322,7 @@ impl DiskFactory {
 
     pub(crate) async fn create_in_memory_disk<'d>(
         &self,
-        name: String,
+        name: DeviceName,
         source: &DiskSource<'d>,
         readonly: bool,
     ) -> Result<Arc<InMemoryDisk>, DiskError> {

@@ -46,7 +46,9 @@ impl VmSpec {
                 continue;
             };
 
-            let (backend_name, backend_spec) = disk.backend_spec();
+            let backend_spec = disk.backend_spec();
+            let backend_name =
+                disk.device_name().clone().into_backend_name().into_string();
             match self
                 .instance_spec
                 .backends

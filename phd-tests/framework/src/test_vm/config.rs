@@ -16,7 +16,7 @@ use propolis_client::{
 use uuid::Uuid;
 
 use crate::{
-    disk::{DiskConfig, DiskSource},
+    disk::{DeviceName, DiskConfig, DiskSource},
     test_vm::spec::VmSpec,
     Framework,
 };
@@ -268,30 +268,27 @@ impl<'dr> VmConfig<'dr> {
         let all_disks = self.disks.iter().zip(disk_handles.iter());
         for (req, hdl) in all_disks {
             let pci_path = PciPath::new(0, req.pci_device_num, 0).unwrap();
-            let (device_name, backend_spec) = hdl.backend_spec();
-            // propolis-server uses a disk's name from the API as its device
-            // name. It then derives a backend name from the disk name. Match
-            // that name derivation here so PHD tests match the API as used by
-            // Nexus.
-            let backend_name = format!("{}-backend", device_name);
+            let backend_spec = hdl.backend_spec();
+            let device_name = hdl.device_name().clone();
+            let backend_name = device_name.clone().into_backend_name();
             let device_spec = match req.interface {
                 DiskInterface::Virtio => {
                     StorageDeviceV0::VirtioDisk(VirtioDisk {
-                        backend_name: backend_name.clone(),
+                        backend_name: backend_name.clone().into_string(),
                         pci_path,
                     })
                 }
                 DiskInterface::Nvme => StorageDeviceV0::NvmeDisk(NvmeDisk {
-                    backend_name: backend_name.clone(),
+                    backend_name: backend_name.clone().into_string(),
                     pci_path,
                 }),
             };
 
             spec_builder
                 .add_storage_device(
-                    device_name,
+                    device_name.into_string(),
                     device_spec,
-                    backend_name,
+                    backend_name.into_string(),
                     backend_spec,
                 )
                 .context("adding storage device to spec")?;
@@ -334,14 +331,16 @@ impl<'dr> VmConfig<'dr> {
 }
 
 async fn make_disk<'req>(
-    name: String,
+    device_name: String,
     framework: &Framework,
     req: &DiskRequest<'req>,
 ) -> anyhow::Result<Arc<dyn DiskConfig>> {
+    let device_name = DeviceName::new(device_name);
+
     Ok(match req.backend {
         DiskBackend::File => framework
             .disk_factory
-            .create_file_backed_disk(name, &req.source)
+            .create_file_backed_disk(device_name, &req.source)
             .await
             .with_context(|| {
                 format!("creating new file-backed disk from {:?}", req.source,)
@@ -349,7 +348,7 @@ async fn make_disk<'req>(
         DiskBackend::Crucible { min_disk_size_gib, block_size } => framework
             .disk_factory
             .create_crucible_disk(
-                name,
+                device_name,
                 &req.source,
                 min_disk_size_gib,
                 block_size,
@@ -364,7 +363,7 @@ async fn make_disk<'req>(
             as Arc<dyn DiskConfig>,
         DiskBackend::InMemory { readonly } => framework
             .disk_factory
-            .create_in_memory_disk(name, &req.source, readonly)
+            .create_in_memory_disk(device_name, &req.source, readonly)
             .await
             .with_context(|| {
                 format!("creating new in-memory disk from {:?}", req.source)
