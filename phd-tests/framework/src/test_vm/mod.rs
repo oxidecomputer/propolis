@@ -357,6 +357,7 @@ impl TestVm {
                         disks: disk_reqs.clone().unwrap(),
                         migrate: migrate.clone(),
                         nics: vec![],
+                        boot_settings: None,
                         properties: properties.clone(),
                     };
 

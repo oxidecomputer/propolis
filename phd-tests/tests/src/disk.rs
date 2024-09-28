@@ -17,6 +17,7 @@ async fn in_memory_backend_smoke_test(ctx: &Framework) {
     let mut data = FatFilesystem::new();
     data.add_file_from_str("hello_oxide.txt", HELLO_MSG)?;
     cfg.data_disk(
+        "data-disk-0",
         DiskSource::FatFilesystem(data),
         DiskInterface::Virtio,
         DiskBackend::InMemory { readonly: true },

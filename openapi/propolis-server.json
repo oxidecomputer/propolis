@@ -529,6 +529,33 @@
         ],
         "additionalProperties": false
       },
+      "BootOrderEntry": {
+        "description": "An entry in a list of boot options.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "The name of the device to attempt booting from.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "BootSettings": {
+        "type": "object",
+        "properties": {
+          "order": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BootOrderEntry"
+            }
+          }
+        },
+        "required": [
+          "order"
+        ]
+      },
       "Chipset": {
         "description": "A kind of virtual chipset.",
         "oneOf": [
@@ -630,6 +657,14 @@
         "properties": {
           "board": {
             "$ref": "#/components/schemas/Board"
+          },
+          "boot_settings": {
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BootSettings"
+              }
+            ]
           },
           "network_devices": {
             "type": "object",
@@ -845,6 +880,15 @@
       "InstanceEnsureRequest": {
         "type": "object",
         "properties": {
+          "boot_settings": {
+            "nullable": true,
+            "default": null,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/BootSettings"
+              }
+            ]
+          },
           "cloud_init_bytes": {
             "nullable": true,
             "type": "string"

@@ -16,7 +16,7 @@ use propolis_client::{
 use uuid::Uuid;
 
 use crate::{
-    disk::{DiskConfig, DiskSource},
+    disk::{DeviceName, DiskConfig, DiskSource},
     test_vm::spec::VmSpec,
     Framework,
 };
@@ -37,6 +37,7 @@ pub enum DiskBackend {
 
 #[derive(Clone, Debug)]
 struct DiskRequest<'a> {
+    name: &'a str,
     interface: DiskInterface,
     backend: DiskBackend,
     source: DiskSource<'a>,
@@ -48,8 +49,8 @@ pub struct VmConfig<'dr> {
     cpus: u8,
     memory_mib: u64,
     bootrom_artifact: String,
-    boot_disk: DiskRequest<'dr>,
-    data_disks: Vec<DiskRequest<'dr>>,
+    boot_order: Option<Vec<&'dr str>>,
+    disks: Vec<DiskRequest<'dr>>,
     devices: BTreeMap<String, propolis_server_config::Device>,
 }
 
@@ -63,22 +64,24 @@ impl<'dr> VmConfig<'dr> {
         bootrom: &str,
         guest_artifact: &'dr str,
     ) -> Self {
-        let boot_disk = DiskRequest {
-            interface: DiskInterface::Nvme,
-            backend: DiskBackend::File,
-            source: DiskSource::Artifact(guest_artifact),
-            pci_device_num: 4,
-        };
-
-        Self {
+        let mut config = Self {
             vm_name: vm_name.to_owned(),
             cpus,
             memory_mib,
             bootrom_artifact: bootrom.to_owned(),
-            boot_disk,
-            data_disks: Vec::new(),
+            boot_order: None,
+            disks: Vec::new(),
             devices: BTreeMap::new(),
-        }
+        };
+
+        config.boot_disk(
+            guest_artifact,
+            DiskInterface::Nvme,
+            DiskBackend::File,
+            4,
+        );
+
+        config
     }
 
     pub fn cpus(&mut self, cpus: u8) -> &mut Self {
@@ -119,6 +122,21 @@ impl<'dr> VmConfig<'dr> {
         self
     }
 
+    pub fn boot_order(&mut self, disks: Vec<&'dr str>) -> &mut Self {
+        self.boot_order = Some(disks);
+        self
+    }
+
+    pub fn clear_boot_order(&mut self) -> &mut Self {
+        self.boot_order = None;
+        self
+    }
+
+    /// Add a new disk to the VM config, and add it to the front of the VM's
+    /// boot order.
+    ///
+    /// The added disk will have the name `boot-disk`, and replace the previous
+    /// existing `boot-disk`.
     pub fn boot_disk(
         &mut self,
         artifact: &'dr str,
@@ -126,24 +144,42 @@ impl<'dr> VmConfig<'dr> {
         backend: DiskBackend,
         pci_device_num: u8,
     ) -> &mut Self {
-        self.boot_disk = DiskRequest {
+        let boot_order = self.boot_order.get_or_insert(Vec::new());
+        if let Some(prev_boot_item) =
+            boot_order.iter().position(|d| *d == "boot-disk")
+        {
+            boot_order.remove(prev_boot_item);
+        }
+
+        if let Some(prev_boot_disk) =
+            self.disks.iter().position(|d| d.name == "boot-disk")
+        {
+            self.disks.remove(prev_boot_disk);
+        }
+
+        boot_order.insert(0, "boot-disk");
+
+        self.data_disk(
+            "boot-disk",
+            DiskSource::Artifact(artifact),
             interface,
             backend,
-            source: DiskSource::Artifact(artifact),
             pci_device_num,
-        };
+        );
 
         self
     }
 
     pub fn data_disk(
         &mut self,
+        name: &'dr str,
         source: DiskSource<'dr>,
         interface: DiskInterface,
         backend: DiskBackend,
         pci_device_num: u8,
     ) -> &mut Self {
-        self.data_disks.push(DiskRequest {
+        self.disks.push(DiskRequest {
+            name,
             interface,
             backend,
             source,
@@ -172,7 +208,38 @@ impl<'dr> VmConfig<'dr> {
             })
             .context("serializing Propolis server config")?;
 
-        let DiskSource::Artifact(boot_artifact) = self.boot_disk.source else {
+        // The first disk in the boot list might not be the disk a test
+        // *actually* expects to boot.
+        //
+        // If there are multiple bootable disks in the boot order, we'll assume
+        // they're all the same guest OS kind. So look for `boot-disk` - if
+        // there isn't a disk named `boot-disk` then fall back to hoping the
+        // first disk in the boot order is a bootable disk, and if *that* isn't
+        // a bootable disk, maybe the first disk is.
+        //
+        // TODO: theoretically we might want to accept configuration of a
+        // specific guest OS adapter and avoid the guessing games. So far the
+        // above supports existing tests and makes them "Just Work", but a more
+        // complicated test may want more control here.
+        let boot_disk = self
+            .disks
+            .iter()
+            .find(|d| d.name == "boot-disk")
+            .or_else(|| {
+                if let Some(boot_order) = self.boot_order.as_ref() {
+                    boot_order.first().and_then(|name| {
+                        self.disks.iter().find(|d| &d.name == name)
+                    })
+                } else {
+                    None
+                }
+            })
+            .or_else(|| self.disks.first())
+            .expect("VM config includes at least one disk");
+
+        // XXX: assuming all bootable images are equivalent to the first, or at
+        // least the same guest OS kind.
+        let DiskSource::Artifact(boot_artifact) = boot_disk.source else {
             unreachable!("boot disks always use artifacts as sources");
         };
 
@@ -183,16 +250,11 @@ impl<'dr> VmConfig<'dr> {
             .context("getting guest OS kind for boot disk")?;
 
         let mut disk_handles = Vec::new();
-        disk_handles.push(
-            make_disk("boot-disk".to_owned(), framework, &self.boot_disk)
-                .await
-                .context("creating boot disk")?,
-        );
-        for (idx, data_disk) in self.data_disks.iter().enumerate() {
+        for disk in self.disks.iter() {
             disk_handles.push(
-                make_disk(format!("data-disk-{}", idx), framework, data_disk)
+                make_disk(disk.name.to_owned(), framework, disk)
                     .await
-                    .context("creating data disk")?,
+                    .context("creating disk")?,
             );
         }
 
@@ -203,32 +265,30 @@ impl<'dr> VmConfig<'dr> {
         // elements for all of them. This assumes the disk handles were created
         // in the correct order: boot disk first, then in the data disks'
         // iteration order.
-        let all_disks = [&self.boot_disk]
-            .into_iter()
-            .chain(self.data_disks.iter())
-            .zip(disk_handles.iter());
-        for (idx, (req, hdl)) in all_disks.enumerate() {
-            let device_name = format!("disk-device{}", idx);
+        let all_disks = self.disks.iter().zip(disk_handles.iter());
+        for (req, hdl) in all_disks {
             let pci_path = PciPath::new(0, req.pci_device_num, 0).unwrap();
-            let (backend_name, backend_spec) = hdl.backend_spec();
+            let backend_spec = hdl.backend_spec();
+            let device_name = hdl.device_name().clone();
+            let backend_name = device_name.clone().into_backend_name();
             let device_spec = match req.interface {
                 DiskInterface::Virtio => {
                     StorageDeviceV0::VirtioDisk(VirtioDisk {
-                        backend_name: backend_name.clone(),
+                        backend_name: backend_name.clone().into_string(),
                         pci_path,
                     })
                 }
                 DiskInterface::Nvme => StorageDeviceV0::NvmeDisk(NvmeDisk {
-                    backend_name: backend_name.clone(),
+                    backend_name: backend_name.clone().into_string(),
                     pci_path,
                 }),
             };
 
             spec_builder
                 .add_storage_device(
-                    device_name,
+                    device_name.into_string(),
                     device_spec,
-                    backend_name,
+                    backend_name.into_string(),
                     backend_spec,
                 )
                 .context("adding storage device to spec")?;
@@ -237,6 +297,14 @@ impl<'dr> VmConfig<'dr> {
         spec_builder
             .add_serial_port(SerialPortNumber::Com1)
             .context("adding serial port to spec")?;
+
+        if let Some(boot_order) = self.boot_order.as_ref() {
+            spec_builder
+                .set_boot_order(
+                    boot_order.iter().map(|x| x.to_string()).collect(),
+                )
+                .context("adding boot order to spec")?;
+        }
 
         let instance_spec = spec_builder.finish();
 
@@ -263,14 +331,16 @@ impl<'dr> VmConfig<'dr> {
 }
 
 async fn make_disk<'req>(
-    name: String,
+    device_name: String,
     framework: &Framework,
     req: &DiskRequest<'req>,
 ) -> anyhow::Result<Arc<dyn DiskConfig>> {
+    let device_name = DeviceName::new(device_name);
+
     Ok(match req.backend {
         DiskBackend::File => framework
             .disk_factory
-            .create_file_backed_disk(name, &req.source)
+            .create_file_backed_disk(device_name, &req.source)
             .await
             .with_context(|| {
                 format!("creating new file-backed disk from {:?}", req.source,)
@@ -278,7 +348,7 @@ async fn make_disk<'req>(
         DiskBackend::Crucible { min_disk_size_gib, block_size } => framework
             .disk_factory
             .create_crucible_disk(
-                name,
+                device_name,
                 &req.source,
                 min_disk_size_gib,
                 block_size,
@@ -293,7 +363,7 @@ async fn make_disk<'req>(
             as Arc<dyn DiskConfig>,
         DiskBackend::InMemory { readonly } => framework
             .disk_factory
-            .create_in_memory_disk(name, &req.source, readonly)
+            .create_in_memory_disk(device_name, &req.source, readonly)
             .await
             .with_context(|| {
                 format!("creating new in-memory disk from {:?}", req.source)

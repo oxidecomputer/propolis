@@ -21,7 +21,9 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use super::BlockSize;
-use crate::{guest_os::GuestOsKind, server_log_mode::ServerLogMode};
+use crate::{
+    disk::DeviceName, guest_os::GuestOsKind, server_log_mode::ServerLogMode,
+};
 
 /// An RAII wrapper around a directory containing Crucible data files. Deletes
 /// the directory and its contents when dropped.
@@ -60,8 +62,8 @@ impl Drop for Downstairs {
 /// An RAII wrapper around a Crucible disk.
 #[derive(Debug)]
 pub struct CrucibleDisk {
-    /// The name of the backend to use in instance specs that include this disk.
-    backend_name: String,
+    /// The name to use in instance specs that include this disk.
+    device_name: DeviceName,
 
     /// The UUID to insert into this disk's `VolumeConstructionRequest`s.
     id: Uuid,
@@ -97,7 +99,7 @@ impl CrucibleDisk {
     /// `data_dir`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        backend_name: String,
+        device_name: DeviceName,
         min_disk_size_gib: u64,
         block_size: BlockSize,
         downstairs_binary_path: &impl AsRef<std::ffi::OsStr>,
@@ -251,7 +253,7 @@ impl CrucibleDisk {
         }
 
         Ok(Self {
-            backend_name,
+            device_name,
             id: disk_uuid,
             block_size,
             blocks_per_extent,
@@ -280,7 +282,11 @@ impl CrucibleDisk {
 }
 
 impl super::DiskConfig for CrucibleDisk {
-    fn backend_spec(&self) -> (String, StorageBackendV0) {
+    fn device_name(&self) -> &DeviceName {
+        &self.device_name
+    }
+
+    fn backend_spec(&self) -> StorageBackendV0 {
         let gen = self.generation.load(Ordering::Relaxed);
         let downstairs_addrs = self
             .downstairs_instances
@@ -318,14 +324,11 @@ impl super::DiskConfig for CrucibleDisk {
             }),
         };
 
-        (
-            self.backend_name.clone(),
-            StorageBackendV0::Crucible(CrucibleStorageBackend {
-                request_json: serde_json::to_string(&vcr)
-                    .expect("VolumeConstructionRequest should serialize"),
-                readonly: false,
-            }),
-        )
+        StorageBackendV0::Crucible(CrucibleStorageBackend {
+            request_json: serde_json::to_string(&vcr)
+                .expect("VolumeConstructionRequest should serialize"),
+            readonly: false,
+        })
     }
 
     fn guest_os(&self) -> Option<GuestOsKind> {

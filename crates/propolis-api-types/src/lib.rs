@@ -52,6 +52,9 @@ pub struct InstanceEnsureRequest {
     #[serde(default)]
     pub disks: Vec<DiskRequest>,
 
+    #[serde(default)]
+    pub boot_settings: Option<BootSettings>,
+
     pub migrate: Option<InstanceMigrateInitiateRequest>,
 
     // base64 encoded cloud-init ISO
@@ -383,6 +386,18 @@ pub struct DiskAttachment {
     pub generation_id: u64,
     pub disk_id: Uuid,
     pub state: DiskAttachmentState,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct BootSettings {
+    pub order: Vec<BootOrderEntry>,
+}
+
+/// An entry in a list of boot options.
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct BootOrderEntry {
+    /// The name of the device to attempt booting from.
+    pub name: String,
 }
 
 /// A stable index which is translated by Propolis

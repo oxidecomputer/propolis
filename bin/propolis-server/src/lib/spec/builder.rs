@@ -14,7 +14,7 @@ use propolis_api_types::{
         },
         PciPath,
     },
-    DiskRequest, InstanceProperties, NetworkInterfaceRequest,
+    BootOrderEntry, DiskRequest, InstanceProperties, NetworkInterfaceRequest,
 };
 use thiserror::Error;
 
@@ -57,6 +57,9 @@ pub(crate) enum SpecBuilderError {
 
     #[error("pvpanic device already specified")]
     PvpanicInUse,
+
+    #[error("Boot option {0} is not an attached device")]
+    BootOptionMissing(String),
 }
 
 #[derive(Debug, Default)]
@@ -107,6 +110,23 @@ impl SpecBuilder {
     ) -> Result<(), SpecBuilderError> {
         let parsed = api_request::parse_disk_from_request(disk)?;
         self.add_storage_device(parsed.name, parsed.disk)?;
+        Ok(())
+    }
+
+    /// Add a boot option to the boot option list of the spec under construction.
+    pub fn add_boot_option(
+        &mut self,
+        item: &BootOrderEntry,
+    ) -> Result<(), SpecBuilderError> {
+        if !self.spec.disks.contains_key(item.name.as_str()) {
+            return Err(SpecBuilderError::BootOptionMissing(item.name.clone()));
+        }
+
+        let boot_order = self.spec.boot_order.get_or_insert(Vec::new());
+
+        boot_order
+            .push(crate::spec::BootOrderEntry { name: item.name.clone() });
+
         Ok(())
     }
 

@@ -247,6 +247,12 @@ impl TryFrom<InstanceSpecV0> for Spec {
             return Err(ApiSpecError::BackendNotUsed(backend.to_owned()));
         }
 
+        if let Some(boot_settings) = value.devices.boot_settings.as_ref() {
+            for item in boot_settings.order.iter() {
+                builder.add_boot_option(item)?;
+            }
+        }
+
         for (name, serial_port) in value.devices.serial_ports {
             builder.add_serial_port(name, serial_port.num)?;
         }

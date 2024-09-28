@@ -8,6 +8,8 @@ test = false
 doctest = false
 
 [dependencies]
+anyhow.workspace = true
+byteorder.workspace = true
 futures.workspace = true
 http.workspace = true
 propolis-client.workspace = true

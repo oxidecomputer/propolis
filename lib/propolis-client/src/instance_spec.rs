@@ -184,6 +184,34 @@ impl SpecBuilderV0 {
         }
     }
 
+    /// Sets a boot order. Names here refer to devices included in this spec.
+    ///
+    /// Permissible to not set this if the implicit boot order is desired, but
+    /// the implicit boot order may be unstable across device addition and
+    /// removal.
+    ///
+    /// If any devices named in this order are not actually present in the
+    /// constructed spec, Propolis will return an error when the spec is
+    /// provided.
+    ///
+    /// XXX: this should certainly return `&mut Self` - all the builders here
+    /// should. check if any of these are chained..?
+    pub fn set_boot_order(
+        &mut self,
+        boot_order: Vec<String>,
+    ) -> Result<&Self, SpecBuilderError> {
+        let boot_order = boot_order
+            .into_iter()
+            .map(|name| crate::types::BootOrderEntry { name })
+            .collect();
+
+        let settings = crate::types::BootSettings { order: boot_order };
+
+        self.spec.devices.boot_settings = Some(settings);
+
+        Ok(self)
+    }
+
     /// Yields the completed spec, consuming the builder.
     pub fn finish(self) -> InstanceSpecV0 {
         self.spec

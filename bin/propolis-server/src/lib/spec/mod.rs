@@ -57,6 +57,7 @@ pub(crate) struct Spec {
     pub board: Board,
     pub disks: HashMap<String, Disk>,
     pub nics: HashMap<String, Nic>,
+    pub boot_order: Option<Vec<BootOrderEntry>>,
 
     pub serial: HashMap<String, SerialPort>,
 
@@ -65,6 +66,11 @@ pub(crate) struct Spec {
 
     #[cfg(feature = "falcon")]
     pub softnpu: SoftNpu,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct BootOrderEntry {
+    pub name: String,
 }
 
 /// Describes the device half of a [`Disk`].

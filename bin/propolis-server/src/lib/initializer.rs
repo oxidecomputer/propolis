@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::serial::Serial;
-use crate::spec::{self, Spec, StorageBackend};
+use crate::spec::{self, Spec, StorageBackend, StorageDevice};
 use crate::stats::{
     track_network_interface_kstats, track_vcpu_kstats, VirtualDiskProducer,
     VirtualMachine,
@@ -34,7 +34,11 @@ use propolis::hw::ibmpc;
 use propolis::hw::pci;
 use propolis::hw::ps2::ctrl::PS2Ctrl;
 use propolis::hw::qemu::pvpanic::QemuPvpanic;
-use propolis::hw::qemu::{debug::QemuDebugPort, fwcfg, ramfb};
+use propolis::hw::qemu::{
+    debug::QemuDebugPort,
+    fwcfg::{self, Entry},
+    ramfb,
+};
 use propolis::hw::uart::LpcUart;
 use propolis::hw::{nvme, virtio};
 use propolis::intr_pins;
@@ -1001,6 +1005,80 @@ impl<'a> MachineInitializer<'a> {
         smb_tables.commit()
     }
 
+    fn generate_bootorder(&self) -> Result<Option<Entry>, Error> {
+        info!(
+            self.log,
+            "Generating bootorder with order: {:?}",
+            self.spec.boot_order.as_ref()
+        );
+        let Some(boot_names) = self.spec.boot_order.as_ref() else {
+            return Ok(None);
+        };
+
+        let mut order = fwcfg::formats::BootOrder::new();
+
+        let parse_bdf =
+            |pci_path: &propolis_api_types::instance_spec::PciPath| {
+                let bdf: Result<pci::Bdf, Error> =
+                    pci_path.to_owned().try_into().map_err(|e| {
+                        Error::new(
+                            ErrorKind::InvalidInput,
+                            format!(
+                                "Couldn't get PCI BDF for {}: {}",
+                                pci_path, e
+                            ),
+                        )
+                    });
+
+                bdf
+            };
+
+        for boot_entry in boot_names.iter() {
+            // Theoretically we could support booting from network devices by
+            // matching them here and adding their PCI paths, but exactly what
+            // would happen is ill-understood. So, only check disks here.
+            if let Some(spec) = self.spec.disks.get(boot_entry.name.as_str()) {
+                match &spec.device_spec {
+                    StorageDevice::Virtio(disk) => {
+                        let bdf = parse_bdf(&disk.pci_path)?;
+                        if bdf.bus.get() != 0 {
+                            return Err(Error::new(
+                                ErrorKind::InvalidInput,
+                                "Boot device currently must be on PCI bus 0",
+                            ));
+                        }
+
+                        order.add_disk(bdf.location);
+                    }
+                    StorageDevice::Nvme(disk) => {
+                        let bdf = parse_bdf(&disk.pci_path)?;
+                        if bdf.bus.get() != 0 {
+                            return Err(Error::new(
+                                ErrorKind::InvalidInput,
+                                "Boot device currently must be on PCI bus 0",
+                            ));
+                        }
+
+                        // TODO: separately, propolis-standalone passes an eui64
+                        // of 0, so do that here too. is that.. ok?
+                        order.add_nvme(bdf.location, 0);
+                    }
+                };
+            } else {
+                // This should be unreachable - we check that the boot disk is
+                // valid when constructing the spec we're initializing from.
+                let message = format!(
+                    "Instance spec included boot entry which does not refer \
+                    to an existing disk: `{}`",
+                    boot_entry.name.as_str(),
+                );
+                return Err(Error::new(ErrorKind::InvalidInput, message));
+            }
+        }
+
+        Ok(Some(order.finish()))
+    }
+
     /// Initialize qemu `fw_cfg` device, and populate it with data including CPU
     /// count, SMBIOS tables, and attached RAM-FB device.
     ///
@@ -1031,6 +1109,10 @@ impl<'a> MachineInitializer<'a> {
                 fwcfg::Entry::Bytes(entry_point),
             )
             .unwrap();
+
+        if let Some(boot_order) = self.generate_bootorder()? {
+            fwcfg.insert_named("bootorder", boot_order).unwrap();
+        }
 
         let ramfb = ramfb::RamFb::create(
             self.log.new(slog::o!("component" => "ramfb")),

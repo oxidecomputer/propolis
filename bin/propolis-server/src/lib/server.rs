@@ -129,6 +129,12 @@ fn instance_spec_from_request(
         spec_builder.add_disk_from_request(disk)?;
     }
 
+    if let Some(boot_settings) = request.boot_settings.as_ref() {
+        for item in boot_settings.order.iter() {
+            spec_builder.add_boot_option(item)?;
+        }
+    }
+
     if let Some(base64) = &request.cloud_init_bytes {
         spec_builder.add_cloud_init_from_request(base64.clone())?;
     }

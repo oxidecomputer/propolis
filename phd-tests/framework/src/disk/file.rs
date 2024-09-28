@@ -9,7 +9,9 @@ use propolis_client::types::{FileStorageBackend, StorageBackendV0};
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 
-use crate::{guest_os::GuestOsKind, zfs::ClonedFile as ZfsClonedFile};
+use crate::{
+    disk::DeviceName, guest_os::GuestOsKind, zfs::ClonedFile as ZfsClonedFile,
+};
 
 /// Describes the method used to create the backing file for a file-backed disk.
 #[derive(Debug)]
@@ -80,7 +82,7 @@ impl Drop for BackingFile {
 #[derive(Debug)]
 pub struct FileBackedDisk {
     /// The name to use for instance spec backends that refer to this disk.
-    backend_name: String,
+    device_name: DeviceName,
 
     /// The backing file for this disk.
     file: BackingFile,
@@ -94,7 +96,7 @@ impl FileBackedDisk {
     /// Creates a new file-backed disk whose initial contents are copied from
     /// the specified artifact on the host file system.
     pub(crate) fn new_from_artifact(
-        backend_name: String,
+        device_name: DeviceName,
         artifact_path: &impl AsRef<Utf8Path>,
         data_dir: &impl AsRef<Utf8Path>,
         guest_os: Option<GuestOsKind>,
@@ -116,19 +118,20 @@ impl FileBackedDisk {
         permissions.set_readonly(false);
         disk_file.set_permissions(permissions)?;
 
-        Ok(Self { backend_name, file: artifact, guest_os })
+        Ok(Self { device_name, file: artifact, guest_os })
     }
 }
 
 impl super::DiskConfig for FileBackedDisk {
-    fn backend_spec(&self) -> (String, StorageBackendV0) {
-        (
-            self.backend_name.clone(),
-            StorageBackendV0::File(FileStorageBackend {
-                path: self.file.path().to_string(),
-                readonly: false,
-            }),
-        )
+    fn device_name(&self) -> &DeviceName {
+        &self.device_name
+    }
+
+    fn backend_spec(&self) -> StorageBackendV0 {
+        StorageBackendV0::File(FileStorageBackend {
+            path: self.file.path().to_string(),
+            readonly: false,
+        })
     }
 
     fn guest_os(&self) -> Option<GuestOsKind> {
