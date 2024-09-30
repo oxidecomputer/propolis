@@ -134,35 +134,19 @@ impl SpecBuilder {
             return Err(SpecBuilderError::BootSettingsInUse);
         }
 
-        self.spec.boot_settings =
-            Some(BootSettings { name: component_name, order: vec![] });
-
+        let mut order = vec![];
         for item in boot_options {
-            self.add_boot_option(item)?;
+            if !self.spec.disks.contains_key(item.name.as_str()) {
+                return Err(SpecBuilderError::BootOptionMissing(
+                    item.name.clone(),
+                ));
+            }
+
+            order.push(crate::spec::BootOrderEntry { name: item.name.clone() });
         }
 
-        Ok(())
-    }
-
-    /// Add a boot option to the boot option list of the spec under construction.
-    fn add_boot_option(
-        &mut self,
-        item: BootOrderEntry,
-    ) -> Result<(), SpecBuilderError> {
-        if !self.spec.disks.contains_key(item.name.as_str()) {
-            return Err(SpecBuilderError::BootOptionMissing(item.name.clone()));
-        }
-
-        let boot_settings = self
-            .spec
-            .boot_settings
-            .as_mut()
-            .expect("boot settings must already exist");
-
-        boot_settings
-            .order
-            .push(crate::spec::BootOrderEntry { name: item.name.clone() });
-
+        self.spec.boot_settings =
+            Some(BootSettings { name: component_name, order });
         Ok(())
     }
 
