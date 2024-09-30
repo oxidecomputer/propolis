@@ -343,14 +343,7 @@ async fn instance_get_common(
     rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<api::InstanceSpecGetResponse, HttpError> {
     let ctx = rqctx.context();
-    ctx.vm.get().await.map_err(|e| match e {
-        VmError::NotCreated | VmError::WaitingToInitialize => {
-            not_created_error()
-        }
-        _ => HttpError::for_internal_error(format!(
-            "unexpected error from VM controller: {e}"
-        )),
-    })
+    ctx.vm.get().await.ok_or_else(not_created_error)
 }
 
 #[endpoint {
@@ -393,14 +386,7 @@ async fn instance_state_monitor(
     let ctx = rqctx.context();
     let gen = request.into_inner().gen;
     let mut state_watcher =
-        ctx.vm.state_watcher().await.map_err(|e| match e {
-            VmError::NotCreated | VmError::WaitingToInitialize => {
-                not_created_error()
-            }
-            _ => HttpError::for_internal_error(format!(
-                "unexpected error from VM controller: {e}"
-            )),
-        })?;
+        ctx.vm.state_watcher().await.ok_or_else(not_created_error)?;
 
     loop {
         let last = state_watcher.borrow().clone();
@@ -440,9 +426,7 @@ async fn instance_state_put(
         .put_state(requested_state)
         .map(|_| HttpResponseUpdatedNoContent {})
         .map_err(|e| match e {
-            VmError::NotCreated | VmError::WaitingToInitialize => {
-                not_created_error()
-            }
+            VmError::WaitingToInitialize => not_created_error(),
             VmError::ForbiddenStateChange(reason) => HttpError::for_status(
                 Some(format!("instance state change not allowed: {}", reason)),
                 hyper::StatusCode::FORBIDDEN,
@@ -614,14 +598,7 @@ async fn instance_migrate_status(
         .state_watcher()
         .await
         .map(|rx| HttpResponseOk(rx.borrow().migration.clone()))
-        .map_err(|e| match e {
-            VmError::NotCreated | VmError::WaitingToInitialize => {
-                not_created_error()
-            }
-            _ => HttpError::for_internal_error(format!(
-                "unexpected error from VM controller: {e}"
-            )),
-        })
+        .ok_or_else(not_created_error)
 }
 
 /// Issues a snapshot request to a crucible backend.

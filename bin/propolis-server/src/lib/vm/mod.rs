@@ -165,9 +165,6 @@ pub(crate) enum VmError {
     #[error("VM operation result channel unexpectedly closed")]
     ResultChannelClosed,
 
-    #[error("VM not created")]
-    NotCreated,
-
     #[error("VM is currently initializing")]
     WaitingToInitialize,
 
@@ -317,18 +314,23 @@ impl Vm {
 
     /// Returns the state, properties, and instance spec for the instance most
     /// recently wrapped by this `Vm`.
-    pub(super) async fn get(&self) -> Result<InstanceSpecGetResponse, VmError> {
+    ///
+    /// # Returns
+    ///
+    /// - `Some` if the VM has been created.
+    /// - `None` if no VM has ever been created.
+    pub(super) async fn get(&self) -> Option<InstanceSpecGetResponse> {
         let guard = self.inner.read().await;
         match &guard.state {
             // If no VM has ever been created, there's nothing to get.
-            VmState::NoVm => Err(VmError::NotCreated),
+            VmState::NoVm => None,
 
             // If the VM is active, pull the required data out of its objects.
             VmState::Active(vm) => {
                 let spec =
                     vm.objects().lock_shared().await.instance_spec().clone();
                 let state = vm.external_state_rx.borrow().clone();
-                Ok(InstanceSpecGetResponse {
+                Some(InstanceSpecGetResponse {
                     properties: vm.properties.clone(),
                     spec: VersionedInstanceSpec::V0(spec.into()),
                     state: state.state,
@@ -340,7 +342,7 @@ impl Vm {
             // machine.
             VmState::WaitingForInit(vm)
             | VmState::Rundown(vm)
-            | VmState::RundownComplete(vm) => Ok(InstanceSpecGetResponse {
+            | VmState::RundownComplete(vm) => Some(InstanceSpecGetResponse {
                 properties: vm.properties.clone(),
                 state: vm.external_state_rx.borrow().state,
                 spec: VersionedInstanceSpec::V0(vm.spec.clone().into()),
@@ -350,16 +352,21 @@ impl Vm {
 
     /// Yields a handle to the most recent instance state receiver wrapped by
     /// this `Vm`.
-    pub(super) async fn state_watcher(
-        &self,
-    ) -> Result<InstanceStateRx, VmError> {
+    ///
+    /// # Returns
+    ///
+    /// - `Some` if the VM has been created.
+    /// - `None` if no VM has ever been created.
+    pub(super) async fn state_watcher(&self) -> Option<InstanceStateRx> {
         let guard = self.inner.read().await;
         match &guard.state {
-            VmState::NoVm => Err(VmError::NotCreated),
-            VmState::Active(vm) => Ok(vm.external_state_rx.clone()),
+            VmState::NoVm => None,
+            VmState::Active(vm) => Some(vm.external_state_rx.clone()),
             VmState::WaitingForInit(vm)
             | VmState::Rundown(vm)
-            | VmState::RundownComplete(vm) => Ok(vm.external_state_rx.clone()),
+            | VmState::RundownComplete(vm) => {
+                Some(vm.external_state_rx.clone())
+            }
         }
     }
 
