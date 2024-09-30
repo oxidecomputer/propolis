@@ -426,7 +426,10 @@ async fn instance_state_put(
         .put_state(requested_state)
         .map(|_| HttpResponseUpdatedNoContent {})
         .map_err(|e| match e {
-            VmError::WaitingToInitialize => not_created_error(),
+            VmError::WaitingToInitialize => HttpError::for_unavail(
+                None,
+                "instance is still initializing".to_string(),
+            ),
             VmError::ForbiddenStateChange(reason) => HttpError::for_status(
                 Some(format!("instance state change not allowed: {}", reason)),
                 hyper::StatusCode::FORBIDDEN,
