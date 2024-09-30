@@ -17,6 +17,7 @@ pub enum ComponentV0 {
     SerialPort(components::devices::SerialPort),
     PciPciBridge(components::devices::PciPciBridge),
     QemuPvpanic(components::devices::QemuPvpanic),
+    BootSettings(components::devices::BootSettings),
     SoftNpuPciPort(components::devices::SoftNpuPciPort),
     SoftNpuPort(components::devices::SoftNpuPort),
     SoftNpuP9(components::devices::SoftNpuP9),

@@ -10,8 +10,7 @@ use std::collections::HashMap;
 use propolis_api_types::instance_spec::{
     components::{
         backends::{DlpiNetworkBackend, VirtioNetworkBackend},
-        board::Board as ApiBoard,
-        devices::SerialPort as SerialPortDesc,
+        devices::{BootSettings, SerialPort as SerialPortDesc},
     },
     v0::{ComponentV0, InstanceSpecV0},
 };
@@ -50,6 +49,20 @@ pub(crate) enum ApiSpecError {
 
 impl From<Spec> for InstanceSpecV0 {
     fn from(val: Spec) -> Self {
+        // Exhaustively destructure the input spec so that adding a new field
+        // without considering it here will break the build.
+        let Spec {
+            board,
+            disks,
+            nics,
+            boot_settings,
+            serial,
+            pci_pci_bridges,
+            pvpanic,
+            #[cfg(feature = "falcon")]
+            softnpu,
+        } = val;
+
         // Inserts a component entry into the supplied map, asserting first that
         // the supplied key is not present in that map.
         //
@@ -70,24 +83,16 @@ impl From<Spec> for InstanceSpecV0 {
             spec.components.insert(key, val);
         }
 
-        let board = ApiBoard {
-            cpus: val.board.cpus,
-            memory_mb: val.board.memory_mb,
-            chipset: val.board.chipset,
-            boot_settings: val.boot_settings.map(Into::into).unwrap_or(
-                propolis_api_types::BootSettings { order: Vec::new() },
-            ),
-        };
         let mut spec = InstanceSpecV0 { board, ..Default::default() };
 
-        for (disk_name, disk) in val.disks {
+        for (disk_name, disk) in disks {
             let backend_name = disk.device_spec.backend_name().to_owned();
             insert_component(&mut spec, disk_name, disk.device_spec.into());
 
             insert_component(&mut spec, backend_name, disk.backend_spec.into());
         }
 
-        for (nic_name, nic) in val.nics {
+        for (nic_name, nic) in nics {
             let backend_name = nic.device_spec.backend_name.clone();
             insert_component(
                 &mut spec,
@@ -102,7 +107,7 @@ impl From<Spec> for InstanceSpecV0 {
             );
         }
 
-        for (name, desc) in val.serial {
+        for (name, desc) in serial {
             if desc.device == SerialPortDevice::Uart {
                 insert_component(
                     &mut spec,
@@ -112,7 +117,7 @@ impl From<Spec> for InstanceSpecV0 {
             }
         }
 
-        for (bridge_name, bridge) in val.pci_pci_bridges {
+        for (bridge_name, bridge) in pci_pci_bridges {
             insert_component(
                 &mut spec,
                 bridge_name,
@@ -120,17 +125,27 @@ impl From<Spec> for InstanceSpecV0 {
             );
         }
 
-        if let Some(pvpanic) = val.pvpanic {
+        if let Some(pvpanic) = pvpanic {
             insert_component(
                 &mut spec,
-                pvpanic.name.clone(),
+                pvpanic.name,
                 ComponentV0::QemuPvpanic(pvpanic.spec),
+            );
+        }
+
+        if let Some(settings) = boot_settings {
+            insert_component(
+                &mut spec,
+                settings.name,
+                ComponentV0::BootSettings(BootSettings {
+                    order: settings.order.into_iter().map(Into::into).collect(),
+                }),
             );
         }
 
         #[cfg(feature = "falcon")]
         {
-            if let Some(softnpu_pci) = val.softnpu.pci_port {
+            if let Some(softnpu_pci) = softnpu.pci_port {
                 insert_component(
                     &mut spec,
                     format!("softnpu-pci-{}", softnpu_pci.pci_path),
@@ -138,7 +153,7 @@ impl From<Spec> for InstanceSpecV0 {
                 );
             }
 
-            if let Some(p9) = val.softnpu.p9_device {
+            if let Some(p9) = softnpu.p9_device {
                 insert_component(
                     &mut spec,
                     format!("softnpu-p9-{}", p9.pci_path),
@@ -146,7 +161,7 @@ impl From<Spec> for InstanceSpecV0 {
                 );
             }
 
-            if let Some(p9fs) = val.softnpu.p9fs {
+            if let Some(p9fs) = softnpu.p9fs {
                 insert_component(
                     &mut spec,
                     format!("p9fs-{}", p9fs.pci_path),
@@ -154,7 +169,7 @@ impl From<Spec> for InstanceSpecV0 {
                 );
             }
 
-            for (port_name, port) in val.softnpu.ports {
+            for (port_name, port) in softnpu.ports {
                 insert_component(
                     &mut spec,
                     port_name.clone(),
@@ -180,8 +195,9 @@ impl TryFrom<InstanceSpecV0> for Spec {
     type Error = ApiSpecError;
 
     fn try_from(value: InstanceSpecV0) -> Result<Self, Self::Error> {
-        let mut builder = SpecBuilder::with_board(&value.board);
+        let mut builder = SpecBuilder::with_board(value.board);
         let mut devices: Vec<(String, ComponentV0)> = vec![];
+        let mut boot_settings = None;
         let mut storage_backends: HashMap<String, StorageBackend> =
             HashMap::new();
         let mut viona_backends: HashMap<String, VirtioNetworkBackend> =
@@ -260,6 +276,14 @@ impl TryFrom<InstanceSpecV0> for Spec {
                         spec: pvpanic,
                     })?;
                 }
+                ComponentV0::BootSettings(settings) => {
+                    // The builder returns an error if its caller tries to add
+                    // a boot option that isn't in the set of attached disks.
+                    // Since there may be more disk devices left in the
+                    // component map, just capture the boot order for now and
+                    // apply it to the builder later.
+                    boot_settings = Some((device_name, settings));
+                }
                 #[cfg(not(feature = "falcon"))]
                 ComponentV0::SoftNpuPciPort(_)
                 | ComponentV0::SoftNpuPort(_)
@@ -307,8 +331,13 @@ impl TryFrom<InstanceSpecV0> for Spec {
             }
         }
 
-        for item in value.board.boot_settings.order.into_iter() {
-            builder.add_boot_option(item)?;
+        // Now that all disks have been attached, try to establish the boot
+        // order if one was supplied.
+        if let Some(settings) = boot_settings {
+            builder.add_boot_order(
+                settings.0,
+                settings.1.order.into_iter().map(Into::into),
+            )?;
         }
 
         if let Some(backend) = storage_backends.into_keys().next() {

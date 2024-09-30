@@ -130,9 +130,11 @@ fn instance_spec_from_request(
     }
 
     if let Some(boot_settings) = request.boot_settings.as_ref() {
-        for item in boot_settings.order.iter() {
-            spec_builder.add_boot_option(item.clone())?;
-        }
+        let order = boot_settings.order.clone();
+        spec_builder.add_boot_order(
+            "boot-settings".to_string(),
+            order.into_iter().map(Into::into),
+        )?;
     }
 
     if let Some(base64) = &request.cloud_init_bytes {

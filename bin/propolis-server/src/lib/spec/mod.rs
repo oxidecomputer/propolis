@@ -22,7 +22,7 @@ use propolis_api_types::instance_spec::{
             BlobStorageBackend, CrucibleStorageBackend, FileStorageBackend,
             VirtioNetworkBackend,
         },
-        board::{Chipset, I440Fx},
+        board::Board,
         devices::{
             NvmeDisk, PciPciBridge, QemuPvpanic as QemuPvpanicDesc,
             SerialPortNumber, VirtioDisk, VirtioNic,
@@ -74,51 +74,9 @@ pub(crate) struct Spec {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Board {
-    pub cpus: u8,
-    pub memory_mb: u64,
-    pub chipset: Chipset,
-}
-
-impl Default for Board {
-    fn default() -> Self {
-        Self {
-            cpus: 0,
-            memory_mb: 0,
-            chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
-        }
-    }
-}
-
-impl From<&propolis_api_types::instance_spec::components::board::Board>
-    for Board
-{
-    fn from(
-        value: &propolis_api_types::instance_spec::components::board::Board,
-    ) -> Self {
-        Board {
-            cpus: value.cpus,
-            memory_mb: value.memory_mb,
-            chipset: value.chipset,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default)]
 pub(crate) struct BootSettings {
+    pub name: String,
     pub order: Vec<BootOrderEntry>,
-}
-
-impl From<propolis_api_types::BootSettings> for BootSettings {
-    fn from(value: propolis_api_types::BootSettings) -> Self {
-        Self { order: value.order.into_iter().map(Into::into).collect() }
-    }
-}
-
-impl From<BootSettings> for propolis_api_types::BootSettings {
-    fn from(value: BootSettings) -> Self {
-        Self { order: value.order.into_iter().map(Into::into).collect() }
-    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -126,13 +84,20 @@ pub(crate) struct BootOrderEntry {
     pub name: String,
 }
 
-impl From<propolis_api_types::BootOrderEntry> for BootOrderEntry {
-    fn from(value: propolis_api_types::BootOrderEntry) -> Self {
-        Self { name: value.name }
+impl
+    From<propolis_api_types::instance_spec::components::devices::BootOrderEntry>
+    for BootOrderEntry
+{
+    fn from(
+        value: propolis_api_types::instance_spec::components::devices::BootOrderEntry,
+    ) -> Self {
+        Self { name: value.name.clone() }
     }
 }
 
-impl From<BootOrderEntry> for propolis_api_types::BootOrderEntry {
+impl From<BootOrderEntry>
+    for propolis_api_types::instance_spec::components::devices::BootOrderEntry
+{
     fn from(value: BootOrderEntry) -> Self {
         Self { name: value.name }
     }

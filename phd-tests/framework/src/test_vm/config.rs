@@ -261,7 +261,6 @@ impl<'dr> VmConfig<'dr> {
                 cpus: self.cpus,
                 memory_mb: self.memory_mib,
                 chipset: Chipset::default(),
-                boot_settings: BootSettings::default(),
             },
             ..Default::default()
         };
@@ -303,12 +302,16 @@ impl<'dr> VmConfig<'dr> {
         assert!(_old.is_none());
 
         if let Some(boot_order) = self.boot_order.as_ref() {
-            spec.board.boot_settings = BootSettings {
-                order: boot_order
-                    .iter()
-                    .map(|item| BootOrderEntry { name: item.to_string() })
-                    .collect(),
-            };
+            let _old = spec.components.insert(
+                "boot-settings".to_string(),
+                ComponentV0::BootSettings(BootSettings {
+                    order: boot_order
+                        .iter()
+                        .map(|item| BootOrderEntry { name: item.to_string() })
+                        .collect(),
+                }),
+            );
+            assert!(_old.is_none());
         }
 
         // Generate random identifiers for this instance's timeseries metadata.

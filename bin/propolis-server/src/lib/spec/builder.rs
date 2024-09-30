@@ -9,12 +9,12 @@ use std::collections::{BTreeSet, HashSet};
 use propolis_api_types::{
     instance_spec::{
         components::{
-            board::{Board as ApiBoard, Chipset, I440Fx},
+            board::{Board, Chipset, I440Fx},
             devices::{PciPciBridge, SerialPortNumber},
         },
         PciPath,
     },
-    BootOrderEntry, DiskRequest, InstanceProperties, NetworkInterfaceRequest,
+    DiskRequest, InstanceProperties, NetworkInterfaceRequest,
 };
 use thiserror::Error;
 
@@ -28,7 +28,7 @@ use crate::{config, spec::SerialPortDevice};
 use super::{
     api_request::{self, DeviceRequestError},
     config_toml::{ConfigTomlError, ParsedConfig},
-    Board, BootSettings, Disk, Nic, QemuPvpanic, SerialPort,
+    BootOrderEntry, BootSettings, Disk, Nic, QemuPvpanic, SerialPort,
 };
 
 #[cfg(feature = "falcon")]
@@ -46,19 +46,22 @@ pub(crate) enum SpecBuilderError {
     #[error("device {0} has the same name as its backend")]
     DeviceAndBackendNamesIdentical(String),
 
-    #[error("A component with name {0} already exists")]
+    #[error("a component with name {0} already exists")]
     ComponentNameInUse(String),
 
-    #[error("A PCI device is already attached at {0:?}")]
+    #[error("a PCI device is already attached at {0:?}")]
     PciPathInUse(PciPath),
 
-    #[error("Serial port {0:?} is already specified")]
+    #[error("serial port {0:?} is already specified")]
     SerialPortInUse(SerialPortNumber),
 
     #[error("pvpanic device already specified")]
     PvpanicInUse,
 
-    #[error("Boot option {0} is not an attached device")]
+    #[error("boot settings were already specified")]
+    BootSettingsInUse,
+
+    #[error("boot option {0} is not an attached device")]
     BootOptionMissing(String),
 }
 
@@ -84,9 +87,9 @@ impl SpecBuilder {
         }
     }
 
-    pub(super) fn with_board(api_board: &ApiBoard) -> Self {
+    pub(super) fn with_board(board: Board) -> Self {
         Self {
-            spec: super::Spec { board: api_board.into(), ..Default::default() },
+            spec: super::Spec { board, ..Default::default() },
             ..Default::default()
         }
     }
@@ -113,8 +116,36 @@ impl SpecBuilder {
         Ok(())
     }
 
+    /// Sets the spec's boot order to the list of disk devices specified in
+    /// `boot_options`.
+    ///
+    /// All of the items in the supplied `boot_options` must already be present
+    /// in the spec's disk map.
+    pub fn add_boot_order(
+        &mut self,
+        component_name: String,
+        boot_options: impl Iterator<Item = BootOrderEntry>,
+    ) -> Result<(), SpecBuilderError> {
+        if self.component_names.contains(&component_name) {
+            return Err(SpecBuilderError::ComponentNameInUse(component_name));
+        }
+
+        if self.spec.boot_settings.is_some() {
+            return Err(SpecBuilderError::BootSettingsInUse);
+        }
+
+        self.spec.boot_settings =
+            Some(BootSettings { name: component_name, order: vec![] });
+
+        for item in boot_options {
+            self.add_boot_option(item)?;
+        }
+
+        Ok(())
+    }
+
     /// Add a boot option to the boot option list of the spec under construction.
-    pub fn add_boot_option(
+    fn add_boot_option(
         &mut self,
         item: BootOrderEntry,
     ) -> Result<(), SpecBuilderError> {
@@ -125,9 +156,12 @@ impl SpecBuilder {
         let boot_settings = self
             .spec
             .boot_settings
-            .get_or_insert(BootSettings { order: Vec::new() });
+            .as_mut()
+            .expect("boot settings must already exist");
 
-        boot_settings.order.push(item.into());
+        boot_settings
+            .order
+            .push(crate::spec::BootOrderEntry { name: item.name.clone() });
 
         Ok(())
     }

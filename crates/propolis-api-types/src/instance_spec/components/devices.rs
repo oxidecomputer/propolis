@@ -104,6 +104,25 @@ pub struct QemuPvpanic {
     // TODO(eliza): add support for the PCI PVPANIC device...
 }
 
+/// A set of settings that determines what Propolis tells guest firmware about
+/// how to boot a guest operating system.
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+pub struct BootSettings {
+    /// An ordered list of components to attempt to boot from.
+    pub order: Vec<BootOrderEntry>,
+}
+
+/// An entry in the boot order stored in a [`BootSettings`] component.
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, Default)]
+pub struct BootOrderEntry {
+    /// The name of another component in the spec that Propolis should try to
+    /// boot from.
+    ///
+    /// Currently, only disk device components are supported.
+    pub name: String,
+}
+
 //
 // Structs for Falcon devices. These devices don't support live migration.
 //

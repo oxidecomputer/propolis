@@ -480,14 +480,6 @@
         "description": "A VM's mainboard.",
         "type": "object",
         "properties": {
-          "boot_settings": {
-            "description": "The boot device order to supply to the guest.",
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/BootSettings"
-              }
-            ]
-          },
           "chipset": {
             "description": "The chipset to expose to guest software.",
             "allOf": [
@@ -510,7 +502,6 @@
           }
         },
         "required": [
-          "boot_settings",
           "chipset",
           "cpus",
           "memory_mb"
@@ -518,11 +509,11 @@
         "additionalProperties": false
       },
       "BootOrderEntry": {
-        "description": "An entry in a list of boot options.",
+        "description": "An entry in the boot order stored in a [`BootSettings`] component.",
         "type": "object",
         "properties": {
           "name": {
-            "description": "The name of the device to attempt booting from.",
+            "description": "The name of another component in the spec that Propolis should try to boot from.\n\nCurrently, only disk device components are supported.",
             "type": "string"
           }
         },
@@ -531,9 +522,11 @@
         ]
       },
       "BootSettings": {
+        "description": "A set of settings that determines what Propolis tells guest firmware about how to boot a guest operating system.",
         "type": "object",
         "properties": {
           "order": {
+            "description": "An ordered list of components to attempt to boot from.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/BootOrderEntry"
@@ -542,7 +535,8 @@
         },
         "required": [
           "order"
-        ]
+        ],
+        "additionalProperties": false
       },
       "Chipset": {
         "description": "A kind of virtual chipset.",
@@ -676,6 +670,25 @@
                 "type": "string",
                 "enum": [
                   "QemuPvpanic"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/BootSettings"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "BootSettings"
                 ]
               }
             },
