@@ -200,18 +200,10 @@ impl<'a> MachineInitializer<'a> {
         event_handler: &Arc<dyn super::vm::guest_event::ChipsetEventHandler>,
     ) -> Result<RegisteredChipset, Error> {
         let mut pci_builder = pci::topology::Builder::new();
-        for (name, bridge) in &self.spec.pci_pci_bridges {
+        for bridge in self.spec.pci_pci_bridges.values() {
             let desc = pci::topology::BridgeDescription::new(
                 pci::topology::LogicalBusId(bridge.downstream_bus),
-                bridge.pci_path.try_into().map_err(|e| {
-                    Error::new(
-                        ErrorKind::InvalidInput,
-                        format!(
-                            "Couldn't get PCI BDF for bridge {}: {}",
-                            name, e
-                        ),
-                    )
-                })?,
+                bridge.pci_path.into(),
             );
             pci_builder.add_bridge(desc)?;
         }
@@ -524,15 +516,7 @@ impl<'a> MachineInitializer<'a> {
                 }
             };
 
-            let bdf: pci::Bdf = pci_path.try_into().map_err(|e| {
-                Error::new(
-                    ErrorKind::InvalidInput,
-                    format!(
-                        "Couldn't get PCI BDF for storage device {}: {}",
-                        disk_name, e
-                    ),
-                )
-            })?;
+            let bdf: pci::Bdf = pci_path.into();
 
             let StorageBackendInstance { be: backend, crucible } = self
                 .create_storage_backend_from_spec(
@@ -638,16 +622,7 @@ impl<'a> MachineInitializer<'a> {
 
         for (device_name, nic) in &self.spec.nics {
             info!(self.log, "Creating vNIC {}", device_name);
-            let bdf: pci::Bdf =
-                nic.device_spec.pci_path.try_into().map_err(|e| {
-                    Error::new(
-                        ErrorKind::InvalidInput,
-                        format!(
-                            "Couldn't get PCI BDF for vNIC {}: {}",
-                            device_name, e
-                        ),
-                    )
-                })?;
+            let bdf: pci::Bdf = nic.device_spec.pci_path.into();
 
             let viona = virtio::PciVirtioViona::new(
                 &nic.backend_spec.vnic_name,
@@ -789,16 +764,7 @@ impl<'a> MachineInitializer<'a> {
                 )
             })?
             .pci_path
-            .try_into()
-            .map_err(|e| {
-                Error::new(
-                    ErrorKind::InvalidInput,
-                    format!(
-                        "Couldn't get PCI BDF for SoftNpu p9 device: {}",
-                        e
-                    ),
-                )
-            })?;
+            .into();
         chipset.pci_attach(bdf, vio9p.clone());
 
         // Create the SoftNpu device.
@@ -821,15 +787,9 @@ impl<'a> MachineInitializer<'a> {
         self.devices.insert("softnpu-main".to_string(), softnpu.clone());
 
         // Create the SoftNpu PCI port.
-        let bdf: pci::Bdf = pci_port.pci_path.try_into().map_err(|e| {
-            Error::new(
-                ErrorKind::InvalidInput,
-                format!("Couldn't get PCI BDF for SoftNpu pci port: {}", e),
-            )
-        })?;
         self.devices
             .insert("softnpu-pciport".to_string(), softnpu.pci_port.clone());
-        chipset.pci_attach(bdf, softnpu.pci_port.clone());
+        chipset.pci_attach(pci_port.pci_path.into(), softnpu.pci_port.clone());
 
         Ok(())
     }
@@ -846,13 +806,6 @@ impl<'a> MachineInitializer<'a> {
             return Ok(());
         };
 
-        let bdf: pci::Bdf = p9fs.pci_path.try_into().map_err(|e| {
-            Error::new(
-                ErrorKind::InvalidInput,
-                format!("Couldn't get PCI BDF for p9fs device: {}", e),
-            )
-        })?;
-
         let handler = virtio::p9fs::HostFSHandler::new(
             p9fs.source.to_owned(),
             p9fs.target.to_owned(),
@@ -861,7 +814,7 @@ impl<'a> MachineInitializer<'a> {
         );
         let vio9p = virtio::p9fs::PciVirtio9pfs::new(0x40, Arc::new(handler));
         self.devices.insert("falcon-p9fs".to_string(), vio9p.clone());
-        chipset.pci_attach(bdf, vio9p);
+        chipset.pci_attach(p9fs.pci_path.into(), vio9p);
         Ok(())
     }
 
@@ -1017,22 +970,6 @@ impl<'a> MachineInitializer<'a> {
 
         let mut order = fwcfg::formats::BootOrder::new();
 
-        let parse_bdf =
-            |pci_path: &propolis_api_types::instance_spec::PciPath| {
-                let bdf: Result<pci::Bdf, Error> =
-                    pci_path.to_owned().try_into().map_err(|e| {
-                        Error::new(
-                            ErrorKind::InvalidInput,
-                            format!(
-                                "Couldn't get PCI BDF for {}: {}",
-                                pci_path, e
-                            ),
-                        )
-                    });
-
-                bdf
-            };
-
         for boot_entry in boot_names.iter() {
             // Theoretically we could support booting from network devices by
             // matching them here and adding their PCI paths, but exactly what
@@ -1040,7 +977,7 @@ impl<'a> MachineInitializer<'a> {
             if let Some(spec) = self.spec.disks.get(boot_entry.name.as_str()) {
                 match &spec.device_spec {
                     StorageDevice::Virtio(disk) => {
-                        let bdf = parse_bdf(&disk.pci_path)?;
+                        let bdf: pci::Bdf = disk.pci_path.into();
                         if bdf.bus.get() != 0 {
                             return Err(Error::new(
                                 ErrorKind::InvalidInput,
@@ -1051,7 +988,7 @@ impl<'a> MachineInitializer<'a> {
                         order.add_disk(bdf.location);
                     }
                     StorageDevice::Nvme(disk) => {
-                        let bdf = parse_bdf(&disk.pci_path)?;
+                        let bdf: pci::Bdf = disk.pci_path.into();
                         if bdf.bus.get() != 0 {
                             return Err(Error::new(
                                 ErrorKind::InvalidInput,
