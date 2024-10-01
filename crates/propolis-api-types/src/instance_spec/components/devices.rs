@@ -104,8 +104,9 @@ pub struct QemuPvpanic {
     // TODO(eliza): add support for the PCI PVPANIC device...
 }
 
-/// A set of settings that determines what Propolis tells guest firmware about
-/// how to boot a guest operating system.
+/// Settings supplied to the guest's firmware image that specify the order in
+/// which it should consider its options when selecting a device to try to boot
+/// from.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
 pub struct BootSettings {

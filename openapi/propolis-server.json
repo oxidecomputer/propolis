@@ -522,7 +522,7 @@
         ]
       },
       "BootSettings": {
-        "description": "A set of settings that determines what Propolis tells guest firmware about how to boot a guest operating system.",
+        "description": "Settings supplied to the guest's firmware image that specify the order in which it should consider its options when selecting a device to try to boot from.",
         "type": "object",
         "properties": {
           "order": {
