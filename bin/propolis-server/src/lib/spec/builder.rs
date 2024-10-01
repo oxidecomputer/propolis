@@ -14,7 +14,7 @@ use propolis_api_types::{
         },
         PciPath,
     },
-    BootOrderEntry, DiskRequest, InstanceProperties, NetworkInterfaceRequest,
+    DiskRequest, InstanceProperties, NetworkInterfaceRequest,
 };
 use thiserror::Error;
 
@@ -28,7 +28,7 @@ use crate::{config, spec::SerialPortDevice};
 use super::{
     api_request::{self, DeviceRequestError},
     config_toml::{ConfigTomlError, ParsedConfig},
-    Disk, Nic, QemuPvpanic, SerialPort,
+    BootOrderEntry, BootSettings, Disk, Nic, QemuPvpanic, SerialPort,
 };
 
 #[cfg(feature = "falcon")]
@@ -46,19 +46,22 @@ pub(crate) enum SpecBuilderError {
     #[error("device {0} has the same name as its backend")]
     DeviceAndBackendNamesIdentical(String),
 
-    #[error("A component with name {0} already exists")]
+    #[error("a component with name {0} already exists")]
     ComponentNameInUse(String),
 
-    #[error("A PCI device is already attached at {0:?}")]
+    #[error("a PCI device is already attached at {0:?}")]
     PciPathInUse(PciPath),
 
-    #[error("Serial port {0:?} is already specified")]
+    #[error("serial port {0:?} is already specified")]
     SerialPortInUse(SerialPortNumber),
 
     #[error("pvpanic device already specified")]
     PvpanicInUse,
 
-    #[error("Boot option {0} is not an attached device")]
+    #[error("boot settings were already specified")]
+    BootSettingsInUse,
+
+    #[error("boot option {0} is not an attached device")]
     BootOptionMissing(String),
 }
 
@@ -113,20 +116,37 @@ impl SpecBuilder {
         Ok(())
     }
 
-    /// Add a boot option to the boot option list of the spec under construction.
-    pub fn add_boot_option(
+    /// Sets the spec's boot order to the list of disk devices specified in
+    /// `boot_options`.
+    ///
+    /// All of the items in the supplied `boot_options` must already be present
+    /// in the spec's disk map.
+    pub fn add_boot_order(
         &mut self,
-        item: &BootOrderEntry,
+        component_name: String,
+        boot_options: impl Iterator<Item = BootOrderEntry>,
     ) -> Result<(), SpecBuilderError> {
-        if !self.spec.disks.contains_key(item.name.as_str()) {
-            return Err(SpecBuilderError::BootOptionMissing(item.name.clone()));
+        if self.component_names.contains(&component_name) {
+            return Err(SpecBuilderError::ComponentNameInUse(component_name));
         }
 
-        let boot_order = self.spec.boot_order.get_or_insert(Vec::new());
+        if self.spec.boot_settings.is_some() {
+            return Err(SpecBuilderError::BootSettingsInUse);
+        }
 
-        boot_order
-            .push(crate::spec::BootOrderEntry { name: item.name.clone() });
+        let mut order = vec![];
+        for item in boot_options {
+            if !self.spec.disks.contains_key(item.name.as_str()) {
+                return Err(SpecBuilderError::BootOptionMissing(
+                    item.name.clone(),
+                ));
+            }
 
+            order.push(crate::spec::BootOrderEntry { name: item.name.clone() });
+        }
+
+        self.spec.boot_settings =
+            Some(BootSettings { name: component_name, order });
         Ok(())
     }
 

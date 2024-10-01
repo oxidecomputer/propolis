@@ -51,6 +51,6 @@ async fn instance_spec_get_test(ctx: &Framework) {
     let spec_get_response = vm.get_spec().await?;
     let propolis_client::types::VersionedInstanceSpec::V0(spec) =
         spec_get_response.spec;
-    assert_eq!(spec.devices.board.cpus, 4);
-    assert_eq!(spec.devices.board.memory_mb, 3072);
+    assert_eq!(spec.board.cpus, 4);
+    assert_eq!(spec.board.memory_mb, 3072);
 }

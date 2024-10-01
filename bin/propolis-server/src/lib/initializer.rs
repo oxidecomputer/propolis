@@ -962,15 +962,15 @@ impl<'a> MachineInitializer<'a> {
         info!(
             self.log,
             "Generating bootorder with order: {:?}",
-            self.spec.boot_order.as_ref()
+            self.spec.boot_settings.as_ref()
         );
-        let Some(boot_names) = self.spec.boot_order.as_ref() else {
+        let Some(boot_names) = self.spec.boot_settings.as_ref() else {
             return Ok(None);
         };
 
         let mut order = fwcfg::formats::BootOrder::new();
 
-        for boot_entry in boot_names.iter() {
+        for boot_entry in boot_names.order.iter() {
             // Theoretically we could support booting from network devices by
             // matching them here and adding their PCI paths, but exactly what
             // would happen is ill-understood. So, only check disks here.

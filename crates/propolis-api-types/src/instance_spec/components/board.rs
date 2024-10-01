@@ -35,7 +35,7 @@ pub enum Chipset {
 }
 
 /// A VM's mainboard.
-#[derive(Clone, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Board {
     /// The number of virtual logical processors attached to this VM.

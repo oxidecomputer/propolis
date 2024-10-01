@@ -296,8 +296,8 @@ impl TestVm {
     ) -> Result<SerialConsole> {
         let (vcpus, memory_mib) = match self.state {
             VmState::New => (
-                self.spec.instance_spec.devices.board.cpus,
-                self.spec.instance_spec.devices.board.memory_mb,
+                self.spec.instance_spec.board.cpus,
+                self.spec.instance_spec.board.memory_mb,
             ),
             VmState::Ensured { .. } => {
                 return Err(VmStateError::InstanceAlreadyEnsured.into())
@@ -555,7 +555,7 @@ impl TestVm {
         let timeout_duration = match Into::<MigrationTimeout>::into(timeout) {
             MigrationTimeout::Explicit(val) => val,
             MigrationTimeout::InferFromMemorySize => {
-                let mem_mib = self.spec.instance_spec.devices.board.memory_mb;
+                let mem_mib = self.spec.instance_spec.board.memory_mb;
                 std::time::Duration::from_secs(
                     (MIGRATION_SECS_PER_GUEST_GIB * mem_mib) / 1024,
                 )
