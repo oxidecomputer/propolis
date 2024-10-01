@@ -2,7 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::convert::TryFrom;
 use std::fmt::Result as FmtResult;
 use std::fmt::{Display, Formatter};
 use std::io::{Error, ErrorKind};
@@ -194,18 +193,48 @@ impl FromStr for Bdf {
     }
 }
 
-impl TryFrom<propolis_types::PciPath> for Bdf {
-    type Error = std::io::Error;
+// The corresponding `propolis_types_pcipath_is_always_valid_bdf` validates this
+// `From` impl exhaustively.
+impl From<propolis_types::PciPath> for Bdf {
+    fn from(value: propolis_types::PciPath) -> Self {
+        // PciPath is exactly as well-formed as Bdf
+        Bdf::new_unchecked(value.bus(), value.device(), value.function())
+    }
+}
 
-    fn try_from(value: propolis_types::PciPath) -> Result<Self, Self::Error> {
-        Bdf::new(value.bus(), value.device(), value.function()).ok_or_else(
-            || {
-                Error::new(
-                    ErrorKind::InvalidInput,
-                    "Failed to convert raw PCI path to BDF".to_string(),
-                )
-            },
-        )
+#[test]
+fn propolis_types_pcipath_is_always_valid_bdf() {
+    fn check_bdf(bus: u8, device: u8, function: u8) -> bool {
+        let bdf = Bdf::new(bus, device, function);
+        let pci_path = propolis_types::PciPath::new(bus, device, function);
+
+        match (bdf, pci_path) {
+            (None, Err(_)) => {
+                return true;
+            }
+            (Some(_), Err(_)) | (None, Ok(_)) => {
+                return false;
+            }
+            (Some(bdf), Ok(pci_path)) => {
+                let converted_bdf: Bdf = pci_path.into();
+                converted_bdf == bdf
+            }
+        }
+    }
+
+    for bus in 0..=255 {
+        for device in 0..=255 {
+            for function in 0..=255 {
+                assert!(
+                    check_bdf(bus, device, function),
+                    "Bdf and PciPath did not match for \
+                    bus/device/function {}/{}/{}",
+                    bus,
+                    device,
+                    function
+                );
+            }
+        }
     }
 }
 
