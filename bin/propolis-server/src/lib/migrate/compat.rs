@@ -2,7 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Checks for compatibility of two instance specs.
+//! Associated functions for the [`crate::spec::Spec`] type that determine
+//! whether two specs describe migration-compatible VMs.
 
 use std::collections::HashMap;
 

@@ -9,8 +9,7 @@ use crate::{
     guest_os::GuestOsKind,
 };
 use propolis_client::types::{
-    DiskRequest, InstanceMetadata, InstanceSpecV0, PciPath, Slot,
-    StorageBackendV0, StorageDeviceV0,
+    ComponentV0, DiskRequest, InstanceMetadata, InstanceSpecV0, PciPath, Slot,
 };
 use uuid::Uuid;
 
@@ -49,16 +48,10 @@ impl VmSpec {
             let backend_spec = disk.backend_spec();
             let backend_name =
                 disk.device_name().clone().into_backend_name().into_string();
-            match self
-                .instance_spec
-                .backends
-                .storage_backends
-                .get(&backend_name)
-            {
-                Some(StorageBackendV0::Crucible(_)) => {
+            match self.instance_spec.components.get(&backend_name) {
+                Some(ComponentV0::CrucibleStorageBackend(_)) => {
                     self.instance_spec
-                        .backends
-                        .storage_backends
+                        .components
                         .insert(backend_name, backend_spec);
                 }
                 Some(_) | None => {}
@@ -107,35 +100,41 @@ impl VmSpec {
             }
         }
 
-        fn get_device_info(
-            device: &StorageDeviceV0,
-        ) -> anyhow::Result<DeviceInfo> {
+        fn get_device_info(device: &ComponentV0) -> anyhow::Result<DeviceInfo> {
             match device {
-                StorageDeviceV0::VirtioDisk(d) => Ok(DeviceInfo {
+                ComponentV0::VirtioDisk(d) => Ok(DeviceInfo {
                     backend_name: &d.backend_name,
                     interface: "virtio",
                     slot: convert_to_slot(d.pci_path)?,
                 }),
-                StorageDeviceV0::NvmeDisk(d) => Ok(DeviceInfo {
+                ComponentV0::NvmeDisk(d) => Ok(DeviceInfo {
                     backend_name: &d.backend_name,
                     interface: "nvme",
                     slot: convert_to_slot(d.pci_path)?,
                 }),
+                _ => {
+                    panic!("asked to get device info for a non-storage device")
+                }
             }
         }
 
         let mut reqs = vec![];
-        for (name, device) in self.instance_spec.devices.storage_devices.iter()
+        for (name, device) in
+            self.instance_spec.components.iter().filter(|(_, c)| {
+                matches!(
+                    c,
+                    ComponentV0::VirtioDisk(_) | ComponentV0::NvmeDisk(_)
+                )
+            })
         {
             let info = get_device_info(device)?;
             let backend = self
                 .instance_spec
-                .backends
-                .storage_backends
+                .components
                 .get(info.backend_name)
                 .expect("storage device should have a matching backend");
 
-            let StorageBackendV0::Crucible(backend) = backend else {
+            let ComponentV0::CrucibleStorageBackend(backend) = backend else {
                 anyhow::bail!("disk {name} does not have a Crucible backend");
             };
 

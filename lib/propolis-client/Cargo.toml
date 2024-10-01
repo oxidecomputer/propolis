@@ -24,7 +24,3 @@ uuid = { workspace = true, features = ["serde", "v4"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
-
-[features]
-default = []
-falcon = []

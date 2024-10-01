@@ -104,11 +104,34 @@ pub struct QemuPvpanic {
     // TODO(eliza): add support for the PCI PVPANIC device...
 }
 
+/// Settings supplied to the guest's firmware image that specify the order in
+/// which it should consider its options when selecting a device to try to boot
+/// from.
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+pub struct BootSettings {
+    /// An ordered list of components to attempt to boot from.
+    pub order: Vec<BootOrderEntry>,
+}
+
+/// An entry in the boot order stored in a [`BootSettings`] component.
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, Default)]
+pub struct BootOrderEntry {
+    /// The name of another component in the spec that Propolis should try to
+    /// boot from.
+    ///
+    /// Currently, only disk device components are supported.
+    pub name: String,
+}
+
 //
 // Structs for Falcon devices. These devices don't support live migration.
 //
 
-#[cfg(feature = "falcon")]
+/// Describes a SoftNPU PCI device.
+///
+/// This is only supported by Propolis servers compiled with the `falcon`
+/// feature.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuPciPort {
@@ -116,7 +139,10 @@ pub struct SoftNpuPciPort {
     pub pci_path: PciPath,
 }
 
-#[cfg(feature = "falcon")]
+/// Describes a SoftNPU network port.
+///
+/// This is only supported by Propolis servers compiled with the `falcon`
+/// feature.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuPort {
@@ -127,7 +153,11 @@ pub struct SoftNpuPort {
     pub backend_name: String,
 }
 
-#[cfg(feature = "falcon")]
+/// Describes a PCI device that shares host files with the guest using the P9
+/// protocol.
+///
+/// This is only supported by Propolis servers compiled with the `falcon`
+/// feature.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuP9 {
@@ -135,7 +165,10 @@ pub struct SoftNpuP9 {
     pub pci_path: PciPath,
 }
 
-#[cfg(feature = "falcon")]
+/// Describes a filesystem to expose through a P9 device.
+///
+/// This is only supported by Propolis servers compiled with the `falcon`
+/// feature.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct P9fs {
