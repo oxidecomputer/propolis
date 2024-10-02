@@ -17,7 +17,7 @@ fn set_crucible_git_rev() -> anyhow::Result<()> {
         src: &cargo_metadata::Source,
     ) -> anyhow::Result<&str> {
         let src = src.repr.strip_prefix("git+").ok_or_else(|| {
-            anyhow::anyhow!("Crucible package's source should be from git")
+            anyhow::anyhow!("Crucible is not a Git dependency")
         })?;
 
         if !src.starts_with(CRUCIBLE_REPO) {
@@ -25,11 +25,11 @@ fn set_crucible_git_rev() -> anyhow::Result<()> {
         }
 
         let rev = src.split("?rev=").nth(1).ok_or_else(|| {
-            anyhow::anyhow!("Crucible package's source should have a revision")
+            anyhow::anyhow!("Crucible package's source did not have a revision")
         })?;
         let mut parts = rev.split('#');
         let sha = parts.next().ok_or_else(|| {
-            anyhow::anyhow!("Crucible package's source should have a revision")
+            anyhow::anyhow!("Crucible package's source did not have a revision")
         })?;
         assert_eq!(Some(sha), parts.next());
         Ok(sha)
@@ -58,10 +58,8 @@ fn set_crucible_git_rev() -> anyhow::Result<()> {
         .and_then(extract_crucible_dep_sha)
         .unwrap_or_else(|err| {
             println!(
-                "cargo:warning=Crucible upstairs dependency is not pointed at \
-                 the {CRUCIBLE_REPO} repository, so this phd-runner build \
-                 not be able to automatically determine the Crucible commit \
-                 to download from Buildomat: {err}",
+                "cargo:warning={err}, so the `--crucible-downstairs-commit auto` \
+                 flag will be disabled in this PHD build",
             );
             "CANT_GET_YE_CRUCIBLE_SHA"
         });
