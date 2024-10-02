@@ -200,16 +200,16 @@ impl<'a> VmEnsureNotStarted<'a> {
         )?;
 
         init.initialize_rtc(&chipset)?;
-        init.initialize_hpet()?;
+        init.initialize_hpet();
 
-        let com1 = Arc::new(init.initialize_uart(&chipset)?);
-        let ps2ctrl = init.initialize_ps2(&chipset)?;
+        let com1 = Arc::new(init.initialize_uart(&chipset));
+        let ps2ctrl = init.initialize_ps2(&chipset);
         init.initialize_qemu_debug_port()?;
         init.initialize_qemu_pvpanic(properties.into())?;
         init.initialize_network_devices(&chipset).await?;
 
         #[cfg(not(feature = "omicron-build"))]
-        init.initialize_test_devices(&options.toml_config.devices)?;
+        init.initialize_test_devices(&options.toml_config.devices);
         #[cfg(feature = "omicron-build")]
         info!(
             self.log,
@@ -219,7 +219,7 @@ impl<'a> VmEnsureNotStarted<'a> {
         #[cfg(feature = "falcon")]
         {
             init.initialize_softnpu_ports(&chipset)?;
-            init.initialize_9pfs(&chipset)?;
+            init.initialize_9pfs(&chipset);
         }
 
         init.initialize_storage_devices(&chipset, options.nexus_client.clone())

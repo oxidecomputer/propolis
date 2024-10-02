@@ -16,6 +16,7 @@ use crate::pio::{PioBus, PioFn};
 use crate::vmm::MemCtx;
 use bits::*;
 
+use thiserror::Error;
 use zerocopy::AsBytes;
 
 const SIGNATURE_VALUE: &[u8; 4] = b"QEMU";
@@ -103,11 +104,18 @@ impl Entry {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum InsertError {
+    #[error("invalid selector")]
     InvalidSelector,
-    SelectorExists,
-    NameExists,
+
+    #[error("selector {0} already exists")]
+    SelectorExists(u16),
+
+    #[error("name {0:?} already in use")]
+    NameExists(String),
+
+    #[error("no capacity")]
     NoCapacity,
 }
 
@@ -134,9 +142,9 @@ impl Directory {
         if selector == ITEM_INVALID {
             Err(InsertError::InvalidSelector)
         } else if self.names.contains_key(&name) {
-            Err(InsertError::NameExists)
+            Err(InsertError::NameExists(name))
         } else if self.entries.contains_key(&selector) {
-            Err(InsertError::SelectorExists)
+            Err(InsertError::SelectorExists(selector))
         } else {
             self.names.insert(name.clone(), selector);
             self.entries.insert(selector, (entry, name));
