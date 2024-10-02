@@ -4,7 +4,6 @@
 
 use std::convert::TryInto;
 use std::fs::File;
-use std::io::{Error, ErrorKind};
 use std::num::NonZeroUsize;
 use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
@@ -19,7 +18,7 @@ use crate::stats::{
 use crate::vm::{
     BlockBackendMap, CrucibleBackendMap, DeviceMap, NetworkInterfaceIds,
 };
-use anyhow::{Context, Result};
+use anyhow::Context;
 use crucible_client_types::VolumeConstructionRequest;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
@@ -32,6 +31,7 @@ use propolis::hw::bhyve::BhyveHpet;
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ibmpc;
 use propolis::hw::pci;
+use propolis::hw::pci::topology::PciTopologyError;
 use propolis::hw::ps2::ctrl::PS2Ctrl;
 use propolis::hw::qemu::pvpanic::QemuPvpanic;
 use propolis::hw::qemu::{
@@ -47,6 +47,55 @@ use propolis_api_types::instance_spec;
 use propolis_api_types::instance_spec::components::devices::SerialPortNumber;
 use propolis_api_types::InstanceProperties;
 use slog::info;
+use thiserror::Error;
+use uuid::Uuid;
+
+/// An error that can arise while initializing a new machine.
+#[derive(Debug, Error)]
+pub enum MachineInitError {
+    /// Catch-all for `anyhow` errors.
+    ///
+    /// The machine initializer calls many bhyve functions that return a
+    /// [`std::io::Error`]. Instead of forcing each such call site to define its
+    /// own error type, this type allows callers to attach an
+    /// [`anyhow::Context`] and convert it to this error variant without losing
+    /// information about the interior I/O error.
+    #[error(transparent)]
+    GenericError(#[from] anyhow::Error),
+
+    #[error("bootrom {path:?} length {length:x} not aligned to {align:x}")]
+    BootromNotAligned { path: String, length: u64, align: u64 },
+
+    #[error(
+        "bootrom read truncated: expected {rom_len} bytes, read {nread} bytes"
+    )]
+    BootromReadTruncated { rom_len: usize, nread: usize },
+
+    #[error(transparent)]
+    PciTopologyError(#[from] PciTopologyError),
+
+    #[error("failed to deserialize volume construction request")]
+    VcrDeserializationFailed(#[from] serde_json::Error),
+
+    #[error("failed to decode in-memory storage backend contents")]
+    InMemoryBackendDecodeFailed(#[from] base64::DecodeError),
+
+    #[error("multiple Crucible disks with ID {0}")]
+    DuplicateCrucibleBackendId(Uuid),
+
+    #[error("boot order entry {0:?} does not refer to an attached disk")]
+    BootOrderEntryWithoutDevice(String),
+
+    #[error("boot entry {0:?} refers to a device on non-zero PCI bus {1}")]
+    BootDeviceOnDownstreamPciBus(String, u8),
+
+    #[error("failed to insert {0} fwcfg entry")]
+    FwcfgInsertFailed(&'static str, #[source] fwcfg::InsertError),
+
+    #[cfg(feature = "falcon")]
+    #[error("softnpu p9 device missing")]
+    SoftNpuP9Missing,
+}
 
 /// Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
@@ -63,33 +112,39 @@ pub fn build_instance(
     spec: &Spec,
     use_reservoir: bool,
     _log: slog::Logger,
-) -> Result<Machine> {
+) -> Result<Machine, MachineInitError> {
     let (lowmem, highmem) = get_spec_guest_ram_limits(spec);
     let create_opts = propolis::vmm::CreateOpts {
         force: true,
         use_reservoir,
         track_dirty: true,
     };
-    let mut builder = Builder::new(name, create_opts)?
-        .max_cpus(spec.board.cpus)?
-        .add_mem_region(0, lowmem, "lowmem")?
-        .add_rom_region(0x1_0000_0000 - MAX_ROM_SIZE, MAX_ROM_SIZE, "bootrom")?
-        .add_mmio_region(0xc000_0000_usize, 0x2000_0000_usize, "dev32")?
-        .add_mmio_region(0xe000_0000_usize, 0x1000_0000_usize, "pcicfg")?;
+    let mut builder = Builder::new(name, create_opts)
+        .context("failed to create kernel vmm builder")?
+        .max_cpus(spec.board.cpus)
+        .context("failed to set max cpus")?
+        .add_mem_region(0, lowmem, "lowmem")
+        .context("failed to add low memory region")?
+        .add_rom_region(0x1_0000_0000 - MAX_ROM_SIZE, MAX_ROM_SIZE, "bootrom")
+        .context("failed to add bootrom region")?
+        .add_mmio_region(0xc000_0000_usize, 0x2000_0000_usize, "dev32")
+        .context("failed to add low device MMIO region")?
+        .add_mmio_region(0xe000_0000_usize, 0x1000_0000_usize, "pcicfg")
+        .context("failed to add PCI config region")?;
 
     let highmem_start = 0x1_0000_0000;
     if highmem > 0 {
-        builder = builder.add_mem_region(highmem_start, highmem, "highmem")?;
+        builder = builder
+            .add_mem_region(highmem_start, highmem, "highmem")
+            .context("failed to add high memory region")?;
     }
 
     let dev64_start = highmem_start + highmem;
-    builder = builder.add_mmio_region(
-        dev64_start,
-        vmm::MAX_PHYSMEM - dev64_start,
-        "dev64",
-    )?;
+    builder = builder
+        .add_mmio_region(dev64_start, vmm::MAX_PHYSMEM - dev64_start, "dev64")
+        .context("failed to add high device MMIO region")?;
 
-    Ok(builder.finalize()?)
+    Ok(builder.finalize().context("failed to finalize kernel vmm")?)
 }
 
 pub struct RegisteredChipset {
@@ -136,21 +191,24 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_rom(
         &mut self,
         path: &std::path::Path,
-    ) -> Result<(), Error> {
-        fn open_bootrom(path: &std::path::Path) -> Result<(File, usize)> {
-            let fp = File::open(path)?;
-            let len = fp.metadata()?.len();
+    ) -> Result<(), MachineInitError> {
+        fn open_bootrom(
+            path: &std::path::Path,
+        ) -> Result<(File, usize), MachineInitError> {
+            let fp = File::open(path)
+                .with_context(|| format!("failed to open bootrom {path:?}"))?;
+            let len = fp
+                .metadata()
+                .with_context(|| {
+                    format!("failed to query metadata for bootrom {path:?}")
+                })?
+                .len();
             if len % (PAGE_SIZE as u64) != 0 {
-                Err(Error::new(
-                    ErrorKind::InvalidData,
-                    format!(
-                        "rom {} length {:x} not aligned to {:x}",
-                        path.to_string_lossy(),
-                        len,
-                        PAGE_SIZE
-                    ),
-                )
-                .into())
+                Err(MachineInitError::BootromNotAligned {
+                    path: path.to_string_lossy().to_string(),
+                    length: len,
+                    align: PAGE_SIZE as u64,
+                })
             } else {
                 Ok((fp, len as usize))
             }
@@ -160,13 +218,22 @@ impl<'a> MachineInitializer<'a> {
             .unwrap_or_else(|e| panic!("Cannot open bootrom: {}", e));
 
         let mem = self.machine.acc_mem.access().unwrap();
-        let mapping = mem.direct_writable_region_by_name("bootrom")?;
+        let mapping = mem
+            .direct_writable_region_by_name("bootrom")
+            .context("failed to map guest bootrom region")?;
         let offset = mapping.len() - rom_len;
         let submapping = mapping.subregion(offset, rom_len).unwrap();
-        let nread = submapping.pread(&romfp, rom_len, 0)?;
+        let nread =
+            submapping.pread(&romfp, rom_len, 0).with_context(|| {
+                format!(
+                    "failed to read bootrom {path:?} into guest memory mapping"
+                )
+            })?;
         if nread != rom_len {
-            // TODO: Handle short read
-            return Err(Error::new(ErrorKind::InvalidData, "short read"));
+            return Err(MachineInitError::BootromReadTruncated {
+                rom_len,
+                nread,
+            });
         }
         self.state.rom_size_bytes = Some(rom_len);
         Ok(())
@@ -175,30 +242,31 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_rtc(
         &self,
         chipset: &RegisteredChipset,
-    ) -> Result<(), Error> {
+    ) -> Result<(), MachineInitError> {
         let (lowmem, highmem) = get_spec_guest_ram_limits(self.spec);
 
         let rtc = chipset.isa.rtc.as_ref();
-        rtc.memsize_to_nvram(lowmem as u32, highmem as u64)?;
+        rtc.memsize_to_nvram(lowmem as u32, highmem as u64)
+            .context("failed to write guest memory size to RTC NVRAM")?;
         rtc.set_time(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("system time precedes UNIX epoch"),
-        )?;
+        )
+        .context("failed to set guest real-time clock")?;
 
         Ok(())
     }
 
-    pub fn initialize_hpet(&mut self) -> Result<(), Error> {
+    pub fn initialize_hpet(&mut self) {
         let hpet = BhyveHpet::create(self.machine.hdl.clone());
         self.devices.insert(hpet.type_name().into(), hpet.clone());
-        Ok(())
     }
 
     pub fn initialize_chipset(
         &mut self,
         event_handler: &Arc<dyn super::vm::guest_event::ChipsetEventHandler>,
-    ) -> Result<RegisteredChipset, Error> {
+    ) -> Result<RegisteredChipset, MachineInitError> {
         let mut pci_builder = pci::topology::Builder::new();
         for bridge in self.spec.pci_pci_bridges.values() {
             let desc = pci::topology::BridgeDescription::new(
@@ -292,7 +360,7 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_uart(
         &mut self,
         chipset: &RegisteredChipset,
-    ) -> Result<Serial<LpcUart>, Error> {
+    ) -> Serial<LpcUart> {
         let mut com1 = None;
         for (name, desc) in self.spec.serial.iter() {
             if desc.device != spec::SerialPortDevice::Uart {
@@ -318,13 +386,13 @@ impl<'a> MachineInitializer<'a> {
 
         let sink_size = NonZeroUsize::new(64).unwrap();
         let source_size = NonZeroUsize::new(1024).unwrap();
-        Ok(Serial::new(com1.unwrap(), sink_size, source_size))
+        Serial::new(com1.unwrap(), sink_size, source_size)
     }
 
     pub fn initialize_ps2(
         &mut self,
         chipset: &RegisteredChipset,
-    ) -> Result<Arc<PS2Ctrl>, Error> {
+    ) -> Arc<PS2Ctrl> {
         let ps2_ctrl = PS2Ctrl::create();
 
         ps2_ctrl.attach(
@@ -335,12 +403,15 @@ impl<'a> MachineInitializer<'a> {
         );
         self.devices.insert(ps2_ctrl.type_name().into(), ps2_ctrl.clone());
 
-        Ok(ps2_ctrl)
+        ps2_ctrl
     }
 
-    pub fn initialize_qemu_debug_port(&mut self) -> Result<(), Error> {
+    pub fn initialize_qemu_debug_port(
+        &mut self,
+    ) -> Result<(), MachineInitError> {
         let dbg = QemuDebugPort::create(&self.machine.bus_pio);
-        let debug_file = std::fs::File::create("debug.out")?;
+        let debug_file = std::fs::File::create("debug.out")
+            .context("failed to create firmware debug port logfile")?;
         let poller = chardev::BlockingFileOutput::new(debug_file);
 
         poller.attach(Arc::clone(&dbg) as Arc<dyn BlockingSource>);
@@ -352,7 +423,7 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_qemu_pvpanic(
         &mut self,
         virtual_machine: VirtualMachine,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), MachineInitError> {
         if let Some(pvpanic) = &self.spec.pvpanic {
             if pvpanic.spec.enable_isa {
                 let pvpanic = QemuPvpanic::create(
@@ -382,14 +453,15 @@ impl<'a> MachineInitializer<'a> {
         backend_spec: &StorageBackend,
         backend_name: &str,
         nexus_client: &Option<NexusClient>,
-    ) -> Result<StorageBackendInstance, Error> {
+    ) -> Result<StorageBackendInstance, MachineInitError> {
         match backend_spec {
             StorageBackend::Crucible(spec) => {
                 info!(self.log, "Creating Crucible disk";
                       "backend_name" => backend_name);
 
                 let vcr: VolumeConstructionRequest =
-                    serde_json::from_str(&spec.request_json)?;
+                    serde_json::from_str(&spec.request_json)
+                        .map_err(MachineInitError::VcrDeserializationFailed)?;
 
                 let cru_id = match vcr {
                     VolumeConstructionRequest::Volume { id, .. } => {
@@ -416,9 +488,16 @@ impl<'a> MachineInitializer<'a> {
                         slog::o!("component" => format!("crucible-{cru_id}")),
                     ),
                 )
-                .await?;
+                .await
+                .context("failed to create Crucible backend")?;
 
-                let crucible = Some((be.get_uuid().await?, be.clone()));
+                let crucible = Some((
+                    be.get_uuid()
+                        .await
+                        .context("failed to get Crucible backend ID")?,
+                    be.clone(),
+                ));
+
                 Ok(StorageBackendInstance { be, crucible })
             }
             StorageBackend::File(spec) => {
@@ -426,7 +505,14 @@ impl<'a> MachineInitializer<'a> {
                       "path" => &spec.path);
 
                 // Check if raw device is being used and gripe if it isn't
-                let meta = std::fs::metadata(&spec.path)?;
+                let meta =
+                    std::fs::metadata(&spec.path).with_context(|| {
+                        format!(
+                            "failed to read file backend metadata for {:?}",
+                            spec.path
+                        )
+                    })?;
+
                 if meta.file_type().is_block_device() {
                     slog::warn!(
                         self.log,
@@ -443,7 +529,13 @@ impl<'a> MachineInitializer<'a> {
                         ..Default::default()
                     },
                     nworkers,
-                )?;
+                )
+                .with_context(|| {
+                    format!(
+                        "failed to create file backend for file {:?}",
+                        spec.path
+                    )
+                })?;
 
                 Ok(StorageBackendInstance { be, crucible: None })
             }
@@ -451,17 +543,7 @@ impl<'a> MachineInitializer<'a> {
                 let bytes = base64::Engine::decode(
                     &base64::engine::general_purpose::STANDARD,
                     &spec.base64,
-                )
-                .map_err(|e| {
-                    Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!(
-                            "failed to decode base64 contents of in-memory \
-                                disk: {}",
-                            e
-                        ),
-                    )
-                })?;
+                )?;
 
                 info!(self.log, "Creating in-memory disk backend";
                       "len" => bytes.len());
@@ -475,7 +557,8 @@ impl<'a> MachineInitializer<'a> {
                         ..Default::default()
                     },
                     nworkers,
-                )?;
+                )
+                .context("failed to create in-memory storage backend")?;
 
                 Ok(StorageBackendInstance { be, crucible: None })
             }
@@ -491,7 +574,7 @@ impl<'a> MachineInitializer<'a> {
         &mut self,
         chipset: &RegisteredChipset,
         nexus_client: Option<NexusClient>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), MachineInitError> {
         enum DeviceInterface {
             Virtio,
             Nvme,
@@ -558,9 +641,8 @@ impl<'a> MachineInitializer<'a> {
                 let block_size = backend.block_size().await;
                 let prev = self.crucible_backends.insert(disk_id, backend);
                 if prev.is_some() {
-                    return Err(Error::new(
-                        ErrorKind::InvalidInput,
-                        format!("multiple disks with id {}", disk_id),
+                    return Err(MachineInitError::DuplicateCrucibleBackendId(
+                        disk_id,
                     ));
                 }
 
@@ -615,7 +697,7 @@ impl<'a> MachineInitializer<'a> {
     pub async fn initialize_network_devices(
         &mut self,
         chipset: &RegisteredChipset,
-    ) -> Result<(), Error> {
+    ) -> Result<(), MachineInitError> {
         // Only create the vector if the kstat_sampler exists.
         let mut interface_ids: Option<NetworkInterfaceIds> =
             self.kstat_sampler.as_ref().map(|_| Vec::new());
@@ -628,13 +710,25 @@ impl<'a> MachineInitializer<'a> {
                 &nic.backend_spec.vnic_name,
                 0x100,
                 &self.machine.hdl,
-            )?;
+            )
+            .with_context(|| {
+                format!("failed to create viona device {device_name:?}")
+            })?;
+
             self.devices
                 .insert(format!("pci-virtio-viona-{}", bdf), viona.clone());
 
             // Only push to interface_ids if kstat_sampler exists
             if let Some(ref mut ids) = interface_ids {
-                ids.push((nic.device_spec.interface_id, viona.instance_id()?));
+                ids.push((
+                    nic.device_spec.interface_id,
+                    viona.instance_id().with_context(|| {
+                        format!(
+                            "failed to get viona instance ID for network \
+                                device {device_name:?}"
+                        )
+                    })?,
+                ));
             }
 
             chipset.pci_attach(bdf, viona);
@@ -660,7 +754,7 @@ impl<'a> MachineInitializer<'a> {
             String,
             propolis_server_config::Device,
         >,
-    ) -> Result<(), Error> {
+    ) {
         use propolis::hw::testdev::{
             MigrationFailureDevice, MigrationFailures,
         };
@@ -698,15 +792,13 @@ impl<'a> MachineInitializer<'a> {
             );
             self.devices.insert(MigrationFailureDevice::NAME.into(), dev);
         }
-
-        Ok(())
     }
 
     #[cfg(feature = "falcon")]
     pub fn initialize_softnpu_ports(
         &mut self,
         chipset: &RegisteredChipset,
-    ) -> Result<(), Error> {
+    ) -> Result<(), MachineInitError> {
         let softnpu = &self.spec.softnpu;
 
         // Check to make sure we actually have both a pci port and at least one
@@ -757,12 +849,7 @@ impl<'a> MachineInitializer<'a> {
         let bdf = softnpu
             .p9_device
             .as_ref()
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorKind::InvalidInput,
-                    "SoftNpu p9 device missing".to_owned(),
-                )
-            })?
+            .ok_or(MachineInitError::SoftNpuP9Missing)?
             .pci_path
             .into();
         chipset.pci_attach(bdf, vio9p.clone());
@@ -777,13 +864,8 @@ impl<'a> MachineInitializer<'a> {
             pipeline,
             self.log.clone(),
         )
-        .map_err(|e| -> std::io::Error {
-            let io_err: std::io::Error = e;
-            std::io::Error::new(
-                io_err.kind(),
-                format!("register softnpu: {}", io_err),
-            )
-        })?;
+        .context("failed to register softnpu")?;
+
         self.devices.insert("softnpu-main".to_string(), softnpu.clone());
 
         // Create the SoftNpu PCI port.
@@ -795,15 +877,12 @@ impl<'a> MachineInitializer<'a> {
     }
 
     #[cfg(feature = "falcon")]
-    pub fn initialize_9pfs(
-        &mut self,
-        chipset: &RegisteredChipset,
-    ) -> Result<(), Error> {
+    pub fn initialize_9pfs(&mut self, chipset: &RegisteredChipset) {
         let softnpu = &self.spec.softnpu;
         // Check that there is actually a p9fs device to register, if not bail
         // early.
         let Some(p9fs) = &softnpu.p9fs else {
-            return Ok(());
+            return;
         };
 
         let handler = virtio::p9fs::HostFSHandler::new(
@@ -815,7 +894,6 @@ impl<'a> MachineInitializer<'a> {
         let vio9p = virtio::p9fs::PciVirtio9pfs::new(0x40, Arc::new(handler));
         self.devices.insert("falcon-p9fs".to_string(), vio9p.clone());
         chipset.pci_attach(p9fs.pci_path.into(), vio9p);
-        Ok(())
     }
 
     fn generate_smbios(&self) -> smbios::TableBytes {
@@ -958,7 +1036,7 @@ impl<'a> MachineInitializer<'a> {
         smb_tables.commit()
     }
 
-    fn generate_bootorder(&self) -> Result<Option<Entry>, Error> {
+    fn generate_bootorder(&self) -> Result<Option<Entry>, MachineInitError> {
         info!(
             self.log,
             "Generating bootorder with order: {:?}",
@@ -979,10 +1057,12 @@ impl<'a> MachineInitializer<'a> {
                     StorageDevice::Virtio(disk) => {
                         let bdf: pci::Bdf = disk.pci_path.into();
                         if bdf.bus.get() != 0 {
-                            return Err(Error::new(
-                                ErrorKind::InvalidInput,
-                                "Boot device currently must be on PCI bus 0",
-                            ));
+                            return Err(
+                                MachineInitError::BootDeviceOnDownstreamPciBus(
+                                    boot_entry.name.clone(),
+                                    bdf.bus.get(),
+                                ),
+                            );
                         }
 
                         order.add_disk(bdf.location);
@@ -990,10 +1070,12 @@ impl<'a> MachineInitializer<'a> {
                     StorageDevice::Nvme(disk) => {
                         let bdf: pci::Bdf = disk.pci_path.into();
                         if bdf.bus.get() != 0 {
-                            return Err(Error::new(
-                                ErrorKind::InvalidInput,
-                                "Boot device currently must be on PCI bus 0",
-                            ));
+                            return Err(
+                                MachineInitError::BootDeviceOnDownstreamPciBus(
+                                    boot_entry.name.clone(),
+                                    bdf.bus.get(),
+                                ),
+                            );
                         }
 
                         // TODO: separately, propolis-standalone passes an eui64
@@ -1004,12 +1086,9 @@ impl<'a> MachineInitializer<'a> {
             } else {
                 // This should be unreachable - we check that the boot disk is
                 // valid when constructing the spec we're initializing from.
-                let message = format!(
-                    "Instance spec included boot entry which does not refer \
-                    to an existing disk: `{}`",
-                    boot_entry.name.as_str(),
-                );
-                return Err(Error::new(ErrorKind::InvalidInput, message));
+                return Err(MachineInitError::BootOrderEntryWithoutDevice(
+                    boot_entry.name.clone(),
+                ));
             }
         }
 
@@ -1023,14 +1102,14 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_fwcfg(
         &mut self,
         cpus: u8,
-    ) -> Result<Arc<ramfb::RamFb>, Error> {
+    ) -> Result<Arc<ramfb::RamFb>, MachineInitError> {
         let fwcfg = fwcfg::FwCfg::new();
         fwcfg
             .insert_legacy(
                 fwcfg::LegacyId::SmpCpuCount,
                 fwcfg::Entry::fixed_u32(u32::from(cpus)),
             )
-            .unwrap();
+            .map_err(|e| MachineInitError::FwcfgInsertFailed("cpu count", e))?;
 
         let smbios::TableBytes { entry_point, structure_table } =
             self.generate_smbios();
@@ -1039,16 +1118,22 @@ impl<'a> MachineInitializer<'a> {
                 "etc/smbios/smbios-tables",
                 fwcfg::Entry::Bytes(structure_table),
             )
-            .unwrap();
+            .map_err(|e| {
+                MachineInitError::FwcfgInsertFailed("smbios tables", e)
+            })?;
         fwcfg
             .insert_named(
                 "etc/smbios/smbios-anchor",
                 fwcfg::Entry::Bytes(entry_point),
             )
-            .unwrap();
+            .map_err(|e| {
+                MachineInitError::FwcfgInsertFailed("smbios anchor", e)
+            })?;
 
         if let Some(boot_order) = self.generate_bootorder()? {
-            fwcfg.insert_named("bootorder", boot_order).unwrap();
+            fwcfg.insert_named("bootorder", boot_order).map_err(|e| {
+                MachineInitError::FwcfgInsertFailed("bootorder", e)
+            })?;
         }
 
         let ramfb = ramfb::RamFb::create(
@@ -1057,7 +1142,7 @@ impl<'a> MachineInitializer<'a> {
         ramfb.attach(&self.machine.acc_mem);
         fwcfg
             .insert_named(ramfb::RamFb::FWCFG_ENTRY_NAME, fwcfg::Entry::RamFb)
-            .unwrap();
+            .map_err(|e| MachineInitError::FwcfgInsertFailed("ramfb", e))?;
         fwcfg.attach_ramfb(Some(ramfb.clone()));
 
         fwcfg.attach(&self.machine.bus_pio, &self.machine.acc_mem);
@@ -1070,9 +1155,10 @@ impl<'a> MachineInitializer<'a> {
     /// Initialize virtual CPUs by first setting their capabilities, inserting
     /// them into the device map, and then, if a kstat sampler is provided,
     /// tracking their kstats.
-    pub async fn initialize_cpus(&mut self) -> Result<(), Error> {
+    pub async fn initialize_cpus(&mut self) -> Result<(), MachineInitError> {
         for vcpu in self.machine.vcpus.iter() {
-            vcpu.set_default_capabs().unwrap();
+            vcpu.set_default_capabs()
+                .context("failed to set vcpu capabilities")?;
 
             // The vCPUs behave like devices, so add them to the list as well
             self.devices.insert(format!("vcpu-{}", vcpu.id), vcpu.clone());
