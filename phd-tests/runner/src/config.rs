@@ -272,8 +272,8 @@ impl RunOptions {
                     anyhow::bail!(
                         "Because {reason}, phd-runner's build script could not determine \
                          the Crucible Git SHA, so the `--crucible-downstairs-commit auto` \
-                         option has been disabled. You can provide a local Crucible \
-                         binary using `--crucible-downstairs-command`.",
+                         option has been disabled.\n\tYou can provide a local Crucible \
+                         binary using `--crucible-downstairs-cmd`.",
                     )
                 }
 
