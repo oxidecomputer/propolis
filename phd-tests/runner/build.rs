@@ -47,6 +47,7 @@ fn set_crucible_git_rev() -> anyhow::Result<()> {
             anyhow::anyhow!("Failed to find Crucible package in cargo metadata")
         })?;
 
+    let mut errmsg = String::new();
     let crucible_sha = crucible_pkg
         .source
         .as_ref()
@@ -61,7 +62,8 @@ fn set_crucible_git_rev() -> anyhow::Result<()> {
                 "cargo:warning={err}, so the `--crucible-downstairs-commit auto` \
                  flag will be disabled in this PHD build",
             );
-            "CANT_GET_YE_CRUCIBLE_SHA"
+            errmsg = format!("CANT_GET_YE_CRUCIBLE_SHA{err}");
+            &errmsg
         });
 
     println!("cargo:rustc-env=PHD_CRUCIBLE_GIT_REV={crucible_sha}");
