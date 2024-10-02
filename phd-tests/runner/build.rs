@@ -12,11 +12,10 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn set_crucible_git_rev() -> anyhow::Result<()> {
+    const CRUCIBLE_REPO: &str = "https://github.com/oxidecomputer/crucible";
     fn extract_crucible_dep_sha(
         src: &cargo_metadata::Source,
     ) -> anyhow::Result<&str> {
-        const CRUCIBLE_REPO: &str = "https://github.com/oxidecomputer/crucible";
-
         let src = src.repr.strip_prefix("git+").ok_or_else(|| {
             anyhow::anyhow!("Crucible package's source should be from git")
         })?;
@@ -48,16 +47,24 @@ fn set_crucible_git_rev() -> anyhow::Result<()> {
             anyhow::anyhow!("Failed to find Crucible package in cargo metadata")
         })?;
 
-    let crucible_src = crucible_pkg.source.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("Crucible package should not be a workspace member, and therefore should have source metadata")
-        })?;
-
-    let crucible_sha =
-        extract_crucible_dep_sha(crucible_src).with_context(|| {
-            format!(
-                "Failed to extract Crucible source SHA from {crucible_src:?}"
+    let crucible_sha = crucible_pkg
+        .source
+        .as_ref()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Crucible dependency is patched with a local checkout"
             )
-        })?;
+        })
+        .and_then(extract_crucible_dep_sha)
+        .unwrap_or_else(|err| {
+            println!(
+                "cargo:warning=Crucible upstairs dependency is not pointed at \
+                 the {CRUCIBLE_REPO} repository, so this phd-runner build \
+                 not be able to automatically determine the Crucible commit \
+                 to download from Buildomat: {err}",
+            );
+            "CANT_GET_YE_CRUCIBLE_SHA"
+        });
 
     println!("cargo:rustc-env=PHD_CRUCIBLE_GIT_REV={crucible_sha}");
 
