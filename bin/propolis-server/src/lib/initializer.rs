@@ -1157,6 +1157,25 @@ impl<'a> MachineInitializer<'a> {
     /// tracking their kstats.
     pub async fn initialize_cpus(&mut self) -> Result<(), MachineInitError> {
         for vcpu in self.machine.vcpus.iter() {
+            if let Some(set) = &self.spec.cpuid {
+                let specialized = cpuid::Specializer::new()
+                    .with_vcpu_count(
+                        NonZeroU8::new(self.spec.board.cpus).unwrap(),
+                        true,
+                    )
+                    .with_vcpuid(vcpu.id)
+                    .with_cache_topo()
+                    .clear_cpu_topo(cpuid::TopoKind::iter())
+                    .execute(cpuid.clone())
+                    .map_err(|e| {
+                        todo!("gjc");
+                        // MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
+                    })?;
+
+                vcpu.set_cpuid(specialized).with_context(|| {
+                    format!("setting CPUID for vcpu {}", vcpu.id)
+                })?;
+            }
             vcpu.set_default_capabs()
                 .context("failed to set vcpu capabilities")?;
 
