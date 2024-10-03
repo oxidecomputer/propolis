@@ -26,7 +26,7 @@ bytes.workspace = true
 chrono = { workspace = true, features = [ "serde" ] }
 clap = { workspace = true, features = ["derive"] }
 const_format.workspace = true
-cpuid_utils.workspace = true
+cpuid_utils = { workspace = true, features = ["instance-spec"] }
 crucible-client-types.workspace = true
 dropshot = { workspace = true, features = ["usdt-probes"] }
 erased-serde.workspace = true

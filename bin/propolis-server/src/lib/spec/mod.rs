@@ -16,13 +16,14 @@
 
 use std::collections::HashMap;
 
+use propolis::cpuid::Set as CpuidSet;
 use propolis_api_types::instance_spec::{
     components::{
         backends::{
             BlobStorageBackend, CrucibleStorageBackend, FileStorageBackend,
             VirtioNetworkBackend,
         },
-        board::Board,
+        board::{Chipset, I440Fx},
         devices::{
             NvmeDisk, PciPciBridge, QemuPvpanic as QemuPvpanicDesc,
             SerialPortNumber, VirtioDisk, VirtioNic,
@@ -60,6 +61,7 @@ pub struct ComponentTypeMismatch;
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Spec {
     pub board: Board,
+    pub cpuid: Option<CpuidSet>,
     pub disks: HashMap<String, Disk>,
     pub nics: HashMap<String, Nic>,
     pub boot_settings: Option<BootSettings>,
@@ -71,6 +73,23 @@ pub(crate) struct Spec {
 
     #[cfg(feature = "falcon")]
     pub softnpu: SoftNpu,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Board {
+    pub cpus: u8,
+    pub memory_mb: u64,
+    pub chipset: Chipset,
+}
+
+impl Default for Board {
+    fn default() -> Self {
+        Self {
+            cpus: 0,
+            memory_mb: 0,
+            chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

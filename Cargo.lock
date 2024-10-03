@@ -758,6 +758,7 @@ version = "0.0.0"
 dependencies = [
  "propolis_api_types",
  "propolis_types",
+ "thiserror",
 ]
 
 [[package]]

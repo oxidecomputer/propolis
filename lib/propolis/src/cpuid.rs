@@ -15,10 +15,16 @@ use cpuid_utils::CpuidMap;
 use propolis_types::{CpuidLeaf, CpuidValues, CpuidVendor};
 
 /// Set of cpuid leafs
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Set {
     map: CpuidMap,
     pub vendor: CpuidVendor,
+}
+
+impl Default for Set {
+    fn default() -> Self {
+        Self::new_host()
+    }
 }
 
 impl Set {
@@ -31,6 +37,10 @@ impl Set {
             CpuidVendor::try_from(cpuid_utils::host_query(CpuidLeaf::leaf(0)))
                 .expect("host CPU should be from recognized vendor");
         Self::new(vendor)
+    }
+
+    pub fn new_from_map(map: CpuidMap, vendor: CpuidVendor) -> Self {
+        Self { map, vendor }
     }
 
     pub fn insert(
@@ -71,7 +81,12 @@ impl Set {
             None
         }
     }
+
+    pub fn into_inner(self) -> (CpuidMap, CpuidVendor) {
+        (self.map, self.vendor)
+    }
 }
+
 impl From<Set> for Vec<bhyve_api::vcpu_cpuid_entry> {
     fn from(value: Set) -> Self {
         let mut out = Vec::with_capacity(value.map.0.len());

@@ -38,7 +38,12 @@ pub enum Chipset {
 
 /// A set of CPUID values to expose to a guest.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[serde(
+    deny_unknown_fields,
+    rename_all = "snake_case",
+    tag = "type",
+    content = "value"
+)]
 pub enum Cpuid {
     /// Allow the host to supply whatever CPUID values it exposes to guests by
     /// default. This is useful for ad hoc testing where a user may not want to
