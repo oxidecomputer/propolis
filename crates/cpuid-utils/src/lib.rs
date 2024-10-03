@@ -113,3 +113,33 @@ pub fn host_query(leaf: CpuidLeaf) -> CpuidValues {
 pub fn host_query(leaf: CpuidLeaf) -> CpuidValues {
     panic!("host CPUID queries only work on x86")
 }
+
+/// Queries subleaf 0 of all of the valid CPUID leaves on the host and returns
+/// the results in a [`CpuidMap`].
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+pub fn host_query_all() -> CpuidMap {
+    let mut map = BTreeMap::new();
+    let leaf_0 = CpuidLeaf::leaf(*STANDARD_LEAVES.start());
+    let leaf_0_values = host_query(leaf_0);
+    map.insert(leaf_0, leaf_0_values);
+
+    for l in (STANDARD_LEAVES.start() + 1)..=leaf_0_values.eax {
+        let leaf = CpuidLeaf::leaf(l);
+        map.insert(leaf, host_query(leaf));
+    }
+
+    let ext_leaf_0 = CpuidLeaf::leaf(*EXTENDED_LEAVES.start());
+    let ext_leaf_0_values = host_query(ext_leaf_0);
+    map.insert(ext_leaf_0, ext_leaf_0_values);
+    for l in (EXTENDED_LEAVES.start() + 1)..=ext_leaf_0_values.eax {
+        let leaf = CpuidLeaf::leaf(l);
+        map.insert(leaf, host_query(leaf));
+    }
+
+    CpuidMap(map)
+}
+
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+pub fn host_query_all() -> CpuidMap {
+    panic!("host CPUID queries only work on x86")
+}

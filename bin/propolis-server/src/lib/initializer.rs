@@ -4,7 +4,7 @@
 
 use std::convert::TryInto;
 use std::fs::File;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU8, NonZeroUsize};
 use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -48,6 +48,7 @@ use propolis_api_types::instance_spec::components::devices::SerialPortNumber;
 use propolis_api_types::InstanceProperties;
 use propolis_types::{CpuidLeaf, CpuidVendor};
 use slog::info;
+use strum::IntoEnumIterator;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -92,6 +93,9 @@ pub enum MachineInitError {
 
     #[error("failed to insert {0} fwcfg entry")]
     FwcfgInsertFailed(&'static str, #[source] fwcfg::InsertError),
+
+    #[error("failed to specialize CPUID for vcpu {0}")]
+    CpuidSpecializationFailed(i32, #[source] propolis::cpuid::SpecializeError),
 
     #[cfg(feature = "falcon")]
     #[error("softnpu p9 device missing")]
@@ -1158,18 +1162,17 @@ impl<'a> MachineInitializer<'a> {
     pub async fn initialize_cpus(&mut self) -> Result<(), MachineInitError> {
         for vcpu in self.machine.vcpus.iter() {
             if let Some(set) = &self.spec.cpuid {
-                let specialized = cpuid::Specializer::new()
+                let specialized = propolis::cpuid::Specializer::new()
                     .with_vcpu_count(
                         NonZeroU8::new(self.spec.board.cpus).unwrap(),
                         true,
                     )
                     .with_vcpuid(vcpu.id)
                     .with_cache_topo()
-                    .clear_cpu_topo(cpuid::TopoKind::iter())
-                    .execute(cpuid.clone())
+                    .clear_cpu_topo(propolis::cpuid::TopoKind::iter())
+                    .execute(set.clone())
                     .map_err(|e| {
-                        todo!("gjc");
-                        // MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
+                        MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
                     })?;
 
                 vcpu.set_cpuid(specialized).with_context(|| {
