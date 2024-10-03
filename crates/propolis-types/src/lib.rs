@@ -152,3 +152,88 @@ mod test {
         }
     }
 }
+
+/// A CPUID leaf/subleaf (function/index) specifier.
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Debug,
+    JsonSchema,
+    Serialize,
+    Deserialize,
+)]
+pub struct CpuidLeaf {
+    pub leaf: u32,
+    pub subleaf: Option<u32>,
+}
+
+impl CpuidLeaf {
+    pub fn leaf(leaf: u32) -> Self {
+        Self { leaf, subleaf: None }
+    }
+
+    pub fn subleaf(leaf: u32, subleaf: u32) -> Self {
+        Self { leaf, subleaf: Some(subleaf) }
+    }
+}
+
+/// Values returned by a CPUID instruction.
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Debug,
+    JsonSchema,
+    Serialize,
+    Deserialize,
+    Default,
+)]
+pub struct CpuidValues {
+    pub eax: u32,
+    pub ebx: u32,
+    pub ecx: u32,
+    pub edx: u32,
+}
+
+impl From<[u32; 4]> for CpuidValues {
+    fn from(value: [u32; 4]) -> Self {
+        Self { eax: value[0], ebx: value[1], ecx: value[2], edx: value[3] }
+    }
+}
+
+#[derive(
+    Clone, Copy, PartialEq, Eq, Debug, JsonSchema, Serialize, Deserialize,
+)]
+pub enum CpuidVendor {
+    Amd,
+    Intel,
+}
+
+impl CpuidVendor {
+    pub fn is_amd(self) -> bool {
+        self == Self::Amd
+    }
+
+    pub fn is_intel(self) -> bool {
+        self == Self::Intel
+    }
+}
+
+impl TryFrom<CpuidValues> for CpuidVendor {
+    type Error = &'static str;
+
+    fn try_from(value: CpuidValues) -> Result<Self, Self::Error> {
+        match (value.ebx, value.ecx, value.edx) {
+            // AuthenticAmd
+            (0x68747541, 0x444d4163, 0x69746e65) => Ok(Self::Amd),
+            // GenuineIntel
+            (0x756e6547, 0x6c65746e, 0x49656e69) => Ok(Self::Intel),
+            _ => Err("unrecognized vendor"),
+        }
+    }
+}

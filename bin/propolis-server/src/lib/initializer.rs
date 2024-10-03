@@ -46,6 +46,7 @@ use propolis::vmm::{self, Builder, Machine};
 use propolis_api_types::instance_spec;
 use propolis_api_types::instance_spec::components::devices::SerialPortNumber;
 use propolis_api_types::InstanceProperties;
+use propolis_types::{CpuidLeaf, CpuidVendor};
 use slog::info;
 use thiserror::Error;
 use uuid::Uuid;
@@ -897,7 +898,6 @@ impl<'a> MachineInitializer<'a> {
     }
 
     fn generate_smbios(&self) -> smbios::TableBytes {
-        use propolis::cpuid;
         use smbios::table::{type0, type1, type16, type4};
 
         let rom_size =
@@ -941,12 +941,12 @@ impl<'a> MachineInitializer<'a> {
 
         // Once CPUID profiles are integrated, these will need to take that into
         // account, rather than blindly querying from the host
-        let cpuid_vendor = cpuid::host_query(cpuid::Ident(0x0, None));
-        let cpuid_ident = cpuid::host_query(cpuid::Ident(0x1, None));
+        let cpuid_vendor = cpuid_utils::host_query(CpuidLeaf::leaf(0));
+        let cpuid_ident = cpuid_utils::host_query(CpuidLeaf::leaf(1));
         let cpuid_procname = [
-            cpuid::host_query(cpuid::Ident(0x8000_0002, None)),
-            cpuid::host_query(cpuid::Ident(0x8000_0003, None)),
-            cpuid::host_query(cpuid::Ident(0x8000_0004, None)),
+            cpuid_utils::host_query(CpuidLeaf::leaf(0x8000_0002)),
+            cpuid_utils::host_query(CpuidLeaf::leaf(0x8000_0003)),
+            cpuid_utils::host_query(CpuidLeaf::leaf(0x8000_0004)),
         ];
 
         let family = match cpuid_ident.eax & 0xf00 {
@@ -956,10 +956,10 @@ impl<'a> MachineInitializer<'a> {
             base => base >> 8,
         };
 
-        let vendor = cpuid::VendorKind::try_from(cpuid_vendor);
+        let vendor = CpuidVendor::try_from(cpuid_vendor);
         let proc_manufacturer = match vendor {
-            Ok(cpuid::VendorKind::Intel) => "Intel",
-            Ok(cpuid::VendorKind::Amd) => "Advanced Micro Devices, Inc.",
+            Ok(CpuidVendor::Intel) => "Intel",
+            Ok(CpuidVendor::Amd) => "Advanced Micro Devices, Inc.",
             _ => "",
         }
         .try_into()
@@ -969,15 +969,15 @@ impl<'a> MachineInitializer<'a> {
             //
             // Although this family identifier is not valid in SMBIOS 2.7,
             // having been defined in 3.x, we pass it through anyways.
-            (Ok(cpuid::VendorKind::Amd), family) if family >= 0x17 => 0x6b,
+            (Ok(CpuidVendor::Amd), family) if family >= 0x17 => 0x6b,
 
             // Emit Unknown for everything else
             _ => 0x2,
         };
         let proc_id =
             u64::from(cpuid_ident.eax) | u64::from(cpuid_ident.edx) << 32;
-        let proc_version =
-            cpuid::parse_brand_string(cpuid_procname).unwrap_or("".to_string());
+        let proc_version = propolis::cpuid::parse_brand_string(cpuid_procname)
+            .unwrap_or("".to_string());
 
         let smb_type4 = smbios::table::Type4 {
             proc_type: type4::ProcType::Central,

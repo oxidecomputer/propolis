@@ -18,6 +18,7 @@ use crate::vmm::VmmHdl;
 use migrate::VcpuReadWrite;
 
 use bhyve_api::ApiVersion;
+use propolis_types::{CpuidLeaf, CpuidVendor};
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
@@ -212,8 +213,8 @@ impl Vcpu {
             // (by nature of doing the cpuid queries against the host CPU) it
             // ignores the INTEL_FALLBACK flag.  We must determine the vendor
             // kind by querying it.
-            let vendor = cpuid::VendorKind::try_from(cpuid::host_query(
-                cpuid::Ident(0, None),
+            let vendor = CpuidVendor::try_from(cpuid_utils::host_query(
+                CpuidLeaf::leaf(0),
             ))
             .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
 
@@ -222,8 +223,8 @@ impl Vcpu {
         let intel_fallback =
             config.vvcc_flags & bhyve_api::VCC_FLAG_INTEL_FALLBACK != 0;
         let mut set = cpuid::Set::new(match intel_fallback {
-            true => cpuid::VendorKind::Intel,
-            false => cpuid::VendorKind::Amd,
+            true => CpuidVendor::Intel,
+            false => CpuidVendor::Amd,
         });
 
         for entry in entries {
@@ -234,7 +235,7 @@ impl Vcpu {
                     ErrorKind::InvalidData,
                     format!(
                         "conflicting entry at eax:{:x} ecx:{:x?})",
-                        ident.0, ident.1
+                        ident.leaf, ident.subleaf
                     ),
                 ));
             }
@@ -504,6 +505,7 @@ pub mod migrate {
     use crate::migrate::*;
 
     use bhyve_api::{vdi_field_entry_v1, vm_reg_name, ApiVersion};
+    use propolis_types::{CpuidLeaf, CpuidValues, CpuidVendor};
     use serde::{Deserialize, Serialize};
 
     pub(super) trait VcpuReadWrite: Sized {
@@ -688,11 +690,11 @@ pub mod migrate {
         pub idx: Option<u32>,
         pub data: [u32; 4],
     }
-    impl From<CpuidEntV1> for (cpuid::Ident, cpuid::Entry) {
+    impl From<CpuidEntV1> for (CpuidLeaf, CpuidValues) {
         fn from(value: CpuidEntV1) -> Self {
             (
-                cpuid::Ident(value.func, value.idx),
-                cpuid::Entry {
+                CpuidLeaf { leaf: value.func, subleaf: value.idx },
+                CpuidValues {
                     eax: value.data[0],
                     ebx: value.data[1],
                     ecx: value.data[2],
@@ -708,15 +710,15 @@ pub mod migrate {
         Amd,
         Intel,
     }
-    impl From<cpuid::VendorKind> for CpuidVendorV1 {
-        fn from(value: cpuid::VendorKind) -> Self {
+    impl From<CpuidVendor> for CpuidVendorV1 {
+        fn from(value: CpuidVendor) -> Self {
             match value {
-                cpuid::VendorKind::Amd => Self::Amd,
-                cpuid::VendorKind::Intel => Self::Intel,
+                CpuidVendor::Amd => Self::Amd,
+                CpuidVendor::Intel => Self::Intel,
             }
         }
     }
-    impl From<CpuidVendorV1> for cpuid::VendorKind {
+    impl From<CpuidVendorV1> for CpuidVendor {
         fn from(value: CpuidVendorV1) -> Self {
             match value {
                 CpuidVendorV1::Amd => Self::Amd,
@@ -741,8 +743,8 @@ pub mod migrate {
             let entries: Vec<_> = value
                 .iter()
                 .map(|(k, v)| CpuidEntV1 {
-                    func: k.0,
-                    idx: k.1,
+                    func: k.leaf,
+                    idx: k.subleaf,
                     data: [v.eax, v.ebx, v.ecx, v.edx],
                 })
                 .collect();

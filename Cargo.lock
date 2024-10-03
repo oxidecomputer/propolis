@@ -753,6 +753,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cpuid_utils"
+version = "0.0.0"
+dependencies = [
+ "propolis_api_types",
+ "propolis_types",
+]
+
+[[package]]
 name = "crc32fast"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4187,6 +4195,7 @@ dependencies = [
  "bitflags 2.6.0",
  "bitstruct",
  "byteorder",
+ "cpuid_utils",
  "crossbeam-channel",
  "crucible",
  "crucible-client-types",
@@ -4318,6 +4327,7 @@ dependencies = [
  "chrono",
  "clap",
  "const_format",
+ "cpuid_utils",
  "crucible-client-types",
  "dropshot",
  "erased-serde",
@@ -4337,6 +4347,7 @@ dependencies = [
  "propolis",
  "propolis-server-config",
  "propolis_api_types",
+ "propolis_types",
  "reqwest 0.12.7",
  "rfb",
  "rgb_frame",
@@ -4381,6 +4392,7 @@ dependencies = [
  "bhyve_api 0.0.0",
  "clap",
  "cpuid_profile_config",
+ "cpuid_utils",
  "crucible-client-types",
  "ctrlc",
  "erased-serde",
@@ -4388,6 +4400,7 @@ dependencies = [
  "futures",
  "libc",
  "propolis",
+ "propolis_types",
  "serde",
  "serde_json",
  "slog",

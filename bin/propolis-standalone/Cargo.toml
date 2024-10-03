@@ -16,6 +16,7 @@ anyhow.workspace = true
 atty.workspace = true
 bhyve_api.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
+cpuid_utils.workspace = true
 ctrlc.workspace = true
 fatfs.workspace = true
 futures.workspace = true
@@ -24,6 +25,7 @@ toml.workspace = true
 tokio = { workspace = true, features = ["io-util", "rt-multi-thread"] }
 serde = { workspace = true, features = ["derive"] }
 propolis.workspace = true
+propolis_types.workspace = true
 crucible-client-types = { workspace = true, optional = true }
 cpuid_profile_config.workspace = true
 erased-serde.workspace = true
