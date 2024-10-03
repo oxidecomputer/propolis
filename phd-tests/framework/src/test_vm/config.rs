@@ -6,10 +6,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::Context;
+use cpuid_utils::CpuidLeaf;
 use propolis_client::types::{
-    Board, BootOrderEntry, BootSettings, Chipset, ComponentV0,
-    InstanceMetadata, InstanceSpecV0, NvmeDisk, PciPath, SerialPort,
-    SerialPortNumber, VirtioDisk,
+    Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
+    CpuidEntry, CpuidVendor, InstanceMetadata, InstanceSpecV0, NvmeDisk,
+    PciPath, SerialPort, SerialPortNumber, VirtioDisk,
 };
 use uuid::Uuid;
 
@@ -46,6 +47,7 @@ pub struct VmConfig<'dr> {
     vm_name: String,
     cpus: u8,
     memory_mib: u64,
+    cpuid: Option<Vec<CpuidEntry>>,
     bootrom_artifact: String,
     boot_order: Option<Vec<&'dr str>>,
     disks: Vec<DiskRequest<'dr>>,
@@ -66,6 +68,7 @@ impl<'dr> VmConfig<'dr> {
             vm_name: vm_name.to_owned(),
             cpus,
             memory_mib,
+            cpuid: None,
             bootrom_artifact: bootrom.to_owned(),
             boot_order: None,
             disks: Vec::new(),
@@ -99,6 +102,11 @@ impl<'dr> VmConfig<'dr> {
 
     pub fn named(&mut self, name: impl ToString) -> &mut Self {
         self.vm_name = name.to_string();
+        self
+    }
+
+    pub fn cpuid(&mut self, entries: Vec<CpuidEntry>) -> &mut Self {
+        self.cpuid = Some(entries);
         self
     }
 
@@ -256,13 +264,33 @@ impl<'dr> VmConfig<'dr> {
             );
         }
 
+        let host_leaf_0 = cpuid_utils::host_query(CpuidLeaf::leaf(0));
+        let host_vendor = cpuid_utils::CpuidVendor::try_from(host_leaf_0)
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "unknown host CPU vendor (leaf 0: {host_leaf_0:?})"
+                )
+            })?;
+
         let mut spec = InstanceSpecV0 {
             board: Board {
                 cpus: self.cpus,
                 memory_mb: self.memory_mib,
                 chipset: Chipset::default(),
+                cpuid: match &self.cpuid {
+                    Some(entries) => Cpuid::Template {
+                        entries: entries.clone(),
+                        vendor: match host_vendor {
+                            cpuid_utils::CpuidVendor::Amd => CpuidVendor::Amd,
+                            cpuid_utils::CpuidVendor::Intel => {
+                                CpuidVendor::Intel
+                            }
+                        },
+                    },
+                    None => Cpuid::HostDefault,
+                },
             },
-            ..Default::default()
+            components: Default::default(),
         };
 
         // Iterate over the collection of disks and handles and add spec

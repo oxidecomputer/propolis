@@ -13,7 +13,7 @@ progenitor::generate_api!(
         // sled-agent and thus require JsonSchema
         BootOrderEntry = { derives = [schemars::JsonSchema] },
         BootSettings = { derives = [Default, schemars::JsonSchema] },
-        CpuidEntry = { derives = [PartialEq, Eq] },
+        CpuidEntry = { derives = [PartialEq, Eq, Copy] },
         DiskRequest = { derives = [schemars::JsonSchema] },
         VolumeConstructionRequest = { derives = [schemars::JsonSchema] },
         CrucibleOpts = { derives = [schemars::JsonSchema] },

@@ -11,6 +11,7 @@ doctest = false
 anyhow.workspace = true
 byteorder.workspace = true
 futures.workspace = true
+itertools.workspace = true
 http.workspace = true
 propolis-client.workspace = true
 phd-testcase.workspace = true

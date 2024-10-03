@@ -6,11 +6,13 @@
 
 use std::{collections::BTreeMap, ops::RangeInclusive};
 
-use propolis_types::{CpuidLeaf, CpuidValues};
-use thiserror::Error;
+pub use propolis_types::{CpuidLeaf, CpuidValues, CpuidVendor};
 
 #[cfg(feature = "instance-spec")]
 use propolis_api_types::instance_spec::components::board::CpuidEntry;
+
+#[cfg(feature = "instance-spec")]
+use thiserror::Error;
 
 /// A map from CPUID leaves to CPUID values.
 #[derive(Clone, Debug, Default)]

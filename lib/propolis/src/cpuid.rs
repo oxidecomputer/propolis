@@ -11,8 +11,7 @@ use std::num::NonZeroU8;
 use std::ops::Bound;
 
 use bhyve_api::vcpu_cpuid_entry;
-use cpuid_utils::CpuidMap;
-use propolis_types::{CpuidLeaf, CpuidValues, CpuidVendor};
+use cpuid_utils::{CpuidLeaf, CpuidMap, CpuidValues, CpuidVendor};
 
 /// Set of cpuid leafs
 #[derive(Clone, Debug)]
