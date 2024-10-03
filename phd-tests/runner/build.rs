@@ -12,13 +12,12 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn set_crucible_git_rev() -> anyhow::Result<()> {
+    const CRUCIBLE_REPO: &str = "https://github.com/oxidecomputer/crucible";
     fn extract_crucible_dep_sha(
         src: &cargo_metadata::Source,
     ) -> anyhow::Result<&str> {
-        const CRUCIBLE_REPO: &str = "https://github.com/oxidecomputer/crucible";
-
         let src = src.repr.strip_prefix("git+").ok_or_else(|| {
-            anyhow::anyhow!("Crucible package's source should be from git")
+            anyhow::anyhow!("Crucible is not a Git dependency")
         })?;
 
         if !src.starts_with(CRUCIBLE_REPO) {
@@ -26,11 +25,11 @@ fn set_crucible_git_rev() -> anyhow::Result<()> {
         }
 
         let rev = src.split("?rev=").nth(1).ok_or_else(|| {
-            anyhow::anyhow!("Crucible package's source should have a revision")
+            anyhow::anyhow!("Crucible package's source did not have a revision")
         })?;
         let mut parts = rev.split('#');
         let sha = parts.next().ok_or_else(|| {
-            anyhow::anyhow!("Crucible package's source should have a revision")
+            anyhow::anyhow!("Crucible package's source did not have a revision")
         })?;
         assert_eq!(Some(sha), parts.next());
         Ok(sha)
@@ -48,16 +47,24 @@ fn set_crucible_git_rev() -> anyhow::Result<()> {
             anyhow::anyhow!("Failed to find Crucible package in cargo metadata")
         })?;
 
-    let crucible_src = crucible_pkg.source.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("Crucible package should not be a workspace member, and therefore should have source metadata")
-        })?;
-
-    let crucible_sha =
-        extract_crucible_dep_sha(crucible_src).with_context(|| {
-            format!(
-                "Failed to extract Crucible source SHA from {crucible_src:?}"
+    let mut errmsg = String::new();
+    let crucible_sha = crucible_pkg
+        .source
+        .as_ref()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Crucible dependency is patched with a local checkout"
             )
-        })?;
+        })
+        .and_then(extract_crucible_dep_sha)
+        .unwrap_or_else(|err| {
+            println!(
+                "cargo:warning={err}, so the `--crucible-downstairs-commit auto` \
+                 flag will be disabled in this PHD build",
+            );
+            errmsg = format!("CANT_GET_YE_CRUCIBLE_SHA{err}");
+            &errmsg
+        });
 
     println!("cargo:rustc-env=PHD_CRUCIBLE_GIT_REV={crucible_sha}");
 

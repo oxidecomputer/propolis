@@ -265,9 +265,22 @@ impl RunOptions {
                 // The Git revision of Crucible we depend on is determined when building
                 // `phd-runner` by the build script, so that the `phd-runner` binary can
                 // be run even after moving it out of the Propolis cargo workspace.
-                let commit = env!("PHD_CRUCIBLE_GIT_REV").parse().context(
-                "PHD_CRUCIBLE_GIT_REV must be set to a valid Git revision by the build script",
-            )?;
+                let commit = env!("PHD_CRUCIBLE_GIT_REV");
+                if let Some(reason) =
+                    commit.strip_prefix("CANT_GET_YE_CRUCIBLE_SHA")
+                {
+                    anyhow::bail!(
+                        "Because {reason}, phd-runner's build script could not determine \
+                         the Crucible Git SHA, so the `--crucible-downstairs-commit auto` \
+                         option has been disabled.\n\tYou can provide a local Crucible \
+                         binary using `--crucible-downstairs-cmd`.",
+                    )
+                }
+
+                let commit = commit.parse().context(
+                    "PHD_CRUCIBLE_GIT_REV must be set to a valid Git \
+                        revision by the build script",
+                )?;
                 Ok(Some(CrucibleDownstairsSource::BuildomatGitRev(commit)))
             }
             None => Ok(None),
