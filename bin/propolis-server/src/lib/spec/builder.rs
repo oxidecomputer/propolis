@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashSet};
 use propolis_api_types::{
     instance_spec::{
         components::{
-            board::{Board, Chipset, I440Fx},
+            board::{Board, Chipset, Cpuid, I440Fx},
             devices::{PciPciBridge, SerialPortNumber},
         },
         PciPath,
@@ -79,6 +79,7 @@ impl SpecBuilder {
             cpus: properties.vcpus,
             memory_mb: properties.memory,
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
+            cpuid: Cpuid::HostDefault,
         };
 
         Self {
