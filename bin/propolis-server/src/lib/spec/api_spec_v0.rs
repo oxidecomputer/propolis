@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use propolis_api_types::instance_spec::{
     components::{
         backends::{DlpiNetworkBackend, VirtioNetworkBackend},
-        board::{Board as InstanceSpecBoard, Cpuid},
+        board::Board as InstanceSpecBoard,
         devices::{BootSettings, SerialPort as SerialPortDesc},
     },
     v0::{ComponentV0, InstanceSpecV0},
@@ -89,10 +89,7 @@ impl From<Spec> for InstanceSpecV0 {
             cpus: board.cpus,
             memory_mb: board.memory_mb,
             chipset: board.chipset,
-            cpuid: cpuid.map(|set| {
-                let (map, vendor) = set.into_inner();
-                Cpuid { entries: map.into(), vendor }
-            }),
+            cpuid: cpuid.map(|set| set.into_instance_spec_cpuid()),
         };
         let mut spec = InstanceSpecV0 { board, components: Default::default() };
 

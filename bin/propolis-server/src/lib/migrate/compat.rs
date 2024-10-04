@@ -71,7 +71,7 @@ pub enum CpuidMismatch {
     Vendor { this: CpuidVendor, other: CpuidVendor },
 
     #[error(transparent)]
-    LeavesOrValues(#[from] cpuid_utils::CpuidMapMismatch),
+    LeavesOrValues(#[from] cpuid_utils::CpuidSetMismatch),
 }
 
 #[derive(Debug, Error)]
@@ -266,7 +266,7 @@ impl spec::Spec {
                     });
                 }
 
-                this.leaves_and_values_equivalent(other)?;
+                this.is_equivalent_to(other)?;
                 Ok(())
             }
         }
@@ -472,8 +472,7 @@ impl CompatCheck for PciPciBridge {
 
 #[cfg(test)]
 mod test {
-    use cpuid_utils::{CpuidIdent, CpuidValues};
-    use propolis::cpuid;
+    use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
     use propolis_api_types::instance_spec::components::{
         backends::{
             CrucibleStorageBackend, FileStorageBackend, VirtioNetworkBackend,
@@ -842,23 +841,23 @@ mod test {
     fn compatible_cpuid() {
         let mut s1 = new_spec();
         let mut s2 = s1.clone();
-        let mut set1 = cpuid::Set::new(CpuidVendor::Intel);
-        let mut set2 = cpuid::Set::new(CpuidVendor::Intel);
+        let mut set1 = CpuidSet::new(CpuidVendor::Intel);
+        let mut set2 = CpuidSet::new(CpuidVendor::Intel);
 
         s1.cpuid = Some(set1.clone());
         s2.cpuid = Some(set2.clone());
         s1.is_migration_compatible(&s2).unwrap();
 
-        set1.insert(CpuidIdent::leaf(0x1337), CpuidValues::default());
-        set2.insert(CpuidIdent::leaf(0x1337), CpuidValues::default());
+        set1.insert(CpuidIdent::leaf(0x1337), CpuidValues::default()).unwrap();
+        set2.insert(CpuidIdent::leaf(0x1337), CpuidValues::default()).unwrap();
 
         s1.cpuid = Some(set1.clone());
         s2.cpuid = Some(set2.clone());
         s1.is_migration_compatible(&s2).unwrap();
 
         let values = CpuidValues { eax: 5, ebx: 6, ecx: 7, edx: 8 };
-        set1.insert(CpuidIdent::subleaf(3, 4), values);
-        set2.insert(CpuidIdent::subleaf(3, 4), values);
+        set1.insert(CpuidIdent::subleaf(3, 4), values).unwrap();
+        set2.insert(CpuidIdent::subleaf(3, 4), values).unwrap();
         s1.is_migration_compatible(&s2).unwrap();
     }
 
@@ -866,7 +865,7 @@ mod test {
     fn cpuid_explicitness_mismatch() {
         let mut s1 = new_spec();
         let s2 = s1.clone();
-        s1.cpuid = Some(cpuid::Set::new(CpuidVendor::Intel));
+        s1.cpuid = Some(CpuidSet::new(CpuidVendor::Intel));
         assert!(s1.is_migration_compatible(&s2).is_err());
     }
 
@@ -874,8 +873,8 @@ mod test {
     fn cpuid_vendor_mismatch() {
         let mut s1 = new_spec();
         let mut s2 = s1.clone();
-        s1.cpuid = Some(cpuid::Set::new(CpuidVendor::Intel));
-        s2.cpuid = Some(cpuid::Set::new(CpuidVendor::Amd));
+        s1.cpuid = Some(CpuidSet::new(CpuidVendor::Intel));
+        s2.cpuid = Some(CpuidSet::new(CpuidVendor::Amd));
         assert!(s1.is_migration_compatible(&s2).is_err());
     }
 
@@ -883,13 +882,13 @@ mod test {
     fn cpuid_leaf_set_mismatch() {
         let mut s1 = new_spec();
         let mut s2 = s1.clone();
-        let mut set1 = cpuid::Set::new(CpuidVendor::Amd);
-        let mut set2 = cpuid::Set::new(CpuidVendor::Amd);
+        let mut set1 = CpuidSet::new(CpuidVendor::Amd);
+        let mut set2 = CpuidSet::new(CpuidVendor::Amd);
 
         // Give the first set an entry the second set doesn't have.
-        set1.insert(CpuidIdent::leaf(0), CpuidValues::default());
-        set1.insert(CpuidIdent::leaf(1), CpuidValues::default());
-        set2.insert(CpuidIdent::leaf(0), CpuidValues::default());
+        set1.insert(CpuidIdent::leaf(0), CpuidValues::default()).unwrap();
+        set1.insert(CpuidIdent::leaf(1), CpuidValues::default()).unwrap();
+        set2.insert(CpuidIdent::leaf(0), CpuidValues::default()).unwrap();
 
         s1.cpuid = Some(set1);
         s2.cpuid = Some(set2.clone());
@@ -897,7 +896,7 @@ mod test {
 
         // Make the sets have the same number of entries, but with a difference
         // in which entries they have.
-        set2.insert(CpuidIdent::leaf(3), CpuidValues::default());
+        set2.insert(CpuidIdent::leaf(3), CpuidValues::default()).unwrap();
         s2.cpuid = Some(set2);
         assert!(s1.is_migration_compatible(&s2).is_err());
     }
@@ -906,13 +905,13 @@ mod test {
     fn cpuid_leaf_value_mismatch() {
         let mut s1 = new_spec();
         let mut s2 = s1.clone();
-        let mut set1 = cpuid::Set::new(CpuidVendor::Amd);
-        let mut set2 = cpuid::Set::new(CpuidVendor::Amd);
+        let mut set1 = CpuidSet::new(CpuidVendor::Amd);
+        let mut set2 = CpuidSet::new(CpuidVendor::Amd);
 
         let v1 = CpuidValues { eax: 4, ebx: 5, ecx: 6, edx: 7 };
         let v2 = CpuidValues { eax: 100, ebx: 200, ecx: 300, edx: 400 };
-        set1.insert(CpuidIdent::leaf(0), v1);
-        set2.insert(CpuidIdent::leaf(0), v2);
+        set1.insert(CpuidIdent::leaf(0), v1).unwrap();
+        set2.insert(CpuidIdent::leaf(0), v2).unwrap();
         s1.cpuid = Some(set1);
         s2.cpuid = Some(set2);
         assert!(s1.is_migration_compatible(&s2).is_err());
@@ -922,16 +921,16 @@ mod test {
     fn cpuid_leaf_subleaf_conflict() {
         let mut s1 = new_spec();
         let mut s2 = s1.clone();
-        let mut set1 = cpuid::Set::new(CpuidVendor::Amd);
-        let mut set2 = cpuid::Set::new(CpuidVendor::Amd);
+        let mut set1 = CpuidSet::new(CpuidVendor::Amd);
+        let mut set2 = CpuidSet::new(CpuidVendor::Amd);
 
         // Check that leaf 0 with no subleaf is not compatible with leaf 0 and a
         // subleaf of 0. These are semantically different: the former matches
         // leaf 0 with any subleaf value, while the latter technically matches
         // only leaf 0 and subleaf 0 (with leaf-specific behavior if a different
         // subleaf is specified).
-        set1.insert(CpuidIdent::leaf(0), CpuidValues::default());
-        set2.insert(CpuidIdent::subleaf(0, 0), CpuidValues::default());
+        set1.insert(CpuidIdent::leaf(0), CpuidValues::default()).unwrap();
+        set2.insert(CpuidIdent::subleaf(0, 0), CpuidValues::default()).unwrap();
         s1.cpuid = Some(set1);
         s2.cpuid = Some(set2);
         assert!(s1.is_migration_compatible(&s2).is_err());

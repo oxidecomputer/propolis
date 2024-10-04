@@ -11,113 +11,7 @@ use std::num::NonZeroU8;
 use std::ops::Bound;
 
 use bhyve_api::vcpu_cpuid_entry;
-use cpuid_utils::{CpuidIdent, CpuidMap, CpuidValues, CpuidVendor};
-
-/// Set of cpuid leafs
-#[derive(Clone, Debug)]
-pub struct Set {
-    map: CpuidMap,
-    pub vendor: CpuidVendor,
-}
-
-impl Default for Set {
-    fn default() -> Self {
-        Self::new_host()
-    }
-}
-
-impl Set {
-    pub fn new(vendor: CpuidVendor) -> Self {
-        Set { map: CpuidMap::default(), vendor }
-    }
-
-    pub fn new_host() -> Self {
-        let vendor =
-            CpuidVendor::try_from(cpuid_utils::host_query(CpuidIdent::leaf(0)))
-                .expect("host CPU should be from recognized vendor");
-        Self::new(vendor)
-    }
-
-    pub fn new_from_map(map: CpuidMap, vendor: CpuidVendor) -> Self {
-        Self { map, vendor }
-    }
-
-    pub fn insert(
-        &mut self,
-        ident: CpuidIdent,
-        entry: CpuidValues,
-    ) -> Option<CpuidValues> {
-        self.map.0.insert(ident, entry)
-    }
-    pub fn remove(&mut self, ident: CpuidIdent) -> Option<CpuidValues> {
-        self.map.0.remove(&ident)
-    }
-    pub fn remove_all(&mut self, func: u32) {
-        self.map.0.retain(|ident, _val| ident.leaf != func);
-    }
-    pub fn get(&self, ident: CpuidIdent) -> Option<&CpuidValues> {
-        self.map.0.get(&ident)
-    }
-    pub fn get_mut(&mut self, ident: CpuidIdent) -> Option<&mut CpuidValues> {
-        self.map.0.get_mut(&ident)
-    }
-    pub fn is_empty(&self) -> bool {
-        self.map.0.is_empty()
-    }
-    pub fn len(&self) -> usize {
-        self.map.0.len()
-    }
-
-    pub fn iter(&self) -> Iter {
-        Iter(self.map.0.iter())
-    }
-
-    pub fn for_regs(&self, eax: u32, ecx: u32) -> Option<CpuidValues> {
-        if let Some(ent) = self.map.0.get(&CpuidIdent::subleaf(eax, ecx)) {
-            // Exact match
-            Some(*ent)
-        } else if let Some(ent) = self.map.0.get(&CpuidIdent::leaf(eax)) {
-            // Function-only match
-            Some(*ent)
-        } else {
-            None
-        }
-    }
-
-    pub fn leaves_and_values_equivalent(
-        &self,
-        other: &Self,
-    ) -> Result<(), cpuid_utils::CpuidMapMismatch> {
-        self.map.is_equivalent(&other.map)
-    }
-
-    pub fn into_inner(self) -> (CpuidMap, CpuidVendor) {
-        (self.map, self.vendor)
-    }
-}
-
-impl From<Set> for Vec<bhyve_api::vcpu_cpuid_entry> {
-    fn from(value: Set) -> Self {
-        let mut out = Vec::with_capacity(value.map.0.len());
-        out.extend(value.map.0.iter().map(|(ident, leaf)| {
-            let vce_flags = match ident.subleaf.as_ref() {
-                Some(_) => bhyve_api::VCE_FLAG_MATCH_INDEX,
-                None => 0,
-            };
-            bhyve_api::vcpu_cpuid_entry {
-                vce_function: ident.leaf,
-                vce_index: ident.subleaf.unwrap_or(0),
-                vce_flags,
-                vce_eax: leaf.eax,
-                vce_ebx: leaf.ebx,
-                vce_ecx: leaf.ecx,
-                vce_edx: leaf.edx,
-                ..Default::default()
-            }
-        }));
-        out
-    }
-}
+use cpuid_utils::{CpuidIdent, CpuidMap, CpuidSet, CpuidValues, CpuidVendor};
 
 /// Convert a [vcpu_cpuid_entry] into an ([CpuidLeaf],
 /// [CpuidValues]) tuple, suitable for insertion into a [Set].
@@ -141,17 +35,6 @@ pub fn from_raw(
             edx: value.vce_edx,
         },
     )
-}
-
-pub struct Iter<'a>(
-    std::collections::btree_map::Iter<'a, CpuidIdent, CpuidValues>,
-);
-impl<'a> Iterator for Iter<'a> {
-    type Item = (&'a CpuidIdent, &'a CpuidValues);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.next()
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -237,7 +120,10 @@ impl Specializer {
 
     /// Given the attributes and modifiers specified in this [Specializer],
     /// render an updated [Set] reflecting those data.
-    pub fn execute(self, mut set: Set) -> Result<Set, SpecializeError> {
+    pub fn execute(
+        self,
+        mut set: CpuidSet,
+    ) -> Result<CpuidSet, SpecializeError> {
         // Use vendor override if provided, or else the existing one
         if let Some(vendor) = self.vendor_kind {
             set.vendor = vendor;
@@ -278,7 +164,10 @@ impl Specializer {
         Ok(set)
     }
 
-    fn fix_amd_cache_topo(&self, set: &mut Set) -> Result<(), SpecializeError> {
+    fn fix_amd_cache_topo(
+        &self,
+        set: &mut CpuidSet,
+    ) -> Result<(), SpecializeError> {
         assert!(self.do_cache_topo);
         let num = self.num_vcpu.unwrap().get();
         for ecx in 0..u32::MAX {
@@ -314,11 +203,11 @@ impl Specializer {
         }
         Ok(())
     }
-    fn fix_cpu_topo(&self, set: &mut Set) -> Result<(), SpecializeError> {
+    fn fix_cpu_topo(&self, set: &mut CpuidSet) -> Result<(), SpecializeError> {
         for topo in self.cpu_topo_populate.union(&self.cpu_topo_clear) {
             // Nuke any existing info in order to potentially override it
             let leaf = *topo as u32;
-            set.remove_all(leaf);
+            set.remove_leaf(leaf);
 
             if !self.cpu_topo_populate.contains(topo) {
                 continue;
