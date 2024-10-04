@@ -756,6 +756,7 @@ dependencies = [
 name = "cpuid_utils"
 version = "0.0.0"
 dependencies = [
+ "bhyve_api 0.0.0",
  "bitflags 2.6.0",
  "propolis_api_types",
  "propolis_types",

@@ -6,28 +6,18 @@
 
 use super::*;
 
-use propolis_api_types::instance_spec::components::board::CpuidEntry;
-use thiserror::Error;
+use propolis_api_types::instance_spec::components::board::{Cpuid, CpuidEntry};
 
-/// An error that can occur when converting a list of CPUID entries in an
-/// instance spec into a [`CpuidMap`].
-#[derive(Debug, Error)]
-pub enum CpuidMapConversionError {
-    #[error("duplicate leaf and subleaf ({0:x}, {1:?})")]
-    DuplicateLeaf(u32, Option<u32>),
-
-    #[error("leaf {0:x} specified subleaf 0 both explicitly and as None")]
-    SubleafZeroAliased(u32),
-
-    #[error("leaf {0:x} not in standard or extended range")]
-    LeafOutOfRange(u32),
+impl super::CpuidSet {
+    pub fn into_instance_spec_cpuid(self) -> Cpuid {
+        Cpuid { entries: self.map.into(), vendor: self.vendor }
+    }
 }
 
 impl From<CpuidMap> for Vec<CpuidEntry> {
     fn from(value: CpuidMap) -> Self {
         value
-            .0
-            .into_iter()
+            .iter()
             .map(
                 |(
                     CpuidIdent { leaf, subleaf },
@@ -59,7 +49,7 @@ impl TryFrom<Vec<CpuidEntry>> for CpuidMap {
     fn try_from(
         value: Vec<CpuidEntry>,
     ) -> Result<Self, CpuidMapConversionError> {
-        let mut map = BTreeMap::new();
+        let mut map = Self::default();
         for CpuidEntry { leaf, subleaf, eax, ebx, ecx, edx } in
             value.into_iter()
         {
@@ -69,25 +59,11 @@ impl TryFrom<Vec<CpuidEntry>> for CpuidMap {
                 return Err(CpuidMapConversionError::LeafOutOfRange(leaf));
             }
 
-            if subleaf.is_none()
-                && map.contains_key(&CpuidIdent::subleaf(leaf, 0))
-            {
-                return Err(CpuidMapConversionError::SubleafZeroAliased(leaf));
-            }
-
-            if let Some(0) = subleaf {
-                if map.contains_key(&CpuidIdent::leaf(leaf)) {
-                    return Err(CpuidMapConversionError::SubleafZeroAliased(
-                        leaf,
-                    ));
-                }
-            }
-
             if map
                 .insert(
                     CpuidIdent { leaf, subleaf },
                     CpuidValues { eax, ebx, ecx, edx },
-                )
+                )?
                 .is_some()
             {
                 return Err(CpuidMapConversionError::DuplicateLeaf(
@@ -96,7 +72,7 @@ impl TryFrom<Vec<CpuidEntry>> for CpuidMap {
             }
         }
 
-        Ok(Self(map))
+        Ok(map)
     }
 }
 
