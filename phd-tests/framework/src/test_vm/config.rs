@@ -277,18 +277,13 @@ impl<'dr> VmConfig<'dr> {
                 cpus: self.cpus,
                 memory_mb: self.memory_mib,
                 chipset: Chipset::default(),
-                cpuid: match &self.cpuid {
-                    Some(entries) => Cpuid::Template {
-                        entries: entries.clone(),
-                        vendor: match host_vendor {
-                            cpuid_utils::CpuidVendor::Amd => CpuidVendor::Amd,
-                            cpuid_utils::CpuidVendor::Intel => {
-                                CpuidVendor::Intel
-                            }
-                        },
+                cpuid: self.cpuid.as_ref().map(|entries| Cpuid {
+                    entries: entries.clone(),
+                    vendor: match host_vendor {
+                        cpuid_utils::CpuidVendor::Amd => CpuidVendor::Amd,
+                        cpuid_utils::CpuidVendor::Intel => CpuidVendor::Intel,
                     },
-                    None => Cpuid::HostDefault,
-                },
+                }),
             },
             components: Default::default(),
         };

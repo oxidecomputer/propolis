@@ -38,52 +38,29 @@ pub enum Chipset {
 
 /// A set of CPUID values to expose to a guest.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
-#[serde(
-    deny_unknown_fields,
-    rename_all = "snake_case",
-    tag = "type",
-    content = "value"
-)]
-pub enum Cpuid {
-    /// Allow the host to supply whatever CPUID values it exposes to guests by
-    /// default. This is useful for ad hoc testing where a user may not want to
-    /// provide an explicit set of CPUID values.
-    HostDefault,
-
-    /// Use the specified CPUID entries as a template to produce the CPUID
-    /// values that will be programmed into the instance's vCPUs.
+#[serde(deny_unknown_fields)]
+pub struct Cpuid {
+    /// A list of CPUID leaves/subleaves and their associated values.
     ///
-    /// Propolis and/or bhyve may further modify the values supplied here before
-    /// exposing them to the guest. For example, some leaves return data that
-    /// depends on the APIC ID of the processor that executed CPUID, and some
-    /// leaves' return values depend on the values of other system registers
-    /// (e.g. CR4) that the guest can write at runtime.
-    ///
-    /// During live migration, sources and targets use identical CPUID
-    /// templates. Any CPUID values that depend on
-    Template {
-        /// A list of CPUID leaves/subleaves and their associated values.
-        ///
-        /// The `leaf` and `subleaf` fields of each entry in the template must
-        /// be unique. The leaf must also be in the standard or extended ranges
-        /// (0 to 0xFFFF or 0x8000_0000 to 0x8000_FFFF).
-        //
-        // It would be nice if this were an associative collection type.
-        // Unfortunately, the most natural keys for such a collection are
-        // structs or tuples, and JSON doesn't allow objects to be used as
-        // property names. Instead of converting leaf/subleaf pairs to and from
-        // strings, just accept a flat Vec and have servers verify that e.g. no
-        // leaf/subleaf pairs are duplicated.
-        entries: Vec<CpuidEntry>,
+    /// The `leaf` and `subleaf` fields of each entry in the template must
+    /// be unique. The leaf must also be in the standard or extended ranges
+    /// (0 to 0xFFFF or 0x8000_0000 to 0x8000_FFFF).
+    //
+    // It would be nice if this were an associative collection type.
+    // Unfortunately, the most natural keys for such a collection are
+    // structs or tuples, and JSON doesn't allow objects to be used as
+    // property names. Instead of converting leaf/subleaf pairs to and from
+    // strings, just accept a flat Vec and have servers verify that e.g. no
+    // leaf/subleaf pairs are duplicated.
+    pub entries: Vec<CpuidEntry>,
 
-        /// The CPU vendor to emulate.
-        ///
-        /// CPUID leaves in the extended range (0x8000_0000 to 0x8000_FFFF) have
-        /// vendor-defined semantics. Propolis uses this value to determine
-        /// these semantics when deciding whether it needs to specialize the
-        /// supplied template values for these leaves.
-        vendor: CpuidVendor,
-    },
+    /// The CPU vendor to emulate.
+    ///
+    /// CPUID leaves in the extended range (0x8000_0000 to 0x8000_FFFF) have
+    /// vendor-defined semantics. Propolis uses this value to determine
+    /// these semantics when deciding whether it needs to specialize the
+    /// supplied template values for these leaves.
+    pub vendor: CpuidVendor,
 }
 
 /// A full description of a CPUID leaf/subleaf and the values it produces.
@@ -124,18 +101,9 @@ pub struct Board {
     /// The chipset to expose to guest software.
     pub chipset: Chipset,
 
-    /// The CPUID values to expose to the guest.
-    pub cpuid: Cpuid,
-    // TODO: Processor and memory topology.
-}
-
-impl Default for Board {
-    fn default() -> Self {
-        Self {
-            cpus: 0,
-            memory_mb: 0,
-            chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
-            cpuid: Cpuid::HostDefault,
-        }
-    }
+    /// The CPUID values to expose to the guest. If `None`, bhyve will derive
+    /// default values from the host's CPUID values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpuid: Option<Cpuid>,
+    // TODO: Processor and  topology.
 }

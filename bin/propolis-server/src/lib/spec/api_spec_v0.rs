@@ -89,15 +89,12 @@ impl From<Spec> for InstanceSpecV0 {
             cpus: board.cpus,
             memory_mb: board.memory_mb,
             chipset: board.chipset,
-            cpuid: match cpuid {
-                None => Cpuid::HostDefault,
-                Some(set) => {
-                    let (map, vendor) = set.into_inner();
-                    Cpuid::Template { entries: map.into(), vendor }
-                }
-            },
+            cpuid: cpuid.map(|set| {
+                let (map, vendor) = set.into_inner();
+                Cpuid { entries: map.into(), vendor }
+            }),
         };
-        let mut spec = InstanceSpecV0 { board, ..Default::default() };
+        let mut spec = InstanceSpecV0 { board, components: Default::default() };
 
         for (disk_name, disk) in disks {
             let backend_name = disk.device_spec.backend_name().to_owned();

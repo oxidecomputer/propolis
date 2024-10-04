@@ -489,7 +489,8 @@
             ]
           },
           "cpuid": {
-            "description": "The CPUID values to expose to the guest.",
+            "nullable": true,
+            "description": "The CPUID values to expose to the guest. If `None`, bhyve will derive default values from the host's CPUID values.",
             "allOf": [
               {
                 "$ref": "#/components/schemas/Cpuid"
@@ -511,7 +512,6 @@
         },
         "required": [
           "chipset",
-          "cpuid",
           "cpus",
           "memory_mb"
         ],
@@ -882,66 +882,29 @@
       },
       "Cpuid": {
         "description": "A set of CPUID values to expose to a guest.",
-        "oneOf": [
-          {
-            "description": "Allow the host to supply whatever CPUID values it exposes to guests by default. This is useful for ad hoc testing where a user may not want to provide an explicit set of CPUID values.",
-            "type": "object",
-            "properties": {
-              "type": {
-                "type": "string",
-                "enum": [
-                  "host_default"
-                ]
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "additionalProperties": false
+        "type": "object",
+        "properties": {
+          "entries": {
+            "description": "A list of CPUID leaves/subleaves and their associated values.\n\nThe `leaf` and `subleaf` fields of each entry in the template must be unique. The leaf must also be in the standard or extended ranges (0 to 0xFFFF or 0x8000_0000 to 0x8000_FFFF).",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CpuidEntry"
+            }
           },
-          {
-            "description": "Use the specified CPUID entries as a template to produce the CPUID values that will be programmed into the instance's vCPUs.\n\nPropolis and/or bhyve may further modify the values supplied here before exposing them to the guest. For example, some leaves return data that depends on the APIC ID of the processor that executed CPUID, and some leaves' return values depend on the values of other system registers (e.g. CR4) that the guest can write at runtime.\n\nDuring live migration, sources and targets use identical CPUID templates. Any CPUID values that depend on",
-            "type": "object",
-            "properties": {
-              "type": {
-                "type": "string",
-                "enum": [
-                  "template"
-                ]
-              },
-              "value": {
-                "type": "object",
-                "properties": {
-                  "entries": {
-                    "description": "A list of CPUID leaves/subleaves and their associated values.\n\nThe `leaf` and `subleaf` fields of each entry in the template must be unique. The leaf must also be in the standard or extended ranges (0 to 0xFFFF or 0x8000_0000 to 0x8000_FFFF).",
-                    "type": "array",
-                    "items": {
-                      "$ref": "#/components/schemas/CpuidEntry"
-                    }
-                  },
-                  "vendor": {
-                    "description": "The CPU vendor to emulate.\n\nCPUID leaves in the extended range (0x8000_0000 to 0x8000_FFFF) have vendor-defined semantics. Propolis uses this value to determine these semantics when deciding whether it needs to specialize the supplied template values for these leaves.",
-                    "allOf": [
-                      {
-                        "$ref": "#/components/schemas/CpuidVendor"
-                      }
-                    ]
-                  }
-                },
-                "required": [
-                  "entries",
-                  "vendor"
-                ],
-                "additionalProperties": false
+          "vendor": {
+            "description": "The CPU vendor to emulate.\n\nCPUID leaves in the extended range (0x8000_0000 to 0x8000_FFFF) have vendor-defined semantics. Propolis uses this value to determine these semantics when deciding whether it needs to specialize the supplied template values for these leaves.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CpuidVendor"
               }
-            },
-            "required": [
-              "type",
-              "value"
-            ],
-            "additionalProperties": false
+            ]
           }
-        ]
+        },
+        "required": [
+          "entries",
+          "vendor"
+        ],
+        "additionalProperties": false
       },
       "CpuidEntry": {
         "description": "A full description of a CPUID leaf/subleaf and the values it produces.",

@@ -29,7 +29,7 @@ pub enum ComponentV0 {
     DlpiNetworkBackend(components::backends::DlpiNetworkBackend),
 }
 
-#[derive(Default, Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InstanceSpecV0 {
     pub board: components::board::Board,

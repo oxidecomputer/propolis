@@ -6,10 +6,11 @@
 
 use std::collections::{BTreeSet, HashSet};
 
+use cpuid_utils::CpuidMapConversionError;
 use propolis_api_types::{
     instance_spec::{
         components::{
-            board::{Board as InstanceSpecBoard, Chipset, Cpuid, I440Fx},
+            board::{Board as InstanceSpecBoard, Chipset, I440Fx},
             devices::{PciPciBridge, SerialPortNumber},
         },
         PciPath,
@@ -100,15 +101,17 @@ impl SpecBuilder {
                     memory_mb: board.memory_mb,
                     chipset: board.chipset,
                 },
-                cpuid: match board.cpuid {
-                    Cpuid::HostDefault => None,
-                    Cpuid::Template { entries, vendor } => {
-                        Some(propolis::cpuid::Set::new_from_map(
-                            entries.try_into()?,
-                            vendor,
-                        ))
-                    }
-                },
+                cpuid: board
+                    .cpuid
+                    .map(|cpuid| -> Result<_, CpuidMapConversionError> {
+                        {
+                            Ok(propolis::cpuid::Set::new_from_map(
+                                cpuid.entries.try_into()?,
+                                cpuid.vendor,
+                            ))
+                        }
+                    })
+                    .transpose()?,
                 ..Default::default()
             },
             ..Default::default()
