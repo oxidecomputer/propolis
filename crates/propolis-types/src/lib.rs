@@ -202,6 +202,13 @@ pub struct CpuidValues {
     pub edx: u32,
 }
 
+impl CpuidValues {
+    /// Returns a mutable iterator over eax, ebx, ecx, and edx.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut u32> {
+        [&mut self.eax, &mut self.ebx, &mut self.ecx, &mut self.edx].into_iter()
+    }
+}
+
 impl From<[u32; 4]> for CpuidValues {
     fn from(value: [u32; 4]) -> Self {
         Self { eax: value[0], ebx: value[1], ecx: value[2], edx: value[3] }

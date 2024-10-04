@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use cpuid_utils::{CpuidIdent, CpuidVendor};
+use cpuid_utils::{CpuidIdent, CpuidValues, CpuidVendor};
 use phd_testcase::*;
 use propolis_client::types::CpuidEntry;
 use tracing::info;
@@ -77,10 +77,11 @@ async fn cpuid_boot_test(ctx: &Framework) {
         );
     }
 
-    // Keep only standard leaves up to 7 and the first two extended leaves.
+    // Keep only standard leaves up to 7 and extended leaves up to 0x80000004.
+    const LAST_EXTENDED_LEAF: u32 = 0x8000_0004;
     host_cpuid.retain(|leaf, _values| {
         leaf.leaf <= 0x7
-            || (leaf.leaf >= 0x8000_0000 && leaf.leaf <= 0x8000_0001)
+            || (leaf.leaf >= 0x8000_0000 && leaf.leaf <= LAST_EXTENDED_LEAF)
     });
 
     // Mask off feature bits that the Oxide platform won't support. See RFD
@@ -97,17 +98,43 @@ async fn cpuid_boot_test(ctx: &Framework) {
     leaf_7.edx = 0;
 
     host_cpuid.get_mut(&CpuidIdent::leaf(0x8000_0000)).unwrap().eax =
-        0x8000_0001;
+        LAST_EXTENDED_LEAF;
     let ext_leaf_1 =
         host_cpuid.get_mut(&CpuidIdent::leaf(0x8000_0001)).unwrap();
     ext_leaf_1.ecx &= 0x4440_01F0;
     ext_leaf_1.edx &= 0x27D3_FBFF;
 
-    // Try to boot a guest with the computed CPUID values.
-    //
-    // Ideally, this test would also verify that the guest actually perceives
-    // the CPUID values that were passed to it, but the correct way to do that
-    // varies heavily from guest OS to guest OS.
+    // Test the plumbing by pumping a fake processor brand string into extended
+    // leaves 2-4 and seeing if the guest recognizes it.
+    const BRAND_STRING: &str = "Oxide Cloud Computer Company Cloud Computer";
+    let brand_bytes = BRAND_STRING.as_bytes();
+
+    assert!(
+        brand_bytes.len() <= 4 * 12,
+        "brand string must fit into twelve 32-bit registers"
+    );
+
+    let chunks = brand_bytes.chunks(4);
+    let mut ext_leaf_2 = CpuidValues::default();
+    let mut ext_leaf_3 = CpuidValues::default();
+    let mut ext_leaf_4 = CpuidValues::default();
+    let dst = ext_leaf_2
+        .iter_mut()
+        .chain(ext_leaf_3.iter_mut())
+        .chain(ext_leaf_4.iter_mut());
+
+    for (chunk, dst) in chunks.zip(dst) {
+        let mut bytes = [0u8; 4];
+        bytes[..chunk.len()].copy_from_slice(chunk);
+        *dst = u32::from_le_bytes(bytes);
+    }
+
+    host_cpuid.insert(CpuidIdent::leaf(0x8000_0002), ext_leaf_2);
+    host_cpuid.insert(CpuidIdent::leaf(0x8000_0003), ext_leaf_3);
+    host_cpuid.insert(CpuidIdent::leaf(0x8000_0004), ext_leaf_4);
+
+    // Try to boot a guest with the computed CPUID values. The modified brand
+    // string should show up in /proc/cpuinfo.
     let mut cfg = ctx.vm_config_builder("cpuid_boot_test");
     cfg.cpuid(
         host_cpuid
@@ -125,4 +152,8 @@ async fn cpuid_boot_test(ctx: &Framework) {
     let mut vm = ctx.spawn_vm(&cfg, None).await?;
     vm.launch().await?;
     vm.wait_to_boot().await?;
+
+    let cpuinfo = vm.run_shell_command("cat /proc/cpuinfo").await?;
+    info!(cpuinfo, "/proc/cpuinfo output");
+    assert!(cpuinfo.contains(BRAND_STRING));
 }

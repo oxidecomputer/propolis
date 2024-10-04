@@ -19,6 +19,7 @@ use crate::vm::{
     BlockBackendMap, CrucibleBackendMap, DeviceMap, NetworkInterfaceIds,
 };
 use anyhow::Context;
+use cpuid_utils::CpuidValues;
 use crucible_client_types::VolumeConstructionRequest;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
@@ -943,45 +944,82 @@ impl<'a> MachineInitializer<'a> {
             ..Default::default()
         };
 
-        // Once CPUID profiles are integrated, these will need to take that into
-        // account, rather than blindly querying from the host
-        let cpuid_vendor = cpuid_utils::host_query(CpuidIdent::leaf(0));
-        let cpuid_ident = cpuid_utils::host_query(CpuidIdent::leaf(1));
-        let cpuid_procname = [
-            cpuid_utils::host_query(CpuidIdent::leaf(0x8000_0002)),
-            cpuid_utils::host_query(CpuidIdent::leaf(0x8000_0003)),
-            cpuid_utils::host_query(CpuidIdent::leaf(0x8000_0004)),
-        ];
+        fn get_spec_or_host_cpuid(
+            spec: &Spec,
+            leaf: u32,
+        ) -> Option<CpuidValues> {
+            let leaf = CpuidIdent::leaf(leaf);
+            let Some(cpuid) = &spec.cpuid else {
+                return Some(cpuid_utils::host_query(leaf));
+            };
 
-        let family = match cpuid_ident.eax & 0xf00 {
-            // If family ID is 0xf, extended family is added to it
-            0xf00 => (cpuid_ident.eax >> 20 & 0xff) + 0xf,
-            // ... otherwise base family ID is used
-            base => base >> 8,
-        };
+            cpuid.get(leaf).copied()
+        }
 
-        let vendor = CpuidVendor::try_from(cpuid_vendor);
+        // The processor vendor, family/model/stepping, and brand string should
+        // correspond to the values the guest will see if it queries CPUID. If
+        // the instance spec contains CPUID values, derive this information from
+        // those. Otherwise, derive them from the values on the host.
+        //
+        // Note that all these values are `Option`s, because the spec may
+        // contain CPUID values that don't contain all of the input leaves.
+        let cpuid_vendor = get_spec_or_host_cpuid(self.spec, 0);
+        let cpuid_ident = get_spec_or_host_cpuid(self.spec, 1);
+
+        // Coerce the array-of-Options into an Option containing the array.
+        let cpuid_procname: Option<[CpuidValues; 3]> = [
+            get_spec_or_host_cpuid(self.spec, 0x8000_0002),
+            get_spec_or_host_cpuid(self.spec, 0x8000_0003),
+            get_spec_or_host_cpuid(self.spec, 0x8000_0004),
+        ]
+        .into_iter()
+        // This returns None if any of the input options were None (i.e. if any
+        // of the requested leaves weren't found). This implies that if the
+        // `collect` returns `Some`, there are necessarily three elements in the
+        // `Vec`, so `try_into::<[CpuidValues; 3]>` will always succeed.
+        .collect::<Option<Vec<_>>>()
+        .map(TryInto::try_into)
+        .transpose()
+        .expect("output array should always have three elements");
+
+        let family = cpuid_ident
+            .map(|ident| {
+                match ident.eax & 0xf00 {
+                    // If family ID is 0xf, extended family is added to it
+                    0xf00 => (ident.eax >> 20 & 0xff) + 0xf,
+                    // ... otherwise base family ID is used
+                    base => base >> 8,
+                }
+            })
+            .unwrap_or(0);
+
+        let vendor = cpuid_vendor.map(CpuidVendor::try_from);
         let proc_manufacturer = match vendor {
-            Ok(CpuidVendor::Intel) => "Intel",
-            Ok(CpuidVendor::Amd) => "Advanced Micro Devices, Inc.",
+            Some(Ok(CpuidVendor::Intel)) => "Intel",
+            Some(Ok(CpuidVendor::Amd)) => "Advanced Micro Devices, Inc.",
             _ => "",
         }
         .try_into()
         .unwrap();
+
         let proc_family = match (vendor, family) {
             // Explicitly match for Zen-based CPUs
             //
             // Although this family identifier is not valid in SMBIOS 2.7,
             // having been defined in 3.x, we pass it through anyways.
-            (Ok(CpuidVendor::Amd), family) if family >= 0x17 => 0x6b,
+            (Some(Ok(CpuidVendor::Amd)), family) if family >= 0x17 => 0x6b,
 
             // Emit Unknown for everything else
             _ => 0x2,
         };
-        let proc_id =
-            u64::from(cpuid_ident.eax) | u64::from(cpuid_ident.edx) << 32;
-        let proc_version = propolis::cpuid::parse_brand_string(cpuid_procname)
-            .unwrap_or("".to_string());
+
+        let proc_id = cpuid_ident
+            .map(|id| u64::from(id.eax) | u64::from(id.edx) << 32)
+            .unwrap_or(0);
+
+        let proc_version = cpuid_procname
+            .and_then(|vals| propolis::cpuid::parse_brand_string(vals).ok())
+            .unwrap_or_default();
 
         let smb_type4 = smbios::table::Type4 {
             proc_type: type4::ProcType::Central,
