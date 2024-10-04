@@ -33,6 +33,7 @@ erased-serde.workspace = true
 futures.workspace = true
 hyper.workspace = true
 internal-dns.workspace = true
+itertools.workspace = true
 kstat-rs.workspace = true
 lazy_static.workspace = true
 nexus-client.workspace = true

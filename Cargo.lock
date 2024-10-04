@@ -4340,6 +4340,7 @@ dependencies = [
  "hex",
  "hyper 1.4.1",
  "internal-dns",
+ "itertools 0.13.0",
  "kstat-rs",
  "lazy_static",
  "mockall",

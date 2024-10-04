@@ -218,6 +218,19 @@ pub enum CpuidVendor {
     Intel,
 }
 
+impl std::fmt::Display for CpuidVendor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Amd => "AMD",
+                Self::Intel => "Intel",
+            }
+        )
+    }
+}
+
 impl CpuidVendor {
     pub fn is_amd(self) -> bool {
         self == Self::Amd

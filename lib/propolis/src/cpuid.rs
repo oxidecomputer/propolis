@@ -64,6 +64,9 @@ impl Set {
     pub fn is_empty(&self) -> bool {
         self.map.0.is_empty()
     }
+    pub fn len(&self) -> usize {
+        self.map.0.len()
+    }
 
     pub fn iter(&self) -> Iter {
         Iter(self.map.0.iter())
@@ -79,6 +82,13 @@ impl Set {
         } else {
             None
         }
+    }
+
+    pub fn leaves_and_values_equivalent(
+        &self,
+        other: &Self,
+    ) -> Result<(), cpuid_utils::CpuidMapMismatch> {
+        self.map.is_equivalent(&other.map)
     }
 
     pub fn into_inner(self) -> (CpuidMap, CpuidVendor) {

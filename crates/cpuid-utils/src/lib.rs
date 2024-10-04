@@ -10,9 +10,13 @@
 //! input list of CPUID entries contains no duplicate leaf/subleaf pairs and
 //! that the specified leaves all fall in the standard or extended ranges.
 
-use std::{collections::BTreeMap, ops::RangeInclusive};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::RangeInclusive,
+};
 
 pub use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor};
+use thiserror::Error;
 
 #[cfg(feature = "instance-spec")]
 mod instance_spec;
@@ -23,6 +27,48 @@ pub use instance_spec::*;
 /// A map from CPUID leaves to CPUID values.
 #[derive(Clone, Debug, Default)]
 pub struct CpuidMap(pub BTreeMap<CpuidIdent, CpuidValues>);
+
+#[derive(Debug, Error)]
+pub enum CpuidMapMismatch {
+    #[error("mismatched CPUID leaves {0:?}")]
+    MismatchedLeaves(Vec<CpuidIdent>),
+
+    #[error("mismatched values for leaves {0:?}")]
+    MismatchedValues(Vec<(CpuidIdent, CpuidValues, CpuidValues)>),
+}
+
+impl CpuidMap {
+    /// Returns `Ok` if `self` is equivalent to `other`; if not, returns a
+    /// [`CpuidMapMismatch`] describing the difference that caused the
+    pub fn is_equivalent(&self, other: &Self) -> Result<(), CpuidMapMismatch> {
+        let this_set: BTreeSet<_> = self.0.keys().collect();
+        let other_set: BTreeSet<_> = other.0.keys().collect();
+        let diff = this_set.symmetric_difference(&other_set);
+        let diff: Vec<CpuidIdent> = diff.copied().copied().collect();
+
+        if !diff.is_empty() {
+            return Err(CpuidMapMismatch::MismatchedLeaves(diff));
+        }
+
+        let mut mismatches = vec![];
+        for (this_leaf, this_value) in self.0.iter() {
+            let other_value = other
+                .0
+                .get(this_leaf)
+                .expect("key sets were already found to be equal");
+
+            if this_value != other_value {
+                mismatches.push((*this_leaf, *this_value, *other_value));
+            }
+        }
+
+        if !mismatches.is_empty() {
+            Err(CpuidMapMismatch::MismatchedValues(mismatches))
+        } else {
+            Ok(())
+        }
+    }
+}
 
 /// The range of standard, architecturally-defined CPUID leaves.
 pub const STANDARD_LEAVES: RangeInclusive<u32> = 0..=0xFFFF;
