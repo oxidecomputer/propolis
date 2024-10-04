@@ -172,11 +172,13 @@ pub struct CpuidIdent {
 }
 
 impl CpuidIdent {
+    /// Constructs an identifier that describes a specific leaf with no subleaf.
     pub fn leaf(leaf: u32) -> Self {
         Self { leaf, subleaf: None }
     }
 
-    pub fn subleaf(leaf: u32, subleaf: u32) -> Self {
+    /// Constructs an identifier that specifies a leaf and subleaf.
+    pub fn leaf_subleaf(leaf: u32, subleaf: u32) -> Self {
         Self { leaf, subleaf: Some(subleaf) }
     }
 }
@@ -206,6 +208,8 @@ impl From<[u32; 4]> for CpuidValues {
     }
 }
 
+/// A recognized CPU vendor derived from the values returned by leaf 0 in ebx,
+/// ecx, and edx.
 #[derive(
     Clone, Copy, PartialEq, Eq, Debug, JsonSchema, Serialize, Deserialize,
 )]

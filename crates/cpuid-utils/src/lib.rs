@@ -3,6 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! Utility functions and types for working with CPUID values.
+//!
+//! If this crate is built with the `instance-spec` feature, this module
+//! includes mechanisms for converting from instance spec CPUID entries to and
+//! from the CPUID map types in the crate. These conversions require that the
+//! input list of CPUID entries contains no duplicate leaf/subleaf pairs and
+//! that the specified leaves all fall in the standard or extended ranges.
 
 use std::{collections::BTreeMap, ops::RangeInclusive};
 
@@ -18,17 +24,26 @@ use thiserror::Error;
 #[derive(Clone, Debug, Default)]
 pub struct CpuidMap(pub BTreeMap<CpuidIdent, CpuidValues>);
 
+/// An error that can occur when converting a list of CPUID entries in an
+/// instance spec into a [`CpuidMap`].
 #[cfg(feature = "instance-spec")]
 #[derive(Debug, Error)]
 pub enum CpuidMapConversionError {
     #[error("duplicate leaf and subleaf ({0:x}, {1:?})")]
     DuplicateLeaf(u32, Option<u32>),
 
+    #[error("leaf {0:x} specified subleaf 0 both explicitly and as None")]
+    SubleafZeroAliased(u32),
+
     #[error("leaf {0:x} not in standard or extended range")]
     LeafOutOfRange(u32),
 }
 
+/// The range of standard, architecturally-defined CPUID leaves.
 pub const STANDARD_LEAVES: RangeInclusive<u32> = 0..=0xFFFF;
+
+/// The range of extended CPUID leaves. The meanings of these leaves are CPU
+/// vendor-specific.
 pub const EXTENDED_LEAVES: RangeInclusive<u32> = 0x8000_0000..=0x8000_FFFF;
 
 #[cfg(feature = "instance-spec")]
@@ -69,6 +84,20 @@ impl TryFrom<Vec<CpuidEntry>> for CpuidMap {
                 || EXTENDED_LEAVES.contains(&leaf))
             {
                 return Err(CpuidMapConversionError::LeafOutOfRange(leaf));
+            }
+
+            if subleaf.is_none()
+                && map.contains_key(&CpuidIdent::leaf_subleaf(leaf, 0))
+            {
+                return Err(CpuidMapConversionError::SubleafZeroAliased(leaf));
+            }
+
+            if let Some(0) = subleaf {
+                if map.contains_key(&CpuidIdent::leaf(leaf)) {
+                    return Err(CpuidMapConversionError::SubleafZeroAliased(
+                        leaf,
+                    ));
+                }
             }
 
             if map
