@@ -208,8 +208,8 @@ impl From<[u32; 4]> for CpuidValues {
     }
 }
 
-/// A recognized CPU vendor derived from the values returned by leaf 0 in ebx,
-/// ecx, and edx.
+/// A CPU vendor to use when interpreting the meanings of CPUID leaves in the
+/// extended ID range (0x80000000 to 0x8000FFFF).
 #[derive(
     Clone, Copy, PartialEq, Eq, Debug, JsonSchema, Serialize, Deserialize,
 )]

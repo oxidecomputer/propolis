@@ -15,29 +15,14 @@ use std::{collections::BTreeMap, ops::RangeInclusive};
 pub use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor};
 
 #[cfg(feature = "instance-spec")]
-use propolis_api_types::instance_spec::components::board::CpuidEntry;
+mod instance_spec;
 
 #[cfg(feature = "instance-spec")]
-use thiserror::Error;
+pub use instance_spec::*;
 
 /// A map from CPUID leaves to CPUID values.
 #[derive(Clone, Debug, Default)]
 pub struct CpuidMap(pub BTreeMap<CpuidIdent, CpuidValues>);
-
-/// An error that can occur when converting a list of CPUID entries in an
-/// instance spec into a [`CpuidMap`].
-#[cfg(feature = "instance-spec")]
-#[derive(Debug, Error)]
-pub enum CpuidMapConversionError {
-    #[error("duplicate leaf and subleaf ({0:x}, {1:?})")]
-    DuplicateLeaf(u32, Option<u32>),
-
-    #[error("leaf {0:x} specified subleaf 0 both explicitly and as None")]
-    SubleafZeroAliased(u32),
-
-    #[error("leaf {0:x} not in standard or extended range")]
-    LeafOutOfRange(u32),
-}
 
 /// The range of standard, architecturally-defined CPUID leaves.
 pub const STANDARD_LEAVES: RangeInclusive<u32> = 0..=0xFFFF;
@@ -46,77 +31,7 @@ pub const STANDARD_LEAVES: RangeInclusive<u32> = 0..=0xFFFF;
 /// vendor-specific.
 pub const EXTENDED_LEAVES: RangeInclusive<u32> = 0x8000_0000..=0x8000_FFFF;
 
-#[cfg(feature = "instance-spec")]
-impl From<CpuidMap> for Vec<CpuidEntry> {
-    fn from(value: CpuidMap) -> Self {
-        value
-            .0
-            .into_iter()
-            .map(
-                |(
-                    CpuidIdent { leaf, subleaf },
-                    CpuidValues { eax, ebx, ecx, edx },
-                )| CpuidEntry {
-                    leaf,
-                    subleaf,
-                    eax,
-                    ebx,
-                    ecx,
-                    edx,
-                },
-            )
-            .collect()
-    }
-}
-
-#[cfg(feature = "instance-spec")]
-impl TryFrom<Vec<CpuidEntry>> for CpuidMap {
-    type Error = CpuidMapConversionError;
-
-    fn try_from(
-        value: Vec<CpuidEntry>,
-    ) -> Result<Self, CpuidMapConversionError> {
-        let mut map = BTreeMap::new();
-        for CpuidEntry { leaf, subleaf, eax, ebx, ecx, edx } in
-            value.into_iter()
-        {
-            if !(STANDARD_LEAVES.contains(&leaf)
-                || EXTENDED_LEAVES.contains(&leaf))
-            {
-                return Err(CpuidMapConversionError::LeafOutOfRange(leaf));
-            }
-
-            if subleaf.is_none()
-                && map.contains_key(&CpuidIdent::leaf_subleaf(leaf, 0))
-            {
-                return Err(CpuidMapConversionError::SubleafZeroAliased(leaf));
-            }
-
-            if let Some(0) = subleaf {
-                if map.contains_key(&CpuidIdent::leaf(leaf)) {
-                    return Err(CpuidMapConversionError::SubleafZeroAliased(
-                        leaf,
-                    ));
-                }
-            }
-
-            if map
-                .insert(
-                    CpuidIdent { leaf, subleaf },
-                    CpuidValues { eax, ebx, ecx, edx },
-                )
-                .is_some()
-            {
-                return Err(CpuidMapConversionError::DuplicateLeaf(
-                    leaf, subleaf,
-                ));
-            }
-        }
-
-        Ok(Self(map))
-    }
-}
-
+/// Queries the supplied CPUID leaf on the caller's machine.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn host_query(leaf: CpuidIdent) -> CpuidValues {
     let mut res = CpuidValues::default();
