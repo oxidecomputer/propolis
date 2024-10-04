@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::Context;
-use cpuid_utils::CpuidLeaf;
+use cpuid_utils::CpuidIdent;
 use propolis_client::types::{
     Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
     CpuidEntry, CpuidVendor, InstanceMetadata, InstanceSpecV0, NvmeDisk,
@@ -264,7 +264,7 @@ impl<'dr> VmConfig<'dr> {
             );
         }
 
-        let host_leaf_0 = cpuid_utils::host_query(CpuidLeaf::leaf(0));
+        let host_leaf_0 = cpuid_utils::host_query(CpuidIdent::leaf(0));
         let host_vendor = cpuid_utils::CpuidVendor::try_from(host_leaf_0)
             .map_err(|_| {
                 anyhow::anyhow!(

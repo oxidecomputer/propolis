@@ -9,7 +9,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Context;
-use propolis_types::CpuidLeaf;
+use propolis_types::CpuidIdent;
 use propolis_types::CpuidValues;
 use propolis_types::CpuidVendor;
 use serde::{Deserialize, Serialize};
@@ -236,7 +236,7 @@ pub fn parse_cpuid(config: &Config) -> anyhow::Result<Option<cpuid::Set>> {
         let entries: Vec<CpuidEntry> = profile.try_into()?;
         for entry in entries {
             let conflict = set.insert(
-                CpuidLeaf { leaf: entry.func, subleaf: entry.idx },
+                CpuidIdent { leaf: entry.func, subleaf: entry.idx },
                 CpuidValues::from(entry.values),
             );
 

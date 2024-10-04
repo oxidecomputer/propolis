@@ -156,7 +156,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-pub use propolis_types::{CpuidLeaf, CpuidValues, CpuidVendor, PciPath};
+pub use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor, PciPath};
 
 pub mod components;
 pub mod v0;

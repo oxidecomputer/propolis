@@ -18,7 +18,7 @@ use crate::vmm::VmmHdl;
 use migrate::VcpuReadWrite;
 
 use bhyve_api::ApiVersion;
-use propolis_types::{CpuidLeaf, CpuidVendor};
+use propolis_types::{CpuidIdent, CpuidVendor};
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
@@ -214,7 +214,7 @@ impl Vcpu {
             // ignores the INTEL_FALLBACK flag.  We must determine the vendor
             // kind by querying it.
             let vendor = CpuidVendor::try_from(cpuid_utils::host_query(
-                CpuidLeaf::leaf(0),
+                CpuidIdent::leaf(0),
             ))
             .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
 
@@ -505,7 +505,7 @@ pub mod migrate {
     use crate::migrate::*;
 
     use bhyve_api::{vdi_field_entry_v1, vm_reg_name, ApiVersion};
-    use propolis_types::{CpuidLeaf, CpuidValues, CpuidVendor};
+    use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor};
     use serde::{Deserialize, Serialize};
 
     pub(super) trait VcpuReadWrite: Sized {
@@ -690,10 +690,10 @@ pub mod migrate {
         pub idx: Option<u32>,
         pub data: [u32; 4],
     }
-    impl From<CpuidEntV1> for (CpuidLeaf, CpuidValues) {
+    impl From<CpuidEntV1> for (CpuidIdent, CpuidValues) {
         fn from(value: CpuidEntV1) -> Self {
             (
-                CpuidLeaf { leaf: value.func, subleaf: value.idx },
+                CpuidIdent { leaf: value.func, subleaf: value.idx },
                 CpuidValues {
                     eax: value.data[0],
                     ebx: value.data[1],

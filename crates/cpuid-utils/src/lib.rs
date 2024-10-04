@@ -6,7 +6,7 @@
 
 use std::{collections::BTreeMap, ops::RangeInclusive};
 
-pub use propolis_types::{CpuidLeaf, CpuidValues, CpuidVendor};
+pub use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor};
 
 #[cfg(feature = "instance-spec")]
 use propolis_api_types::instance_spec::components::board::CpuidEntry;
@@ -16,7 +16,7 @@ use thiserror::Error;
 
 /// A map from CPUID leaves to CPUID values.
 #[derive(Clone, Debug, Default)]
-pub struct CpuidMap(pub BTreeMap<CpuidLeaf, CpuidValues>);
+pub struct CpuidMap(pub BTreeMap<CpuidIdent, CpuidValues>);
 
 #[cfg(feature = "instance-spec")]
 #[derive(Debug, Error)]
@@ -39,7 +39,7 @@ impl From<CpuidMap> for Vec<CpuidEntry> {
             .into_iter()
             .map(
                 |(
-                    CpuidLeaf { leaf, subleaf },
+                    CpuidIdent { leaf, subleaf },
                     CpuidValues { eax, ebx, ecx, edx },
                 )| CpuidEntry {
                     leaf,
@@ -73,7 +73,7 @@ impl TryFrom<Vec<CpuidEntry>> for CpuidMap {
 
             if map
                 .insert(
-                    CpuidLeaf { leaf, subleaf },
+                    CpuidIdent { leaf, subleaf },
                     CpuidValues { eax, ebx, ecx, edx },
                 )
                 .is_some()
@@ -89,7 +89,7 @@ impl TryFrom<Vec<CpuidEntry>> for CpuidMap {
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub fn host_query(leaf: CpuidLeaf) -> CpuidValues {
+pub fn host_query(leaf: CpuidIdent) -> CpuidValues {
     let mut res = CpuidValues::default();
 
     unsafe {
@@ -110,7 +110,7 @@ pub fn host_query(leaf: CpuidLeaf) -> CpuidValues {
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-pub fn host_query(leaf: CpuidLeaf) -> CpuidValues {
+pub fn host_query(leaf: CpuidIdent) -> CpuidValues {
     panic!("host CPUID queries only work on x86")
 }
 
@@ -119,20 +119,20 @@ pub fn host_query(leaf: CpuidLeaf) -> CpuidValues {
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn host_query_all() -> CpuidMap {
     let mut map = BTreeMap::new();
-    let leaf_0 = CpuidLeaf::leaf(*STANDARD_LEAVES.start());
+    let leaf_0 = CpuidIdent::leaf(*STANDARD_LEAVES.start());
     let leaf_0_values = host_query(leaf_0);
     map.insert(leaf_0, leaf_0_values);
 
     for l in (STANDARD_LEAVES.start() + 1)..=leaf_0_values.eax {
-        let leaf = CpuidLeaf::leaf(l);
+        let leaf = CpuidIdent::leaf(l);
         map.insert(leaf, host_query(leaf));
     }
 
-    let ext_leaf_0 = CpuidLeaf::leaf(*EXTENDED_LEAVES.start());
+    let ext_leaf_0 = CpuidIdent::leaf(*EXTENDED_LEAVES.start());
     let ext_leaf_0_values = host_query(ext_leaf_0);
     map.insert(ext_leaf_0, ext_leaf_0_values);
     for l in (EXTENDED_LEAVES.start() + 1)..=ext_leaf_0_values.eax {
-        let leaf = CpuidLeaf::leaf(l);
+        let leaf = CpuidIdent::leaf(l);
         map.insert(leaf, host_query(leaf));
     }
 

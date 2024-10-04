@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use cpuid_utils::{CpuidLeaf, CpuidVendor};
+use cpuid_utils::{CpuidIdent, CpuidVendor};
 use phd_testcase::*;
 use propolis_client::types::{Cpuid, CpuidEntry};
 use tracing::info;
@@ -62,7 +62,7 @@ async fn cpuid_boot_test(ctx: &Framework) {
     let mut host_cpuid = cpuid_utils::host_query_all().0;
     info!(?host_cpuid, "read host CPUID");
     let leaf_0_values = *host_cpuid
-        .get(&CpuidLeaf::leaf(0))
+        .get(&CpuidIdent::leaf(0))
         .expect("host CPUID leaf 0 should always be present");
 
     // Linux guests expect to see at least a couple of leaves in the extended
@@ -89,19 +89,20 @@ async fn cpuid_boot_test(ctx: &Framework) {
     // Mask off feature bits that the Oxide platform won't support. See RFD
     // 314. These are masks (and not assignments) so that features the host CPU
     // support won't appear in the guest's feature masks.
-    host_cpuid.get_mut(&CpuidLeaf::leaf(0)).unwrap().eax = 7;
-    let leaf_1 = host_cpuid.get_mut(&CpuidLeaf::leaf(1)).unwrap();
+    host_cpuid.get_mut(&CpuidIdent::leaf(0)).unwrap().eax = 7;
+    let leaf_1 = host_cpuid.get_mut(&CpuidIdent::leaf(1)).unwrap();
     leaf_1.ecx &= 0xF6F8_3203;
     leaf_1.edx &= 0x178B_FBFF;
-    let leaf_7 = host_cpuid.get_mut(&CpuidLeaf::leaf(7)).unwrap();
+    let leaf_7 = host_cpuid.get_mut(&CpuidIdent::leaf(7)).unwrap();
     leaf_7.eax = 0;
     leaf_7.ebx &= 0x219C_03A9;
     leaf_7.ecx = 0;
     leaf_7.edx = 0;
 
-    host_cpuid.get_mut(&CpuidLeaf::leaf(0x8000_0000)).unwrap().eax =
+    host_cpuid.get_mut(&CpuidIdent::leaf(0x8000_0000)).unwrap().eax =
         0x8000_0001;
-    let ext_leaf_1 = host_cpuid.get_mut(&CpuidLeaf::leaf(0x8000_0001)).unwrap();
+    let ext_leaf_1 =
+        host_cpuid.get_mut(&CpuidIdent::leaf(0x8000_0001)).unwrap();
     ext_leaf_1.ecx &= 0x4440_01F0;
     ext_leaf_1.edx &= 0x27D3_FBFF;
 

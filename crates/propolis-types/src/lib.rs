@@ -166,12 +166,12 @@ mod test {
     Serialize,
     Deserialize,
 )]
-pub struct CpuidLeaf {
+pub struct CpuidIdent {
     pub leaf: u32,
     pub subleaf: Option<u32>,
 }
 
-impl CpuidLeaf {
+impl CpuidIdent {
     pub fn leaf(leaf: u32) -> Self {
         Self { leaf, subleaf: None }
     }

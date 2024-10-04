@@ -11,7 +11,7 @@ use std::num::NonZeroU8;
 use std::ops::Bound;
 
 use bhyve_api::vcpu_cpuid_entry;
-use cpuid_utils::{CpuidLeaf, CpuidMap, CpuidValues, CpuidVendor};
+use cpuid_utils::{CpuidIdent, CpuidMap, CpuidValues, CpuidVendor};
 
 /// Set of cpuid leafs
 #[derive(Clone, Debug)]
@@ -33,7 +33,7 @@ impl Set {
 
     pub fn new_host() -> Self {
         let vendor =
-            CpuidVendor::try_from(cpuid_utils::host_query(CpuidLeaf::leaf(0)))
+            CpuidVendor::try_from(cpuid_utils::host_query(CpuidIdent::leaf(0)))
                 .expect("host CPU should be from recognized vendor");
         Self::new(vendor)
     }
@@ -44,21 +44,21 @@ impl Set {
 
     pub fn insert(
         &mut self,
-        ident: CpuidLeaf,
+        ident: CpuidIdent,
         entry: CpuidValues,
     ) -> Option<CpuidValues> {
         self.map.0.insert(ident, entry)
     }
-    pub fn remove(&mut self, ident: CpuidLeaf) -> Option<CpuidValues> {
+    pub fn remove(&mut self, ident: CpuidIdent) -> Option<CpuidValues> {
         self.map.0.remove(&ident)
     }
     pub fn remove_all(&mut self, func: u32) {
         self.map.0.retain(|ident, _val| ident.leaf != func);
     }
-    pub fn get(&self, ident: CpuidLeaf) -> Option<&CpuidValues> {
+    pub fn get(&self, ident: CpuidIdent) -> Option<&CpuidValues> {
         self.map.0.get(&ident)
     }
-    pub fn get_mut(&mut self, ident: CpuidLeaf) -> Option<&mut CpuidValues> {
+    pub fn get_mut(&mut self, ident: CpuidIdent) -> Option<&mut CpuidValues> {
         self.map.0.get_mut(&ident)
     }
     pub fn is_empty(&self) -> bool {
@@ -70,10 +70,10 @@ impl Set {
     }
 
     pub fn for_regs(&self, eax: u32, ecx: u32) -> Option<CpuidValues> {
-        if let Some(ent) = self.map.0.get(&CpuidLeaf::subleaf(eax, ecx)) {
+        if let Some(ent) = self.map.0.get(&CpuidIdent::subleaf(eax, ecx)) {
             // Exact match
             Some(*ent)
-        } else if let Some(ent) = self.map.0.get(&CpuidLeaf::leaf(eax)) {
+        } else if let Some(ent) = self.map.0.get(&CpuidIdent::leaf(eax)) {
             // Function-only match
             Some(*ent)
         } else {
@@ -115,7 +115,7 @@ impl From<Set> for Vec<bhyve_api::vcpu_cpuid_entry> {
 /// This would be implemented as a [From] trait if rust let us.
 pub fn from_raw(
     value: bhyve_api::vcpu_cpuid_entry,
-) -> (CpuidLeaf, CpuidValues) {
+) -> (CpuidIdent, CpuidValues) {
     let subleaf = if value.vce_flags & bhyve_api::VCE_FLAG_MATCH_INDEX != 0 {
         Some(value.vce_index)
     } else {
@@ -123,7 +123,7 @@ pub fn from_raw(
     };
 
     (
-        CpuidLeaf { leaf: value.vce_function, subleaf },
+        CpuidIdent { leaf: value.vce_function, subleaf },
         CpuidValues {
             eax: value.vce_eax,
             ebx: value.vce_ebx,
@@ -134,10 +134,10 @@ pub fn from_raw(
 }
 
 pub struct Iter<'a>(
-    std::collections::btree_map::Iter<'a, CpuidLeaf, CpuidValues>,
+    std::collections::btree_map::Iter<'a, CpuidIdent, CpuidValues>,
 );
 impl<'a> Iterator for Iter<'a> {
-    type Item = (&'a CpuidLeaf, &'a CpuidValues);
+    type Item = (&'a CpuidIdent, &'a CpuidValues);
 
     fn next(&mut self) -> Option<Self::Item> {
         self.0.next()
@@ -246,7 +246,7 @@ impl Specializer {
 
         // APIC ID based on vcpuid
         if let Some(vcpuid) = self.vcpuid.as_ref() {
-            if let Some(ent) = set.get_mut(CpuidLeaf::leaf(1)) {
+            if let Some(ent) = set.get_mut(CpuidIdent::leaf(1)) {
                 // bits 31:24 contain initial APIC ID
                 ent.ebx &= !0xff000000;
                 ent.ebx |= ((*vcpuid as u32) & 0xff) << 24;
@@ -256,7 +256,7 @@ impl Specializer {
         // logical CPU count (if SMT is enabled)
         if let Some(num_vcpu) = self.num_vcpu.as_ref() {
             if self.has_smt {
-                if let Some(ent) = set.get_mut(CpuidLeaf::leaf(1)) {
+                if let Some(ent) = set.get_mut(CpuidIdent::leaf(1)) {
                     ent.edx |= (0x1 << 28);
                     // bits 23:16 contain max IDs for logical CPUs in package
                     ent.ebx &= !0xff0000;
@@ -272,7 +272,7 @@ impl Specializer {
         assert!(self.do_cache_topo);
         let num = self.num_vcpu.unwrap().get();
         for ecx in 0..u32::MAX {
-            match set.get_mut(CpuidLeaf::subleaf(0x8000001d, ecx)) {
+            match set.get_mut(CpuidIdent::subleaf(0x8000001d, ecx)) {
                 None => break,
                 Some(vals) => {
                     // bits 7:5 hold the cache level
@@ -322,10 +322,10 @@ impl Specializer {
             match topo {
                 TopoKind::StdB => {
                     // Queries with invalid ecx will get all-zeroes
-                    set.insert(CpuidLeaf::leaf(leaf), CpuidValues::default());
+                    set.insert(CpuidIdent::leaf(leaf), CpuidValues::default());
                     if self.has_smt {
                         set.insert(
-                            CpuidLeaf::subleaf(leaf, 0),
+                            CpuidIdent::subleaf(leaf, 0),
                             CpuidValues {
                                 eax: 0x1,
                                 ebx: 0x2,
@@ -336,7 +336,7 @@ impl Specializer {
                         );
                     } else {
                         set.insert(
-                            CpuidLeaf::subleaf(leaf, 0),
+                            CpuidIdent::subleaf(leaf, 0),
                             CpuidValues {
                                 eax: 0x0,
                                 ebx: 0x1,
@@ -347,7 +347,7 @@ impl Specializer {
                         );
                     }
                     set.insert(
-                        CpuidLeaf::subleaf(leaf, 1),
+                        CpuidIdent::subleaf(leaf, 1),
                         CpuidValues {
                             eax: 0x0,
                             ebx: num_vcpu,
@@ -368,7 +368,7 @@ impl Specializer {
                         ebx |= 0x100;
                     }
                     set.insert(
-                        CpuidLeaf::leaf(leaf),
+                        CpuidIdent::leaf(leaf),
                         CpuidValues {
                             eax: id,
                             ebx,

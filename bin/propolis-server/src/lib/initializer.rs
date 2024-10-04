@@ -46,7 +46,7 @@ use propolis::vmm::{self, Builder, Machine};
 use propolis_api_types::instance_spec;
 use propolis_api_types::instance_spec::components::devices::SerialPortNumber;
 use propolis_api_types::InstanceProperties;
-use propolis_types::{CpuidLeaf, CpuidVendor};
+use propolis_types::{CpuidIdent, CpuidVendor};
 use slog::info;
 use strum::IntoEnumIterator;
 use thiserror::Error;
@@ -945,12 +945,12 @@ impl<'a> MachineInitializer<'a> {
 
         // Once CPUID profiles are integrated, these will need to take that into
         // account, rather than blindly querying from the host
-        let cpuid_vendor = cpuid_utils::host_query(CpuidLeaf::leaf(0));
-        let cpuid_ident = cpuid_utils::host_query(CpuidLeaf::leaf(1));
+        let cpuid_vendor = cpuid_utils::host_query(CpuidIdent::leaf(0));
+        let cpuid_ident = cpuid_utils::host_query(CpuidIdent::leaf(1));
         let cpuid_procname = [
-            cpuid_utils::host_query(CpuidLeaf::leaf(0x8000_0002)),
-            cpuid_utils::host_query(CpuidLeaf::leaf(0x8000_0003)),
-            cpuid_utils::host_query(CpuidLeaf::leaf(0x8000_0004)),
+            cpuid_utils::host_query(CpuidIdent::leaf(0x8000_0002)),
+            cpuid_utils::host_query(CpuidIdent::leaf(0x8000_0003)),
+            cpuid_utils::host_query(CpuidIdent::leaf(0x8000_0004)),
         ];
 
         let family = match cpuid_ident.eax & 0xf00 {
