@@ -77,17 +77,20 @@ async fn cpuid_boot_test(ctx: &Framework) {
         );
     }
 
-    // Keep only standard leaves up to 7 and extended leaves up to 0x80000004.
-    const LAST_EXTENDED_LEAF: u32 = 0x8000_0004;
+    // Keep only standard leaves up to 7 and the first two extended leaves.
+    // Extended leaves 2 through 4 will be overwritten with a fake brand string
+    // (see below).
     host_cpuid.retain(|leaf, _values| {
         leaf.leaf <= 0x7
-            || (leaf.leaf >= 0x8000_0000 && leaf.leaf <= LAST_EXTENDED_LEAF)
+            || (leaf.leaf >= 0x8000_0000 && leaf.leaf <= 0x8000_0001)
     });
+
+    // Report that leaf 7 is the last available standard leaf.
+    host_cpuid.get_mut(&CpuidIdent::leaf(0)).unwrap().eax = 7;
 
     // Mask off feature bits that the Oxide platform won't support. See RFD
     // 314. These are masks (and not assignments) so that features the host CPU
     // support won't appear in the guest's feature masks.
-    host_cpuid.get_mut(&CpuidIdent::leaf(0)).unwrap().eax = 7;
     let leaf_1 = host_cpuid.get_mut(&CpuidIdent::leaf(1)).unwrap();
     leaf_1.ecx &= 0xF6F8_3203;
     leaf_1.edx &= 0x178B_FBFF;
@@ -97,8 +100,10 @@ async fn cpuid_boot_test(ctx: &Framework) {
     leaf_7.ecx = 0;
     leaf_7.edx = 0;
 
+    // Report that leaf 0x8000_0004 is the last extended leaf and clean up
+    // feature bits in leaf 0x8000_0001.
     host_cpuid.get_mut(&CpuidIdent::leaf(0x8000_0000)).unwrap().eax =
-        LAST_EXTENDED_LEAF;
+        0x8000_0004;
     let ext_leaf_1 =
         host_cpuid.get_mut(&CpuidIdent::leaf(0x8000_0001)).unwrap();
     ext_leaf_1.ecx &= 0x4440_01F0;
@@ -106,15 +111,10 @@ async fn cpuid_boot_test(ctx: &Framework) {
 
     // Test the plumbing by pumping a fake processor brand string into extended
     // leaves 2-4 and seeing if the guest recognizes it.
-    const BRAND_STRING: &str = "Oxide Cloud Computer Company Cloud Computer";
-    let brand_bytes = BRAND_STRING.as_bytes();
+    const BRAND_STRING: &[u8; 48] =
+        b"Oxide Cloud Computer Company Cloud Computer\0\0\0\0\0";
 
-    assert!(
-        brand_bytes.len() <= 4 * 12,
-        "brand string must fit into twelve 32-bit registers"
-    );
-
-    let chunks = brand_bytes.chunks(4);
+    let chunks = BRAND_STRING.chunks_exact(4);
     let mut ext_leaf_2 = CpuidValues::default();
     let mut ext_leaf_3 = CpuidValues::default();
     let mut ext_leaf_4 = CpuidValues::default();
@@ -124,9 +124,7 @@ async fn cpuid_boot_test(ctx: &Framework) {
         .chain(ext_leaf_4.iter_mut());
 
     for (chunk, dst) in chunks.zip(dst) {
-        let mut bytes = [0u8; 4];
-        bytes[..chunk.len()].copy_from_slice(chunk);
-        *dst = u32::from_le_bytes(bytes);
+        *dst = u32::from_le_bytes(chunk.try_into().unwrap());
     }
 
     host_cpuid.insert(CpuidIdent::leaf(0x8000_0002), ext_leaf_2);
@@ -155,5 +153,7 @@ async fn cpuid_boot_test(ctx: &Framework) {
 
     let cpuinfo = vm.run_shell_command("cat /proc/cpuinfo").await?;
     info!(cpuinfo, "/proc/cpuinfo output");
-    assert!(cpuinfo.contains(BRAND_STRING));
+    assert!(cpuinfo.contains(
+        std::str::from_utf8(BRAND_STRING).unwrap().trim_matches('\0')
+    ));
 }
