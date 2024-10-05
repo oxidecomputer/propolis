@@ -585,6 +585,8 @@ pub fn host_query_all() -> CpuidMap {
 
 #[cfg(test)]
 mod test {
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
@@ -720,8 +722,107 @@ mod test {
         assert!(map.is_empty());
     }
 
-    #[test]
-    fn map_iteration() {
-        todo!()
+    #[derive(Debug)]
+    enum MapEntry {
+        Leaf(u32, CpuidValues),
+        Subleaves(u32, Vec<(u32, CpuidValues)>),
+    }
+
+    /// Produces a random CPUID leaf entry. Each entry has an leaf number in
+    /// [0..8) and one of the following values:
+    ///
+    /// - One of sixteen random [`CpuidValues`] values
+    /// - One subleaf with index [0..5) and one of two values
+    /// - Two such subleaves
+    /// - Three such subleaves
+    ///
+    /// There are (16 + 10 + 100 + 1000) = 1,126 possible values for each leaf,
+    /// for a total of 9,008 possible leaf entries.
+    fn map_entry_strategy() -> impl Strategy<Value = MapEntry> {
+        const MAX_LEAF: u32 = 8;
+        prop_oneof![
+            (0..MAX_LEAF, prop::array::uniform4(0..2u32)).prop_map(
+                |(leaf, value_arr)| { MapEntry::Leaf(leaf, value_arr.into()) }
+            ),
+            (
+                0..MAX_LEAF,
+                prop::collection::vec(0..5u32, 1..=3),
+                proptest::bool::ANY
+            )
+                .prop_map(|(leaf, subleaves, set_value)| {
+                    let value = if set_value {
+                        CpuidValues { eax: 1, ebx: 2, ecx: 3, edx: 4 }
+                    } else {
+                        CpuidValues::default()
+                    };
+                    let subleaves = subleaves
+                        .into_iter()
+                        .map(|subleaf| (subleaf, value))
+                        .collect();
+                    MapEntry::Subleaves(leaf, subleaves)
+                })
+        ]
+    }
+
+    proptest! {
+        /// Verifies that a [`CpuidMapIterator`] visits all of the leaf and
+        /// subleaf entries in a map and does so in the expected order.
+        ///
+        /// proptest will generate a set of 3-8 leaves for each test according
+        /// to the strategy defined in [`map_entry_strategy`].
+        #[test]
+        fn map_iteration_order(
+            entries in prop::collection::vec(map_entry_strategy(), 3..=8)
+        ) {
+            let mut map = CpuidMap::default();
+            let mut _expected_len = 0;
+
+            // Insert all of the entries into the map. The input array may have
+            // some duplicates and may assign both a no-subleaf and a subleaf
+            // value to a single leaf; ignore all of the resulting errors and
+            // substitutions.
+            for entry in entries {
+                match entry {
+                    MapEntry::Leaf(leaf, values) => {
+                        if let Ok(None) = map.insert(
+                            CpuidIdent::leaf(leaf),
+                            values
+                        ) {
+                            _expected_len += 1;
+                        }
+                    }
+                    MapEntry::Subleaves(leaf, subleaves) => {
+                        for (subleaf, values) in subleaves {
+                            if let Ok(None) = map.insert(
+                                CpuidIdent::subleaf(leaf, subleaf),
+                                values
+                            ) {
+                                _expected_len += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            assert_eq!(map.len(), _expected_len);
+
+            // The iterator should visit leaves in order and return subleaves
+            // before the next leaf. This happens to be the ordering provided by
+            // `CpuidIdent`'s `Ord` implementation, so it suffices just to
+            // compare identifiers directly.
+            let mut _observed_len = 0;
+            let output: Vec<(CpuidIdent, CpuidValues)> = map.iter().collect();
+            for (first, second) in
+                output.as_slice().windows(2).map(|sl| (sl[0].0, sl[1].0)) {
+                assert!(first < second, "first: {first:?}, second: {second:?}");
+                _observed_len += 1;
+            }
+
+            // The `windows(2)` iterator will not count the last entry (it has
+            // no successor), so the actual observed length is one more than the
+            // number of observed iterations. (Note that by construction the map
+            // is not empty, so there is always a last entry.)
+            assert_eq!(_observed_len + 1, _expected_len);
+        }
     }
 }
