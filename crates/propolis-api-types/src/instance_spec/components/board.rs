@@ -106,5 +106,5 @@ pub struct Board {
     /// default values from the host's CPUID values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpuid: Option<Cpuid>,
-    // TODO: Processor and  topology.
+    // TODO: Processor and NUMA topology.
 }
