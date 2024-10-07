@@ -80,23 +80,10 @@ pub const EXTENDED_LEAVES: RangeInclusive<u32> = 0x8000_0000..=0x8000_FFFF;
 /// Queries the supplied CPUID leaf on the caller's machine.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub fn host_query(leaf: CpuidIdent) -> CpuidValues {
-    let mut res = CpuidValues::default();
-
     unsafe {
-        std::arch::asm!(
-            "push rbx",
-            "cpuid",
-            "mov {0:e}, ebx",
-            "pop rbx",
-            out(reg) res.ebx,
-            // select cpuid 0, also specify eax as clobbered
-            inout("eax") leaf.leaf => res.eax,
-            inout("ecx") leaf.subleaf.unwrap_or(0) => res.ecx,
-            out("edx") res.edx,
-        );
+        core::arch::x86_64::__cpuid_count(leaf.leaf, leaf.subleaf.unwrap_or(0))
     }
-
-    res
+    .into()
 }
 
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
@@ -121,6 +108,8 @@ pub fn host_query_all() -> CpuidMap {
         map.insert(leaf, host_query(leaf));
     }
 
+    // This needs to be done by hand because the `__get_cpuid_max` intrinsic
+    // only returns the maximum standard leaf.
     let ext_leaf_0 = CpuidIdent::leaf(*EXTENDED_LEAVES.start());
     let ext_leaf_0_values = host_query(ext_leaf_0);
     map.insert(ext_leaf_0, ext_leaf_0_values);

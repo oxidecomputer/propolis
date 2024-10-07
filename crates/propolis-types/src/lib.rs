@@ -209,6 +209,12 @@ impl CpuidValues {
     }
 }
 
+impl From<core::arch::x86_64::CpuidResult> for CpuidValues {
+    fn from(value: core::arch::x86_64::CpuidResult) -> Self {
+        Self { eax: value.eax, ebx: value.ebx, ecx: value.ecx, edx: value.edx }
+    }
+}
+
 impl From<[u32; 4]> for CpuidValues {
     fn from(value: [u32; 4]) -> Self {
         Self { eax: value[0], ebx: value[1], ecx: value[2], edx: value[3] }
