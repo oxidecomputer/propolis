@@ -39,7 +39,7 @@ pub enum CpuidMapMismatch {
 
 impl CpuidMap {
     /// Returns `Ok` if `self` is equivalent to `other`; if not, returns a
-    /// [`CpuidMapMismatch`] describing the difference that caused the
+    /// [`CpuidMapMismatch`] describing the difference between the maps.
     pub fn is_equivalent(&self, other: &Self) -> Result<(), CpuidMapMismatch> {
         let this_set: BTreeSet<_> = self.0.keys().collect();
         let other_set: BTreeSet<_> = other.0.keys().collect();
