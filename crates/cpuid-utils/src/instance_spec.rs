@@ -48,6 +48,14 @@ impl From<CpuidMap> for Vec<CpuidEntry> {
 impl TryFrom<Vec<CpuidEntry>> for CpuidMap {
     type Error = CpuidMapConversionError;
 
+    /// Converts a set of [`CpuidEntry`] structures from an instance spec into a
+    /// [`CpuidMap`]. This conversion fails if
+    ///
+    /// - one or more of the entries' leaves is not in the standard or extended
+    ///   ranges (0x0-0xFFFF and 0x80000000-0x8000FFFF),
+    /// - a leaf/subleaf pair is specified more than once, or
+    /// - two input entries specify the same leaf value, one specifies a subleaf
+    ///   of `None`, and one specifies a subleaf of `Some`.
     fn try_from(
         value: Vec<CpuidEntry>,
     ) -> Result<Self, CpuidMapConversionError> {

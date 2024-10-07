@@ -6,9 +6,9 @@
 //!
 //! If this crate is built with the `instance-spec` feature, this module
 //! includes mechanisms for converting from instance spec CPUID entries to and
-//! from the CPUID map types in the crate. These conversions require that the
-//! input list of CPUID entries contains no duplicate leaf/subleaf pairs and
-//! that the specified leaves all fall in the standard or extended ranges.
+//! from the CPUID map types in the crate. This is feature-gated so that the
+//! main Propolis lib can use this library without depending on
+//! `propolis-api-types`.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
