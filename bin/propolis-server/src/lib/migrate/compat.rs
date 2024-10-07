@@ -56,7 +56,7 @@ pub enum BoardIncompatibility {
     )]
     PcieEnabled { this: bool, other: bool },
 
-    #[error("boards have incompatible CPUID settings")]
+    #[error(transparent)]
     Cpuid(#[from] CpuidMismatch),
 }
 
@@ -70,7 +70,7 @@ pub enum CpuidMismatch {
     )]
     Vendor { this: CpuidVendor, other: CpuidVendor },
 
-    #[error("CPUID leaves have mismatched leaves or values")]
+    #[error(transparent)]
     LeavesOrValues(#[from] cpuid_utils::CpuidMapMismatch),
 }
 

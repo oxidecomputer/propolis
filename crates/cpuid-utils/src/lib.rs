@@ -30,10 +30,10 @@ pub struct CpuidMap(pub BTreeMap<CpuidIdent, CpuidValues>);
 
 #[derive(Debug, Error)]
 pub enum CpuidMapMismatch {
-    #[error("mismatched CPUID leaves {0:?}")]
+    #[error("CPUID leaves not found in both sets ({0:?})")]
     MismatchedLeaves(Vec<CpuidIdent>),
 
-    #[error("mismatched values for leaves {0:?}")]
+    #[error("CPUID leaves have different values in different sets ({0:?})")]
     MismatchedValues(Vec<(CpuidIdent, CpuidValues, CpuidValues)>),
 }
 

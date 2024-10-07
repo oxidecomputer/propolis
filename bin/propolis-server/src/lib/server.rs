@@ -334,7 +334,13 @@ async fn instance_spec_ensure(
     let request = request.into_inner();
     let VersionedInstanceSpec::V0(v0_spec) = request.instance_spec;
     let spec = Spec::try_from(v0_spec).map_err(|e: ApiSpecError| {
-        HttpError::for_bad_request(None, e.to_string())
+        HttpError::for_bad_request(
+            None,
+            format!(
+                "failed to create internal instance spec from API spec: {:#?}",
+                e
+            ),
+        )
     })?;
 
     instance_ensure_common(rqctx, request.properties, request.migrate, spec)
