@@ -178,7 +178,7 @@ impl CpuidIdent {
     }
 
     /// Constructs an identifier that specifies a leaf and subleaf.
-    pub fn leaf_subleaf(leaf: u32, subleaf: u32) -> Self {
+    pub fn subleaf(leaf: u32, subleaf: u32) -> Self {
         Self { leaf, subleaf: Some(subleaf) }
     }
 }

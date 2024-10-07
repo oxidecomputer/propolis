@@ -62,7 +62,7 @@ impl TryFrom<Vec<CpuidEntry>> for CpuidMap {
             }
 
             if subleaf.is_none()
-                && map.contains_key(&CpuidIdent::leaf_subleaf(leaf, 0))
+                && map.contains_key(&CpuidIdent::subleaf(leaf, 0))
             {
                 return Err(CpuidMapConversionError::SubleafZeroAliased(leaf));
             }

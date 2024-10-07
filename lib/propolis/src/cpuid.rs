@@ -73,7 +73,7 @@ impl Set {
     }
 
     pub fn for_regs(&self, eax: u32, ecx: u32) -> Option<CpuidValues> {
-        if let Some(ent) = self.map.0.get(&CpuidIdent::leaf_subleaf(eax, ecx)) {
+        if let Some(ent) = self.map.0.get(&CpuidIdent::subleaf(eax, ecx)) {
             // Exact match
             Some(*ent)
         } else if let Some(ent) = self.map.0.get(&CpuidIdent::leaf(eax)) {
@@ -282,7 +282,7 @@ impl Specializer {
         assert!(self.do_cache_topo);
         let num = self.num_vcpu.unwrap().get();
         for ecx in 0..u32::MAX {
-            match set.get_mut(CpuidIdent::leaf_subleaf(0x8000001d, ecx)) {
+            match set.get_mut(CpuidIdent::subleaf(0x8000001d, ecx)) {
                 None => break,
                 Some(vals) => {
                     // bits 7:5 hold the cache level
@@ -335,7 +335,7 @@ impl Specializer {
                     set.insert(CpuidIdent::leaf(leaf), CpuidValues::default());
                     if self.has_smt {
                         set.insert(
-                            CpuidIdent::leaf_subleaf(leaf, 0),
+                            CpuidIdent::subleaf(leaf, 0),
                             CpuidValues {
                                 eax: 0x1,
                                 ebx: 0x2,
@@ -346,7 +346,7 @@ impl Specializer {
                         );
                     } else {
                         set.insert(
-                            CpuidIdent::leaf_subleaf(leaf, 0),
+                            CpuidIdent::subleaf(leaf, 0),
                             CpuidValues {
                                 eax: 0x0,
                                 ebx: 0x1,
@@ -357,7 +357,7 @@ impl Specializer {
                         );
                     }
                     set.insert(
-                        CpuidIdent::leaf_subleaf(leaf, 1),
+                        CpuidIdent::subleaf(leaf, 1),
                         CpuidValues {
                             eax: 0x0,
                             ebx: num_vcpu,

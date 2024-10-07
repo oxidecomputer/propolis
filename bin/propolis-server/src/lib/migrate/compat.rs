@@ -857,8 +857,8 @@ mod test {
         s1.is_migration_compatible(&s2).unwrap();
 
         let values = CpuidValues { eax: 5, ebx: 6, ecx: 7, edx: 8 };
-        set1.insert(CpuidIdent::leaf_subleaf(3, 4), values);
-        set2.insert(CpuidIdent::leaf_subleaf(3, 4), values);
+        set1.insert(CpuidIdent::subleaf(3, 4), values);
+        set2.insert(CpuidIdent::subleaf(3, 4), values);
         s1.is_migration_compatible(&s2).unwrap();
     }
 
