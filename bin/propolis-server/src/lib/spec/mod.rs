@@ -75,6 +75,13 @@ pub(crate) struct Spec {
     pub softnpu: SoftNpu,
 }
 
+/// The VM's mainboard.
+///
+/// This is distinct from the [instance spec `Board`] so that it can exclude
+/// fields (such as CPUID information) that need to be checked for validity
+/// before being included in an internal spec.
+///
+/// [instance spec `Board`]: propolis_api_types::instance_spec::components::board::Board
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Board {
     pub cpus: u8,
