@@ -90,7 +90,7 @@ async fn cpuid_boot_test(ctx: &Framework) {
 
     // Mask off feature bits that the Oxide platform won't support. See RFD
     // 314. These are masks (and not assignments) so that features the host CPU
-    // support won't appear in the guest's feature masks.
+    // doesn't support won't appear in the guest's feature masks.
     let leaf_1 = host_cpuid.get_mut(&CpuidIdent::leaf(1)).unwrap();
     leaf_1.ecx &= 0xF6F8_3203;
     leaf_1.edx &= 0x178B_FBFF;
