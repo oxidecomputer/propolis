@@ -6,7 +6,6 @@
 
 use super::*;
 
-#[cfg(feature = "instance-spec")]
 use propolis_api_types::instance_spec::components::board::CpuidEntry;
 use thiserror::Error;
 
