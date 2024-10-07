@@ -1213,6 +1213,10 @@ impl<'a> MachineInitializer<'a> {
                         MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
                     })?;
 
+                info!(self.log, "setting CPUID for vCPU";
+                      "vcpu" => vcpu.id,
+                      "cpuid" => ?specialized);
+
                 vcpu.set_cpuid(specialized).with_context(|| {
                     format!("setting CPUID for vcpu {}", vcpu.id)
                 })?;
