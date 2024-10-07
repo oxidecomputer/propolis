@@ -917,4 +917,23 @@ mod test {
         s2.cpuid = Some(set2);
         assert!(s1.is_migration_compatible(&s2).is_err());
     }
+
+    #[test]
+    fn cpuid_leaf_subleaf_conflict() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let mut set1 = cpuid::Set::new(CpuidVendor::Amd);
+        let mut set2 = cpuid::Set::new(CpuidVendor::Amd);
+
+        // Check that leaf 0 with no subleaf is not compatible with leaf 0 and a
+        // subleaf of 0. These are semantically different: the former matches
+        // leaf 0 with any subleaf value, while the latter technically matches
+        // only leaf 0 and subleaf 0 (with leaf-specific behavior if a different
+        // subleaf is specified).
+        set1.insert(CpuidIdent::leaf(0), CpuidValues::default());
+        set2.insert(CpuidIdent::subleaf(0, 0), CpuidValues::default());
+        s1.cpuid = Some(set1);
+        s2.cpuid = Some(set2);
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
 }
