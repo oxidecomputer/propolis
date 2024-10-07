@@ -44,7 +44,8 @@ pub struct Cpuid {
     ///
     /// The `leaf` and `subleaf` fields of each entry in the template must
     /// be unique. The leaf must also be in the standard or extended ranges
-    /// (0 to 0xFFFF or 0x8000_0000 to 0x8000_FFFF).
+    /// (0 to 0xFFFF or 0x8000_0000 to 0x8000_FFFF) defined in the `cpuid_utils`
+    /// crate.
     //
     // It would be nice if this were an associative collection type.
     // Unfortunately, the most natural keys for such a collection are
