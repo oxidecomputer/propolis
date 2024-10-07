@@ -106,7 +106,10 @@ pub fn host_query(leaf: CpuidIdent) -> CpuidValues {
 
 /// Queries subleaf 0 of all of the valid CPUID leaves on the host and returns
 /// the results in a [`CpuidMap`].
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+///
+/// # Panics
+///
+/// Panics if the target architecture is not x86 or x86-64.
 pub fn host_query_all() -> CpuidMap {
     let mut map = BTreeMap::new();
     let leaf_0 = CpuidIdent::leaf(*STANDARD_LEAVES.start());
@@ -127,9 +130,4 @@ pub fn host_query_all() -> CpuidMap {
     }
 
     CpuidMap(map)
-}
-
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-pub fn host_query_all() -> CpuidMap {
-    panic!("host CPUID queries only work on x86")
 }
