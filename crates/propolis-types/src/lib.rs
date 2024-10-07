@@ -167,7 +167,15 @@ mod test {
     Deserialize,
 )]
 pub struct CpuidIdent {
+    /// A leaf number.
     pub leaf: u32,
+
+    /// A subleaf number, or `None` if the leaf is not expected to use
+    /// subleaves.
+    ///
+    /// When matching CPUID input values to a [`CpuidIdent`], a subleaf of
+    /// `None` matches any value in ecx, while a value of `Some(s)` only matches
+    /// inputs where ecx is equal to `s`.
     pub subleaf: Option<u32>,
 }
 
