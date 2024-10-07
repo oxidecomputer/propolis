@@ -10,7 +10,7 @@ doctest = false
 [dependencies]
 anyhow.workspace = true
 byteorder.workspace = true
-cpuid_utils.workspace = true
+cpuid_utils = { workspace = true, features = [ "instance-spec" ] }
 futures.workspace = true
 itertools.workspace = true
 http.workspace = true
