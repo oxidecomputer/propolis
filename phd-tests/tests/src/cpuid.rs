@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use cpuid_utils::{CpuidIdent, CpuidMap, CpuidValues, CpuidVendor};
+use cpuid_utils::{CpuidIdent, CpuidValues, CpuidVendor};
 use phd_testcase::*;
 use propolis_client::types::CpuidEntry;
 use tracing::info;
@@ -134,7 +134,19 @@ async fn cpuid_boot_test(ctx: &Framework) {
     // Try to boot a guest with the computed CPUID values. The modified brand
     // string should show up in /proc/cpuinfo.
     let mut cfg = ctx.vm_config_builder("cpuid_boot_test");
-    cfg.cpuid(CpuidMap(host_cpuid).into());
+    cfg.cpuid(
+        host_cpuid
+            .iter()
+            .map(|(leaf, value)| CpuidEntry {
+                leaf: leaf.leaf,
+                subleaf: leaf.subleaf,
+                eax: value.eax,
+                ebx: value.ebx,
+                ecx: value.ecx,
+                edx: value.edx,
+            })
+            .collect(),
+    );
     let mut vm = ctx.spawn_vm(&cfg, None).await?;
     vm.launch().await?;
     vm.wait_to_boot().await?;
