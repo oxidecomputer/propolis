@@ -44,6 +44,8 @@ async fn cpuid_instance_spec_round_trip_test(ctx: &Framework) {
 
 #[phd_testcase]
 async fn cpuid_boot_test(ctx: &Framework) {
+    use cpuid_utils::bits::*;
+
     // This test verifies that plumbing a reasonably sensible-looking set of
     // CPUID values into the guest produces a bootable guest.
     //
@@ -88,15 +90,24 @@ async fn cpuid_boot_test(ctx: &Framework) {
     // Report that leaf 7 is the last available standard leaf.
     host_cpuid.get_mut(&CpuidIdent::leaf(0)).unwrap().eax = 7;
 
-    // Mask off feature bits that the Oxide platform won't support. See RFD
-    // 314. These are masks (and not assignments) so that features the host CPU
-    // doesn't support won't appear in the guest's feature masks.
+    // Mask off bits that a minimum-viable Oxide platform doesn't support or
+    // can't (or won't) expose to guests. See RFD 314 for further discussion of
+    // how these masks were chosen.
+    //
+    // These are masks (and not assignments) so that, if the host processor
+    // doesn't support a feature contained in an `ALL_FLAGS` value, the
     let leaf_1 = host_cpuid.get_mut(&CpuidIdent::leaf(1)).unwrap();
-    leaf_1.ecx &= 0xF6F8_3203;
-    leaf_1.edx &= 0x178B_FBFF;
+    leaf_1.ecx &=
+        (Leaf1Ecx::ALL_FLAGS & !(Leaf1Ecx::OSXSAVE | Leaf1Ecx::MONITOR)).bits();
+    leaf_1.edx &= Leaf1Edx::ALL_FLAGS.bits();
     let leaf_7 = host_cpuid.get_mut(&CpuidIdent::leaf(7)).unwrap();
     leaf_7.eax = 0;
-    leaf_7.ebx &= 0x219C_03A9;
+    leaf_7.ebx &= (Leaf7Sub0Ebx::ALL_FLAGS
+        & !(Leaf7Sub0Ebx::PQM
+            | Leaf7Sub0Ebx::PQE
+            | Leaf7Sub0Ebx::RDSEED
+            | Leaf7Sub0Ebx::INVPCID))
+        .bits();
     leaf_7.ecx = 0;
     leaf_7.edx = 0;
 
@@ -106,8 +117,16 @@ async fn cpuid_boot_test(ctx: &Framework) {
         0x8000_0004;
     let ext_leaf_1 =
         host_cpuid.get_mut(&CpuidIdent::leaf(0x8000_0001)).unwrap();
-    ext_leaf_1.ecx &= 0x4440_01F0;
-    ext_leaf_1.edx &= 0x27D3_FBFF;
+    ext_leaf_1.ecx &= (AmdExtLeaf1Ecx::ALT_MOV_CR8
+        | AmdExtLeaf1Ecx::ABM
+        | AmdExtLeaf1Ecx::SSE4A
+        | AmdExtLeaf1Ecx::MISALIGN_SSE
+        | AmdExtLeaf1Ecx::THREED_NOW_PREFETCH
+        | AmdExtLeaf1Ecx::DATA_ACCESS_BP
+        | AmdExtLeaf1Ecx::DATA_BP_ADDR_MASK_EXT)
+        .bits();
+    ext_leaf_1.edx &=
+        (AmdExtLeaf1Edx::ALL_FLAGS & !AmdExtLeaf1Edx::RDTSCP).bits();
 
     // Test the plumbing by pumping a fake processor brand string into extended
     // leaves 2-4 and seeing if the guest recognizes it.

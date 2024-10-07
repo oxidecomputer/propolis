@@ -18,6 +18,8 @@ use std::{
 pub use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor};
 use thiserror::Error;
 
+pub mod bits;
+
 #[cfg(feature = "instance-spec")]
 mod instance_spec;
 
