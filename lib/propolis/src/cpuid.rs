@@ -11,99 +11,102 @@ use std::num::NonZeroU8;
 use std::ops::Bound;
 
 use bhyve_api::vcpu_cpuid_entry;
-
-/// Values for a cpuid leaf
-#[derive(Copy, Clone, Debug)]
-pub struct Entry {
-    pub eax: u32,
-    pub ebx: u32,
-    pub ecx: u32,
-    pub edx: u32,
-}
-impl Entry {
-    pub fn zero() -> Self {
-        Self { eax: 0, ebx: 0, ecx: 0, edx: 0 }
-    }
-}
-impl From<[u32; 4]> for Entry {
-    fn from(value: [u32; 4]) -> Self {
-        Self { eax: value[0], ebx: value[1], ecx: value[2], edx: value[3] }
-    }
-}
-
-/// Matching criteria for function (%eax) and sub-function (%ecx) to identify a
-/// specific leaf of cpuid information
-#[derive(Eq, PartialEq, Ord, PartialOrd, Copy, Clone, Debug)]
-pub struct Ident(
-    /// Function (%eax) value
-    pub u32,
-    /// Sub-function (%ecx) value, if any
-    pub Option<u32>,
-);
+use cpuid_utils::{CpuidIdent, CpuidMap, CpuidValues, CpuidVendor};
 
 /// Set of cpuid leafs
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Set {
-    map: BTreeMap<Ident, Entry>,
-    pub vendor: VendorKind,
+    map: CpuidMap,
+    pub vendor: CpuidVendor,
+}
+
+impl Default for Set {
+    fn default() -> Self {
+        Self::new_host()
+    }
 }
 
 impl Set {
-    pub fn new(vendor: VendorKind) -> Self {
-        Set { map: BTreeMap::new(), vendor }
+    pub fn new(vendor: CpuidVendor) -> Self {
+        Set { map: CpuidMap::default(), vendor }
     }
+
     pub fn new_host() -> Self {
-        let vendor = VendorKind::try_from(host_query(Ident(0, None)))
-            .expect("host CPU should be from recognized vendor");
+        let vendor =
+            CpuidVendor::try_from(cpuid_utils::host_query(CpuidIdent::leaf(0)))
+                .expect("host CPU should be from recognized vendor");
         Self::new(vendor)
     }
 
-    pub fn insert(&mut self, ident: Ident, entry: Entry) -> Option<Entry> {
-        self.map.insert(ident, entry)
+    pub fn new_from_map(map: CpuidMap, vendor: CpuidVendor) -> Self {
+        Self { map, vendor }
     }
-    pub fn remove(&mut self, ident: Ident) -> Option<Entry> {
-        self.map.remove(&ident)
+
+    pub fn insert(
+        &mut self,
+        ident: CpuidIdent,
+        entry: CpuidValues,
+    ) -> Option<CpuidValues> {
+        self.map.0.insert(ident, entry)
+    }
+    pub fn remove(&mut self, ident: CpuidIdent) -> Option<CpuidValues> {
+        self.map.0.remove(&ident)
     }
     pub fn remove_all(&mut self, func: u32) {
-        self.map.retain(|ident, _val| ident.0 != func);
+        self.map.0.retain(|ident, _val| ident.leaf != func);
     }
-    pub fn get(&self, ident: Ident) -> Option<&Entry> {
-        self.map.get(&ident)
+    pub fn get(&self, ident: CpuidIdent) -> Option<&CpuidValues> {
+        self.map.0.get(&ident)
     }
-    pub fn get_mut(&mut self, ident: Ident) -> Option<&mut Entry> {
-        self.map.get_mut(&ident)
+    pub fn get_mut(&mut self, ident: CpuidIdent) -> Option<&mut CpuidValues> {
+        self.map.0.get_mut(&ident)
     }
     pub fn is_empty(&self) -> bool {
-        self.map.is_empty()
+        self.map.0.is_empty()
+    }
+    pub fn len(&self) -> usize {
+        self.map.0.len()
     }
 
     pub fn iter(&self) -> Iter {
-        Iter(self.map.iter())
+        Iter(self.map.0.iter())
     }
 
-    pub fn for_regs(&self, eax: u32, ecx: u32) -> Option<Entry> {
-        if let Some(ent) = self.map.get(&Ident(eax, Some(ecx))) {
+    pub fn for_regs(&self, eax: u32, ecx: u32) -> Option<CpuidValues> {
+        if let Some(ent) = self.map.0.get(&CpuidIdent::subleaf(eax, ecx)) {
             // Exact match
             Some(*ent)
-        } else if let Some(ent) = self.map.get(&Ident(eax, None)) {
+        } else if let Some(ent) = self.map.0.get(&CpuidIdent::leaf(eax)) {
             // Function-only match
             Some(*ent)
         } else {
             None
         }
     }
+
+    pub fn leaves_and_values_equivalent(
+        &self,
+        other: &Self,
+    ) -> Result<(), cpuid_utils::CpuidMapMismatch> {
+        self.map.is_equivalent(&other.map)
+    }
+
+    pub fn into_inner(self) -> (CpuidMap, CpuidVendor) {
+        (self.map, self.vendor)
+    }
 }
+
 impl From<Set> for Vec<bhyve_api::vcpu_cpuid_entry> {
     fn from(value: Set) -> Self {
-        let mut out = Vec::with_capacity(value.map.len());
-        out.extend(value.map.iter().map(|(ident, leaf)| {
-            let vce_flags = match ident.1.as_ref() {
+        let mut out = Vec::with_capacity(value.map.0.len());
+        out.extend(value.map.0.iter().map(|(ident, leaf)| {
+            let vce_flags = match ident.subleaf.as_ref() {
                 Some(_) => bhyve_api::VCE_FLAG_MATCH_INDEX,
                 None => 0,
             };
             bhyve_api::vcpu_cpuid_entry {
-                vce_function: ident.0,
-                vce_index: ident.1.unwrap_or(0),
+                vce_function: ident.leaf,
+                vce_index: ident.subleaf.unwrap_or(0),
                 vce_flags,
                 vce_eax: leaf.eax,
                 vce_ebx: leaf.ebx,
@@ -116,20 +119,22 @@ impl From<Set> for Vec<bhyve_api::vcpu_cpuid_entry> {
     }
 }
 
-/// Convert a [vcpu_cpuid_entry] into an ([Ident],
-/// [Entry]) tuple, suitable for insertion into a [Set].
+/// Convert a [vcpu_cpuid_entry] into an ([CpuidLeaf],
+/// [CpuidValues]) tuple, suitable for insertion into a [Set].
 ///
 /// This would be implemented as a [From] trait if rust let us.
-pub fn from_raw(value: bhyve_api::vcpu_cpuid_entry) -> (Ident, Entry) {
-    let idx = if value.vce_flags & bhyve_api::VCE_FLAG_MATCH_INDEX != 0 {
+pub fn from_raw(
+    value: bhyve_api::vcpu_cpuid_entry,
+) -> (CpuidIdent, CpuidValues) {
+    let subleaf = if value.vce_flags & bhyve_api::VCE_FLAG_MATCH_INDEX != 0 {
         Some(value.vce_index)
     } else {
         None
     };
 
     (
-        Ident(value.vce_function, idx),
-        Entry {
+        CpuidIdent { leaf: value.vce_function, subleaf },
+        CpuidValues {
             eax: value.vce_eax,
             ebx: value.vce_ebx,
             ecx: value.vce_ecx,
@@ -138,9 +143,11 @@ pub fn from_raw(value: bhyve_api::vcpu_cpuid_entry) -> (Ident, Entry) {
     )
 }
 
-pub struct Iter<'a>(std::collections::btree_map::Iter<'a, Ident, Entry>);
+pub struct Iter<'a>(
+    std::collections::btree_map::Iter<'a, CpuidIdent, CpuidValues>,
+);
 impl<'a> Iterator for Iter<'a> {
-    type Item = (&'a Ident, &'a Entry);
+    type Item = (&'a CpuidIdent, &'a CpuidValues);
 
     fn next(&mut self) -> Option<Self::Item> {
         self.0.next()
@@ -164,7 +171,7 @@ pub struct Specializer {
     has_smt: bool,
     num_vcpu: Option<NonZeroU8>,
     vcpuid: Option<i32>,
-    vendor_kind: Option<VendorKind>,
+    vendor_kind: Option<CpuidVendor>,
     cpu_topo_populate: BTreeSet<TopoKind>,
     cpu_topo_clear: BTreeSet<TopoKind>,
     do_cache_topo: bool,
@@ -186,7 +193,7 @@ impl Specializer {
     }
 
     /// Specify CPU vendor
-    pub fn with_vendor(self, vendor: VendorKind) -> Self {
+    pub fn with_vendor(self, vendor: CpuidVendor) -> Self {
         Self { vendor_kind: Some(vendor), ..self }
     }
 
@@ -236,7 +243,7 @@ impl Specializer {
             set.vendor = vendor;
         }
         match set.vendor {
-            VendorKind::Amd => {
+            CpuidVendor::Amd => {
                 if self.do_cache_topo && self.num_vcpu.is_some() {
                     self.fix_amd_cache_topo(&mut set)?;
                 }
@@ -249,7 +256,7 @@ impl Specializer {
 
         // APIC ID based on vcpuid
         if let Some(vcpuid) = self.vcpuid.as_ref() {
-            if let Some(ent) = set.get_mut(Ident(0x1, None)) {
+            if let Some(ent) = set.get_mut(CpuidIdent::leaf(1)) {
                 // bits 31:24 contain initial APIC ID
                 ent.ebx &= !0xff000000;
                 ent.ebx |= ((*vcpuid as u32) & 0xff) << 24;
@@ -259,7 +266,7 @@ impl Specializer {
         // logical CPU count (if SMT is enabled)
         if let Some(num_vcpu) = self.num_vcpu.as_ref() {
             if self.has_smt {
-                if let Some(ent) = set.get_mut(Ident(0x1, None)) {
+                if let Some(ent) = set.get_mut(CpuidIdent::leaf(1)) {
                     ent.edx |= (0x1 << 28);
                     // bits 23:16 contain max IDs for logical CPUs in package
                     ent.ebx &= !0xff0000;
@@ -275,7 +282,7 @@ impl Specializer {
         assert!(self.do_cache_topo);
         let num = self.num_vcpu.unwrap().get();
         for ecx in 0..u32::MAX {
-            match set.get_mut(Ident(0x8000001d, Some(ecx))) {
+            match set.get_mut(CpuidIdent::subleaf(0x8000001d, ecx)) {
                 None => break,
                 Some(vals) => {
                     // bits 7:5 hold the cache level
@@ -325,11 +332,11 @@ impl Specializer {
             match topo {
                 TopoKind::StdB => {
                     // Queries with invalid ecx will get all-zeroes
-                    set.insert(Ident(leaf, None), Entry::zero());
+                    set.insert(CpuidIdent::leaf(leaf), CpuidValues::default());
                     if self.has_smt {
                         set.insert(
-                            Ident(leaf, Some(0)),
-                            Entry {
+                            CpuidIdent::subleaf(leaf, 0),
+                            CpuidValues {
                                 eax: 0x1,
                                 ebx: 0x2,
                                 ecx: 0x100,
@@ -339,8 +346,8 @@ impl Specializer {
                         );
                     } else {
                         set.insert(
-                            Ident(leaf, Some(0)),
-                            Entry {
+                            CpuidIdent::subleaf(leaf, 0),
+                            CpuidValues {
                                 eax: 0x0,
                                 ebx: 0x1,
                                 ecx: 0x100,
@@ -350,8 +357,8 @@ impl Specializer {
                         );
                     }
                     set.insert(
-                        Ident(leaf, Some(1)),
-                        Entry {
+                        CpuidIdent::subleaf(leaf, 1),
+                        CpuidValues {
                             eax: 0x0,
                             ebx: num_vcpu,
                             ecx: 0x201,
@@ -371,8 +378,8 @@ impl Specializer {
                         ebx |= 0x100;
                     }
                     set.insert(
-                        Ident(leaf, None),
-                        Entry {
+                        CpuidIdent::leaf(leaf),
+                        CpuidValues {
                             eax: id,
                             ebx,
                             // TODO: populate ecx info?
@@ -398,35 +405,10 @@ pub enum TopoKind {
     Ext1E = 0x8000001e,
 }
 
-/// Flavors of CPU vendor for cpuid specialization
-#[derive(Clone, Copy)]
-pub enum VendorKind {
-    Amd,
-    Intel,
-}
-impl VendorKind {
-    pub fn is_intel(self) -> bool {
-        matches!(self, VendorKind::Intel)
-    }
-}
-impl TryFrom<Entry> for VendorKind {
-    type Error = &'static str;
-
-    fn try_from(value: Entry) -> Result<Self, Self::Error> {
-        match (value.ebx, value.ecx, value.edx) {
-            // AuthenticAmd
-            (0x68747541, 0x444d4163, 0x69746e65) => Ok(VendorKind::Amd),
-            // GenuineIntel
-            (0x756e6547, 0x6c65746e, 0x49656e69) => Ok(VendorKind::Intel),
-            _ => Err("unrecognized vendor"),
-        }
-    }
-}
-
 /// Parse the Processor Brand String (aka ProcName) from extended leafs
 /// 0x8000_0002 - 0x8000_0004.
 pub fn parse_brand_string(
-    leafs: [Entry; 3],
+    leafs: [CpuidValues; 3],
 ) -> Result<String, std::str::Utf8Error> {
     let mut buf = Vec::with_capacity(16 * 3);
     for ent in leafs {
@@ -443,28 +425,4 @@ pub fn parse_brand_string(
 
     // trim any bounding whitespace which remains
     Ok(untrimmed.trim().to_string())
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub fn host_query(ident: Ident) -> Entry {
-    let mut res = Entry::zero();
-
-    unsafe {
-        std::arch::asm!(
-            "push rbx",
-            "cpuid",
-            "mov {0:e}, ebx",
-            "pop rbx",
-            out(reg) res.ebx,
-            // select cpuid 0, also specify eax as clobbered
-            inout("eax") ident.0 => res.eax,
-            inout("ecx") ident.1.unwrap_or(0) => res.ecx,
-            out("edx") res.edx,
-        );
-    }
-    res
-}
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-pub fn host_query(_ident: Ident) -> Entry {
-    panic!("this is not going to work on non-x86")
 }

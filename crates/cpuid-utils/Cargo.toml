@@ -1,0 +1,14 @@
+[package]
+name = "cpuid_utils"
+version = "0.0.0"
+license = "MPL-2.0"
+edition = "2021"
+
+[dependencies]
+bitflags.workspace = true
+propolis_api_types = {workspace = true, optional = true}
+propolis_types.workspace = true
+thiserror.workspace = true
+
+[features]
+instance-spec = ["propolis_api_types"]

@@ -43,6 +43,7 @@ panic = "abort"
 # Internal crates
 bhyve_api = { path = "crates/bhyve-api" }
 bhyve_api_sys = { path = "crates/bhyve-api/sys" }
+cpuid_utils = { path = "crates/cpuid-utils" }
 cpuid_profile_config = { path = "crates/cpuid-profile-config" }
 dladm = { path = "crates/dladm" }
 propolis-server-config = { path = "crates/propolis-server-config" }
@@ -120,6 +121,7 @@ http = "1.1.0"
 hyper = "1.0"
 indicatif = "0.17.3"
 inventory = "0.3.0"
+itertools = "0.13.0"
 kstat-rs = "0.2.4"
 lazy_static = "1.4"
 libc = "0.2"

@@ -6,10 +6,11 @@
 
 use std::collections::{BTreeSet, HashSet};
 
+use cpuid_utils::CpuidMapConversionError;
 use propolis_api_types::{
     instance_spec::{
         components::{
-            board::{Board, Chipset, I440Fx},
+            board::{Board as InstanceSpecBoard, Chipset, I440Fx},
             devices::{PciPciBridge, SerialPortNumber},
         },
         PciPath,
@@ -28,7 +29,7 @@ use crate::{config, spec::SerialPortDevice};
 use super::{
     api_request::{self, DeviceRequestError},
     config_toml::{ConfigTomlError, ParsedConfig},
-    BootOrderEntry, BootSettings, Disk, Nic, QemuPvpanic, SerialPort,
+    Board, BootOrderEntry, BootSettings, Disk, Nic, QemuPvpanic, SerialPort,
 };
 
 #[cfg(feature = "falcon")]
@@ -63,6 +64,9 @@ pub(crate) enum SpecBuilderError {
 
     #[error("boot option {0} is not an attached device")]
     BootOptionMissing(String),
+
+    #[error("instance spec's CPUID entries are invalid")]
+    CpuidEntriesInvalid(#[from] cpuid_utils::CpuidMapConversionError),
 }
 
 #[derive(Debug, Default)]
@@ -87,11 +91,31 @@ impl SpecBuilder {
         }
     }
 
-    pub(super) fn with_board(board: Board) -> Self {
-        Self {
-            spec: super::Spec { board, ..Default::default() },
+    pub(super) fn with_instance_spec_board(
+        board: InstanceSpecBoard,
+    ) -> Result<Self, SpecBuilderError> {
+        Ok(Self {
+            spec: super::Spec {
+                board: Board {
+                    cpus: board.cpus,
+                    memory_mb: board.memory_mb,
+                    chipset: board.chipset,
+                },
+                cpuid: board
+                    .cpuid
+                    .map(|cpuid| -> Result<_, CpuidMapConversionError> {
+                        {
+                            Ok(propolis::cpuid::Set::new_from_map(
+                                cpuid.entries.try_into()?,
+                                cpuid.vendor,
+                            ))
+                        }
+                    })
+                    .transpose()?,
+                ..Default::default()
+            },
             ..Default::default()
-        }
+        })
     }
 
     /// Converts an HTTP API request to add a NIC to an instance into

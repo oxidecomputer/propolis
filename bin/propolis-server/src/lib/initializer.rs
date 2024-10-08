@@ -4,7 +4,7 @@
 
 use std::convert::TryInto;
 use std::fs::File;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU8, NonZeroUsize};
 use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -19,6 +19,7 @@ use crate::vm::{
     BlockBackendMap, CrucibleBackendMap, DeviceMap, NetworkInterfaceIds,
 };
 use anyhow::Context;
+use cpuid_utils::CpuidValues;
 use crucible_client_types::VolumeConstructionRequest;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
@@ -46,7 +47,9 @@ use propolis::vmm::{self, Builder, Machine};
 use propolis_api_types::instance_spec;
 use propolis_api_types::instance_spec::components::devices::SerialPortNumber;
 use propolis_api_types::InstanceProperties;
+use propolis_types::{CpuidIdent, CpuidVendor};
 use slog::info;
+use strum::IntoEnumIterator;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -91,6 +94,9 @@ pub enum MachineInitError {
 
     #[error("failed to insert {0} fwcfg entry")]
     FwcfgInsertFailed(&'static str, #[source] fwcfg::InsertError),
+
+    #[error("failed to specialize CPUID for vcpu {0}")]
+    CpuidSpecializationFailed(i32, #[source] propolis::cpuid::SpecializeError),
 
     #[cfg(feature = "falcon")]
     #[error("softnpu p9 device missing")]
@@ -897,7 +903,6 @@ impl<'a> MachineInitializer<'a> {
     }
 
     fn generate_smbios(&self) -> smbios::TableBytes {
-        use propolis::cpuid;
         use smbios::table::{type0, type1, type16, type4};
 
         let rom_size =
@@ -939,45 +944,82 @@ impl<'a> MachineInitializer<'a> {
             ..Default::default()
         };
 
-        // Once CPUID profiles are integrated, these will need to take that into
-        // account, rather than blindly querying from the host
-        let cpuid_vendor = cpuid::host_query(cpuid::Ident(0x0, None));
-        let cpuid_ident = cpuid::host_query(cpuid::Ident(0x1, None));
-        let cpuid_procname = [
-            cpuid::host_query(cpuid::Ident(0x8000_0002, None)),
-            cpuid::host_query(cpuid::Ident(0x8000_0003, None)),
-            cpuid::host_query(cpuid::Ident(0x8000_0004, None)),
-        ];
+        fn get_spec_or_host_cpuid(
+            spec: &Spec,
+            leaf: u32,
+        ) -> Option<CpuidValues> {
+            let leaf = CpuidIdent::leaf(leaf);
+            let Some(cpuid) = &spec.cpuid else {
+                return Some(cpuid_utils::host_query(leaf));
+            };
 
-        let family = match cpuid_ident.eax & 0xf00 {
-            // If family ID is 0xf, extended family is added to it
-            0xf00 => (cpuid_ident.eax >> 20 & 0xff) + 0xf,
-            // ... otherwise base family ID is used
-            base => base >> 8,
-        };
+            cpuid.get(leaf).copied()
+        }
 
-        let vendor = cpuid::VendorKind::try_from(cpuid_vendor);
+        // The processor vendor, family/model/stepping, and brand string should
+        // correspond to the values the guest will see if it queries CPUID. If
+        // the instance spec contains CPUID values, derive this information from
+        // those. Otherwise, derive them from the values on the host.
+        //
+        // Note that all these values are `Option`s, because the spec may
+        // contain CPUID values that don't contain all of the input leaves.
+        let cpuid_vendor = get_spec_or_host_cpuid(self.spec, 0);
+        let cpuid_ident = get_spec_or_host_cpuid(self.spec, 1);
+
+        // Coerce the array-of-Options into an Option containing the array.
+        let cpuid_procname: Option<[CpuidValues; 3]> = [
+            get_spec_or_host_cpuid(self.spec, 0x8000_0002),
+            get_spec_or_host_cpuid(self.spec, 0x8000_0003),
+            get_spec_or_host_cpuid(self.spec, 0x8000_0004),
+        ]
+        .into_iter()
+        // This returns None if any of the input options were None (i.e. if any
+        // of the requested leaves weren't found). This implies that if the
+        // `collect` returns `Some`, there are necessarily three elements in the
+        // `Vec`, so `try_into::<[CpuidValues; 3]>` will always succeed.
+        .collect::<Option<Vec<_>>>()
+        .map(TryInto::try_into)
+        .transpose()
+        .expect("output array should always have three elements");
+
+        let family = cpuid_ident
+            .map(|ident| {
+                match ident.eax & 0xf00 {
+                    // If family ID is 0xf, extended family is added to it
+                    0xf00 => (ident.eax >> 20 & 0xff) + 0xf,
+                    // ... otherwise base family ID is used
+                    base => base >> 8,
+                }
+            })
+            .unwrap_or(0);
+
+        let vendor = cpuid_vendor.map(CpuidVendor::try_from);
         let proc_manufacturer = match vendor {
-            Ok(cpuid::VendorKind::Intel) => "Intel",
-            Ok(cpuid::VendorKind::Amd) => "Advanced Micro Devices, Inc.",
+            Some(Ok(CpuidVendor::Intel)) => "Intel",
+            Some(Ok(CpuidVendor::Amd)) => "Advanced Micro Devices, Inc.",
             _ => "",
         }
         .try_into()
         .unwrap();
+
         let proc_family = match (vendor, family) {
             // Explicitly match for Zen-based CPUs
             //
             // Although this family identifier is not valid in SMBIOS 2.7,
             // having been defined in 3.x, we pass it through anyways.
-            (Ok(cpuid::VendorKind::Amd), family) if family >= 0x17 => 0x6b,
+            (Some(Ok(CpuidVendor::Amd)), family) if family >= 0x17 => 0x6b,
 
             // Emit Unknown for everything else
             _ => 0x2,
         };
-        let proc_id =
-            u64::from(cpuid_ident.eax) | u64::from(cpuid_ident.edx) << 32;
-        let proc_version =
-            cpuid::parse_brand_string(cpuid_procname).unwrap_or("".to_string());
+
+        let proc_id = cpuid_ident
+            .map(|id| u64::from(id.eax) | u64::from(id.edx) << 32)
+            .unwrap_or(0);
+
+        let proc_version = cpuid_procname
+            .and_then(|vals| propolis::cpuid::parse_brand_string(vals).ok())
+            .unwrap_or_default();
 
         let smb_type4 = smbios::table::Type4 {
             proc_type: type4::ProcType::Central,
@@ -1157,6 +1199,28 @@ impl<'a> MachineInitializer<'a> {
     /// tracking their kstats.
     pub async fn initialize_cpus(&mut self) -> Result<(), MachineInitError> {
         for vcpu in self.machine.vcpus.iter() {
+            if let Some(set) = &self.spec.cpuid {
+                let specialized = propolis::cpuid::Specializer::new()
+                    .with_vcpu_count(
+                        NonZeroU8::new(self.spec.board.cpus).unwrap(),
+                        true,
+                    )
+                    .with_vcpuid(vcpu.id)
+                    .with_cache_topo()
+                    .clear_cpu_topo(propolis::cpuid::TopoKind::iter())
+                    .execute(set.clone())
+                    .map_err(|e| {
+                        MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
+                    })?;
+
+                info!(self.log, "setting CPUID for vCPU";
+                      "vcpu" => vcpu.id,
+                      "cpuid" => ?specialized);
+
+                vcpu.set_cpuid(specialized).with_context(|| {
+                    format!("setting CPUID for vcpu {}", vcpu.id)
+                })?;
+            }
             vcpu.set_default_capabs()
                 .context("failed to set vcpu capabilities")?;
 

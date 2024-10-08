@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use propolis_api_types::instance_spec::{
     components::{
         backends::{DlpiNetworkBackend, VirtioNetworkBackend},
+        board::{Board as InstanceSpecBoard, Cpuid},
         devices::{BootSettings, SerialPort as SerialPortDesc},
     },
     v0::{ComponentV0, InstanceSpecV0},
@@ -53,6 +54,7 @@ impl From<Spec> for InstanceSpecV0 {
         // without considering it here will break the build.
         let Spec {
             board,
+            cpuid,
             disks,
             nics,
             boot_settings,
@@ -83,7 +85,16 @@ impl From<Spec> for InstanceSpecV0 {
             spec.components.insert(key, val);
         }
 
-        let mut spec = InstanceSpecV0 { board, ..Default::default() };
+        let board = InstanceSpecBoard {
+            cpus: board.cpus,
+            memory_mb: board.memory_mb,
+            chipset: board.chipset,
+            cpuid: cpuid.map(|set| {
+                let (map, vendor) = set.into_inner();
+                Cpuid { entries: map.into(), vendor }
+            }),
+        };
+        let mut spec = InstanceSpecV0 { board, components: Default::default() };
 
         for (disk_name, disk) in disks {
             let backend_name = disk.device_spec.backend_name().to_owned();
@@ -195,7 +206,7 @@ impl TryFrom<InstanceSpecV0> for Spec {
     type Error = ApiSpecError;
 
     fn try_from(value: InstanceSpecV0) -> Result<Self, Self::Error> {
-        let mut builder = SpecBuilder::with_board(value.board);
+        let mut builder = SpecBuilder::with_instance_spec_board(value.board)?;
         let mut devices: Vec<(String, ComponentV0)> = vec![];
         let mut boot_settings = None;
         let mut storage_backends: HashMap<String, StorageBackend> =

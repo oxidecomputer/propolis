@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use crate::spec::{self, SerialPortDevice};
 
+use cpuid_utils::CpuidVendor;
 use propolis_api_types::instance_spec::{
     components::{
         board::Chipset,
@@ -54,6 +55,23 @@ pub enum BoardIncompatibility {
         "chipsets have different PCIe settings (self: {this}, other: {other})"
     )]
     PcieEnabled { this: bool, other: bool },
+
+    #[error(transparent)]
+    Cpuid(#[from] CpuidMismatch),
+}
+
+#[derive(Debug, Error)]
+pub enum CpuidMismatch {
+    #[error("CPUID is explicit in one spec but not the other (self: {this}, other: {other}")]
+    Explicitness { this: bool, other: bool },
+
+    #[error(
+        "CPUID sets have different CPU vendors (self: {this}, other: {other})"
+    )]
+    Vendor { this: CpuidVendor, other: CpuidVendor },
+
+    #[error(transparent)]
+    LeavesOrValues(#[from] cpuid_utils::CpuidMapMismatch),
 }
 
 #[derive(Debug, Error)]
@@ -195,6 +213,7 @@ impl spec::Spec {
         other: &Self,
     ) -> Result<(), BoardIncompatibility> {
         self.is_chipset_compatible(other)?;
+        self.is_cpuid_compatible(other)?;
 
         let this = &self.board;
         let other = &other.board;
@@ -227,6 +246,29 @@ impl spec::Spec {
             })
         } else {
             Ok(())
+        }
+    }
+
+    fn is_cpuid_compatible(&self, other: &Self) -> Result<(), CpuidMismatch> {
+        match (&self.cpuid, &other.cpuid) {
+            (None, None) => Ok(()),
+            (Some(_), None) | (None, Some(_)) => {
+                Err(CpuidMismatch::Explicitness {
+                    this: self.cpuid.is_some(),
+                    other: other.cpuid.is_some(),
+                })
+            }
+            (Some(this), Some(other)) => {
+                if this.vendor != other.vendor {
+                    return Err(CpuidMismatch::Vendor {
+                        this: this.vendor,
+                        other: other.vendor,
+                    });
+                }
+
+                this.leaves_and_values_equivalent(other)?;
+                Ok(())
+            }
         }
     }
 
@@ -430,6 +472,8 @@ impl CompatCheck for PciPciBridge {
 
 #[cfg(test)]
 mod test {
+    use cpuid_utils::{CpuidIdent, CpuidValues};
+    use propolis::cpuid;
     use propolis_api_types::instance_spec::components::{
         backends::{
             CrucibleStorageBackend, FileStorageBackend, VirtioNetworkBackend,
@@ -791,6 +835,105 @@ mod test {
         b2.pci_path = PciPath::new(0, 30, 0).unwrap();
         s1.pci_pci_bridges.insert("bridge1".to_owned(), b1);
         s2.pci_pci_bridges.insert("bridge1".to_owned(), b2);
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn compatible_cpuid() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let mut set1 = cpuid::Set::new(CpuidVendor::Intel);
+        let mut set2 = cpuid::Set::new(CpuidVendor::Intel);
+
+        s1.cpuid = Some(set1.clone());
+        s2.cpuid = Some(set2.clone());
+        s1.is_migration_compatible(&s2).unwrap();
+
+        set1.insert(CpuidIdent::leaf(0x1337), CpuidValues::default());
+        set2.insert(CpuidIdent::leaf(0x1337), CpuidValues::default());
+
+        s1.cpuid = Some(set1.clone());
+        s2.cpuid = Some(set2.clone());
+        s1.is_migration_compatible(&s2).unwrap();
+
+        let values = CpuidValues { eax: 5, ebx: 6, ecx: 7, edx: 8 };
+        set1.insert(CpuidIdent::subleaf(3, 4), values);
+        set2.insert(CpuidIdent::subleaf(3, 4), values);
+        s1.is_migration_compatible(&s2).unwrap();
+    }
+
+    #[test]
+    fn cpuid_explicitness_mismatch() {
+        let mut s1 = new_spec();
+        let s2 = s1.clone();
+        s1.cpuid = Some(cpuid::Set::new(CpuidVendor::Intel));
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn cpuid_vendor_mismatch() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        s1.cpuid = Some(cpuid::Set::new(CpuidVendor::Intel));
+        s2.cpuid = Some(cpuid::Set::new(CpuidVendor::Amd));
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn cpuid_leaf_set_mismatch() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let mut set1 = cpuid::Set::new(CpuidVendor::Amd);
+        let mut set2 = cpuid::Set::new(CpuidVendor::Amd);
+
+        // Give the first set an entry the second set doesn't have.
+        set1.insert(CpuidIdent::leaf(0), CpuidValues::default());
+        set1.insert(CpuidIdent::leaf(1), CpuidValues::default());
+        set2.insert(CpuidIdent::leaf(0), CpuidValues::default());
+
+        s1.cpuid = Some(set1);
+        s2.cpuid = Some(set2.clone());
+        assert!(s1.is_migration_compatible(&s2).is_err());
+
+        // Make the sets have the same number of entries, but with a difference
+        // in which entries they have.
+        set2.insert(CpuidIdent::leaf(3), CpuidValues::default());
+        s2.cpuid = Some(set2);
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn cpuid_leaf_value_mismatch() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let mut set1 = cpuid::Set::new(CpuidVendor::Amd);
+        let mut set2 = cpuid::Set::new(CpuidVendor::Amd);
+
+        let v1 = CpuidValues { eax: 4, ebx: 5, ecx: 6, edx: 7 };
+        let v2 = CpuidValues { eax: 100, ebx: 200, ecx: 300, edx: 400 };
+        set1.insert(CpuidIdent::leaf(0), v1);
+        set2.insert(CpuidIdent::leaf(0), v2);
+        s1.cpuid = Some(set1);
+        s2.cpuid = Some(set2);
+        assert!(s1.is_migration_compatible(&s2).is_err());
+    }
+
+    #[test]
+    fn cpuid_leaf_subleaf_conflict() {
+        let mut s1 = new_spec();
+        let mut s2 = s1.clone();
+        let mut set1 = cpuid::Set::new(CpuidVendor::Amd);
+        let mut set2 = cpuid::Set::new(CpuidVendor::Amd);
+
+        // Check that leaf 0 with no subleaf is not compatible with leaf 0 and a
+        // subleaf of 0. These are semantically different: the former matches
+        // leaf 0 with any subleaf value, while the latter technically matches
+        // only leaf 0 and subleaf 0 (with leaf-specific behavior if a different
+        // subleaf is specified).
+        set1.insert(CpuidIdent::leaf(0), CpuidValues::default());
+        set2.insert(CpuidIdent::subleaf(0, 0), CpuidValues::default());
+        s1.cpuid = Some(set1);
+        s2.cpuid = Some(set2);
         assert!(s1.is_migration_compatible(&s2).is_err());
     }
 }

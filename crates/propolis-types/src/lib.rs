@@ -152,3 +152,126 @@ mod test {
         }
     }
 }
+
+/// A CPUID leaf/subleaf (function/index) specifier.
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Debug,
+    JsonSchema,
+    Serialize,
+    Deserialize,
+)]
+pub struct CpuidIdent {
+    /// A leaf number.
+    pub leaf: u32,
+
+    /// A subleaf number, or `None` if the leaf is not expected to use
+    /// subleaves.
+    ///
+    /// When matching CPUID input values to a [`CpuidIdent`], a subleaf of
+    /// `None` matches any value in ecx, while a value of `Some(s)` only matches
+    /// inputs where ecx is equal to `s`.
+    pub subleaf: Option<u32>,
+}
+
+impl CpuidIdent {
+    /// Constructs an identifier that describes a specific leaf with no subleaf.
+    pub fn leaf(leaf: u32) -> Self {
+        Self { leaf, subleaf: None }
+    }
+
+    /// Constructs an identifier that specifies a leaf and subleaf.
+    pub fn subleaf(leaf: u32, subleaf: u32) -> Self {
+        Self { leaf, subleaf: Some(subleaf) }
+    }
+}
+
+/// Values returned by a CPUID instruction.
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Debug,
+    JsonSchema,
+    Serialize,
+    Deserialize,
+    Default,
+)]
+pub struct CpuidValues {
+    pub eax: u32,
+    pub ebx: u32,
+    pub ecx: u32,
+    pub edx: u32,
+}
+
+impl CpuidValues {
+    /// Returns a mutable iterator over eax, ebx, ecx, and edx.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut u32> {
+        [&mut self.eax, &mut self.ebx, &mut self.ecx, &mut self.edx].into_iter()
+    }
+}
+
+impl From<core::arch::x86_64::CpuidResult> for CpuidValues {
+    fn from(value: core::arch::x86_64::CpuidResult) -> Self {
+        Self { eax: value.eax, ebx: value.ebx, ecx: value.ecx, edx: value.edx }
+    }
+}
+
+impl From<[u32; 4]> for CpuidValues {
+    fn from(value: [u32; 4]) -> Self {
+        Self { eax: value[0], ebx: value[1], ecx: value[2], edx: value[3] }
+    }
+}
+
+/// A CPU vendor to use when interpreting the meanings of CPUID leaves in the
+/// extended ID range (0x80000000 to 0x8000FFFF).
+#[derive(
+    Clone, Copy, PartialEq, Eq, Debug, JsonSchema, Serialize, Deserialize,
+)]
+pub enum CpuidVendor {
+    Amd,
+    Intel,
+}
+
+impl std::fmt::Display for CpuidVendor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Amd => "AMD",
+                Self::Intel => "Intel",
+            }
+        )
+    }
+}
+
+impl CpuidVendor {
+    pub fn is_amd(self) -> bool {
+        self == Self::Amd
+    }
+
+    pub fn is_intel(self) -> bool {
+        self == Self::Intel
+    }
+}
+
+impl TryFrom<CpuidValues> for CpuidVendor {
+    type Error = &'static str;
+
+    fn try_from(value: CpuidValues) -> Result<Self, Self::Error> {
+        match (value.ebx, value.ecx, value.edx) {
+            // AuthenticAmd
+            (0x68747541, 0x444d4163, 0x69746e65) => Ok(Self::Amd),
+            // GenuineIntel
+            (0x756e6547, 0x6c65746e, 0x49656e69) => Ok(Self::Intel),
+            _ => Err("unrecognized vendor"),
+        }
+    }
+}

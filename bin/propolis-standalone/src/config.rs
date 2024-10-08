@@ -9,6 +9,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Context;
+use propolis_types::CpuidIdent;
+use propolis_types::CpuidValues;
+use propolis_types::CpuidVendor;
 use serde::{Deserialize, Serialize};
 
 use cpuid_profile_config::*;
@@ -226,15 +229,15 @@ pub fn parse_bdf(v: &str) -> Option<Bdf> {
 pub fn parse_cpuid(config: &Config) -> anyhow::Result<Option<cpuid::Set>> {
     if let Some(profile) = config.cpuid_profile() {
         let vendor = match profile.vendor {
-            CpuVendor::Amd => cpuid::VendorKind::Amd,
-            CpuVendor::Intel => cpuid::VendorKind::Intel,
+            CpuVendor::Amd => CpuidVendor::Amd,
+            CpuVendor::Intel => CpuidVendor::Intel,
         };
         let mut set = cpuid::Set::new(vendor);
         let entries: Vec<CpuidEntry> = profile.try_into()?;
         for entry in entries {
             let conflict = set.insert(
-                cpuid::Ident(entry.func, entry.idx),
-                cpuid::Entry::from(entry.values),
+                CpuidIdent { leaf: entry.func, subleaf: entry.idx },
+                CpuidValues::from(entry.values),
             );
 
             if conflict.is_some() {

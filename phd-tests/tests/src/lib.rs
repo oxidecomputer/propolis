@@ -5,6 +5,7 @@
 pub use phd_testcase;
 
 mod boot_order;
+mod cpuid;
 mod crucible;
 mod disk;
 mod ensure_api;

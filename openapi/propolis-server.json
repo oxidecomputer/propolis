@@ -488,6 +488,15 @@
               }
             ]
           },
+          "cpuid": {
+            "nullable": true,
+            "description": "The CPUID values to expose to the guest. If `None`, bhyve will derive default values from the host's CPUID values.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Cpuid"
+              }
+            ]
+          },
           "cpus": {
             "description": "The number of virtual logical processors attached to this VM.",
             "type": "integer",
@@ -869,6 +878,91 @@
             ],
             "additionalProperties": false
           }
+        ]
+      },
+      "Cpuid": {
+        "description": "A set of CPUID values to expose to a guest.",
+        "type": "object",
+        "properties": {
+          "entries": {
+            "description": "A list of CPUID leaves/subleaves and their associated values.\n\nPropolis servers require that each entry's `leaf` be unique and that it falls in either the \"standard\" (0 to 0xFFFF) or \"extended\" (0x8000_0000 to 0x8000_FFFF) function ranges, since these are the only valid input ranges currently defined by Intel and AMD. See the Intel 64 and IA-32 Architectures Software Developer's Manual (June 2024) Table 3-17 and the AMD64 Architecture Programmer's Manual (March 2024) Volume 3's documentation of the CPUID instruction.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CpuidEntry"
+            }
+          },
+          "vendor": {
+            "description": "The CPU vendor to emulate.\n\nCPUID leaves in the extended range (0x8000_0000 to 0x8000_FFFF) have vendor-defined semantics. Propolis uses this value to determine these semantics when deciding whether it needs to specialize the supplied template values for these leaves.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CpuidVendor"
+              }
+            ]
+          }
+        },
+        "required": [
+          "entries",
+          "vendor"
+        ],
+        "additionalProperties": false
+      },
+      "CpuidEntry": {
+        "description": "A full description of a CPUID leaf/subleaf and the values it produces.",
+        "type": "object",
+        "properties": {
+          "eax": {
+            "description": "The value to return in eax.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "ebx": {
+            "description": "The value to return in ebx.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "ecx": {
+            "description": "The value to return in ecx.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "edx": {
+            "description": "The value to return in edx.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "leaf": {
+            "description": "The leaf (function) number for this entry.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "subleaf": {
+            "nullable": true,
+            "description": "The subleaf (index) number for this entry, if it uses subleaves.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "eax",
+          "ebx",
+          "ecx",
+          "edx",
+          "leaf"
+        ],
+        "additionalProperties": false
+      },
+      "CpuidVendor": {
+        "description": "A CPU vendor to use when interpreting the meanings of CPUID leaves in the extended ID range (0x80000000 to 0x8000FFFF).",
+        "type": "string",
+        "enum": [
+          "Amd",
+          "Intel"
         ]
       },
       "CrucibleOpts": {

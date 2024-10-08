@@ -8,6 +8,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::instance_spec::CpuidVendor;
+
 /// An Intel 440FX-compatible chipset.
 #[derive(
     Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema,
@@ -34,6 +36,62 @@ pub enum Chipset {
     I440Fx(I440Fx),
 }
 
+/// A set of CPUID values to expose to a guest.
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Cpuid {
+    /// A list of CPUID leaves/subleaves and their associated values.
+    ///
+    /// Propolis servers require that each entry's `leaf` be unique and that it
+    /// falls in either the "standard" (0 to 0xFFFF) or "extended" (0x8000_0000
+    /// to 0x8000_FFFF) function ranges, since these are the only valid input
+    /// ranges currently defined by Intel and AMD. See the Intel 64 and IA-32
+    /// Architectures Software Developer's Manual (June 2024) Table 3-17 and the
+    /// AMD64 Architecture Programmer's Manual (March 2024) Volume 3's
+    /// documentation of the CPUID instruction.
+    //
+    // It would be nice if this were an associative collection type.
+    // Unfortunately, the most natural keys for such a collection are
+    // structs or tuples, and JSON doesn't allow objects to be used as
+    // property names. Instead of converting leaf/subleaf pairs to and from
+    // strings, just accept a flat Vec and have servers verify that e.g. no
+    // leaf/subleaf pairs are duplicated.
+    pub entries: Vec<CpuidEntry>,
+
+    /// The CPU vendor to emulate.
+    ///
+    /// CPUID leaves in the extended range (0x8000_0000 to 0x8000_FFFF) have
+    /// vendor-defined semantics. Propolis uses this value to determine
+    /// these semantics when deciding whether it needs to specialize the
+    /// supplied template values for these leaves.
+    pub vendor: CpuidVendor,
+}
+
+/// A full description of a CPUID leaf/subleaf and the values it produces.
+#[derive(
+    Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema,
+)]
+#[serde(deny_unknown_fields)]
+pub struct CpuidEntry {
+    /// The leaf (function) number for this entry.
+    pub leaf: u32,
+
+    /// The subleaf (index) number for this entry, if it uses subleaves.
+    pub subleaf: Option<u32>,
+
+    /// The value to return in eax.
+    pub eax: u32,
+
+    /// The value to return in ebx.
+    pub ebx: u32,
+
+    /// The value to return in ecx.
+    pub ecx: u32,
+
+    /// The value to return in edx.
+    pub edx: u32,
+}
+
 /// A VM's mainboard.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -46,16 +104,10 @@ pub struct Board {
 
     /// The chipset to expose to guest software.
     pub chipset: Chipset,
-    // TODO: Guest platform and CPU feature identification.
-    // TODO: NUMA topology.
-}
 
-impl Default for Board {
-    fn default() -> Self {
-        Self {
-            cpus: 0,
-            memory_mb: 0,
-            chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
-        }
-    }
+    /// The CPUID values to expose to the guest. If `None`, bhyve will derive
+    /// default values from the host's CPUID values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpuid: Option<Cpuid>,
+    // TODO: Processor and NUMA topology.
 }

@@ -9,14 +9,11 @@ progenitor::generate_api!(
     interface = Builder,
     tags = Separate,
     patch = {
-        // Add `Default` to types related to instance specs
-        InstanceSpecV0 = { derives = [Default] },
-        Board = { derives = [Default] },
-
         // Some Crucible-related bits are re-exported through simulated
         // sled-agent and thus require JsonSchema
         BootOrderEntry = { derives = [schemars::JsonSchema] },
         BootSettings = { derives = [Default, schemars::JsonSchema] },
+        CpuidEntry = { derives = [PartialEq, Eq, Copy] },
         DiskRequest = { derives = [schemars::JsonSchema] },
         VolumeConstructionRequest = { derives = [schemars::JsonSchema] },
         CrucibleOpts = { derives = [schemars::JsonSchema] },

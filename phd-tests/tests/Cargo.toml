@@ -10,7 +10,9 @@ doctest = false
 [dependencies]
 anyhow.workspace = true
 byteorder.workspace = true
+cpuid_utils.workspace = true
 futures.workspace = true
+itertools.workspace = true
 http.workspace = true
 propolis-client.workspace = true
 phd-testcase.workspace = true

@@ -13,6 +13,7 @@ byteorder.workspace = true
 lazy_static.workspace = true
 thiserror.workspace = true
 bhyve_api.workspace = true
+cpuid_utils.workspace = true
 dladm.workspace = true
 viona_api.workspace = true
 propolis_types.workspace = true
