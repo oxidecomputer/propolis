@@ -96,6 +96,7 @@ async fn cpuid_boot_test(ctx: &Framework) {
     //
     // These are masks (and not assignments) so that, if the host processor
     // doesn't support a feature contained in an `ALL_FLAGS` value, the
+    // feature will not be enabled in the guest.
     let leaf_1 = host_cpuid.get_mut(&CpuidIdent::leaf(1)).unwrap();
     leaf_1.ecx &=
         (Leaf1Ecx::ALL_FLAGS & !(Leaf1Ecx::OSXSAVE | Leaf1Ecx::MONITOR)).bits();
