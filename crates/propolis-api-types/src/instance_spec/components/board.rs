@@ -42,10 +42,13 @@ pub enum Chipset {
 pub struct Cpuid {
     /// A list of CPUID leaves/subleaves and their associated values.
     ///
-    /// The `leaf` and `subleaf` fields of each entry in the template must
-    /// be unique. The leaf must also be in the standard or extended ranges
-    /// (0 to 0xFFFF or 0x8000_0000 to 0x8000_FFFF) defined in the `cpuid_utils`
-    /// crate.
+    /// Propolis servers require that each entry's `leaf` be unique and that it
+    /// falls in either the "standard" (0 to 0xFFFF) or "extended" (0x8000_0000
+    /// to 0x8000_FFFF) function ranges, since these are the only valid input
+    /// ranges currently defined by Intel and AMD. See the Intel 64 and IA-32
+    /// Architectures Software Developer's Manual (June 2024) Table 3-17 and the
+    /// AMD64 Architecture Programmer's Manual (March 2024) Volume 3's
+    /// documentation of the CPUID instruction.
     //
     // It would be nice if this were an associative collection type.
     // Unfortunately, the most natural keys for such a collection are
