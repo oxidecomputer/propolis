@@ -80,7 +80,7 @@ pub const STANDARD_LEAVES: RangeInclusive<u32> = 0..=0xFFFF;
 pub const EXTENDED_LEAVES: RangeInclusive<u32> = 0x8000_0000..=0x8000_FFFF;
 
 /// Queries the supplied CPUID leaf on the caller's machine.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(target_arch = "x86_64")]
 pub fn host_query(leaf: CpuidIdent) -> CpuidValues {
     unsafe {
         core::arch::x86_64::__cpuid_count(leaf.leaf, leaf.subleaf.unwrap_or(0))
@@ -88,9 +88,9 @@ pub fn host_query(leaf: CpuidIdent) -> CpuidValues {
     .into()
 }
 
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+#[cfg(not(target_arch = "x86_64"))]
 pub fn host_query(leaf: CpuidIdent) -> CpuidValues {
-    panic!("host CPUID queries only work on x86")
+    panic!("host CPUID queries only work on x86-64 hosts")
 }
 
 /// Queries subleaf 0 of all of the valid CPUID leaves on the host and returns
@@ -98,7 +98,7 @@ pub fn host_query(leaf: CpuidIdent) -> CpuidValues {
 ///
 /// # Panics
 ///
-/// Panics if the target architecture is not x86 or x86-64.
+/// Panics if the target architecture is not x86-64.
 pub fn host_query_all() -> CpuidMap {
     let mut map = BTreeMap::new();
     let leaf_0 = CpuidIdent::leaf(*STANDARD_LEAVES.start());
