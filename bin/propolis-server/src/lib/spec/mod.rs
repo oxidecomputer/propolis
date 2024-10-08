@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 
-use propolis::cpuid::Set as CpuidSet;
+use cpuid_utils::CpuidSet;
 use propolis_api_types::instance_spec::{
     components::{
         backends::{

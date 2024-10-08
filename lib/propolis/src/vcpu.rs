@@ -4,7 +4,7 @@
 
 //! Virtual CPU functionality.
 
-use std::io::{Error, ErrorKind, Result};
+use std::io::Result;
 use std::sync::Arc;
 
 use crate::common::Lifecycle;
@@ -15,7 +15,9 @@ use crate::mmio::MmioBus;
 use crate::pio::PioBus;
 use crate::tasks;
 use crate::vmm::VmmHdl;
+use cpuid_utils::{CpuidMapConversionError, CpuidSet};
 use migrate::VcpuReadWrite;
+use thiserror::Error;
 
 use bhyve_api::ApiVersion;
 use propolis_types::{CpuidIdent, CpuidVendor};
@@ -32,6 +34,18 @@ pub const MAXCPU: usize = bhyve_api::VM_MAXCPU;
 // Helios (stlouis) is built with an expanded limit of 64
 #[cfg(feature = "omicron-build")]
 pub const MAXCPU: usize = 64;
+
+#[derive(Debug, Error)]
+pub enum GetCpuidError {
+    #[error("failed to read CPUID values from bhyve")]
+    ReadIoctlFailed(#[source] std::io::Error),
+
+    #[error("failed to build a map of CPUID entries")]
+    MapConversion(#[from] CpuidMapConversionError),
+
+    #[error("failed to convert CPUID values to vendor string: {0}")]
+    VendorConversionFailed(&'static str),
+}
 
 /// A handle to a virtual CPU.
 pub struct Vcpu {
@@ -147,7 +161,7 @@ impl Vcpu {
     ///
     /// If `values` contains no cpuid entries, then legacy emulation handling
     /// will be used.
-    pub fn set_cpuid(&self, values: cpuid::Set) -> Result<()> {
+    pub fn set_cpuid(&self, values: CpuidSet) -> Result<()> {
         let mut config = bhyve_api::vm_vcpu_cpuid_config {
             vvcc_vcpuid: self.id,
             ..Default::default()
@@ -175,9 +189,9 @@ impl Vcpu {
 
     /// Query the configured (in-kernel) `cpuid` emulation state for this vCPU.
     ///
-    /// If legacy cpuid handling is configured, the resulting [Set](cpuid::Set)
+    /// If legacy cpuid handling is configured, the resulting [Set](CpuidSet)
     /// will contain no entries.
-    pub fn get_cpuid(&self) -> Result<cpuid::Set> {
+    pub fn get_cpuid(&self) -> std::result::Result<CpuidSet, GetCpuidError> {
         let mut config = bhyve_api::vm_vcpu_cpuid_config {
             vvcc_vcpuid: self.id,
             vvcc_nent: 0,
@@ -199,13 +213,16 @@ impl Vcpu {
                 Ok(0)
             }
             Err(e) => Err(e),
-        }?;
+        }
+        .map_err(GetCpuidError::ReadIoctlFailed)?;
 
         let mut entries = Vec::with_capacity(count as usize);
         entries.fill(bhyve_api::vcpu_cpuid_entry::default());
         config.vvcc_entries = entries.as_mut_ptr() as *mut libc::c_void;
         unsafe {
-            self.hdl.ioctl(bhyve_api::VM_GET_CPUID, &mut config)?;
+            self.hdl
+                .ioctl(bhyve_api::VM_GET_CPUID, &mut config)
+                .map_err(GetCpuidError::ReadIoctlFailed)?;
         }
 
         if config.vvcc_flags & bhyve_api::VCC_FLAG_LEGACY_HANDLING != 0 {
@@ -216,28 +233,29 @@ impl Vcpu {
             let vendor = CpuidVendor::try_from(cpuid_utils::host_query(
                 CpuidIdent::leaf(0),
             ))
-            .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
+            .map_err(GetCpuidError::VendorConversionFailed)?;
 
-            return Ok(cpuid::Set::new(vendor));
+            return Ok(CpuidSet::new(vendor));
         }
         let intel_fallback =
             config.vvcc_flags & bhyve_api::VCC_FLAG_INTEL_FALLBACK != 0;
-        let mut set = cpuid::Set::new(match intel_fallback {
+        let mut set = CpuidSet::new(match intel_fallback {
             true => CpuidVendor::Intel,
             false => CpuidVendor::Amd,
         });
 
         for entry in entries {
             let (ident, value) = cpuid::from_raw(entry);
-            let conflict = set.insert(ident, value);
+            let conflict = set
+                .insert(ident, value)
+                .map_err(CpuidMapConversionError::SubleafConflict)?;
+
             if conflict.is_some() {
-                return Err(Error::new(
-                    ErrorKind::InvalidData,
-                    format!(
-                        "conflicting entry at eax:{:x} ecx:{:x?})",
-                        ident.leaf, ident.subleaf
-                    ),
-                ));
+                return Err(CpuidMapConversionError::DuplicateLeaf(
+                    ident.leaf,
+                    ident.subleaf,
+                )
+                .into());
             }
         }
         Ok(set)
@@ -501,10 +519,10 @@ pub mod migrate {
     use std::{convert::TryInto, io};
 
     use super::Vcpu;
-    use crate::cpuid;
     use crate::migrate::*;
 
     use bhyve_api::{vdi_field_entry_v1, vm_reg_name, ApiVersion};
+    use cpuid_utils::CpuidSet;
     use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor};
     use serde::{Deserialize, Serialize};
 
@@ -737,8 +755,8 @@ pub mod migrate {
             ("bhyve-x86-cpuid", 1)
         }
     }
-    impl From<cpuid::Set> for CpuidV1 {
-        fn from(value: cpuid::Set) -> Self {
+    impl From<CpuidSet> for CpuidV1 {
+        fn from(value: CpuidSet) -> Self {
             let vendor = value.vendor.into();
             let entries: Vec<_> = value
                 .iter()
@@ -751,12 +769,14 @@ pub mod migrate {
             CpuidV1 { vendor, entries }
         }
     }
-    impl From<CpuidV1> for cpuid::Set {
+    impl From<CpuidV1> for CpuidSet {
         fn from(value: CpuidV1) -> Self {
-            let mut set = cpuid::Set::new(value.vendor.into());
+            let mut set = CpuidSet::new(value.vendor.into());
             for item in value.entries {
                 let (ident, value) = item.into();
-                set.insert(ident, value);
+                set.insert(ident, value).expect(
+                    "well-formed CpuidV1 entries have no subleaf conflicts",
+                );
             }
             set
         }
@@ -1297,7 +1317,18 @@ pub mod migrate {
     }
     impl VcpuReadWrite for CpuidV1 {
         fn read(vcpu: &Vcpu) -> Result<Self> {
-            Ok(vcpu.get_cpuid()?.into())
+            Ok(vcpu
+                .get_cpuid()
+                .map_err(|e| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "error reading CPUID for vCPU {}: {:?}",
+                            vcpu.id, e
+                        ),
+                    )
+                })?
+                .into())
         }
 
         fn write(self, vcpu: &Vcpu) -> Result<()> {

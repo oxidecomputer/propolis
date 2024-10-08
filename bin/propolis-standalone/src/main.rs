@@ -1345,7 +1345,7 @@ fn setup_instance(
         } else {
             // An empty set will instruct the kernel to use the legacy
             // fallback behavior
-            propolis::cpuid::Set::new_host()
+            cpuid_utils::CpuidSet::new_host()
         };
         vcpu.set_cpuid(vcpu_profile)?;
         vcpu.set_default_capabs()?;

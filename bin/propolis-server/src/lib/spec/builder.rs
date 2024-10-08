@@ -105,10 +105,10 @@ impl SpecBuilder {
                     .cpuid
                     .map(|cpuid| -> Result<_, CpuidMapConversionError> {
                         {
-                            Ok(propolis::cpuid::Set::new_from_map(
+                            Ok(cpuid_utils::CpuidSet::from_map(
                                 cpuid.entries.try_into()?,
                                 cpuid.vendor,
-                            ))
+                            )?)
                         }
                     })
                     .transpose()?,
