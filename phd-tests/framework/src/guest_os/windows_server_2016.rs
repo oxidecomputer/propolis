@@ -40,4 +40,8 @@ impl GuestOs for WindowsServer2016 {
             crate::serial::BufferKind::Vt80x24,
         )
     }
+
+    fn graceful_reboot(&self) -> CommandSequence {
+        self.shell_command_sequence("shutdown /r /t 0 /d p:0:0")
+    }
 }

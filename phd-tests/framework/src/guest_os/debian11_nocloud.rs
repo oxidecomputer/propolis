@@ -24,4 +24,16 @@ impl GuestOs for Debian11NoCloud {
     fn read_only_fs(&self) -> bool {
         false
     }
+
+    fn graceful_reboot(&self) -> CommandSequence {
+        // On Debian 11, `reboot` does not seem to be the same wrapper for
+        // `systemctl reboot` as it is on more recent Ubuntu. Whatever it *is*,
+        // it does its job before a new prompt line is printed, so we can only
+        // wait to see a new login sequence.
+        //
+        // While `systemctl reboot` does exist here, and is mechanically more
+        // like Ubuntu's `reboot`, just using `reboot` on Debian gets the job
+        // done and keeps our instructions consistent across Linuxes.
+        self.shell_command_sequence("reboot")
+    }
 }

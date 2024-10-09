@@ -8,7 +8,9 @@
 use std::{fmt::Debug, io::Write, sync::Arc, time::Duration};
 
 use crate::{
-    guest_os::{self, CommandSequenceEntry, GuestOs, GuestOsKind},
+    guest_os::{
+        self, CommandSequence, CommandSequenceEntry, GuestOs, GuestOsKind,
+    },
     serial::{BufferKind, SerialConsole},
     test_vm::{
         environment::Environment, server::ServerProcessParameters, spec::VmSpec,
@@ -872,6 +874,38 @@ impl TestVm {
         // type (which affects e.g. affects how it displays multi-line commands)
         // and serial console buffering discipline.
         let command_sequence = self.guest_os.shell_command_sequence(cmd);
+        self.run_command_sequence(command_sequence).await?;
+
+        // `shell_command_sequence` promises that the generated command sequence
+        // clears buffer of everything up to and including the input command
+        // before actually issuing the final '\n' that issues the command.
+        // This ensures that the buffer contents returned by this call contain
+        // only the command's output.
+        let out = self
+            .wait_for_serial_output(
+                self.guest_os.get_shell_prompt(),
+                Duration::from_secs(300),
+            )
+            .await?;
+
+        // Trim any leading newlines inserted when the command was issued and
+        // any trailing whitespace that isn't actually part of the command
+        // output. Any other embedded whitespace is the caller's problem.
+        Ok(out.trim().to_string())
+    }
+
+    pub async fn graceful_reboot(&self) -> Result<()> {
+        self.run_command_sequence(self.guest_os.graceful_reboot()).await?;
+        self.wait_to_boot().await
+    }
+
+    /// Run a [`CommandSequence`] in the context of a booted and logged-in
+    /// guest. The guest is expected to be at a shell prompt when this sequence
+    /// is begun.
+    async fn run_command_sequence(
+        &self,
+        command_sequence: CommandSequence<'_>,
+    ) -> Result<()> {
         for step in command_sequence.0 {
             match step {
                 CommandSequenceEntry::WaitFor(s) => {
@@ -896,22 +930,7 @@ impl TestVm {
             }
         }
 
-        // `shell_command_sequence` promises that the generated command sequence
-        // clears buffer of everything up to and including the input command
-        // before actually issuing the final '\n' that issues the command.
-        // This ensures that the buffer contents returned by this call contain
-        // only the command's output.
-        let out = self
-            .wait_for_serial_output(
-                self.guest_os.get_shell_prompt(),
-                Duration::from_secs(300),
-            )
-            .await?;
-
-        // Trim any leading newlines inserted when the command was issued and
-        // any trailing whitespace that isn't actually part of the command
-        // output. Any other embedded whitespace is the caller's problem.
-        Ok(out.trim().to_string())
+        Ok(())
     }
 
     /// Sends `string` to the guest's serial console worker, then waits for the
