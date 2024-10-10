@@ -24,4 +24,8 @@ impl GuestOs for WindowsServer2022 {
     fn read_only_fs(&self) -> bool {
         false
     }
+
+    fn graceful_reboot(&self) -> CommandSequence {
+        self.shell_command_sequence("shutdown /r /t 0 /d p:0:0")
+    }
 }

@@ -363,20 +363,32 @@ pub(crate) async fn write_efivar(
 
     let mut new_value = attrs;
     new_value.extend_from_slice(data);
+    let data_len = new_value.len();
 
     // The command to write this data back out will be, roughtly:
     // ```
-    // printf "\xAA\xAA\xAA\xAA\xDD\xDD\xDD\xDD" > /sys/firmware/efi/efivars/...
+    // printf "\xAA\xAA\xAA\xAA\xDD\xDD\xDD\xDD" | \
+    //   dd obs={inlen} of=/sys/firmware/efi/efivars/... status=none
     // ```
     // where AAAAAAAA are the attribute bytes and DDDDDDDD are caller-provided
     // data.
+    //
+    // notably do not printf directly to /sys/firmware/efi/efivars/*!! printf
+    // may flush output early if the data to write contains a `\n` (observed at
+    // least on Debian 11), and such a partial write to efivars may be rejected
+    // as invalid UEFI variable data.
     let escaped: String =
         new_value.into_iter().fold(String::new(), |mut out, b| {
             write!(out, "\\x{:02x}", b).expect("can append to String");
             out
         });
 
-    let cmd = format!("printf \"{}\" > {}", escaped, efipath(varname));
+    let cmd = format!(
+        "printf \"{}\" | dd obs={} of={} status=none",
+        escaped,
+        data_len,
+        efipath(varname)
+    );
 
     let res = run_long_command(vm, &cmd).await?;
     // If something went sideways and the write failed with something like
