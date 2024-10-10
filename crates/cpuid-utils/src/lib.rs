@@ -358,7 +358,7 @@ impl Iterator for CpuidMapIterator<'_> {
 #[derive(Clone, Debug)]
 pub struct CpuidSet {
     map: CpuidMap,
-    pub vendor: CpuidVendor,
+    vendor: CpuidVendor,
 }
 
 impl Default for CpuidSet {
@@ -401,6 +401,11 @@ impl CpuidSet {
         vendor: CpuidVendor,
     ) -> Result<Self, SubleafInsertConflict> {
         Ok(Self { map, vendor })
+    }
+
+    /// Yields this set's vendor.
+    pub fn vendor(&self) -> CpuidVendor {
+        self.vendor
     }
 
     /// Executes the CPUID instruction on the current machine to determine its

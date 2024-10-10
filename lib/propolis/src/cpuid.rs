@@ -54,7 +54,6 @@ pub struct Specializer {
     has_smt: bool,
     num_vcpu: Option<NonZeroU8>,
     vcpuid: Option<i32>,
-    vendor_kind: Option<CpuidVendor>,
     cpu_topo_populate: BTreeSet<TopoKind>,
     cpu_topo_clear: BTreeSet<TopoKind>,
     do_cache_topo: bool,
@@ -73,11 +72,6 @@ impl Specializer {
     pub fn with_vcpuid(self, vcpuid: i32) -> Self {
         assert!((vcpuid as usize) < bhyve_api::VM_MAXCPU);
         Self { vcpuid: Some(vcpuid), ..self }
-    }
-
-    /// Specify CPU vendor
-    pub fn with_vendor(self, vendor: CpuidVendor) -> Self {
-        Self { vendor_kind: Some(vendor), ..self }
     }
 
     /// Specify CPU topology types to render into the specialized [Set]
@@ -124,11 +118,7 @@ impl Specializer {
         self,
         mut set: CpuidSet,
     ) -> Result<CpuidSet, SpecializeError> {
-        // Use vendor override if provided, or else the existing one
-        if let Some(vendor) = self.vendor_kind {
-            set.vendor = vendor;
-        }
-        match set.vendor {
+        match set.vendor() {
             CpuidVendor::Amd => {
                 if self.do_cache_topo && self.num_vcpu.is_some() {
                     self.fix_amd_cache_topo(&mut set)?;

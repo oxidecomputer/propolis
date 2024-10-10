@@ -172,7 +172,7 @@ impl Vcpu {
                 self.hdl.ioctl(bhyve_api::VM_SET_CPUID, &mut config)?;
             }
         } else {
-            if values.vendor.is_intel() {
+            if values.vendor().is_intel() {
                 config.vvcc_flags |= bhyve_api::VCC_FLAG_INTEL_FALLBACK;
             }
             let mut entries: Vec<bhyve_api::vcpu_cpuid_entry> = values.into();
@@ -757,7 +757,7 @@ pub mod migrate {
     }
     impl From<CpuidSet> for CpuidV1 {
         fn from(value: CpuidSet) -> Self {
-            let vendor = value.vendor.into();
+            let vendor = value.vendor().into();
             let entries: Vec<_> = value
                 .iter()
                 .map(|(k, v)| CpuidEntV1 {

@@ -259,10 +259,10 @@ impl spec::Spec {
                 })
             }
             (Some(this), Some(other)) => {
-                if this.vendor != other.vendor {
+                if this.vendor() != other.vendor() {
                     return Err(CpuidMismatch::Vendor {
-                        this: this.vendor,
-                        other: other.vendor,
+                        this: this.vendor(),
+                        other: other.vendor(),
                     });
                 }
 
