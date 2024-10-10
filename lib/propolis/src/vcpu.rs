@@ -43,8 +43,8 @@ pub enum GetCpuidError {
     #[error("failed to build a map of CPUID entries")]
     MapConversion(#[from] CpuidMapConversionError),
 
-    #[error("failed to convert CPUID values to vendor string: {0}")]
-    VendorConversionFailed(&'static str),
+    #[error("unsupported CPUID vendor string: {0}")]
+    UnsupportedVendor(&'static str),
 }
 
 /// A handle to a virtual CPU.
@@ -233,7 +233,7 @@ impl Vcpu {
             let vendor = CpuidVendor::try_from(cpuid_utils::host_query(
                 CpuidIdent::leaf(0),
             ))
-            .map_err(GetCpuidError::VendorConversionFailed)?;
+            .map_err(GetCpuidError::UnsupportedVendor)?;
 
             return Ok(CpuidSet::new(vendor));
         }
@@ -1323,7 +1323,7 @@ pub mod migrate {
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         format!(
-                            "error reading CPUID for vCPU {}: {:?}",
+                            "error reading CPUID for vCPU {}: {}",
                             vcpu.id, e
                         ),
                     )

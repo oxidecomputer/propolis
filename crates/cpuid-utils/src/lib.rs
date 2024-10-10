@@ -125,7 +125,7 @@ impl CpuidMap {
         .flatten()
     }
 
-    /// Retrives a mutable reference to the values associated with the supplied
+    /// Retrieves a mutable reference to the values associated with the supplied
     /// `ident`, or `None` if the identifier is not present in the map.
     pub fn get_mut(&mut self, ident: CpuidIdent) -> Option<&mut CpuidValues> {
         match ident.subleaf {
