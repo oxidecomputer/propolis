@@ -31,4 +31,12 @@ impl GuestOs for Alpine {
             crate::serial::BufferKind::Raw,
         )
     }
+
+    fn graceful_reboot(&self) -> CommandSequence {
+        // For Alpine guests we've looked at, `reboot` kicks off OpenRC behavior
+        // to reboot the system. We *could* wait for a new shell prompt at this
+        // point, but it's more reliable to wait for a guest to have fully
+        // rebooted and log back in.
+        self.shell_command_sequence("reboot")
+    }
 }

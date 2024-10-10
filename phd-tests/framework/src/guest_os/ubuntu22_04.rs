@@ -27,4 +27,13 @@ impl GuestOs for Ubuntu2204 {
     fn read_only_fs(&self) -> bool {
         false
     }
+
+    fn graceful_reboot(&self) -> CommandSequence {
+        // Ubuntu `reboot` seems to be mechanically similar to Alpine `reboot`,
+        // except mediated by SystemD rather than OpenRC. We'll get a new shell
+        // prompt, and then the system reboots shortly after. Just issuing
+        // `reboot` and waiting for a login prompt is the lowest common
+        // denominator across Linuxes.
+        self.shell_command_sequence("reboot")
+    }
 }
