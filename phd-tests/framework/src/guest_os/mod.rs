@@ -79,6 +79,12 @@ pub(super) trait GuestOs: Send + Sync {
             crate::serial::BufferKind::Raw,
         )
     }
+
+    /// Returns the sequence of serial console operations a test VM must perform
+    /// in order to perform a graceful (e.g. guest-initiated and expected)
+    /// reboot. PHD's expectation following these commands will be to wait for
+    /// the guest's login sequence.
+    fn graceful_reboot(&self) -> CommandSequence;
 }
 
 #[allow(dead_code)]

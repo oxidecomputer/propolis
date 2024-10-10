@@ -389,8 +389,7 @@ async fn guest_can_adjust_boot_order(ctx: &Framework) {
     assert_eq!(new_boot_order, written_boot_order);
 
     // Now, reboot and check that the settings stuck.
-    vm.run_shell_command("reboot").await?;
-    vm.wait_to_boot().await?;
+    vm.graceful_reboot().await?;
 
     let boot_order_after_reboot = read_efivar(&vm, BOOT_ORDER_VAR).await?;
     assert_eq!(new_boot_order, boot_order_after_reboot);
@@ -469,8 +468,7 @@ async fn boot_order_source_priority(ctx: &Framework) {
         .await?
         .expect("unbootable was in the boot order");
 
-    vm_no_bootorder.run_shell_command("reboot").await?;
-    vm_no_bootorder.wait_to_boot().await?;
+    vm_no_bootorder.graceful_reboot().await?;
 
     let reloaded_order = read_efivar(&vm_no_bootorder, BOOT_ORDER_VAR).await?;
 
@@ -515,8 +513,7 @@ async fn boot_order_source_priority(ctx: &Framework) {
         .await?
         .expect("unbootable was in the boot order");
 
-    vm.run_shell_command("reboot").await?;
-    vm.wait_to_boot().await?;
+    vm.graceful_reboot().await?;
 
     let reloaded_order = read_efivar(&vm, BOOT_ORDER_VAR).await?;
 
