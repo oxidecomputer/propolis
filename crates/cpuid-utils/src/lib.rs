@@ -261,6 +261,20 @@ impl CpuidMap {
     /// Passes each leaf number in the map to `f` and removes any leaf entries
     /// for which `f` returns `false`. If a removed leaf has subleaves, all
     /// their entries are removed.
+    //
+    // This function can be made to consider subleaves by changing `f` to take a
+    // `CpuidIdent` and then writing the call to `retain` with a `match`:
+    //
+    // - If the leaf has `Subleaves::Absent`, pass the leaf ID through to `f`
+    //   directly and return the result to `retain`.
+    // - If the leaf has `Subleaves::Present`, call `retain` on the subleaf map,
+    //   passing each subleaf to `f`, then return `!map.is_empty()` to the outer
+    //   call to `retain` (i.e. keep the leaf entry if the subleaf map still has
+    //   entries in it).
+    //
+    // The cost of doing this is that the function now needs to visit every
+    // subleaf entry in the map, even if the caller doesn't care about subleaf
+    // IDs. So it may be better to break this out into a separate function.
     pub fn retain_by_leaf<F>(&mut self, mut f: F)
     where
         F: FnMut(u32) -> bool,
