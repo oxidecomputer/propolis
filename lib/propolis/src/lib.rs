@@ -28,6 +28,7 @@ pub mod intr_pins;
 pub mod lifecycle;
 pub mod migrate;
 pub mod mmio;
+pub mod msr;
 pub mod pio;
 pub mod tasks;
 pub mod util;
