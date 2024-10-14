@@ -99,12 +99,19 @@ pub enum SubleafInsertConflict {
 /// Tracking CPUID values in a simple `BTreeMap` from [`CpuidIdent`] to
 /// [`CpuidValues`] allows a single leaf to use both options at once, because
 /// `CpuidIdent { leaf: x, subleaf: None }` is not the same as `CpuidIdent {
-/// leaf: x, subleaf: Some(y) }`.
+/// leaf: x, subleaf: Some(y) }`. To avoid this kind of semantic confusion, this
+/// type's `insert` method returns a `Result` that indicates whether inserting
+/// the requested leaf/subleaf identifier would produce a semantic conflict
+/// between a subleaf-bearing and subleaf-free entry.
 ///
-/// To avoid this kind of semantic confusion, this type's `insert` method
-/// returns a `Result` that indicates whether inserting the requested
-/// leaf/subleaf identifier would produce a semantic conflict between a
-/// subleaf-bearing and subleaf-free entry.
+/// This structure allows "holes" in a leaf's subleaf IDs; that is, the
+/// structure permits `leaf: 0, subleaf: Some(0)` and `subleaf: Some(2)` to
+/// appear in a map where `subleaf: Some(1)` is absent. This is mostly for
+/// simplicity (it saves the map type from having to check for discontiguous
+/// subleaf domains); the existing subleaf-having CPUID leaves in the Intel and
+/// AMD manuals all specify contiguous subleaf domains, and a client who
+/// specifies a discontiguous subleaf set may find itself with unhappy guest
+/// operating systems.
 #[derive(Clone, Debug, Default)]
 pub struct CpuidMap(BTreeMap<u32, Subleaves>);
 
