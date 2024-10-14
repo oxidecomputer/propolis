@@ -124,7 +124,17 @@ impl VcpuTasks {
                 Ok(exit) => exit,
             };
 
-            entry = vcpu.process_vmexit(&exit).unwrap_or_else(|| {
+            let maybe_entry = match vcpu.process_vmexit(&exit) {
+                Ok(entry) => entry,
+                Err(e) => {
+                    panic!(
+                        "unhandled library error processing VM exit \
+                        {exit:?}: {e}"
+                    )
+                }
+            };
+
+            entry = maybe_entry.unwrap_or_else(|| {
                 match exit.kind {
                     VmExitKind::Inout(pio) => {
                         debug!(&log, "Unhandled pio {:x?}", pio;

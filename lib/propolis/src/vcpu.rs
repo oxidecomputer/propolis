@@ -12,9 +12,14 @@ use crate::cpuid;
 use crate::exits::*;
 use crate::migrate::*;
 use crate::mmio::MmioBus;
+use crate::msr::Error as MsrError;
+use crate::msr::MsrDisposition;
+use crate::msr::MsrId;
+use crate::msr::MsrSpace;
 use crate::pio::PioBus;
 use crate::tasks;
 use crate::vmm::VmmHdl;
+use anyhow::Context;
 use cpuid_utils::{CpuidMapConversionError, CpuidSet};
 use migrate::VcpuReadWrite;
 use thiserror::Error;
@@ -53,6 +58,7 @@ pub struct Vcpu {
     pub id: i32,
     pub bus_mmio: Arc<MmioBus>,
     pub bus_pio: Arc<PioBus>,
+    msr: Arc<MsrSpace>,
 }
 
 impl Vcpu {
@@ -62,8 +68,9 @@ impl Vcpu {
         id: i32,
         bus_mmio: Arc<MmioBus>,
         bus_pio: Arc<PioBus>,
+        msr: Arc<MsrSpace>,
     ) -> Arc<Self> {
-        Arc::new(Self { hdl, id, bus_mmio, bus_pio })
+        Arc::new(Self { hdl, id, bus_mmio, bus_pio, msr })
     }
 
     /// ID of the virtual CPU.
@@ -392,10 +399,33 @@ impl Vcpu {
         unsafe { self.hdl.ioctl(bhyve_api::VM_INJECT_NMI, &mut vm_nmi) }
     }
 
+    /// Send a general protection fault (#GP) to the vcpu.
+    pub fn inject_gp(&self) -> Result<()> {
+        let mut vm_excp = bhyve_api::vm_exception {
+            cpuid: self.cpuid(),
+            vector: i32::from(bits::IDT_GP),
+            error_code: 0,
+            error_code_valid: 0,
+            restart_instruction: 1,
+        };
+        unsafe { self.hdl.ioctl(bhyve_api::VM_INJECT_EXCEPTION, &mut vm_excp) }
+    }
+
     /// Process [`VmExit`] in the context of this vCPU, emitting a [`VmEntry`]
     /// if the parameters of the exit were such that they could be handled.
-    pub fn process_vmexit(&self, exit: &VmExit) -> Option<VmEntry> {
-        match exit.kind {
+    ///
+    /// # Return value
+    ///
+    /// - `Ok(Some(entry))` if the exit was successfully handled. The payload
+    ///   describes the parameters the caller should pass back to bhyve when
+    ///   re-entering the guest.
+    /// - `Ok(None)` if the exit was not handled at this layer.
+    /// - `Err` if an internal error occurred while trying to handle the exit.
+    pub fn process_vmexit(
+        &self,
+        exit: &VmExit,
+    ) -> anyhow::Result<Option<VmEntry>> {
+        let entry = match exit.kind {
             VmExitKind::Bogus => Some(VmEntry::Run),
             VmExitKind::Inout(io) => match io {
                 InoutReq::Out(io, val) => self
@@ -432,9 +462,50 @@ impl Vcpu {
                     })
                     .ok(),
             },
-            VmExitKind::Rdmsr(_) | VmExitKind::Wrmsr(_, _) => {
-                // Leave it to the caller to emulate MSRs unhandled by the kernel
-                None
+            VmExitKind::Rdmsr(msr) => {
+                let mut out = 0u64;
+                match self.msr.rdmsr(MsrId(msr), &mut out) {
+                    Ok(MsrDisposition::Handled) => {
+                        self.set_reg(
+                            bhyve_api::vm_reg_name::VM_REG_GUEST_RAX,
+                            u64::from(out as u32),
+                        )
+                        .unwrap();
+                        self.set_reg(
+                            bhyve_api::vm_reg_name::VM_REG_GUEST_RDX,
+                            out >> 32,
+                        )
+                        .unwrap();
+                        Some(VmEntry::Run)
+                    }
+                    Ok(MsrDisposition::GpException) => {
+                        self.inject_gp().unwrap();
+                        Some(VmEntry::Run)
+                    }
+                    Err(MsrError::HandlerNotFound(_)) => None,
+                    Err(e) => {
+                        return Err(e).with_context(|| {
+                            format!("handling RDMSR for MSR {msr:#x}")
+                        })
+                    }
+                }
+            }
+            VmExitKind::Wrmsr(msr, value) => {
+                match self.msr.wrmsr(MsrId(msr), value) {
+                    Ok(MsrDisposition::Handled) => Some(VmEntry::Run),
+                    Ok(MsrDisposition::GpException) => {
+                        self.inject_gp().unwrap();
+                        Some(VmEntry::Run)
+                    }
+                    Err(MsrError::HandlerNotFound(_)) => None,
+                    Err(e) => {
+                        return Err(e).with_context(|| {
+                            format!(
+                            "handling WRMSR for MSR {msr:#x}, value {value:#x}"
+                        )
+                        })
+                    }
+                }
             }
             VmExitKind::Debug => {
                 // Until there is an interface to delay until a vCPU is no
@@ -450,7 +521,9 @@ impl Vcpu {
             | VmExitKind::VmxError(_)
             | VmExitKind::SvmError(_) => None,
             _ => None,
-        }
+        };
+
+        Ok(entry)
     }
 }
 
@@ -1340,4 +1413,6 @@ pub mod migrate {
 mod bits {
     pub const MSR_DEBUGCTL: u32 = 0x1d9;
     pub const MSR_EFER: u32 = 0xc0000080;
+
+    pub const IDT_GP: u8 = 0xd;
 }

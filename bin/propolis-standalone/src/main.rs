@@ -607,7 +607,7 @@ impl Instance {
                 Ok(exit) => exit,
             };
 
-            entry = vcpu.process_vmexit(&exit).unwrap_or_else(|| {
+            entry = vcpu.process_vmexit(&exit).unwrap().unwrap_or_else(|| {
                 match exit.kind {
                     VmExitKind::Inout(pio) => {
                         slog::error!(

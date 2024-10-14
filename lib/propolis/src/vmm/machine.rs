@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use crate::accessors::*;
 use crate::mmio::MmioBus;
+use crate::msr::MsrSpace;
 use crate::pio::PioBus;
 use crate::vcpu::{Vcpu, MAXCPU};
 use crate::vmm::{create_vm, CreateOpts, PhysMap, VmmHdl};
@@ -31,6 +32,7 @@ pub struct Machine {
     pub map_physmem: PhysMap,
     pub bus_mmio: Arc<MmioBus>,
     pub bus_pio: Arc<PioBus>,
+    pub msr: Arc<MsrSpace>,
 
     pub acc_mem: MemAccessor,
     pub acc_msi: MsiAccessor,
@@ -118,9 +120,15 @@ impl Machine {
 
         let bus_mmio = Arc::new(MmioBus::new(MAX_PHYSMEM));
         let bus_pio = Arc::new(PioBus::new());
+        let msr = Arc::new(MsrSpace::new());
 
-        let vcpus =
-            vec![Vcpu::new(hdl.clone(), 0, bus_mmio.clone(), bus_pio.clone())];
+        let vcpus = vec![Vcpu::new(
+            hdl.clone(),
+            0,
+            bus_mmio.clone(),
+            bus_pio.clone(),
+            msr.clone(),
+        )];
 
         let acc_mem = MemAccessor::new(map.memctx());
         let acc_msi = MsiAccessor::new(hdl.clone());
@@ -136,6 +144,7 @@ impl Machine {
 
             bus_mmio,
             bus_pio,
+            msr,
 
             destroyed: AtomicBool::new(false),
         })
@@ -238,6 +247,7 @@ impl Builder {
 
         let bus_mmio = Arc::new(MmioBus::new(MAX_PHYSMEM));
         let bus_pio = Arc::new(PioBus::new());
+        let msr = Arc::new(MsrSpace::new());
 
         let acc_mem = MemAccessor::new(map.memctx());
         let acc_msi = MsiAccessor::new(hdl.clone());
@@ -249,6 +259,7 @@ impl Builder {
                     i32::from(id),
                     bus_mmio.clone(),
                     bus_pio.clone(),
+                    msr.clone(),
                 )
             })
             .collect();
@@ -264,6 +275,7 @@ impl Builder {
 
             bus_mmio,
             bus_pio,
+            msr,
 
             destroyed: AtomicBool::new(false),
         };
