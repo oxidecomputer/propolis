@@ -3,6 +3,22 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! A virtual "address space" for model-specific registers (MSRs).
+//!
+//! MSRs provide system software with a way to configure or interact with the
+//! underlying CPU in an extensible way that (as the name suggests) may be
+//! specific to a particular range of CPU models. Some MSRs are architectural
+//! parts of the x86-64 architecture, though many really are manufacturer- and
+//! model-specific.
+//!
+//! This module provides the [`MsrSpace`] type, which provides a virtual
+//! "address space" that other Propolis components can use to register to handle
+//! RDMSR/WRMSR operations. Some architectural MSRs are handled entirely in
+//! bhyve; those that are handled in Propolis are dispatched to the calling
+//! CPU's MSR space for possible handling.
+//!
+//! Individual handlers are responsible for keeping track of the values that are
+//! written to the MSRs they manage (including saving and restoring them during
+//! live migration).
 
 use std::sync::{Arc, Mutex};
 
