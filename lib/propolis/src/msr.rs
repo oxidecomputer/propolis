@@ -22,13 +22,17 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::util::aspace::{ASpace, Error as ASpaceError};
+use crate::{
+    util::aspace::{ASpace, Error as ASpaceError},
+    vcpu::VcpuId,
+};
 use thiserror::Error;
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
     fn msr_read(
-        id: u32,
+        vcpuid: u32,
+        msr: u32,
         val: u64,
         handler_registered: u8,
         handler_ok: u8,
@@ -37,7 +41,8 @@ mod probes {
     }
 
     fn msr_write(
-        id: u32,
+        vcpuid: u32,
+        msr: u32,
         val: u64,
         handler_registered: u8,
         handler_ok: u8,
@@ -50,6 +55,7 @@ mod probes {
 ///
 /// # Arguments
 ///
+/// - `VcpuId`: The ID of the vCPU that accessed an MSR.
 /// - `MsrId`: The ID of the MSR being read or written.
 /// - `MsrOp`: The operation to perform on the supplied MSR.
 ///
@@ -61,7 +67,7 @@ mod probes {
 /// - `Err` if the handler function encountered an internal error. The operation
 ///   is completely unhandled; in particular, if it was a [`MsrOp::Read`], no
 ///   output value was written.
-pub type MsrFn = dyn Fn(MsrId, MsrOp) -> anyhow::Result<MsrDisposition>
+pub type MsrFn = dyn Fn(VcpuId, MsrId, MsrOp) -> anyhow::Result<MsrDisposition>
     + Send
     + Sync
     + 'static;
@@ -142,10 +148,11 @@ impl MsrSpace {
     /// Handles the RDMSR instruction.
     pub fn rdmsr(
         &self,
+        vcpu: VcpuId,
         msr: MsrId,
         out: &mut u64,
     ) -> Result<MsrDisposition, Error> {
-        let res = self.do_msr_op(msr, MsrOp::Read(out));
+        let res = self.do_msr_op(vcpu, msr, MsrOp::Read(out));
         probes::msr_read!(|| {
             let info = ProbeInfo::from(&res);
             let (ok, disposition) = if let Some(d) = info.disposition {
@@ -153,7 +160,7 @@ impl MsrSpace {
             } else {
                 (false, 0)
             };
-            (msr.0, *out, info.registered as u8, ok as u8, disposition)
+            (vcpu.0, msr.0, *out, info.registered as u8, ok as u8, disposition)
         });
         res
     }
@@ -161,10 +168,11 @@ impl MsrSpace {
     /// Handles the WRMSR instruction.
     pub fn wrmsr(
         &self,
+        vcpu: VcpuId,
         msr: MsrId,
         value: u64,
     ) -> Result<MsrDisposition, Error> {
-        let res = self.do_msr_op(msr, MsrOp::Write(value));
+        let res = self.do_msr_op(vcpu, msr, MsrOp::Write(value));
         probes::msr_write!(|| {
             let info = ProbeInfo::from(&res);
             let (ok, disposition) = if let Some(d) = info.disposition {
@@ -172,7 +180,7 @@ impl MsrSpace {
             } else {
                 (false, 0)
             };
-            (msr.0, value, info.registered as u8, ok as u8, disposition)
+            (vcpu.0, msr.0, value, info.registered as u8, ok as u8, disposition)
         });
         res
     }
@@ -180,6 +188,7 @@ impl MsrSpace {
     /// Handles MSR operations.
     fn do_msr_op(
         &self,
+        vcpu: VcpuId,
         msr: MsrId,
         op: MsrOp,
     ) -> Result<MsrDisposition, Error> {
@@ -199,7 +208,7 @@ impl MsrSpace {
         // Allow other vCPUs to access the handler map while this operation is
         // being processed.
         drop(map);
-        handler(msr, op).map_err(Error::HandlerError)
+        handler(vcpu, msr, op).map_err(Error::HandlerError)
     }
 }
 

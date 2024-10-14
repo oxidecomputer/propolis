@@ -5,6 +5,7 @@
 //! Virtual CPU functionality.
 
 use std::io::Result;
+use std::num::TryFromIntError;
 use std::sync::Arc;
 
 use crate::common::Lifecycle;
@@ -35,6 +36,18 @@ mod probes {
 
 #[cfg(not(feature = "omicron-build"))]
 pub const MAXCPU: usize = bhyve_api::VM_MAXCPU;
+
+/// The ID of a specific vCPU.
+#[derive(Clone, Copy, Debug)]
+pub struct VcpuId(pub u32);
+
+impl TryFrom<i32> for VcpuId {
+    type Error = TryFromIntError;
+
+    fn try_from(value: i32) -> std::result::Result<Self, Self::Error> {
+        Ok(Self(u32::try_from(value)?))
+    }
+}
 
 // Helios (stlouis) is built with an expanded limit of 64
 #[cfg(feature = "omicron-build")]
@@ -464,7 +477,11 @@ impl Vcpu {
             },
             VmExitKind::Rdmsr(msr) => {
                 let mut out = 0u64;
-                match self.msr.rdmsr(MsrId(msr), &mut out) {
+                match self.msr.rdmsr(
+                    self.id.try_into().unwrap(),
+                    MsrId(msr),
+                    &mut out,
+                ) {
                     Ok(MsrDisposition::Handled) => {
                         self.set_reg(
                             bhyve_api::vm_reg_name::VM_REG_GUEST_RAX,
@@ -491,7 +508,11 @@ impl Vcpu {
                 }
             }
             VmExitKind::Wrmsr(msr, value) => {
-                match self.msr.wrmsr(MsrId(msr), value) {
+                match self.msr.wrmsr(
+                    self.id.try_into().unwrap(),
+                    MsrId(msr),
+                    value,
+                ) {
                     Ok(MsrDisposition::Handled) => Some(VmEntry::Run),
                     Ok(MsrDisposition::GpException) => {
                         self.inject_gp().unwrap();
