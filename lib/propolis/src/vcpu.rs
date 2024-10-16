@@ -1341,3 +1341,137 @@ mod bits {
     pub const MSR_DEBUGCTL: u32 = 0x1d9;
     pub const MSR_EFER: u32 = 0xc0000080;
 }
+
+/// Pretty-printable diagnostic information about the state of a vCPU.
+pub struct Diagnostics {
+    /// True if capturing vCPU diagnostics is disabled by the library's
+    /// build-time configuration. This is used to prevent vCPU data from
+    /// appearing in logs when building production Propolis binaries.
+    disabled_by_config: bool,
+    gp_regs: Result<migrate::VcpuGpRegsV1>,
+    seg_regs: Result<migrate::VcpuSegRegsV1>,
+    ctrl_regs: Result<migrate::VcpuCtrlRegsV1>,
+}
+
+impl Diagnostics {
+    #[cfg(not(feature = "omicron-build"))]
+    pub fn capture(vcpu: &Vcpu) -> Self {
+        Self {
+            disabled_by_config: false,
+            gp_regs: migrate::VcpuGpRegsV1::read(vcpu),
+            seg_regs: migrate::VcpuSegRegsV1::read(vcpu),
+            ctrl_regs: migrate::VcpuCtrlRegsV1::read(vcpu),
+        }
+    }
+
+    #[cfg(feature = "omicron-build")]
+    pub fn capture(_vcpu: &Vcpu) -> Self {
+        Self {
+            disabled_by_config: true,
+            gp_regs: Err(std::io::Error::from(std::io::ErrorKind::Other)),
+            seg_regs: Err(std::io::Error::from(std::io::ErrorKind::Other)),
+            ctrl_regs: Err(std::io::Error::from(std::io::ErrorKind::Other)),
+        }
+    }
+}
+
+impl std::fmt::Display for migrate::VcpuGpRegsV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "%rax = {:#018x}\t%r9  = {:#018x}", self.rax, self.r9)?;
+        writeln!(f, "%rbx = {:#018x}\t%r10 = {:#018x}", self.rbx, self.r10)?;
+        writeln!(f, "%rcx = {:#018x}\t%r11 = {:#018x}", self.rcx, self.r11)?;
+        writeln!(f, "%rdx = {:#018x}\t%r12 = {:#018x}", self.rdx, self.r12)?;
+        writeln!(f, "%rsi = {:#018x}\t%r13 = {:#018x}", self.rsi, self.r13)?;
+        writeln!(f, "%rdi = {:#018x}\t%r14 = {:#018x}", self.rdi, self.r14)?;
+        writeln!(f, "%r8  = {:#018x}\t%r15 = {:#018x}", self.r8, self.r15)?;
+        writeln!(f)?;
+        writeln!(f, "%rip = {:#018x}", self.rip)?;
+        writeln!(f, "%rbp = {:#018x}", self.rbp)?;
+        writeln!(f, "%rsp = {:#018x}", self.rsp)?;
+        writeln!(f, "%rflags = {:#018x}", self.rflags)?;
+
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for migrate::SegDesc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "sel = {:#06x}\tbase = {:#018x}", self.selector, self.base)?;
+        write!(
+            f,
+            "\tlimit = {:#010x}\taccess = {:#010x}",
+            self.limit, self.access
+        )?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for migrate::VcpuSegRegsV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "%cs:   {}", self.cs)?;
+        writeln!(f, "%ds:   {}", self.ds)?;
+        writeln!(f, "%es:   {}", self.es)?;
+        writeln!(f, "%fs:   {}", self.fs)?;
+        writeln!(f, "%gs:   {}", self.gs)?;
+        writeln!(f, "%ss:   {}", self.ss)?;
+        writeln!(f, "%gdtr: {}", self.gdtr)?;
+        writeln!(f, "%idtr: {}", self.idtr)?;
+        writeln!(f, "%ldtr: {}", self.ldtr)?;
+        writeln!(f, "%tr:   {}", self.tr)?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for migrate::VcpuCtrlRegsV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "%cr0  = {:#018x}\t%cr2  = {:#018x}", self.cr0, self.cr2)?;
+        writeln!(f, "%cr3  = {:#018x}\t%cr4  = {:#018x}", self.cr3, self.cr4)?;
+        writeln!(
+            f,
+            "%xcr0 = {:#018x}\t%efer = {:#018x}",
+            self.xcr0, self.efer
+        )?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for Diagnostics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.disabled_by_config {
+            return writeln!(
+                f,
+                "vCPU diagnostics disabled by build configuration"
+            );
+        }
+
+        writeln!(f)?;
+        match &self.gp_regs {
+            Ok(regs) => {
+                writeln!(f, "{}", regs)?;
+            }
+            Err(e) => {
+                writeln!(f, "error reading general-purpose registers: {}", e)?;
+            }
+        }
+
+        match &self.seg_regs {
+            Ok(regs) => {
+                writeln!(f, "{}", regs)?;
+            }
+            Err(e) => {
+                writeln!(f, "error reading segment registers: {}", e)?;
+            }
+        }
+
+        match &self.ctrl_regs {
+            Ok(regs) => {
+                writeln!(f, "{}", regs)?;
+            }
+            Err(e) => {
+                writeln!(f, "error reading control registers: {}", e)?;
+            }
+        }
+
+        Ok(())
+    }
+}
