@@ -159,14 +159,36 @@ impl VcpuTasks {
                         VmEntry::Run
                     }
                     VmExitKind::Suspended(SuspendDetail { kind, when }) => {
+                        use propolis::vcpu::Diagnostics;
                         match kind {
                             exits::Suspend::Halt => {
+                                slog::info!(
+                                    &log,
+                                    "halt event on vcpu {}",
+                                    vcpu.id;
+                                    "state" => %Diagnostics::capture(vcpu)
+                                );
+
                                 event_handler.suspend_halt_event(when);
                             }
                             exits::Suspend::Reset => {
+                                slog::info!(
+                                    &log,
+                                    "reset event on vcpu {}",
+                                    vcpu.id;
+                                    "state" => %Diagnostics::capture(vcpu)
+                                );
+
                                 event_handler.suspend_reset_event(when);
                             }
                             exits::Suspend::TripleFault(vcpuid) => {
+                                slog::info!(
+                                    &log,
+                                    "triple fault on vcpu {}",
+                                    vcpu.id;
+                                    "state" => %Diagnostics::capture(vcpu)
+                                );
+
                                 if vcpuid == -1 || vcpuid == vcpu.id {
                                     event_handler
                                         .suspend_triple_fault_event(vcpu.id, when);
