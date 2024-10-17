@@ -215,13 +215,20 @@ impl VcpuTasks {
                         event_handler.unhandled_vm_exit(vcpu.id, exit.kind);
                         VmEntry::Run
                     }
+                    // Bhyve emits the `Bogus` exit kind when there is no actual
+                    // guest exit for user space to handle, but circumstances
+                    // nevertheless dictate that the kernel VMM should exit to
+                    // user space (e.g. a caller requested that all vCPUs be
+                    // forced to exit to user space so their threads can
+                    // rendezvous there).
+                    //
+                    // `process_vmexit` should always successfully handle this
+                    // exit, since it never entails any work that could fail to
+                    // be completed.
                     VmExitKind::Bogus => {
-                        error!(log,
-                               "lib returned bogus exit from vCPU {}",
-                               vcpu.id);
-
-                        event_handler.unhandled_vm_exit(vcpu.id, exit.kind);
-                        VmEntry::Run
+                        unreachable!(
+                            "propolis-lib always handles VmExitKind::Bogus"
+                        );
                     }
                     VmExitKind::Debug => {
                         error!(log,
