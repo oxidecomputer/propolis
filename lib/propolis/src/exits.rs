@@ -93,11 +93,27 @@ impl From<&bhyve_api::vm_exit_vmx> for VmxDetail {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct InstEmul {
     pub inst_data: [u8; 15],
     pub len: u8,
 }
+
+impl std::fmt::Debug for InstEmul {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        #[cfg(feature = "omicron-build")]
+        let inst_data = "<redacted>";
+
+        #[cfg(not(feature = "omicron-build"))]
+        let inst_data = &self.inst_data;
+
+        f.debug_struct("InstEmul")
+            .field("inst_data", &inst_data)
+            .field("len", &self.len)
+            .finish()
+    }
+}
+
 impl InstEmul {
     pub fn bytes(&self) -> &[u8] {
         &self.inst_data[..usize::min(self.inst_data.len(), self.len as usize)]
