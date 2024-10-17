@@ -142,6 +142,51 @@ enum VmState {
     Ensured { serial: SerialConsole },
 }
 
+/// Both the output and status of a command.
+pub struct ShellOutput {
+    status: u16,
+    output: String,
+}
+
+impl ShellOutput {
+    /// Consume this [`ShellOutput`], returning the command's output as text
+    /// if the command completed successfully, or an error if it did not.
+    pub fn expect_ok(self) -> Result<String> {
+        if self.status == 0 {
+            Ok(self.output)
+        } else {
+            Err(anyhow!("command exited with non-zero status: {}", self.status))
+        }
+    }
+
+    /// Consume this [`ShellOutput`], returning the command's output as text
+    /// if the command exited with non-zero status, or an error if it exited
+    /// with status zero.
+    pub fn expect_err(self) -> Result<String> {
+        if self.status != 0 {
+            Ok(self.output)
+        } else {
+            Err(anyhow!("command unexpectedly succeeded"))
+        }
+    }
+
+    pub fn ignore_status(self) -> String {
+        self.output
+    }
+
+    pub fn status(&self) -> u16 {
+        self.status
+    }
+
+    /// Get the textual output of the command. You probably should use
+    /// [`ShellOutput::expect_ok`] or [`ShellOutput::expect_err`] to ensure
+    /// the command was processed as expected before asserting on its
+    /// output.
+    pub fn output(&self) -> &str {
+        self.output.as_str()
+    }
+}
+
 /// A virtual machine running in a Propolis server. Test cases create these VMs
 /// using the `factory::VmFactory` embedded in their test contexts.
 ///
@@ -868,7 +913,21 @@ impl TestVm {
     /// waits for another shell prompt to appear using
     /// [`Self::wait_for_serial_output`] and returns any text that was buffered
     /// to the serial console after the command was sent.
-    pub async fn run_shell_command(&self, cmd: &str) -> Result<String> {
+    ///
+    /// After running the shell command, sends `echo $?` to query and return the
+    /// command's return status as well.
+    // TO REVIEWERS: it would be really nice to write this as a function
+    // returning a `struct ShellCommandExecutor` that impls
+    // `Future<Output=String>` where the underlying ShellOutput is automatically
+    // `.expect_ok()`'d. In such a case it would be possible for the struct to
+    // have an `.expect_err()` that replaces teh default `.expect_ok()`
+    // behavior, so that the likely case doesn't need any change in PHD tests.
+    //
+    // unfortunately I don't know how to plumb the futures for that, since we'd
+    // have to close over `&self`, so doing any Boxing to hold an
+    // `async move {}` immediately causes issues.
+    #[must_use]
+    pub async fn run_shell_command(&self, cmd: &str) -> Result<ShellOutput> {
         // Allow the guest OS to transform the input command into a
         // guest-specific command sequence. This accounts for the guest's shell
         // type (which affects e.g. affects how it displays multi-line commands)
@@ -881,7 +940,18 @@ impl TestVm {
         // before actually issuing the final '\n' that issues the command.
         // This ensures that the buffer contents returned by this call contain
         // only the command's output.
-        let out = self
+        let output = self
+            .wait_for_serial_output(
+                self.guest_os.get_shell_prompt(),
+                Duration::from_secs(300),
+            )
+            .await?;
+
+        let status_command_sequence =
+            self.guest_os.shell_command_sequence("echo $?");
+        self.run_command_sequence(status_command_sequence).await?;
+
+        let status = self
             .wait_for_serial_output(
                 self.guest_os.get_shell_prompt(),
                 Duration::from_secs(300),
@@ -891,7 +961,10 @@ impl TestVm {
         // Trim any leading newlines inserted when the command was issued and
         // any trailing whitespace that isn't actually part of the command
         // output. Any other embedded whitespace is the caller's problem.
-        Ok(out.trim().to_string())
+        let output = output.trim().to_string();
+        let status = status.trim().parse::<u16>()?;
+
+        Ok(ShellOutput { status, output })
     }
 
     pub async fn graceful_reboot(&self) -> Result<()> {

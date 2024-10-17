@@ -169,7 +169,8 @@ async fn cpuid_boot_test(ctx: &Framework) {
     vm.launch().await?;
     vm.wait_to_boot().await?;
 
-    let cpuinfo = vm.run_shell_command("cat /proc/cpuinfo").await?;
+    let cpuinfo =
+        vm.run_shell_command("cat /proc/cpuinfo").await?.expect_ok()?;
     info!(cpuinfo, "/proc/cpuinfo output");
     assert!(cpuinfo.contains(
         std::str::from_utf8(BRAND_STRING).unwrap().trim_matches('\0')

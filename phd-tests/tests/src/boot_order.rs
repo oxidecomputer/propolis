@@ -5,7 +5,7 @@
 use anyhow::{bail, Error};
 use phd_framework::{
     disk::{fat::FatFilesystem, DiskSource},
-    test_vm::{DiskBackend, DiskInterface},
+    test_vm::{DiskBackend, DiskInterface, ShellOutput},
 };
 use phd_testcase::*;
 use std::io::Cursor;
@@ -23,7 +23,7 @@ use efi_utils::{
 pub(crate) async fn run_long_command(
     vm: &phd_framework::TestVm,
     cmd: &str,
-) -> Result<String, Error> {
+) -> Result<ShellOutput, Error> {
     // Ok, this is a bit whacky: something about the line wrapping for long
     // commands causes `run_shell_command` to hang instead of ever actually
     // seeing a response prompt.
@@ -284,7 +284,8 @@ async fn guest_can_adjust_boot_order(ctx: &Framework) {
 
     // If the guest doesn't have an EFI partition then there's no way for boot
     // order preferences to be persisted.
-    let mountline = vm.run_shell_command("mount | grep efivarfs").await?;
+    let mountline =
+        vm.run_shell_command("mount | grep efivarfs").await?.ignore_status();
 
     if !mountline.starts_with("efivarfs on ") {
         warn!(
@@ -298,6 +299,7 @@ async fn guest_can_adjust_boot_order(ctx: &Framework) {
     // reboot, and make sure they're all as we set them.
     if !run_long_command(&vm, &format!("ls {}", efipath(&bootvar(0xffff))))
         .await?
+        .expect_err()?
         .is_empty()
     {
         warn!(

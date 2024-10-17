@@ -37,6 +37,7 @@ async fn guest_reboot_test(ctx: &Framework) {
     vm.launch().await?;
     vm.wait_to_boot().await?;
 
+    // XXX: use graceful_reboot() now.
     // Don't use `run_shell_command` because the guest won't echo another prompt
     // after this.
     vm.send_serial_str("reboot\n").await?;
@@ -64,10 +65,11 @@ async fn shutdown_persistence_test(ctx: &Framework) {
 
     // Verify that the test file doesn't exist yet, then touch it, flush it, and
     // shut down the VM.
-    let lsout = vm.run_shell_command("ls foo.bar 2> /dev/null").await?;
+    let lsout =
+        vm.run_shell_command("ls foo.bar 2> /dev/null").await?.expect_err()?;
     assert_eq!(lsout, "");
-    vm.run_shell_command("touch ./foo.bar").await?;
-    vm.run_shell_command("sync ./foo.bar").await?;
+    vm.run_shell_command("touch ./foo.bar").await?.expect_ok()?;
+    vm.run_shell_command("sync ./foo.bar").await?.expect_ok()?;
     vm.stop().await?;
     vm.wait_for_state(InstanceState::Destroyed, Duration::from_secs(60))
         .await?;
@@ -82,6 +84,7 @@ async fn shutdown_persistence_test(ctx: &Framework) {
     vm.wait_to_boot().await?;
 
     // The touched file from the previous VM should be present in the new one.
-    let lsout = vm.run_shell_command("ls foo.bar 2> /dev/null").await?;
+    let lsout =
+        vm.run_shell_command("ls foo.bar 2> /dev/null").await?.expect_ok()?;
     assert_eq!(lsout, "foo.bar");
 }
