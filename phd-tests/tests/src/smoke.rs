@@ -30,10 +30,7 @@ async fn guest_reboot_test(ctx: &Framework) {
     vm.launch().await?;
     vm.wait_to_boot().await?;
 
-    // Don't use `run_shell_command` because the guest won't echo another prompt
-    // after this.
-    vm.send_serial_str("reboot\n").await?;
-    vm.wait_to_boot().await?;
+    vm.graceful_reboot().await?;
 }
 
 #[phd_testcase]
