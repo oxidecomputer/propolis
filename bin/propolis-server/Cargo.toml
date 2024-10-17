@@ -76,7 +76,7 @@ expectorate.workspace = true
 mockall.workspace = true
 
 [features]
-default = []
+default = ["propolis/dump-guest-state"]
 
 # When building to be packaged for inclusion in the production ramdisk
 # (nominally an Omicron package), certain code is compiled in or out.

@@ -101,10 +101,10 @@ pub struct InstEmul {
 
 impl std::fmt::Debug for InstEmul {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        #[cfg(feature = "omicron-build")]
-        let inst_data = "<redacted>";
+        #[cfg(not(feature = "dump-guest-state"))]
+        let inst_data = "<dump-guest-state disabled>";
 
-        #[cfg(not(feature = "omicron-build"))]
+        #[cfg(feature = "dump-guest-state")]
         let inst_data = &self.inst_data;
 
         f.debug_struct("InstEmul")
