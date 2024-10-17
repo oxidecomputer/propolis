@@ -162,23 +162,9 @@ impl VcpuTasks {
                         use propolis::vcpu::Diagnostics;
                         match kind {
                             exits::Suspend::Halt => {
-                                slog::info!(
-                                    &log,
-                                    "halt event on vcpu {}",
-                                    vcpu.id;
-                                    "state" => %Diagnostics::capture(vcpu)
-                                );
-
                                 event_handler.suspend_halt_event(when);
                             }
                             exits::Suspend::Reset => {
-                                slog::info!(
-                                    &log,
-                                    "reset event on vcpu {}",
-                                    vcpu.id;
-                                    "state" => %Diagnostics::capture(vcpu)
-                                );
-
                                 event_handler.suspend_reset_event(when);
                             }
                             exits::Suspend::TripleFault(vcpuid) => {
