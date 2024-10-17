@@ -815,7 +815,7 @@ mod bits {
     use zerocopy::byteorder::big_endian::{
         U16 as BE16, U32 as BE32, U64 as BE64,
     };
-    use zerocopy::AsBytes;
+    use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
     pub const FW_CFG_IOP_SELECTOR: u16 = 0x0510;
     pub const FW_CFG_IOP_DATA: u16 = 0x0511;
@@ -867,18 +867,13 @@ mod bits {
         }
     }
 
-    #[derive(AsBytes, Default, Copy, Clone, Debug)]
+    #[derive(AsBytes, Default, Copy, Clone, Debug, FromBytes, FromZeroes)]
     #[repr(C)]
     pub struct FwCfgDmaAccess {
         pub ctrl: BE32,
         pub len: BE32,
         pub addr: BE64,
     }
-
-    /// Safety: all fields of FwCfgDmaAccess are valid for all bit patterns.
-    ///
-    /// They're just big-endian instead of little-endian.
-    unsafe impl crate::vmm::AlwaysInhabited for FwCfgDmaAccess {}
 }
 
 #[cfg(test)]

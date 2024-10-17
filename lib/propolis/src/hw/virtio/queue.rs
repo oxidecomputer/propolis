@@ -17,16 +17,16 @@ use crate::common::*;
 use crate::migrate::MigrateStateError;
 use crate::vmm::MemCtx;
 
+use zerocopy::{FromBytes, FromZeroes};
+
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, FromBytes, FromZeroes)]
 struct VqdDesc {
     addr: u64,
     len: u32,
     flags: u16,
     next: u16,
 }
-/// Safety: all fields of VqdDesc are valid for all bit patterns
-unsafe impl crate::vmm::AlwaysInhabited for VqdDesc {}
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 struct VqdUsed {

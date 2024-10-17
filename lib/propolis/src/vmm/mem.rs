@@ -19,38 +19,7 @@ use crate::common::{GuestAddr, GuestRegion};
 use crate::util::aspace::ASpace;
 use crate::vmm::VmmHdl;
 
-/// Marker trait declaring that a type is valid for all bit patterns.  This is
-/// one of the necessary requirements to read a type from guest memory.
-///
-/// Notably a type like
-/// ```rust
-/// #[repr(u8)]
-/// enum Foo {
-///     A,
-///     B,
-///     C,
-///     Other(u8)
-/// }
-/// ```
-///
-/// *can not* impl `AlwaysInhabited`: the discriminant may only be one of four
-/// bit pattens.
-///
-/// TODO: it'd be nice to have a proc macro to derive this on structs comprised
-/// entirely of `AlwaysInhabited` types..
-pub unsafe trait AlwaysInhabited {}
-
-/// All bit patterns are valid `u8`.
-unsafe impl AlwaysInhabited for u8 {}
-
-/// All bit patterns are valid `u16`.
-unsafe impl AlwaysInhabited for u16 {}
-
-/// All bit patterns are valid `u64`.
-unsafe impl AlwaysInhabited for u64 {}
-
-/// All bit patterns are valid `u8`, so they are valid `MaybeUninit<u8>` too.
-unsafe impl AlwaysInhabited for MaybeUninit<u8> {}
+use zerocopy::FromBytes;
 
 bitflags! {
     /// Bitflags representing memory protections.
@@ -513,7 +482,7 @@ impl<'a> SubMapping<'a> {
     }
 
     /// Reads a `T` object from the mapping.
-    pub fn read<T: Copy + AlwaysInhabited>(&self) -> Result<T> {
+    pub fn read<T: Copy + FromBytes>(&self) -> Result<T> {
         self.check_read_access()?;
         let typed = self.ptr.as_ptr() as *const T;
         if self.len < std::mem::size_of::<T>() {
@@ -523,12 +492,14 @@ impl<'a> SubMapping<'a> {
         // Safety:
         // - typed must be valid for reads: `check_read_access()` succeeded
         // - typed must point to a properly initialized value of T: always true
-        //     because we require `T: AlwaysInhabited`
+        //     because we require `T: FromBytes`. `zerocopy::FromBytes` happens
+        //     to have the same concerns as us - that T is valid for all bit
+        //     patterns.
         Ok(unsafe { typed.read_unaligned() })
     }
 
     /// Read `values` from the mapping.
-    pub fn read_many<T: Copy + AlwaysInhabited>(
+    pub fn read_many<T: Copy + FromBytes>(
         &self,
         values: &mut [T],
     ) -> Result<()> {
@@ -546,7 +517,7 @@ impl<'a> SubMapping<'a> {
         // will appease those alignment concerns
         let src = self.ptr.as_ptr() as *const u8;
         // We know reinterpreting `*mut T` as `*mut u8` and writing to it cannot
-        // result in invalid `T` because `T: AlwaysInhabited`
+        // result in invalid `T` because `T: FromBytes`
         let dst = values.as_mut_ptr() as *mut u8;
 
         // Safety
@@ -827,10 +798,7 @@ pub struct MemCtx {
 }
 impl MemCtx {
     /// Reads a generic value from a specified guest address.
-    pub fn read<T: Copy + AlwaysInhabited>(
-        &self,
-        addr: GuestAddr,
-    ) -> Option<T> {
+    pub fn read<T: Copy + FromBytes>(&self, addr: GuestAddr) -> Option<T> {
         if let Some(mapping) =
             self.region_covered(addr, size_of::<T>(), Prot::READ)
         {
@@ -870,7 +838,7 @@ impl MemCtx {
     }
 
     /// Reads multiple objects from a guest address.
-    pub fn read_many<T: Copy + AlwaysInhabited>(
+    pub fn read_many<T: Copy + FromBytes>(
         &self,
         base: GuestAddr,
         count: usize,
@@ -1057,7 +1025,7 @@ pub struct MemMany<'a, T: Copy> {
     pos: usize,
     phantom: PhantomData<T>,
 }
-impl<'a, T: Copy + AlwaysInhabited> MemMany<'a, T> {
+impl<'a, T: Copy + FromBytes> MemMany<'a, T> {
     /// Gets the object at position `pos` within the memory region.
     ///
     /// Returns [`Option::None`] if out of range.
@@ -1070,7 +1038,7 @@ impl<'a, T: Copy + AlwaysInhabited> MemMany<'a, T> {
         }
     }
 }
-impl<'a, T: Copy + AlwaysInhabited> Iterator for MemMany<'a, T> {
+impl<'a, T: Copy + FromBytes> Iterator for MemMany<'a, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
