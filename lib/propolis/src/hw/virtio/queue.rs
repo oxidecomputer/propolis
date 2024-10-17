@@ -25,6 +25,8 @@ struct VqdDesc {
     flags: u16,
     next: u16,
 }
+/// Safety: all fields of VqdDesc are valid for all bit patterns
+unsafe impl crate::vmm::AlwaysInhabited for VqdDesc {}
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 struct VqdUsed {

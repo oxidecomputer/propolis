@@ -874,6 +874,11 @@ mod bits {
         pub len: BE32,
         pub addr: BE64,
     }
+
+    /// Safety: all fields of FwCfgDmaAccess are valid for all bit patterns.
+    ///
+    /// They're just big-endian instead of little-endian.
+    unsafe impl crate::vmm::AlwaysInhabited for FwCfgDmaAccess {}
 }
 
 #[cfg(test)]

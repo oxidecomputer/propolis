@@ -86,6 +86,9 @@ pub struct SubmissionQueueEntry {
     pub cdw15: u32,
 }
 
+/// Safety: all fields of SubmissionQueueEntry are valid for all bit patterns.
+unsafe impl crate::vmm::AlwaysInhabited for SubmissionQueueEntry {}
+
 impl SubmissionQueueEntry {
     /// Returns the Identifier (CID) of this Submission Queue Entry.
     ///
