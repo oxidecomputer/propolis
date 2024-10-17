@@ -1344,33 +1344,28 @@ mod bits {
 
 /// Pretty-printable diagnostic information about the state of a vCPU.
 pub struct Diagnostics {
-    /// True if capturing vCPU diagnostics is disabled by the library's
-    /// build-time configuration. This is used to prevent vCPU data from
-    /// appearing in logs when building production Propolis binaries.
-    disabled_by_config: bool,
     gp_regs: Result<migrate::VcpuGpRegsV1>,
     seg_regs: Result<migrate::VcpuSegRegsV1>,
     ctrl_regs: Result<migrate::VcpuCtrlRegsV1>,
 }
 
 impl Diagnostics {
-    #[cfg(not(feature = "omicron-build"))]
+    #[cfg(feature = "dump-guest-state")]
     pub fn capture(vcpu: &Vcpu) -> Self {
         Self {
-            disabled_by_config: false,
             gp_regs: migrate::VcpuGpRegsV1::read(vcpu),
             seg_regs: migrate::VcpuSegRegsV1::read(vcpu),
             ctrl_regs: migrate::VcpuCtrlRegsV1::read(vcpu),
         }
     }
 
-    #[cfg(feature = "omicron-build")]
+    #[cfg(not(feature = "dump-guest-state"))]
     pub fn capture(_vcpu: &Vcpu) -> Self {
+        let msg = "dump-guest-state feature disabled";
         Self {
-            disabled_by_config: true,
-            gp_regs: Err(std::io::Error::from(std::io::ErrorKind::Other)),
-            seg_regs: Err(std::io::Error::from(std::io::ErrorKind::Other)),
-            ctrl_regs: Err(std::io::Error::from(std::io::ErrorKind::Other)),
+            gp_regs: Err(std::io::Error::new(std::io::ErrorKind::Other, msg)),
+            seg_regs: Err(std::io::Error::new(std::io::ErrorKind::Other, msg)),
+            ctrl_regs: Err(std::io::Error::new(std::io::ErrorKind::Other, msg)),
         }
     }
 }
@@ -1437,13 +1432,6 @@ impl std::fmt::Display for migrate::VcpuCtrlRegsV1 {
 
 impl std::fmt::Display for Diagnostics {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.disabled_by_config {
-            return writeln!(
-                f,
-                "vCPU diagnostics disabled by build configuration"
-            );
-        }
-
         writeln!(f)?;
         match &self.gp_regs {
             Ok(regs) => {

@@ -210,7 +210,6 @@ impl VcpuTasks {
                         VmEntry::Run
                     }
                     VmExitKind::InstEmul(inst) => {
-                        // TODO(gjc) the context contains guest data!
                         let diag = propolis::vcpu::Diagnostics::capture(vcpu);
                         error!(log,
                                "instruction emulation exit on vCPU {}",
