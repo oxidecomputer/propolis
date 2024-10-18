@@ -18,7 +18,7 @@ use crate::{
     Framework,
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use camino::Utf8PathBuf;
 use core::result::Result as StdResult;
 use propolis_client::{
@@ -148,72 +148,113 @@ pub struct ShellOutput {
     output: String,
 }
 
-pub struct ShellOutputExecutor {
-    fut: Pin<Box<dyn std::future::Future<Output=Result<ShellOutput>>>>
+/// Description of the acceptable status codes from executing a command in a
+/// [`TestVm::run_shell_command`].
+// This could reasonably have a `Status(u16)` variant to check specific non-zero
+// statuses, but specific codes are not terribly portable! In the few cases we
+// can expect a specific status for errors, those specific codes change between
+// f.ex illumos and Linux guests.
+enum StatusCheck {
+    Ok,
+    NotOk,
 }
 
-pub struct ShellOutputOkExecutor {
-    fut: Pin<Box<dyn std::future::Future<Output=Result<ShellOutput>>>>
+pub struct ShellOutputExecutor<'ctx> {
+    vm: &'ctx TestVm,
+    cmd: &'ctx str,
+    status_check: Option<StatusCheck>,
 }
 
-use std::pin::Pin;
-use std::task::Poll;
+impl<'a> ShellOutputExecutor<'a> {
+    pub fn ignore_status(mut self) -> ShellOutputExecutor<'a> {
+        self.status_check = None;
+        self
+    }
 
-impl std::future::Future for ShellOutputExecutor {
-    type Output = Result<ShellOutput>;
+    pub fn check_ok(mut self) -> ShellOutputExecutor<'a> {
+        self.status_check = Some(StatusCheck::Ok);
+        self
+    }
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        self.fut.as_mut().poll(cx)
+    pub fn check_err(mut self) -> ShellOutputExecutor<'a> {
+        self.status_check = Some(StatusCheck::NotOk);
+        self
     }
 }
+use futures::FutureExt;
 
-impl std::future::Future for ShellOutputOkExecutor {
+impl<'a> std::future::IntoFuture for ShellOutputExecutor<'a> {
     type Output = Result<String>;
+    type IntoFuture = futures::future::BoxFuture<'a, Result<String>>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        match self.fut.as_mut().poll(cx) {
-            Poll::Ready(t) => Poll::Ready(t.and_then(|res| res.expect_ok())),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
+    fn into_future(self) -> Self::IntoFuture {
+        let cmd = Box::pin(async move {
+            // Allow the guest OS to transform the input command into a
+            // guest-specific command sequence. This accounts for the guest's
+            // shell type (which affects e.g. affects how it displays multi-line
+            // commands) and serial console buffering discipline.
+            let command_sequence =
+                self.vm.guest_os.shell_command_sequence(self.cmd);
+            self.vm.run_command_sequence(command_sequence).await?;
 
-impl ShellOutput {
-    /// Consume this [`ShellOutput`], returning the command's output as text
-    /// if the command completed successfully, or an error if it did not.
-    pub fn expect_ok(self) -> Result<String> {
-        if self.status == 0 {
-            Ok(self.output)
-        } else {
-            Err(anyhow!("command exited with non-zero status: {}", self.status))
-        }
-    }
+            // `shell_command_sequence` promises that the generated command
+            // sequence clears buffer of everything up to and including the
+            // input command before actually issuing the final '\n' that issues
+            // the command.  This ensures that the buffer contents returned by
+            // this call contain only the command's output.
+            let output = self
+                .vm
+                .wait_for_serial_output(
+                    self.vm.guest_os.get_shell_prompt(),
+                    Duration::from_secs(300),
+                )
+                .await?;
 
-    /// Consume this [`ShellOutput`], returning the command's output as text
-    /// if the command exited with non-zero status, or an error if it exited
-    /// with status zero.
-    pub fn expect_err(self) -> Result<String> {
-        if self.status != 0 {
-            Ok(self.output)
-        } else {
-            Err(anyhow!("command unexpectedly succeeded"))
-        }
-    }
+            let status_command_sequence =
+                self.vm.guest_os.shell_command_sequence("echo $?");
+            self.vm.run_command_sequence(status_command_sequence).await?;
 
-    pub fn ignore_status(self) -> String {
-        self.output
-    }
+            let status = self
+                .vm
+                .wait_for_serial_output(
+                    self.vm.guest_os.get_shell_prompt(),
+                    Duration::from_secs(300),
+                )
+                .await?;
 
-    pub fn status(&self) -> u16 {
-        self.status
-    }
+            // Trim any leading newlines inserted when the command was issued
+            // and any trailing whitespace that isn't actually part of the
+            // command output. Any other embedded whitespace is the caller's
+            // problem.
+            let output = output.trim().to_string();
+            let status = status.trim().parse::<u16>()?;
 
-    /// Get the textual output of the command. You probably should use
-    /// [`ShellOutput::expect_ok`] or [`ShellOutput::expect_err`] to ensure
-    /// the command was processed as expected before asserting on its
-    /// output.
-    pub fn output(&self) -> &str {
-        self.output.as_str()
+            Ok(ShellOutput { status, output })
+        });
+        cmd.map(move |res| {
+            res.and_then(|out| {
+                match self.status_check {
+                    Some(StatusCheck::Ok) => {
+                        if out.status != 0 {
+                            bail!("expected status 0, got {}", out.status);
+                        }
+                    }
+                    Some(StatusCheck::NotOk) => {
+                        if out.status != 0 {
+                            bail!(
+                                "expected non-zero status, got {}",
+                                out.status
+                            );
+                        }
+                    }
+                    None => {
+                        // No check, always a success regardless of exit status
+                    }
+                }
+                Ok(out.output)
+            })
+        })
+        .boxed()
     }
 }
 
@@ -946,59 +987,19 @@ impl TestVm {
     ///
     /// After running the shell command, sends `echo $?` to query and return the
     /// command's return status as well.
-    // TO REVIEWERS: it would be really nice to write this as a function
-    // returning a `struct ShellCommandExecutor` that impls
-    // `Future<Output=String>` where the underlying ShellOutput is automatically
-    // `.expect_ok()`'d. In such a case it would be possible for the struct to
-    // have an `.expect_err()` that replaces teh default `.expect_ok()`
-    // behavior, so that the likely case doesn't need any change in PHD tests.
-    //
-    // unfortunately I don't know how to plumb the futures for that, since we'd
-    // have to close over `&self`, so doing any Boxing to hold an
-    // `async move {}` immediately causes issues.
-    pub fn run_shell_command<'a>(&'a self, cmd: &'a str) -> impl std::future::Future<Output=Result<ShellOutput>> + 'a {
-        let fut = Box::pin(async move {
-        // Allow the guest OS to transform the input command into a
-        // guest-specific command sequence. This accounts for the guest's shell
-        // type (which affects e.g. affects how it displays multi-line commands)
-        // and serial console buffering discipline.
-        let command_sequence = self.guest_os.shell_command_sequence(cmd);
-        self.run_command_sequence(command_sequence).await?;
-
-        // `shell_command_sequence` promises that the generated command sequence
-        // clears buffer of everything up to and including the input command
-        // before actually issuing the final '\n' that issues the command.
-        // This ensures that the buffer contents returned by this call contain
-        // only the command's output.
-        let output = self
-            .wait_for_serial_output(
-                self.guest_os.get_shell_prompt(),
-                Duration::from_secs(300),
-            )
-            .await?;
-
-        let status_command_sequence =
-            self.guest_os.shell_command_sequence("echo $?");
-        self.run_command_sequence(status_command_sequence).await?;
-
-        let status = self
-            .wait_for_serial_output(
-                self.guest_os.get_shell_prompt(),
-                Duration::from_secs(300),
-            )
-            .await?;
-
-        // Trim any leading newlines inserted when the command was issued and
-        // any trailing whitespace that isn't actually part of the command
-        // output. Any other embedded whitespace is the caller's problem.
-        let output = output.trim().to_string();
-        let status = status.trim().parse::<u16>()?;
-
-        Ok(ShellOutput { status, output })
-        });
-
+    ///
+    /// This will return an error if the command returns a non-zero status by
+    /// default; to ignore the status or expect a non-zero as a positive
+    /// condition, see [`ShellOutputExecutor::ignore_status`] or
+    /// [`ShellOutputExecutor::check_err`].
+    pub fn run_shell_command<'a>(
+        &'a self,
+        cmd: &'a str,
+    ) -> ShellOutputExecutor<'a> {
         ShellOutputExecutor {
-            fut,
+            vm: self,
+            cmd,
+            status_check: Some(StatusCheck::Ok),
         }
     }
 

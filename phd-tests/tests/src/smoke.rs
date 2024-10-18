@@ -11,7 +11,7 @@ async fn nproc_test(ctx: &Framework) {
     vm.launch().await?;
     vm.wait_to_boot().await?;
 
-    let nproc = vm.run_shell_command("nproc").await?.expect_ok()?;
+    let nproc = vm.run_shell_command("nproc").await?;
     assert_eq!(nproc.parse::<u8>().unwrap(), 6);
 }
 

@@ -37,12 +37,9 @@ async fn in_memory_backend_smoke_test(ctx: &Framework) {
     // try to check that the disk is located there and fail the test early if
     // it's not. If the by-path directory is missing, put up a warning and hope
     // for the best.
-    let dev_disk = vm.run_shell_command("ls /dev/disk").await?.ignore_status();
+    let dev_disk = vm.run_shell_command("ls /dev/disk").ignore_status().await?;
     if dev_disk.contains("by-path") {
-        let ls = vm
-            .run_shell_command("ls -la /dev/disk/by-path")
-            .await?
-            .expect_ok()?;
+        let ls = vm.run_shell_command("ls -la /dev/disk/by-path").await?;
         info!(%ls, "guest disk device paths");
         assert!(ls.contains("virtio-pci-0000:00:18.0 -> ../../vda"));
     } else {
@@ -52,19 +49,17 @@ async fn in_memory_backend_smoke_test(ctx: &Framework) {
         );
     }
 
-    vm.run_shell_command("mkdir /phd").await?.expect_ok()?;
+    vm.run_shell_command("mkdir /phd").await?;
 
     // The disk is read-only, so pass the `ro` option to `mount` so that it
     // doesn't complain about not being able to mount for writing.
-    let mount =
-        vm.run_shell_command("mount -o ro /dev/vda /phd").await?.expect_ok()?;
+    let mount = vm.run_shell_command("mount -o ro /dev/vda /phd").await?;
     assert_eq!(mount, "");
 
     // The file should be there and have the expected contents.
-    let ls = vm.run_shell_command("ls /phd").await?.expect_ok()?;
+    let ls = vm.run_shell_command("ls /phd").await?;
     assert_eq!(ls, "hello_oxide.txt");
 
-    let cat =
-        vm.run_shell_command("cat /phd/hello_oxide.txt").await?.expect_ok()?;
+    let cat = vm.run_shell_command("cat /phd/hello_oxide.txt").await?;
     assert_eq!(cat, HELLO_MSG);
 }

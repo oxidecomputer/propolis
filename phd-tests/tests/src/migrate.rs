@@ -58,13 +58,13 @@ mod from_base {
         // `ls` with no results exits non-zero, so expect an error here.
         let lsout = source
             .run_shell_command("ls foo.bar 2> /dev/null")
-            .await?
-            .expect_err()?;
+            .check_err()
+            .await?;
         assert_eq!(lsout, "");
 
         // create an empty file on the source VM.
-        source.run_shell_command("touch ./foo.bar").await?.expect_ok()?;
-        source.run_shell_command("sync ./foo.bar").await?.expect_ok()?;
+        source.run_shell_command("touch ./foo.bar").await?;
+        source.run_shell_command("sync ./foo.bar").await?;
 
         ctx.lifecycle_test(
             source,
@@ -78,9 +78,9 @@ mod from_base {
                     // the file should still exist on the target VM after migration.
                     let lsout = target
                         .run_shell_command("ls foo.bar")
+                        .ignore_status()
                         .await
-                        .expect("`ls foo.bar` should succeed")
-                        .ignore_status();
+                        .expect("can try to run `ls foo.bar`");
                     assert_eq!(lsout, "foo.bar");
                 })
             },
@@ -261,10 +261,10 @@ mod running_process {
             "\nEOF"
         ))
         .await?;
-        vm.run_shell_command("chmod +x dirt.sh").await?.expect_ok()?;
+        vm.run_shell_command("chmod +x dirt.sh").await?;
         // When dirt.sh suspends itself, the parent shell will report a non-zero
         // status (148, in particular: 128 + SIGTSTP aka 20 for Linux guests).
-        let run_dirt = vm.run_shell_command("./dirt.sh").await?.expect_err()?;
+        let run_dirt = vm.run_shell_command("./dirt.sh").check_err().await?;
         assert!(run_dirt.contains("made dirt"), "dirt.sh failed: {run_dirt:?}");
         assert!(
             run_dirt.contains("Stopped"),
@@ -275,7 +275,7 @@ mod running_process {
     }
 
     async fn check_dirt(vm: &TestVm) -> phd_testcase::Result<()> {
-        let output = vm.run_shell_command("fg").await?.expect_ok()?;
+        let output = vm.run_shell_command("fg").await?;
         assert!(output.contains("all good"), "dirt.sh failed: {output:?}");
         Ok(())
     }
@@ -342,13 +342,10 @@ async fn multiple_migrations(ctx: &Framework) {
     vm0.launch().await?;
     vm0.wait_to_boot().await?;
     vm1.migrate_from(&vm0, Uuid::new_v4(), MigrationTimeout::default()).await?;
-    assert_eq!(
-        vm1.run_shell_command("echo Hello world").await?.ignore_status(),
-        "Hello world"
-    );
+    assert_eq!(vm1.run_shell_command("echo Hello world").await?, "Hello world");
     vm2.migrate_from(&vm1, Uuid::new_v4(), MigrationTimeout::default()).await?;
     assert_eq!(
-        vm2.run_shell_command("echo I have migrated!").await?.ignore_status(),
+        vm2.run_shell_command("echo I have migrated!").await?,
         "I have migrated!"
     );
 }
@@ -356,10 +353,8 @@ async fn multiple_migrations(ctx: &Framework) {
 async fn run_smoke_test(ctx: &Framework, mut source: TestVm) -> Result<()> {
     source.launch().await?;
     source.wait_to_boot().await?;
-    let lsout = source
-        .run_shell_command("ls foo.bar 2> /dev/null")
-        .await?
-        .expect_err()?;
+    let lsout =
+        source.run_shell_command("ls foo.bar 2> /dev/null").check_err().await?;
     assert_eq!(lsout, "");
 
     // create an empty file on the source VM.
@@ -374,9 +369,9 @@ async fn run_smoke_test(ctx: &Framework, mut source: TestVm) -> Result<()> {
                 // the file should still exist on the target VM after migration.
                 let lsout = target
                     .run_shell_command("ls foo.bar")
+                    .ignore_status()
                     .await
-                    .expect("`ls foo.bar` should succeed after migration")
-                    .ignore_status();
+                    .expect("can try to run `ls foo.bar`");
                 assert_eq!(lsout, "foo.bar");
             })
         },
@@ -393,8 +388,8 @@ async fn run_serial_history_test(
 
     let out = source
         .run_shell_command("echo hello from the source VM!")
-        .await?
-        .ignore_status();
+        .ignore_status()
+        .await?;
     assert_eq!(out, "hello from the source VM!");
 
     let serial_hist_pre = source.get_serial_console_history(0).await?;
