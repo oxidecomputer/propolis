@@ -5,11 +5,12 @@
 #![allow(dead_code)]
 
 use bitstruct::bitstruct;
+use zerocopy::{FromBytes, FromZeroes};
 
 /// A Submission Queue Entry as represented in memory.
 ///
 /// See NVMe 1.0e Section 4.2 Submission Queue Entry - Command Format
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone, FromBytes, FromZeroes)]
 #[repr(C, packed(1))]
 pub struct SubmissionQueueEntry {
     /// Command Dword 0 (CDW0)
