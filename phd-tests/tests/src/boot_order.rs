@@ -20,6 +20,11 @@ use efi_utils::{
     EDK2_FIRMWARE_VOL_GUID, EDK2_UI_APP_GUID,
 };
 
+// NOTE: This function differs from `run_shell_command` in that it implicitly
+// ignores the status of executed commands. When
+// https://github.com/oxidecomputer/propolis/issues/773 is fixed and this is
+// deleted, callers of this function may need to be updated to call
+// `.ignore_status` or `.check_err`
 pub(crate) async fn run_long_command(
     vm: &phd_framework::TestVm,
     cmd: &str,
@@ -31,7 +36,7 @@ pub(crate) async fn run_long_command(
     // I haven't gone and debugged that; instead, chunk the input command up
     // into segments short enough to not wrap when input, put them all in a
     // file, then run the file.
-    vm.run_shell_command("rm cmd").await?;
+    vm.run_shell_command("rm cmd").ignore_status().await?;
     let mut offset = 0;
     // Escape any internal `\`. This isn't comprehensive escaping (doesn't
     // handle \n, for example)..
@@ -48,7 +53,9 @@ pub(crate) async fn run_long_command(
 
         vm.run_shell_command(&format!("echo -n \'{}\' >>cmd", chunk)).await?;
     }
-    vm.run_shell_command(". cmd").await
+    // `ignore_status` because it's a bit cumbersome to wrap this whole thing in
+    // a way that checks statuses,
+    vm.run_shell_command(". cmd").ignore_status().await
 }
 
 // This test checks that with a specified boot order, the guest boots whichever
@@ -284,7 +291,8 @@ async fn guest_can_adjust_boot_order(ctx: &Framework) {
 
     // If the guest doesn't have an EFI partition then there's no way for boot
     // order preferences to be persisted.
-    let mountline = vm.run_shell_command("mount | grep efivarfs").await?;
+    let mountline =
+        vm.run_shell_command("mount | grep efivarfs").ignore_status().await?;
 
     if !mountline.starts_with("efivarfs on ") {
         warn!(
