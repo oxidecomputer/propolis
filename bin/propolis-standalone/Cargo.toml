@@ -40,5 +40,5 @@ tar.workspace = true
 uuid.workspace = true
 
 [features]
-default = ["propolis/dump-guest-state"]
+default = []
 crucible = ["propolis/crucible-full", "propolis/oximeter", "crucible-client-types"]

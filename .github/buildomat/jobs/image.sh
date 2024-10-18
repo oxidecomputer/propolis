@@ -28,16 +28,12 @@ rustc --version
 
 banner build
 
-# This job produces the propolis-server zone image that the Omicron repository
-# imports to create full-blown Oxide software packages. Disable all default
-# features and opt into the "omicron-build" feature instead to build libraries
-# in their "production" configurations.
+# Enable the "omicron-build" feature to indicate this is an artifact destined
+# for production use on an appropriately configured Oxide machine
 #
 # The 'release' profile is configured for abort-on-panic, so we get an
 # immediate coredump rather than unwinding in the case of an error.
-ptime -m cargo build --release --verbose -p propolis-server \
-    --no-default-features \
-    --features omicron-build
+ptime -m cargo build --release --verbose -p propolis-server --features omicron-build
 
 banner image
 ptime -m cargo run -p propolis-package

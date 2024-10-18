@@ -1421,6 +1421,9 @@ fn main() -> anyhow::Result<ExitCode> {
     // Check that vmm and viona device version match what we expect
     api_version_checks(&log).context("API version checks")?;
 
+    propolis::common::DISPLAY_GUEST_DATA
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
     // Load/parse the config first, since it's required to size the tokio runtime
     // used to run the instance.
     let config = if restore {

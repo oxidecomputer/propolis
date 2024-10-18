@@ -12,6 +12,8 @@ use bhyve_api::{
     vm_suspend_how,
 };
 
+use crate::common::GuestData;
+
 /// Describes the reason for exiting execution of a vCPU.
 pub struct VmExit {
     /// The instruction pointer of the guest at the time of exit.
@@ -93,37 +95,24 @@ impl From<&bhyve_api::vm_exit_vmx> for VmxDetail {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct InstEmul {
-    pub inst_data: [u8; 15],
+    pub inst_data: GuestData<[u8; 15]>,
     pub len: u8,
-}
-
-impl std::fmt::Debug for InstEmul {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        #[cfg(not(feature = "dump-guest-state"))]
-        let inst_data = "<dump-guest-state disabled>";
-
-        #[cfg(feature = "dump-guest-state")]
-        let inst_data = &self.inst_data;
-
-        f.debug_struct("InstEmul")
-            .field("inst_data", &inst_data)
-            .field("len", &self.len)
-            .finish()
-    }
 }
 
 impl InstEmul {
     pub fn bytes(&self) -> &[u8] {
-        &self.inst_data[..usize::min(self.inst_data.len(), self.len as usize)]
+        &self.inst_data.0
+            [..usize::min(self.inst_data.0.len(), self.len as usize)]
     }
 }
 impl From<&bhyve_api::vm_inst_emul> for InstEmul {
     fn from(raw: &bhyve_api::vm_inst_emul) -> Self {
-        let mut res = Self { inst_data: [0u8; 15], len: raw.num_valid };
-        assert!(res.len as usize <= res.inst_data.len());
-        res.inst_data.copy_from_slice(&raw.inst[..]);
+        let mut res =
+            Self { inst_data: GuestData([0u8; 15]), len: raw.num_valid };
+        assert!(res.len as usize <= res.inst_data.0.len());
+        res.inst_data.0.copy_from_slice(&raw.inst[..]);
 
         res
     }

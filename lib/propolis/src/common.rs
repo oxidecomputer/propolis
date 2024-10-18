@@ -5,8 +5,47 @@
 use std::ops::{Add, BitAnd};
 use std::ops::{Bound::*, RangeBounds};
 use std::slice::SliceIndex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::vmm::SubMapping;
+
+/// Controls whether items wrapped in a [`GuestData`] are displayed or redacted
+/// when the wrappers are printed via their `Display` or `Debug` impls.
+pub static DISPLAY_GUEST_DATA: AtomicBool = AtomicBool::new(false);
+
+/// A wrapper type denoting that the contained `T` was obtained from the guest
+/// (e.g. by reading the guest's memory).
+///
+/// This type has custom `Display` and `Debug` impls that redact the wrapped `T`
+/// if [`DISPLAY_GUEST_DATA`] is `false`.
+///
+/// WARNING: This type only suppresses display of its contents. It does not do
+/// anything else to secure those contents: the inner `T` can be moved from the
+/// wrapper, the memory that held it is not zeroed when the wrapper is dropped,
+/// etc.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct GuestData<T>(pub T);
+
+impl<T: std::fmt::Display> std::fmt::Display for GuestData<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if DISPLAY_GUEST_DATA.load(Ordering::Relaxed) {
+            write!(f, "{}", self.0)
+        } else {
+            write!(f, "<guest data redacted>")
+        }
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for GuestData<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if DISPLAY_GUEST_DATA.load(Ordering::Relaxed) {
+            write!(f, "{:?}", self.0)
+        } else {
+            write!(f, "<guest data redacted>")
+        }
+    }
+}
 
 fn numeric_bounds(
     bound: impl RangeBounds<usize>,

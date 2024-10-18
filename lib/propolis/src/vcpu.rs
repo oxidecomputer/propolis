@@ -7,6 +7,7 @@
 use std::io::Result;
 use std::sync::Arc;
 
+use crate::common::GuestData;
 use crate::common::Lifecycle;
 use crate::cpuid;
 use crate::exits::*;
@@ -1344,28 +1345,17 @@ mod bits {
 
 /// Pretty-printable diagnostic information about the state of a vCPU.
 pub struct Diagnostics {
-    gp_regs: Result<migrate::VcpuGpRegsV1>,
-    seg_regs: Result<migrate::VcpuSegRegsV1>,
-    ctrl_regs: Result<migrate::VcpuCtrlRegsV1>,
+    gp_regs: Result<GuestData<migrate::VcpuGpRegsV1>>,
+    seg_regs: Result<GuestData<migrate::VcpuSegRegsV1>>,
+    ctrl_regs: Result<GuestData<migrate::VcpuCtrlRegsV1>>,
 }
 
 impl Diagnostics {
-    #[cfg(feature = "dump-guest-state")]
     pub fn capture(vcpu: &Vcpu) -> Self {
         Self {
-            gp_regs: migrate::VcpuGpRegsV1::read(vcpu),
-            seg_regs: migrate::VcpuSegRegsV1::read(vcpu),
-            ctrl_regs: migrate::VcpuCtrlRegsV1::read(vcpu),
-        }
-    }
-
-    #[cfg(not(feature = "dump-guest-state"))]
-    pub fn capture(_vcpu: &Vcpu) -> Self {
-        let msg = "dump-guest-state feature disabled";
-        Self {
-            gp_regs: Err(std::io::Error::new(std::io::ErrorKind::Other, msg)),
-            seg_regs: Err(std::io::Error::new(std::io::ErrorKind::Other, msg)),
-            ctrl_regs: Err(std::io::Error::new(std::io::ErrorKind::Other, msg)),
+            gp_regs: migrate::VcpuGpRegsV1::read(vcpu).map(GuestData),
+            seg_regs: migrate::VcpuSegRegsV1::read(vcpu).map(GuestData),
+            ctrl_regs: migrate::VcpuCtrlRegsV1::read(vcpu).map(GuestData),
         }
     }
 }
@@ -1433,33 +1423,30 @@ impl std::fmt::Display for migrate::VcpuCtrlRegsV1 {
 impl std::fmt::Display for Diagnostics {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f)?;
-        match &self.gp_regs {
-            Ok(regs) => {
-                writeln!(f, "{}", regs)?;
-            }
-            Err(e) => {
-                writeln!(f, "error reading general-purpose registers: {}", e)?;
-            }
-        }
-
-        match &self.seg_regs {
-            Ok(regs) => {
-                writeln!(f, "{}", regs)?;
-            }
-            Err(e) => {
-                writeln!(f, "error reading segment registers: {}", e)?;
-            }
-        }
-
-        match &self.ctrl_regs {
-            Ok(regs) => {
-                writeln!(f, "{}", regs)?;
-            }
-            Err(e) => {
-                writeln!(f, "error reading control registers: {}", e)?;
-            }
-        }
-
+        writeln!(
+            f,
+            "{}",
+            self.gp_regs.as_ref().map(|regs| regs.to_string()).unwrap_or_else(
+                |e| format!("error reading general-purpose registers: {e}")
+            )
+        )?;
+        writeln!(
+            f,
+            "{}",
+            self.seg_regs.as_ref().map(|regs| regs.to_string()).unwrap_or_else(
+                |e| format!("error reading segment registers: {e}")
+            )
+        )?;
+        writeln!(
+            f,
+            "{}",
+            self.ctrl_regs
+                .as_ref()
+                .map(|regs| regs.to_string())
+                .unwrap_or_else(|e| format!(
+                    "error reading control registers: {e}"
+                ))
+        )?;
         Ok(())
     }
 }
