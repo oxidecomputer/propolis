@@ -18,14 +18,9 @@ pub static DISPLAY_GUEST_DATA: AtomicBool = AtomicBool::new(false);
 ///
 /// This type has custom `Display` and `Debug` impls that redact the wrapped `T`
 /// if [`DISPLAY_GUEST_DATA`] is `false`.
-///
-/// WARNING: This type only suppresses display of its contents. It does not do
-/// anything else to secure those contents: the inner `T` can be moved from the
-/// wrapper, the memory that held it is not zeroed when the wrapper is dropped,
-/// etc.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub struct GuestData<T>(pub T);
+pub struct GuestData<T: ?Sized>(T);
 
 impl<T: std::fmt::Display> std::fmt::Display for GuestData<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -44,6 +39,32 @@ impl<T: std::fmt::Debug> std::fmt::Debug for GuestData<T> {
         } else {
             write!(f, "<guest data redacted>")
         }
+    }
+}
+
+impl<T> std::ops::Deref for GuestData<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for GuestData<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T> From<T> for GuestData<T> {
+    fn from(value: T) -> Self {
+        Self(value)
+    }
+}
+
+impl<T> std::borrow::Borrow<T> for GuestData<T> {
+    fn borrow(&self) -> &T {
+        &self.0
     }
 }
 

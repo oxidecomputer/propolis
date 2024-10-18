@@ -4,7 +4,7 @@
 
 use bitvec::prelude::{BitSlice, Lsb0};
 use futures::{SinkExt, StreamExt};
-use propolis::common::{GuestAddr, PAGE_SIZE};
+use propolis::common::{GuestAddr, GuestData, PAGE_SIZE};
 use propolis::migrate::{
     MigrateCtx, MigrateStateError, Migrator, PayloadOutputs,
 };
@@ -657,9 +657,12 @@ impl<'vm, T: MigrateConn> RonV0Runner<'vm, T> {
         info!(self.log(), "ram_push: xfer RAM between {start:#x} and {end:#x}",);
         self.send_msg(memx::make_mem_xfer(start, end, bits)).await?;
         for addr in PageIter::new(start, end, bits) {
-            let mut bytes = [0u8; PAGE_SIZE];
-            self.read_guest_mem(GuestAddr(addr), &mut bytes).await?;
-            self.send_msg(codec::Message::Page(bytes.into())).await?;
+            let mut byte_buffer = [0u8; PAGE_SIZE];
+            {
+                let mut bytes = GuestData::from(byte_buffer.as_mut_slice());
+                self.read_guest_mem(GuestAddr(addr), &mut bytes).await?;
+            }
+            self.send_msg(codec::Message::Page(byte_buffer.into())).await?;
             probes::migrate_xfer_ram_page!(|| (addr, PAGE_SIZE as u64));
         }
         Ok(())
@@ -919,7 +922,7 @@ impl<'vm, T: MigrateConn> RonV0Runner<'vm, T> {
     async fn read_guest_mem(
         &mut self,
         addr: GuestAddr,
-        buf: &mut [u8],
+        buf: &mut GuestData<&mut [u8]>,
     ) -> Result<(), MigrateError> {
         let objects = self.vm.lock_shared().await;
         let memctx = objects.access_mem().unwrap();

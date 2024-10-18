@@ -103,16 +103,15 @@ pub struct InstEmul {
 
 impl InstEmul {
     pub fn bytes(&self) -> &[u8] {
-        &self.inst_data.0
-            [..usize::min(self.inst_data.0.len(), self.len as usize)]
+        &self.inst_data[..usize::min(self.inst_data.len(), self.len as usize)]
     }
 }
 impl From<&bhyve_api::vm_inst_emul> for InstEmul {
     fn from(raw: &bhyve_api::vm_inst_emul) -> Self {
         let mut res =
-            Self { inst_data: GuestData([0u8; 15]), len: raw.num_valid };
-        assert!(res.len as usize <= res.inst_data.0.len());
-        res.inst_data.0.copy_from_slice(&raw.inst[..]);
+            Self { inst_data: GuestData::from([0u8; 15]), len: raw.num_valid };
+        assert!(res.len as usize <= res.inst_data.len());
+        res.inst_data.copy_from_slice(&raw.inst[..]);
 
         res
     }

@@ -1353,9 +1353,9 @@ pub struct Diagnostics {
 impl Diagnostics {
     pub fn capture(vcpu: &Vcpu) -> Self {
         Self {
-            gp_regs: migrate::VcpuGpRegsV1::read(vcpu).map(GuestData),
-            seg_regs: migrate::VcpuSegRegsV1::read(vcpu).map(GuestData),
-            ctrl_regs: migrate::VcpuCtrlRegsV1::read(vcpu).map(GuestData),
+            gp_regs: migrate::VcpuGpRegsV1::read(vcpu).map(GuestData::from),
+            seg_regs: migrate::VcpuSegRegsV1::read(vcpu).map(GuestData::from),
+            ctrl_regs: migrate::VcpuCtrlRegsV1::read(vcpu).map(GuestData::from),
         }
     }
 }

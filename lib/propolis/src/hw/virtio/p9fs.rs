@@ -223,15 +223,15 @@ pub trait P9Handler: Sync + Send + 'static {
         let mut data = Vec::new();
         let msize = self.msize();
         data.resize(msize as usize, 0);
-        let buf = data.as_mut_slice();
+        let mut buf = GuestData::from(data.as_mut_slice());
 
         // TODO copy pasta from tail end of Chain::read function. Seemingly
         // cannot use Chain::read as-is because it expects a statically sized
         // type.
         let mut done = 0;
         let _total = chain.for_remaining_type(true, |addr, len| {
-            let remain = &mut buf[done..];
-            if let Some(copied) = mem.read_into(addr, remain, len) {
+            let mut remain = GuestData::from(&mut buf[done..]);
+            if let Some(copied) = mem.read_into(addr, &mut remain, len) {
                 let need_more = copied != remain.len();
                 done += copied;
                 (copied, need_more)

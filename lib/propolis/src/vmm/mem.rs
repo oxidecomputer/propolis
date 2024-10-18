@@ -14,8 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use libc::iovec;
 
-use crate::common::PAGE_SIZE;
-use crate::common::{GuestAddr, GuestRegion};
+use crate::common::{GuestAddr, GuestData, GuestRegion, PAGE_SIZE};
 use crate::util::aspace::ASpace;
 use crate::vmm::VmmHdl;
 
@@ -798,11 +797,14 @@ pub struct MemCtx {
 }
 impl MemCtx {
     /// Reads a generic value from a specified guest address.
-    pub fn read<T: Copy + FromBytes>(&self, addr: GuestAddr) -> Option<T> {
+    pub fn read<T: Copy + FromBytes>(
+        &self,
+        addr: GuestAddr,
+    ) -> Option<GuestData<T>> {
         if let Some(mapping) =
             self.region_covered(addr, size_of::<T>(), Prot::READ)
         {
-            mapping.read().ok()
+            mapping.read::<T>().ok().map(GuestData::from)
         } else {
             None
         }
@@ -813,7 +815,7 @@ impl MemCtx {
     pub fn read_into(
         &self,
         addr: GuestAddr,
-        buf: &mut [u8],
+        buf: &mut GuestData<&mut [u8]>,
         len: usize,
     ) -> Option<usize> {
         let len = usize::min(buf.len(), len);
@@ -828,7 +830,7 @@ impl MemCtx {
     pub fn direct_read_into(
         &self,
         addr: GuestAddr,
-        buf: &mut [u8],
+        buf: &mut GuestData<&mut [u8]>,
         len: usize,
     ) -> Option<usize> {
         let len = usize::min(buf.len(), len);
@@ -842,9 +844,16 @@ impl MemCtx {
         &self,
         base: GuestAddr,
         count: usize,
-    ) -> Option<MemMany<T>> {
+    ) -> Option<GuestData<MemMany<T>>> {
         self.region_covered(base, size_of::<T>() * count, Prot::READ).map(
-            |mapping| MemMany { mapping, pos: 0, count, phantom: PhantomData },
+            |mapping| {
+                GuestData::from(MemMany {
+                    mapping,
+                    pos: 0,
+                    count,
+                    phantom: PhantomData,
+                })
+            },
         )
     }
     /// Writes a value to guest memory.
@@ -1025,26 +1034,30 @@ pub struct MemMany<'a, T: Copy> {
     pos: usize,
     phantom: PhantomData<T>,
 }
-impl<'a, T: Copy + FromBytes> MemMany<'a, T> {
+impl<'a, T: Copy + FromBytes> GuestData<MemMany<'a, T>> {
     /// Gets the object at position `pos` within the memory region.
     ///
     /// Returns [`Option::None`] if out of range.
-    pub fn get(&self, pos: usize) -> Option<T> {
+    pub fn get(&self, pos: usize) -> Option<GuestData<T>> {
         if pos < self.count {
             let sz = std::mem::size_of::<T>();
-            self.mapping.subregion(pos * sz, sz)?.read().ok()
+            self.mapping
+                .subregion(pos * sz, sz)?
+                .read::<T>()
+                .ok()
+                .map(GuestData::from)
         } else {
             None
         }
     }
 }
-impl<'a, T: Copy + FromBytes> Iterator for MemMany<'a, T> {
-    type Item = T;
+impl<'a, T: Copy + FromBytes> Iterator for GuestData<MemMany<'a, T>> {
+    type Item = GuestData<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let res = self.get(self.pos);
         self.pos += 1;
-        res
+        res.map(GuestData::from)
     }
 }
 
