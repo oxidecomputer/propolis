@@ -148,15 +148,67 @@ pub struct ShellOutput {
     output: String,
 }
 
-pub struct ShellOutputExecutor {
-    fut: Pin<Box<dyn std::future::Future<Output=Result<ShellOutput>>>>
+pub struct ShellOutputExecutor<'ctx> {
+    vm: &'ctx TestVm,
+    cmd: &'ctx str,
 }
 
+/*
 impl ShellOutputExecutor {
     fn require_ok(self) -> ShellOutputOkExecutor {
         ShellOutputOkExecutor {
             fut: self.fut
         }
+    }
+}
+*/
+
+impl<'a> std::future::IntoFuture for ShellOutputExecutor<'a> {
+    type Output = Result<ShellOutput>;
+    type IntoFuture = Pin<Box<dyn std::future::Future<Output = Self::Output>>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move {
+        // Allow the guest OS to transform the input command into a
+        // guest-specific command sequence. This accounts for the guest's shell
+        // type (which affects e.g. affects how it displays multi-line commands)
+        // and serial console buffering discipline.
+        let command_sequence = self.vm.guest_os.shell_command_sequence(self.cmd);
+        self.vm.run_command_sequence(command_sequence).await?;
+
+        // `shell_command_sequence` promises that the generated command sequence
+        // clears buffer of everything up to and including the input command
+        // before actually issuing the final '\n' that issues the command.
+        // This ensures that the buffer contents returned by this call contain
+        // only the command's output.
+        let output = self
+            .vm
+            .wait_for_serial_output(
+                self.vm.guest_os.get_shell_prompt(),
+                Duration::from_secs(300),
+            )
+            .await?;
+
+        let status_command_sequence =
+            self.vm.guest_os.shell_command_sequence("echo $?");
+        self.vm.run_command_sequence(status_command_sequence).await?;
+
+        let status = self
+            .vm
+            .wait_for_serial_output(
+                self.vm.guest_os.get_shell_prompt(),
+                Duration::from_secs(300),
+            )
+            .await?;
+
+        // Trim any leading newlines inserted when the command was issued and
+        // any trailing whitespace that isn't actually part of the command
+        // output. Any other embedded whitespace is the caller's problem.
+        let output = output.trim().to_string();
+        let status = status.trim().parse::<u16>()?;
+
+        Ok(ShellOutput { status, output })
+        })
     }
 }
 
@@ -167,13 +219,15 @@ pub struct ShellOutputOkExecutor {
 use std::pin::Pin;
 use std::task::Poll;
 
-impl std::future::Future for ShellOutputExecutor {
+/*
+impl<' std::future::Future for ShellOutputExecutor {
     type Output = Result<ShellOutput>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         self.fut.as_mut().poll(cx)
     }
 }
+*/
 
 impl std::future::Future for ShellOutputOkExecutor {
     type Output = Result<String>;
@@ -964,49 +1018,10 @@ impl TestVm {
     // unfortunately I don't know how to plumb the futures for that, since we'd
     // have to close over `&self`, so doing any Boxing to hold an
     // `async move {}` immediately causes issues.
-    pub fn run_shell_command<'a>(&'a self, cmd: &'a str) -> impl std::future::Future<Output=Result<ShellOutput>> + 'a {
-        let fut = Box::pin(async move {
-        // Allow the guest OS to transform the input command into a
-        // guest-specific command sequence. This accounts for the guest's shell
-        // type (which affects e.g. affects how it displays multi-line commands)
-        // and serial console buffering discipline.
-        let command_sequence = self.guest_os.shell_command_sequence(cmd);
-        self.run_command_sequence(command_sequence).await?;
-
-        // `shell_command_sequence` promises that the generated command sequence
-        // clears buffer of everything up to and including the input command
-        // before actually issuing the final '\n' that issues the command.
-        // This ensures that the buffer contents returned by this call contain
-        // only the command's output.
-        let output = self
-            .wait_for_serial_output(
-                self.guest_os.get_shell_prompt(),
-                Duration::from_secs(300),
-            )
-            .await?;
-
-        let status_command_sequence =
-            self.guest_os.shell_command_sequence("echo $?");
-        self.run_command_sequence(status_command_sequence).await?;
-
-        let status = self
-            .wait_for_serial_output(
-                self.guest_os.get_shell_prompt(),
-                Duration::from_secs(300),
-            )
-            .await?;
-
-        // Trim any leading newlines inserted when the command was issued and
-        // any trailing whitespace that isn't actually part of the command
-        // output. Any other embedded whitespace is the caller's problem.
-        let output = output.trim().to_string();
-        let status = status.trim().parse::<u16>()?;
-
-        Ok(ShellOutput { status, output })
-        });
-
+    pub fn run_shell_command<'a>(&'a self, cmd: &'a str) -> ShellOutputExecutor<'a> {
         ShellOutputExecutor {
-            fut,
+            vm: self,
+            cmd,
         }
     }
 
