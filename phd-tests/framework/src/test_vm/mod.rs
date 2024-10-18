@@ -148,6 +148,36 @@ pub struct ShellOutput {
     output: String,
 }
 
+pub struct ShellOutputExecutor {
+    fut: Pin<Box<dyn std::future::Future<Output=Result<ShellOutput>>>>
+}
+
+pub struct ShellOutputOkExecutor {
+    fut: Pin<Box<dyn std::future::Future<Output=Result<ShellOutput>>>>
+}
+
+use std::pin::Pin;
+use std::task::Poll;
+
+impl std::future::Future for ShellOutputExecutor {
+    type Output = Result<ShellOutput>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        self.fut.as_mut().poll(cx)
+    }
+}
+
+impl std::future::Future for ShellOutputOkExecutor {
+    type Output = Result<String>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        match self.fut.as_mut().poll(cx) {
+            Poll::Ready(t) => Poll::Ready(t.and_then(|res| res.expect_ok())),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 impl ShellOutput {
     /// Consume this [`ShellOutput`], returning the command's output as text
     /// if the command completed successfully, or an error if it did not.
@@ -926,7 +956,8 @@ impl TestVm {
     // unfortunately I don't know how to plumb the futures for that, since we'd
     // have to close over `&self`, so doing any Boxing to hold an
     // `async move {}` immediately causes issues.
-    pub async fn run_shell_command(&self, cmd: &str) -> Result<ShellOutput> {
+    pub fn run_shell_command<'a>(&'a self, cmd: &'a str) -> impl std::future::Future<Output=Result<ShellOutput>> + 'a {
+        let fut = Box::pin(async move {
         // Allow the guest OS to transform the input command into a
         // guest-specific command sequence. This accounts for the guest's shell
         // type (which affects e.g. affects how it displays multi-line commands)
@@ -964,6 +995,11 @@ impl TestVm {
         let status = status.trim().parse::<u16>()?;
 
         Ok(ShellOutput { status, output })
+        });
+
+        ShellOutputExecutor {
+            fut,
+        }
     }
 
     pub async fn graceful_reboot(&self) -> Result<()> {
