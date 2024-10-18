@@ -66,10 +66,10 @@ async fn shutdown_persistence_test(ctx: &Framework) {
     // Verify that the test file doesn't exist yet, then touch it, flush it, and
     // shut down the VM.
     let lsout =
-        vm.run_shell_command("ls foo.bar 2> /dev/null").await?.expect_err()?;
+        vm.run_shell_command("ls foo.bar 2> /dev/null").check_err().await?;
     assert_eq!(lsout, "");
-    vm.run_shell_command("touch ./foo.bar").await?.expect_ok()?;
-    vm.run_shell_command("sync ./foo.bar").await?.expect_ok()?;
+    vm.run_shell_command("touch ./foo.bar").await?;
+    vm.run_shell_command("sync ./foo.bar").await?;
     vm.stop().await?;
     vm.wait_for_state(InstanceState::Destroyed, Duration::from_secs(60))
         .await?;
@@ -84,7 +84,6 @@ async fn shutdown_persistence_test(ctx: &Framework) {
     vm.wait_to_boot().await?;
 
     // The touched file from the previous VM should be present in the new one.
-    let lsout =
-        vm.run_shell_command("ls foo.bar 2> /dev/null").await?.expect_ok()?;
+    let lsout = vm.run_shell_command("ls foo.bar 2> /dev/null").await?;
     assert_eq!(lsout, "foo.bar");
 }

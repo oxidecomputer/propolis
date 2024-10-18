@@ -23,17 +23,17 @@ async fn lspci_lifecycle_test(ctx: &Framework) {
     // * lshw may not exist (Debian)
     // * we may not input a sudo password (Ubuntu)
 
-    let lspci = vm.run_shell_command(LSPCI).await?.ignore_status();
-    let lshw = vm.run_shell_command(LSHW).await?.ignore_status();
+    let lspci = vm.run_shell_command(LSPCI).ignore_status().await?;
+    let lshw = vm.run_shell_command(LSHW).ignore_status().await?;
     ctx.lifecycle_test(vm, &[Action::StopAndStart], move |vm| {
         let lspci = lspci.clone();
         let lshw = lshw.clone();
         Box::pin(async move {
             let new_lspci =
-                vm.run_shell_command(LSPCI).await.unwrap().ignore_status();
+                vm.run_shell_command(LSPCI).ignore_status().await.unwrap();
             assert_eq!(new_lspci, lspci);
             let new_lshw =
-                vm.run_shell_command(LSHW).await.unwrap().ignore_status();
+                vm.run_shell_command(LSHW).ignore_status().await.unwrap();
             assert_eq!(new_lshw, lshw);
         })
     })

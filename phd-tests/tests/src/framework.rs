@@ -13,7 +13,6 @@ async fn multiline_serial_test(ctx: &Framework) {
     vm.launch().await?;
     vm.wait_to_boot().await?;
 
-    let out =
-        vm.run_shell_command("echo \\\nhello \\\nworld").await?.expect_ok()?;
+    let out = vm.run_shell_command("echo \\\nhello \\\nworld").await?;
     assert_eq!(out, "hello world");
 }
