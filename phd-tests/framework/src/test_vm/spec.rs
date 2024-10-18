@@ -48,13 +48,12 @@ impl VmSpec {
             let backend_spec = disk.backend_spec();
             let backend_name =
                 disk.device_name().clone().into_backend_name().into_string();
-            match self.instance_spec.components.get(&backend_name) {
-                Some(ComponentV0::CrucibleStorageBackend(_)) => {
-                    self.instance_spec
-                        .components
-                        .insert(backend_name, backend_spec);
-                }
-                Some(_) | None => {}
+            if let Some(ComponentV0::CrucibleStorageBackend(_)) =
+                self.instance_spec.components.get(&backend_name)
+            {
+                self.instance_spec
+                    .components
+                    .insert(backend_name, backend_spec);
             }
         }
     }
