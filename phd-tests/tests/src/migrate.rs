@@ -263,7 +263,7 @@ mod running_process {
         .await?;
         vm.run_shell_command("chmod +x dirt.sh").await?;
         // When dirt.sh suspends itself, the parent shell will report a non-zero
-        // status (148, in particular: 128 + SIGTSTP aka 20 for Linux guests).
+        // status (one example is 148: 128 + SIGTSTP aka 20 on Linux).
         let run_dirt = vm.run_shell_command("./dirt.sh").check_err().await?;
         assert!(run_dirt.contains("made dirt"), "dirt.sh failed: {run_dirt:?}");
         assert!(
@@ -386,10 +386,8 @@ async fn run_serial_history_test(
     source.launch().await?;
     source.wait_to_boot().await?;
 
-    let out = source
-        .run_shell_command("echo hello from the source VM!")
-        .ignore_status()
-        .await?;
+    let out =
+        source.run_shell_command("echo hello from the source VM!").await?;
     assert_eq!(out, "hello from the source VM!");
 
     let serial_hist_pre = source.get_serial_console_history(0).await?;
