@@ -926,7 +926,6 @@ impl TestVm {
     // unfortunately I don't know how to plumb the futures for that, since we'd
     // have to close over `&self`, so doing any Boxing to hold an
     // `async move {}` immediately causes issues.
-    #[must_use]
     pub async fn run_shell_command(&self, cmd: &str) -> Result<ShellOutput> {
         // Allow the guest OS to transform the input command into a
         // guest-specific command sequence. This accounts for the guest's shell
