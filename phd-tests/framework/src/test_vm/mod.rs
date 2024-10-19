@@ -142,12 +142,6 @@ enum VmState {
     Ensured { serial: SerialConsole },
 }
 
-/// Both the output and status of a command.
-pub struct ShellOutput {
-    status: u16,
-    output: String,
-}
-
 /// Description of the acceptable status codes from executing a command in a
 /// [`TestVm::run_shell_command`].
 // This could reasonably have a `Status(u16)` variant to check specific non-zero
@@ -188,7 +182,7 @@ impl<'a> std::future::IntoFuture for ShellOutputExecutor<'a> {
     type IntoFuture = futures::future::BoxFuture<'a, Result<String>>;
 
     fn into_future(self) -> Self::IntoFuture {
-        let cmd = Box::pin(async move {
+        Box::pin(async move {
             // Allow the guest OS to transform the input command into a
             // guest-specific command sequence. This accounts for the guest's
             // shell type (which affects e.g. affects how it displays multi-line
@@ -210,49 +204,40 @@ impl<'a> std::future::IntoFuture for ShellOutputExecutor<'a> {
                 )
                 .await?;
 
-            let status_command_sequence =
-                self.vm.guest_os.shell_command_sequence("echo $?");
-            self.vm.run_command_sequence(status_command_sequence).await?;
-
-            let status = self
-                .vm
-                .wait_for_serial_output(
-                    self.vm.guest_os.get_shell_prompt(),
-                    Duration::from_secs(300),
-                )
-                .await?;
-
             // Trim any leading newlines inserted when the command was issued
             // and any trailing whitespace that isn't actually part of the
             // command output. Any other embedded whitespace is the caller's
             // problem.
             let output = output.trim().to_string();
-            let status = status.trim().parse::<u16>()?;
 
-            Ok(ShellOutput { status, output })
-        });
-        cmd.map(move |res| {
-            res.and_then(|out| {
-                match self.status_check {
-                    Some(StatusCheck::Ok) => {
-                        if out.status != 0 {
-                            bail!("expected status 0, got {}", out.status);
+            if let Some(check) = self.status_check {
+                let status_command_sequence =
+                    self.vm.guest_os.shell_command_sequence("echo $?");
+                self.vm.run_command_sequence(status_command_sequence).await?;
+                let status = self
+                    .vm
+                    .wait_for_serial_output(
+                        self.vm.guest_os.get_shell_prompt(),
+                        Duration::from_secs(300),
+                    )
+                    .await?;
+                let status = status.trim().parse::<u16>()?;
+
+                match check {
+                    StatusCheck::Ok => {
+                        if status != 0 {
+                            bail!("expected status 0, got {}", status);
                         }
                     }
-                    Some(StatusCheck::NotOk) => {
-                        if out.status != 0 {
-                            bail!(
-                                "expected non-zero status, got {}",
-                                out.status
-                            );
+                    StatusCheck::NotOk => {
+                        if status == 0 {
+                            bail!("expected non-zero status, got {}", status);
                         }
-                    }
-                    None => {
-                        // No check, always a success regardless of exit status
                     }
                 }
-                Ok(out.output)
-            })
+            }
+
+            Ok(output)
         })
         .boxed()
     }
