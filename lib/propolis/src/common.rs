@@ -11,13 +11,25 @@ use crate::vmm::SubMapping;
 
 /// Controls whether items wrapped in a [`GuestData`] are displayed or redacted
 /// when the wrappers are printed via their `Display` or `Debug` impls.
+#[no_mangle]
 pub static DISPLAY_GUEST_DATA: AtomicBool = AtomicBool::new(false);
 
 /// A wrapper type denoting that the contained `T` was obtained from the guest
-/// (e.g. by reading the guest's memory).
+/// (e.g. by reading the guest's memory). This type implements various traits
+/// (`Deref`, `DerefMut`, and `Borrow`) that allow it to be treated in most
+/// cases as just another instance of a `T`. The main difference is that this
+/// wrapper has custom `Display` and `Debug` implementations that redact the
+/// wrapped value unless the program has set the [`DISPLAY_GUEST_DATA`] flag.
 ///
-/// This type has custom `Display` and `Debug` impls that redact the wrapped `T`
-/// if [`DISPLAY_GUEST_DATA`] is `false`.
+/// NOTE: This wrapper type is not airtight: owners of a wrapper can always
+/// dereference it and invoke the Display/Debug impls directly on the resulting
+/// reference to the wrapped value. If `T` is `Clone`, they can also clone the
+/// dereferenced value and display the clone. (This comes with the territory
+/// here: users need to be able to get at the wrapped value to be able to do
+/// anything useful with it!)
+///
+/// NOTE: This type does not provide any other security guarantees (e.g. it does
+/// not ensure that the wrapped memory will be zeroed on drop).
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct GuestData<T: ?Sized>(T);
