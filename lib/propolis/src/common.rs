@@ -11,6 +11,13 @@ use crate::vmm::SubMapping;
 
 /// Controls whether items wrapped in a [`GuestData`] are displayed or redacted
 /// when the wrappers are printed via their `Display` or `Debug` impls.
+//
+// The Propolis server binary should only link the Propolis lib once (any
+// structure that links the lib multiple times means something is very odd about
+// its dependency graph), so there should never be any ambiguity about what
+// `DISPLAY_GUEST_DATA` refers to when linking. But to be maximally cautious,
+// label this static as `no_mangle` so that pulling in multiple Propolis
+// libraries will break the build instead of possibly resolving ambiguously.
 #[no_mangle]
 pub static DISPLAY_GUEST_DATA: AtomicBool = AtomicBool::new(false);
 
