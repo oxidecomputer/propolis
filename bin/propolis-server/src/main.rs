@@ -136,6 +136,13 @@ fn run_server(
         Err(e).context("API version checks")?;
     }
 
+    // If this is a development image being run outside of an Omicron zone,
+    // enable the display (in logs, panic messages, and the like) of diagnostic
+    // data that may have originated in the guest.
+    #[cfg(not(feature = "omicron-build"))]
+    propolis::common::DISPLAY_GUEST_DATA
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
     let use_reservoir = config::reservoir_decide(&log);
 
     let context = server::DropshotEndpointContext::new(

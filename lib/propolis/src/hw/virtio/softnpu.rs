@@ -652,8 +652,8 @@ use bits::*;
 fn read_buf(mem: &MemCtx, chain: &mut Chain, buf: &mut [u8]) -> usize {
     let mut done = 0;
     chain.for_remaining_type(true, |addr, len| {
-        let remain = &mut buf[done..];
-        if let Some(copied) = mem.read_into(addr, remain, len) {
+        let mut remain = GuestData::from(&mut buf[done..]);
+        if let Some(copied) = mem.read_into(addr, &mut remain, len) {
             let need_more = copied != remain.len();
             done += copied;
             (copied, need_more)

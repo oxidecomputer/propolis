@@ -429,7 +429,7 @@ impl SubQueue {
     pub fn pop(
         self: &Arc<SubQueue>,
         mem: &MemCtx,
-    ) -> Option<(SubmissionQueueEntry, Permit, u16)> {
+    ) -> Option<(GuestData<SubmissionQueueEntry>, Permit, u16)> {
         // Attempt to reserve an entry on the Completion Queue
         let permit = self.cq.reserve_entry(&self)?;
         let mut state = self.state.lock();

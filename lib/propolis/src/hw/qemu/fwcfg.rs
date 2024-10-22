@@ -599,7 +599,7 @@ impl FwCfg {
 
         let mem_guard = self.acc_mem.access().expect("usable mem accessor");
         let mem = mem_guard.deref();
-        let req: FwCfgDmaAccess =
+        let req: GuestData<FwCfgDmaAccess> =
             mem.read(GuestAddr(addr)).ok_or(FwCfgErr::BadAddr)?;
 
         fn dma_write_result(
@@ -632,7 +632,7 @@ impl FwCfg {
     fn dma_operation(
         &self,
         state: &mut MutexGuard<State>,
-        req: FwCfgDmaAccess,
+        req: GuestData<FwCfgDmaAccess>,
         mem: &MemCtx,
     ) -> Result<(), FwCfgErr> {
         let opts = FwCfgDmaCtrl::from_bits_truncate(req.ctrl.get());
@@ -995,9 +995,9 @@ mod test {
         submit_dma_req(&dev, req_addr);
 
         // DMA should have successfully completed now
-        assert_eq!(mem.read::<u32>(GuestAddr(req_addr)).unwrap(), 0);
+        assert_eq!(*mem.read::<u32>(GuestAddr(req_addr)).unwrap(), 0);
         let data = mem.read::<[u8; 4]>(GuestAddr(dma_addr)).unwrap();
-        assert_eq!(&data, "QEMU".as_bytes());
+        assert_eq!(&*data, "QEMU".as_bytes());
     }
 
     #[test]
@@ -1019,9 +1019,9 @@ mod test {
         submit_dma_req(&dev, req_addr);
 
         // DMA should have successfully completed now
-        assert_eq!(mem.read::<u32>(GuestAddr(req_addr)).unwrap(), 0);
+        assert_eq!(*mem.read::<u32>(GuestAddr(req_addr)).unwrap(), 0);
         let data = mem.read::<[u8; 4]>(GuestAddr(dma_addr)).unwrap();
-        assert_eq!(data, [0u8; 4]);
+        assert_eq!(*data, [0u8; 4]);
     }
 
     #[test]

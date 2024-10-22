@@ -59,7 +59,7 @@ impl VqAvail {
             return None;
         }
         if let Some(idx) = mem.read::<u16>(self.gpa_idx) {
-            let ndesc = Wrapping(idx) - self.cur_avail_idx;
+            let ndesc = Wrapping(*idx) - self.cur_avail_idx;
             if ndesc.0 != 0 && ndesc.0 < rsize {
                 let avail_idx = self.cur_avail_idx.0 & (rsize - 1);
                 self.cur_avail_idx += Wrapping(1);
@@ -68,7 +68,7 @@ impl VqAvail {
                 let addr = self.gpa_ring.offset::<u16>(avail_idx as usize);
                 return mem
                     .read(addr)
-                    .map(|desc_idx| VqReq { desc_idx, avail_idx });
+                    .map(|desc_idx| VqReq { desc_idx: *desc_idx, avail_idx });
             }
         }
         None
@@ -78,7 +78,7 @@ impl VqAvail {
         id: u16,
         rsize: u16,
         mem: &MemCtx,
-    ) -> Option<VqdDesc> {
+    ) -> Option<GuestData<VqdDesc>> {
         assert!(id < rsize);
         let addr = self.gpa_desc.offset::<VqdDesc>(id as usize);
         mem.read::<VqdDesc>(addr)
@@ -127,7 +127,7 @@ impl VqUsed {
         mem.write(self.gpa_idx, &self.used_idx.0);
     }
     fn intr_supressed(&self, mem: &MemCtx) -> bool {
-        let flags: u16 = mem.read(self.gpa_flags).unwrap();
+        let flags: u16 = *mem.read(self.gpa_flags).unwrap();
         flags & VRING_AVAIL_F_NO_INTERRUPT != 0
     }
     fn reset(&mut self) {
@@ -504,8 +504,8 @@ impl Chain {
         };
         let mut done = 0;
         let total = self.for_remaining_type(true, |addr, len| {
-            let remain = &mut raw[done..];
-            if let Some(copied) = mem.read_into(addr, remain, len) {
+            let mut remain = GuestData::from(&mut raw[done..]);
+            if let Some(copied) = mem.read_into(addr, &mut remain, len) {
                 let need_more = copied != remain.len();
 
                 done += copied;

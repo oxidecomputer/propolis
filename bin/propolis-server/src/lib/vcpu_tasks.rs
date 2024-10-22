@@ -159,6 +159,7 @@ impl VcpuTasks {
                         VmEntry::Run
                     }
                     VmExitKind::Suspended(SuspendDetail { kind, when }) => {
+                        use propolis::vcpu::Diagnostics;
                         match kind {
                             exits::Suspend::Halt => {
                                 event_handler.suspend_halt_event(when);
@@ -167,6 +168,13 @@ impl VcpuTasks {
                                 event_handler.suspend_reset_event(when);
                             }
                             exits::Suspend::TripleFault(vcpuid) => {
+                                slog::info!(
+                                    &log,
+                                    "triple fault on vcpu {}",
+                                    vcpu.id;
+                                    "state" => %Diagnostics::capture(vcpu)
+                                );
+
                                 if vcpuid == -1 || vcpuid == vcpu.id {
                                     event_handler
                                         .suspend_triple_fault_event(vcpu.id, when);
@@ -187,7 +195,76 @@ impl VcpuTasks {
                         task.force_hold();
                         VmEntry::Run
                     }
-                    _ => {
+                    VmExitKind::InstEmul(inst) => {
+                        let diag = propolis::vcpu::Diagnostics::capture(vcpu);
+                        error!(log,
+                               "instruction emulation exit on vCPU {}",
+                               vcpu.id;
+                               "context" => ?inst,
+                               "vcpu_state" => %diag);
+
+                        event_handler.unhandled_vm_exit(vcpu.id, exit.kind);
+                        VmEntry::Run
+                    }
+                    VmExitKind::Unknown(code) => {
+                        error!(log,
+                               "unrecognized exit code on vCPU {}",
+                               vcpu.id;
+                               "code" => code);
+
+                        event_handler.unhandled_vm_exit(vcpu.id, exit.kind);
+                        VmEntry::Run
+                    }
+                    // Bhyve emits the `Bogus` exit kind when there is no actual
+                    // guest exit for user space to handle, but circumstances
+                    // nevertheless dictate that the kernel VMM should exit to
+                    // user space (e.g. a caller requested that all vCPUs be
+                    // forced to exit to user space so their threads can
+                    // rendezvous there).
+                    //
+                    // `process_vmexit` should always successfully handle this
+                    // exit, since it never entails any work that could fail to
+                    // be completed.
+                    VmExitKind::Bogus => {
+                        unreachable!(
+                            "propolis-lib always handles VmExitKind::Bogus"
+                        );
+                    }
+                    VmExitKind::Debug => {
+                        error!(log,
+                               "lib returned debug exit from vCPU {}",
+                               vcpu.id);
+
+                        event_handler.unhandled_vm_exit(vcpu.id, exit.kind);
+                        VmEntry::Run
+                    }
+                    VmExitKind::VmxError(detail) => {
+                        error!(log,
+                               "unclassified VMX exit on vCPU {}",
+                               vcpu.id;
+                               "detail" => ?detail);
+
+                        event_handler.unhandled_vm_exit(vcpu.id, exit.kind);
+                        VmEntry::Run
+                    }
+                    VmExitKind::SvmError(detail) => {
+                        error!(log,
+                               "unclassified SVM exit on vCPU {}",
+                               vcpu.id;
+                               "detail" => ?detail);
+
+                        event_handler.unhandled_vm_exit(vcpu.id, exit.kind);
+                        VmEntry::Run
+                    }
+                    VmExitKind::Paging(gpa, fault_type) => {
+                        let diag = propolis::vcpu::Diagnostics::capture(vcpu);
+                        error!(log,
+                               "unhandled paging exit on vCPU {}",
+                               vcpu.id;
+                               "gpa" => gpa,
+                               "fault_type" => fault_type,
+                               "vcpu_state" => %diag);
+
                         event_handler.unhandled_vm_exit(vcpu.id, exit.kind);
                         VmEntry::Run
                     }
