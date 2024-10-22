@@ -5,7 +5,6 @@ license = "MPL-2.0"
 edition = "2021"
 
 [lib]
-test = false
 doctest = false
 
 [dependencies]
@@ -13,4 +12,5 @@ schemars = { workspace = true, features = [ "uuid1" ] }
 serde.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 serde_test.workspace = true
