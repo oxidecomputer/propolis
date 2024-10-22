@@ -25,6 +25,9 @@ async fn in_memory_backend_smoke_test(ctx: &Framework) {
     );
 
     let mut vm = ctx.spawn_vm(&cfg, None).await?;
+    if vm.guest_os_kind().is_windows() {
+        phd_skip!("this test uses mount options not supported by Cygwin");
+    }
     vm.launch().await?;
     vm.wait_to_boot().await?;
 

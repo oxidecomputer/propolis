@@ -37,6 +37,22 @@ pub(super) fn get_login_sequence_for<'a>(
     ));
 
     let mut commands = vec![
+        // Look for `BdsDxe:` as a sign that we're actually seeing a fresh boot.
+        // This is not terribly important in the case of a first boot, but in a
+        // case such as logging out and waiting for reboot, exiting a cmd.exe
+        // session causes Windows to redraw its previous screen - everything
+        // past `Computer is booting, ...` below.
+        //
+        // A test that tries to boot and wait for a new login sequence would
+        // then incorrectly identify the already-booted VM as the freshly-booted
+        // OS it was waiting for, log in again, and at some point later finally
+        // actually reboot.
+        //
+        // At least on Windows Server 2022, there is an XML prelude that is
+        // printed to COM1 that we could look for here, but check for `BdsDxe: `
+        // instead as that comes from OVMF and will be consistent regardless of
+        // guest OS version.
+        CommandSequenceEntry::wait_for("BdsDxe: loading "),
         CommandSequenceEntry::wait_for(
             "Computer is booting, SAC started and initialized.",
         ),

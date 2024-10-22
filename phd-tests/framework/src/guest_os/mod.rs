@@ -99,6 +99,30 @@ pub enum GuestOsKind {
     WindowsServer2022,
 }
 
+impl GuestOsKind {
+    pub fn is_linux(&self) -> bool {
+        match self {
+            GuestOsKind::Alpine
+            | GuestOsKind::Debian11NoCloud
+            | GuestOsKind::Ubuntu2204 => true,
+            GuestOsKind::WindowsServer2016
+            | GuestOsKind::WindowsServer2019
+            | GuestOsKind::WindowsServer2022 => false,
+        }
+    }
+
+    pub fn is_windows(&self) -> bool {
+        match self {
+            GuestOsKind::WindowsServer2016
+            | GuestOsKind::WindowsServer2019
+            | GuestOsKind::WindowsServer2022 => true,
+            GuestOsKind::Alpine
+            | GuestOsKind::Debian11NoCloud
+            | GuestOsKind::Ubuntu2204 => false,
+        }
+    }
+}
+
 impl FromStr for GuestOsKind {
     type Err = std::io::Error;
 

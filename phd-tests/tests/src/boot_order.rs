@@ -98,6 +98,9 @@ async fn configurable_boot_order(ctx: &Framework) {
     // We haven't specified a boot order. So, we'll expect that we boot to the
     // lower-numbered PCI device (4) and end up in Alpine 3.20.
     let mut vm = ctx.spawn_vm(&cfg, None).await?;
+    if !vm.guest_os_kind().is_linux() {
+        phd_skip!("boot order tests require efivarfs to manipulate UEFI vars");
+    }
     vm.launch().await?;
     vm.wait_to_boot().await?;
 
@@ -162,6 +165,9 @@ async fn unbootable_disk_skipped(ctx: &Framework) {
     cfg.boot_order(vec!["unbootable", "boot-disk"]);
 
     let mut vm = ctx.spawn_vm(&cfg, None).await?;
+    if !vm.guest_os_kind().is_linux() {
+        phd_skip!("boot order tests require efivarfs to manipulate UEFI vars");
+    }
     vm.launch().await?;
     vm.wait_to_boot().await?;
 
@@ -279,6 +285,9 @@ async fn guest_can_adjust_boot_order(ctx: &Framework) {
     cfg.boot_order(vec!["boot-disk", "unbootable"]);
 
     let mut vm = ctx.spawn_vm(&cfg, None).await?;
+    if !vm.guest_os_kind().is_linux() {
+        phd_skip!("boot order tests require efivarfs to manipulate UEFI vars");
+    }
     vm.launch().await?;
     vm.wait_to_boot().await?;
 
@@ -446,6 +455,9 @@ async fn boot_order_source_priority(ctx: &Framework) {
     cfg.clear_boot_order();
 
     let mut vm_no_bootorder = ctx.spawn_vm(&cfg, None).await?;
+    if !vm_no_bootorder.guest_os_kind().is_linux() {
+        phd_skip!("boot order tests require efivarfs to manipulate UEFI vars");
+    }
     vm_no_bootorder.launch().await?;
     vm_no_bootorder.wait_to_boot().await?;
 
