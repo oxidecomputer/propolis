@@ -5,6 +5,7 @@
 //! Implement a virtual block device backed by Crucible
 
 use std::io;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::accessors::MemAccessor;
@@ -14,6 +15,7 @@ use crate::vmm::MemCtx;
 
 use crucible::{
     BlockIO, Buffer, CrucibleError, ReplaceResult, SnapshotDetails, Volume,
+    VolumeBuilder,
 };
 use crucible_client_types::VolumeConstructionRequest;
 use oximeter::types::ProducerRegistry;
@@ -55,7 +57,7 @@ impl WorkerState {
             };
             let res = if let Some(memctx) = acc_mem.access() {
                 match process_request(
-                    &self.volume,
+                    self.volume.deref(),
                     &self.info,
                     self.skip_flush,
                     &req,
@@ -182,8 +184,8 @@ impl CrucibleBackend {
             block_size,
             size as usize,
         ));
-        let mut volume = Volume::new(block_size, log);
-        volume
+        let mut builder = VolumeBuilder::new(block_size, log);
+        builder
             .add_subvolume(mem_disk)
             .await
             .map_err(|e| std::io::Error::from(e))?;
@@ -191,7 +193,7 @@ impl CrucibleBackend {
         Ok(Arc::new(CrucibleBackend {
             state: Arc::new(WorkerState {
                 attachment: block::BackendAttachment::new(),
-                volume,
+                volume: builder.into(),
                 info: block::DeviceInfo {
                     block_size: block_size as u32,
                     total_size: size / block_size,
