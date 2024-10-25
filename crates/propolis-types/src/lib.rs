@@ -291,6 +291,7 @@ impl CpuidValues {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 impl From<core::arch::x86_64::CpuidResult> for CpuidValues {
     fn from(value: core::arch::x86_64::CpuidResult) -> Self {
         Self { eax: value.eax, ebx: value.ebx, ecx: value.ecx, edx: value.edx }
