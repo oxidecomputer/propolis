@@ -167,6 +167,23 @@ mod test {
         }
     }
 
+    fn check_pci_path_deserialization<E>(
+        input: &str,
+        expected: Result<PciPath, E>,
+    ) {
+        let actual = serde_json::from_str::<PciPath>(input);
+        match (actual, expected) {
+            (Ok(parsed), Ok(expected)) => assert_eq!(parsed, expected),
+            (Ok(_), Err(_)) => {
+                panic!("expected to fail to deserialize input: {input}")
+            }
+            (Err(e), Ok(_)) => {
+                panic!("failed to deserialize input {input}: {e}")
+            }
+            (Err(_), Err(_)) => {}
+        }
+    }
+
     #[test]
     fn pci_path_deserialization() {
         const TEST_CASES: &[(&str, Result<PciPath, ()>)] = &[
@@ -183,15 +200,28 @@ mod test {
         ];
 
         for (input, expected) in TEST_CASES {
-            match (serde_json::from_str::<PciPath>(input), expected) {
-                (Ok(parsed), Ok(expected)) => assert_eq!(parsed, *expected),
-                (Ok(_), Err(())) => {
-                    panic!("expected to fail to deserialize input: {input}")
+            check_pci_path_deserialization(input, *expected);
+        }
+    }
+
+    // This test is expensive, so don't run it by default.
+    #[test]
+    #[ignore]
+    fn pci_path_deserialization_exhaustive() {
+        for bus in 0..=255 {
+            for device in 0..=255 {
+                for function in 0..=255 {
+                    let expected = PciPath::new(bus, device, function);
+                    let json = format!(
+                        "{{\
+                        \"bus\": {bus},\
+                        \"device\": {device},\
+                        \"function\": {function}\
+                        }}"
+                    );
+
+                    check_pci_path_deserialization(&json, expected);
                 }
-                (Err(e), Ok(_)) => {
-                    panic!("failed to deserialize input {input}: {e}")
-                }
-                (Err(_), Err(())) => {}
             }
         }
     }
