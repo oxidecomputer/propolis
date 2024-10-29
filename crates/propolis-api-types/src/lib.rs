@@ -4,8 +4,9 @@
 
 //! Definitions for types exposed by the propolis-server API
 
-use std::{fmt, net::SocketAddr};
+use std::{collections::HashMap, fmt, net::SocketAddr};
 
+use instance_spec::{components::backends, v0::InstanceSpecV0, SpecKey};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -48,48 +49,53 @@ pub struct InstanceMetadata {
     pub sled_model: String,
 }
 
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[serde(deny_unknown_fields, tag = "type", content = "component")]
+pub enum ReplacementComponent {
+    CrucibleStorageBackend(backends::CrucibleStorageBackend),
+    FileStorageBackend(backends::FileStorageBackend),
+    BlobStorageBackend(backends::BlobStorageBackend),
+    VirtioNetworkBackend(backends::VirtioNetworkBackend),
+    DlpiNetworkBackend(backends::DlpiNetworkBackend),
+}
+
+/// The mechanism to use to create a new Propolis VM.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct InstanceEnsureRequest {
-    pub properties: InstanceProperties,
+#[serde(tag = "method", content = "value")]
+pub enum InstanceInitializationMethod {
+    /// Create a brand new VM with the devices specified in the configuration
+    /// TOML passed to propolis-server when it started.
+    ConfigToml { cpus: u8, memory_mib: u64 },
 
-    /// Number of vCPUs to be allocated to the Instance.
-    pub vcpus: u8,
+    /// Create a brand new VM with the devies specified in the supplied spec.
+    Spec {
+        /// The component manifest for the new VM.
+        spec: InstanceSpecV0,
+    },
 
-    /// Size of memory allocated to the Instance, in MiB.
-    pub memory: u64,
+    /// Initialize the VM via migration.
+    MigrationTarget {
+        /// The ID to assign to this migration attempt.
+        migration_id: Uuid,
 
-    #[serde(default)]
-    pub nics: Vec<NetworkInterfaceRequest>,
+        /// The address of the Propolis server that will serve as the migration
+        /// source.
+        src_addr: SocketAddr,
 
-    #[serde(default)]
-    pub disks: Vec<DiskRequest>,
-
-    #[serde(default)]
-    pub boot_settings: Option<BootSettings>,
-
-    pub migrate: Option<InstanceMigrateInitiateRequest>,
-
-    // base64 encoded cloud-init ISO
-    pub cloud_init_bytes: Option<String>,
+        /// A list of components in the source VM's instance spec to replace.
+        replace_components: HashMap<SpecKey, ReplacementComponent>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct InstanceSpecEnsureRequest {
+pub struct InstanceEnsureRequest {
     pub properties: InstanceProperties,
-    pub instance_spec: VersionedInstanceSpec,
-    pub migrate: Option<InstanceMigrateInitiateRequest>,
+    pub init: InstanceInitializationMethod,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceEnsureResponse {
     pub migrate: Option<InstanceMigrateInitiateResponse>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct InstanceMigrateInitiateRequest {
-    pub migration_id: Uuid,
-    pub src_addr: SocketAddr,
-    pub src_uuid: Uuid,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -292,72 +298,6 @@ pub struct InstanceSerialConsoleStreamRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum InstanceSerialConsoleControlMessage {
     Migrating { destination: SocketAddr, from_start: u64 },
-}
-
-/// Describes how to connect to one or more storage agent services.
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
-pub struct StorageAgentDescription {
-    /// Addresses of storage agents.
-    pub agents: Vec<std::net::SocketAddrV6>,
-
-    /// Opaque key material for encryption and decryption.
-    /// May become more structured as encryption scheme is solidified.
-    pub key: Vec<u8>,
-
-    /// Minimum number of redundant copies of a block which must
-    /// be written until data is considered "persistent".
-    pub write_redundancy_threshold: u32,
-}
-
-/// Refer to RFD 135 for more information on Virtual Storage Interfaces.
-/// This describes the type of disk which should be exposed to the guest VM.
-#[derive(Clone, Copy, Deserialize, Serialize, JsonSchema)]
-pub enum DiskType {
-    NVMe,
-    VirtioBlock,
-}
-
-/// Describes a virtual disk.
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
-pub struct Disk {
-    /// Unique identifier for this disk.
-    pub id: Uuid,
-
-    /// Storage agents which implement networked block device servers.
-    pub storage_agents: StorageAgentDescription,
-
-    /// Size of the disk (blocks).
-    pub block_count: u64,
-
-    /// Block size (bytes).
-    pub block_size: u32,
-
-    /// Storage interface.
-    pub interface: DiskType,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct DiskRequest {
-    pub name: String,
-    pub slot: Slot,
-    pub read_only: bool,
-    pub device: String,
-
-    // Crucible related opts
-    pub volume_construction_request:
-        crucible_client_types::VolumeConstructionRequest,
-}
-
-/// A stable index which is translated by Propolis
-/// into a PCI BDF, visible to the guest.
-#[derive(Copy, Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct Slot(pub u8);
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct NetworkInterfaceRequest {
-    pub interface_id: Uuid,
-    pub name: String,
-    pub slot: Slot,
 }
 
 #[derive(Deserialize, JsonSchema)]

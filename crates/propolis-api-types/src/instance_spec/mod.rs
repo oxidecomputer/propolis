@@ -155,14 +155,67 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_with::{DeserializeFromStr, SerializeDisplay};
 
 pub use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor, PciPath};
+use uuid::Uuid;
 
 pub mod components;
 pub mod v0;
 
-/// Type alias for keys in the instance spec's maps.
-type SpecKey = String;
+#[derive(
+    Clone,
+    Debug,
+    SerializeDisplay,
+    DeserializeFromStr,
+    Hash,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+)]
+pub enum SpecKey {
+    Uuid(uuid::Uuid),
+    Name(String),
+}
+
+impl std::fmt::Display for SpecKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Uuid(id) => write!(f, "{id}"),
+            Self::Name(name) => write!(f, "{name}"),
+        }
+    }
+}
+
+impl std::str::FromStr for SpecKey {
+    // This conversion is infallible, but the error type needs to implement
+    // `Display` in order to derive `DeserializeFromStr`.
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match Uuid::from_str(s) {
+            Ok(uuid) => Self::Uuid(uuid),
+            Err(_) => Self::Name(s.to_owned()),
+        })
+    }
+}
+
+impl JsonSchema for SpecKey {
+    fn schema_name() -> String {
+        "SpecKey".to_string()
+    }
+
+    fn json_schema(
+        _: &mut schemars::gen::SchemaGenerator,
+    ) -> schemars::schema::Schema {
+        schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::String.into()),
+            ..Default::default()
+        }
+        .into()
+    }
+}
 
 /// A versioned instance spec.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]

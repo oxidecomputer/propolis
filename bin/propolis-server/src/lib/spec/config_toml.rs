@@ -11,7 +11,7 @@ use propolis_api_types::instance_spec::{
         backends::{FileStorageBackend, VirtioNetworkBackend},
         devices::{NvmeDisk, PciPciBridge, VirtioDisk, VirtioNic},
     },
-    PciPath,
+    PciPath, SpecKey,
 };
 use thiserror::Error;
 
@@ -113,22 +113,22 @@ impl TryFrom<&config::Config> for ParsedConfig {
                     let device_spec =
                         parse_storage_device_from_config(device_name, device)?;
 
-                    let backend_name = device_spec.backend_name();
+                    let backend_name = device_spec.backend_id().to_string();
                     let backend_config =
-                        config.block_devs.get(backend_name).ok_or_else(
+                        config.block_devs.get(&backend_name).ok_or_else(
                             || ConfigTomlError::StorageDeviceBackendNotFound {
                                 device: device_name.to_owned(),
-                                backend: backend_name.to_owned(),
+                                backend: backend_name.to_string(),
                             },
                         )?;
 
                     let backend_spec = parse_storage_backend_from_config(
-                        backend_name,
+                        &backend_name,
                         backend_config,
                     )?;
 
                     parsed.disks.push(ParsedDiskRequest {
-                        name: device_name.to_owned(),
+                        id: SpecKey::Name(device_name.to_owned()),
                         disk: Disk { device_spec, backend_spec },
                     });
                 }
@@ -242,17 +242,19 @@ pub(super) fn parse_storage_device_from_config(
         }
     };
 
-    let backend_name = device
-        .options
-        .get("block_dev")
-        .ok_or_else(|| {
-            ConfigTomlError::NoBackendNameForStorageDevice(name.to_owned())
-        })?
-        .as_str()
-        .ok_or_else(|| {
-            ConfigTomlError::NoBackendNameForStorageDevice(name.to_owned())
-        })?
-        .to_owned();
+    let backend_id = SpecKey::from_str(
+        device
+            .options
+            .get("block_dev")
+            .ok_or_else(|| {
+                ConfigTomlError::NoBackendNameForStorageDevice(name.to_owned())
+            })?
+            .as_str()
+            .ok_or_else(|| {
+                ConfigTomlError::NoBackendNameForStorageDevice(name.to_owned())
+            })?,
+    )
+    .unwrap();
 
     let pci_path: PciPath = device
         .get("pci-path")
@@ -260,10 +262,10 @@ pub(super) fn parse_storage_device_from_config(
 
     Ok(match interface {
         Interface::Virtio => {
-            StorageDevice::Virtio(VirtioDisk { backend_name, pci_path })
+            StorageDevice::Virtio(VirtioDisk { backend_id, pci_path })
         }
         Interface::Nvme => {
-            StorageDevice::Nvme(NvmeDisk { backend_name, pci_path })
+            StorageDevice::Nvme(NvmeDisk { backend_id, pci_path })
         }
     })
 }
@@ -280,10 +282,11 @@ pub(super) fn parse_network_device_from_config(
         .get("pci-path")
         .ok_or_else(|| ConfigTomlError::InvalidPciPath(name.to_owned()))?;
 
-    let (device_name, backend_name) = super::pci_path_to_nic_names(pci_path);
+    let device_id = SpecKey::Name(name.to_owned());
+    let backend_id = SpecKey::Name(format!("{name}-backend"));
     let backend_spec = VirtioNetworkBackend { vnic_name: vnic_name.to_owned() };
     let device_spec = VirtioNic {
-        backend_name: backend_name.clone(),
+        backend_id,
         // NICs added by the configuration TOML have no control plane-
         // supplied correlation IDs.
         interface_id: uuid::Uuid::nil(),
@@ -291,7 +294,7 @@ pub(super) fn parse_network_device_from_config(
     };
 
     Ok(ParsedNicRequest {
-        name: device_name,
+        id: device_id,
         nic: Nic { device_spec, backend_spec },
     })
 }
@@ -303,9 +306,9 @@ pub(super) fn parse_pci_bridge_from_config(
         ConfigTomlError::PciPathParseFailed(bridge.pci_path.to_string(), e)
     })?;
 
-    let name = format!("pci-bridge-{}", bridge.pci_path);
+    let id = SpecKey::Name(format!("pci-bridge-{}", bridge.pci_path));
     Ok(ParsedPciBridgeRequest {
-        name,
+        id,
         bridge: PciPciBridge {
             downstream_bus: bridge.downstream_bus,
             pci_path,
@@ -348,10 +351,12 @@ pub(super) fn parse_softnpu_port_from_config(
         .get_string("vnic")
         .ok_or_else(|| ConfigTomlError::NoVnicName(name.to_owned()))?;
 
+    // TODO(gjc) is this right? think about the hierarchy of softnpu types some
+    // more
     Ok(ParsedSoftNpuPort {
-        name: name.to_owned(),
+        id: SpecKey::Name(name.to_owned()),
         port: SoftNpuPort {
-            backend_name: vnic_name.to_owned(),
+            backend_id: SpecKey::Name(vnic_name.to_owned()),
             backend_spec: DlpiNetworkBackend {
                 vnic_name: vnic_name.to_owned(),
             },

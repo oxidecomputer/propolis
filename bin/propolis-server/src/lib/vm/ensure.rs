@@ -30,8 +30,9 @@ use std::sync::Arc;
 use oximeter::types::ProducerRegistry;
 use oximeter_instruments::kstat::KstatSampler;
 use propolis_api_types::{
-    InstanceEnsureResponse, InstanceMigrateInitiateRequest,
-    InstanceMigrateInitiateResponse, InstanceProperties, InstanceState,
+    instance_spec::v0::InstanceSpecV0, InstanceEnsureResponse,
+    InstanceInitializationMethod, InstanceMigrateInitiateResponse,
+    InstanceProperties, InstanceState,
 };
 use slog::{debug, info};
 
@@ -39,6 +40,7 @@ use crate::{
     initializer::{
         build_instance, MachineInitializer, MachineInitializerState,
     },
+    migrate::destination::MigrationTargetInfo,
     spec::Spec,
     stats::{create_kstat_sampler, VirtualMachine},
     vm::request_queue::InstanceAutoStart,
@@ -52,10 +54,14 @@ use super::{
     EnsureOptions, InstanceEnsureResponseTx, VmError,
 };
 
+pub(crate) enum VmInitializationMethod {
+    Spec(Spec),
+    Migration(MigrationTargetInfo),
+}
+
 pub(crate) struct VmEnsureRequest {
     pub(crate) properties: InstanceProperties,
-    pub(crate) migrate: Option<InstanceMigrateInitiateRequest>,
-    pub(crate) instance_spec: Spec,
+    pub(crate) init: VmInitializationMethod,
 }
 
 /// Holds state about an instance ensure request that has not yet produced any

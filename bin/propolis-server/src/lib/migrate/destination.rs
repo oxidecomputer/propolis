@@ -9,8 +9,9 @@ use propolis::migrate::{
     MigrateCtx, MigrateStateError, Migrator, PayloadOffer, PayloadOffers,
 };
 use propolis::vmm;
-use propolis_api_types::InstanceMigrateInitiateRequest;
+use propolis_api_types::{instance_spec::SpecKey, ReplacementComponent};
 use slog::{error, info, trace, warn};
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::io;
 use std::net::SocketAddr;
@@ -35,6 +36,12 @@ use crate::vm::state_publisher::{
 use super::protocol::Protocol;
 use super::MigrateConn;
 
+pub(crate) struct MigrationTargetInfo {
+    pub migration_id: Uuid,
+    pub src_addr: SocketAddr,
+    pub replace_components: HashMap<SpecKey, ReplacementComponent>,
+}
+
 /// The interface to an arbitrary version of the target half of the live
 /// migration protocol.
 //
@@ -57,7 +64,7 @@ pub(crate) trait DestinationProtocol {
 /// that the caller can use to run the migration.
 pub(crate) async fn initiate(
     log: &slog::Logger,
-    migrate_info: &InstanceMigrateInitiateRequest,
+    migrate_info: MigrationTargetInfo,
     local_addr: SocketAddr,
 ) -> Result<impl DestinationProtocol, MigrateError> {
     let migration_id = migrate_info.migration_id;

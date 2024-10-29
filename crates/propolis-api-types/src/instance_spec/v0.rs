@@ -4,9 +4,11 @@
 
 use std::collections::HashMap;
 
-use crate::instance_spec::{components, SpecKey};
+use crate::instance_spec::components;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use super::SpecKey;
 
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields, tag = "type", content = "component")]

@@ -12,5 +12,6 @@ crucible-client-types.workspace = true
 propolis_types.workspace = true
 schemars.workspace = true
 serde.workspace = true
+serde_with.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

@@ -349,10 +349,10 @@ impl spec::StorageDevice {
                 this: self.pci_path(),
                 other: other.pci_path(),
             })
-        } else if self.backend_name() != other.backend_name() {
+        } else if self.backend_id() != other.backend_id() {
             Err(DiskIncompatibility::BackendName {
-                this: self.backend_name().to_owned(),
-                other: other.backend_name().to_owned(),
+                this: self.backend_id().to_owned(),
+                other: other.backend_id().to_owned(),
             })
         } else {
             Ok(())

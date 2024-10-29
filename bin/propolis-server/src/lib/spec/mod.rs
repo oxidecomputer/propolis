@@ -30,7 +30,7 @@ use propolis_api_types::instance_spec::{
         },
     },
     v0::ComponentV0,
-    PciPath,
+    PciPath, SpecKey,
 };
 use thiserror::Error;
 
@@ -40,7 +40,6 @@ use propolis_api_types::instance_spec::components::{
     devices::{P9fs, SoftNpuP9, SoftNpuPciPort},
 };
 
-mod api_request;
 pub(crate) mod api_spec_v0;
 pub(crate) mod builder;
 mod config_toml;
@@ -62,13 +61,13 @@ pub struct ComponentTypeMismatch;
 pub(crate) struct Spec {
     pub board: Board,
     pub cpuid: Option<CpuidSet>,
-    pub disks: HashMap<String, Disk>,
-    pub nics: HashMap<String, Nic>,
+    pub disks: HashMap<SpecKey, Disk>,
+    pub nics: HashMap<SpecKey, Nic>,
     pub boot_settings: Option<BootSettings>,
 
-    pub serial: HashMap<String, SerialPort>,
+    pub serial: HashMap<SpecKey, SerialPort>,
 
-    pub pci_pci_bridges: HashMap<String, PciPciBridge>,
+    pub pci_pci_bridges: HashMap<SpecKey, PciPciBridge>,
     pub pvpanic: Option<QemuPvpanic>,
 
     #[cfg(feature = "falcon")]
@@ -101,13 +100,13 @@ impl Default for Board {
 
 #[derive(Clone, Debug)]
 pub(crate) struct BootSettings {
-    pub name: String,
+    pub component_id: SpecKey,
     pub order: Vec<BootOrderEntry>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct BootOrderEntry {
-    pub name: String,
+    pub component_id: SpecKey,
 }
 
 impl
@@ -117,7 +116,7 @@ impl
     fn from(
         value: propolis_api_types::instance_spec::components::devices::BootOrderEntry,
     ) -> Self {
-        Self { name: value.name.clone() }
+        Self { component_id: value.component_id }
     }
 }
 
@@ -125,7 +124,7 @@ impl From<BootOrderEntry>
     for propolis_api_types::instance_spec::components::devices::BootOrderEntry
 {
     fn from(value: BootOrderEntry) -> Self {
-        Self { name: value.name }
+        Self { component_id: value.component_id }
     }
 }
 
@@ -151,10 +150,10 @@ impl StorageDevice {
         }
     }
 
-    pub fn backend_name(&self) -> &str {
+    pub fn backend_id(&self) -> &SpecKey {
         match self {
-            StorageDevice::Virtio(disk) => &disk.backend_name,
-            StorageDevice::Nvme(disk) => &disk.backend_name,
+            StorageDevice::Virtio(disk) => &disk.backend_id,
+            StorageDevice::Nvme(disk) => &disk.backend_id,
         }
     }
 }
@@ -273,15 +272,14 @@ pub struct SerialPort {
 
 #[derive(Clone, Debug)]
 pub struct QemuPvpanic {
-    #[allow(dead_code)]
-    pub name: String,
+    pub id: SpecKey,
     pub spec: QemuPvpanicDesc,
 }
 
 #[cfg(feature = "falcon")]
 #[derive(Clone, Debug)]
 pub struct SoftNpuPort {
-    pub backend_name: String,
+    pub backend_id: SpecKey,
     pub backend_spec: DlpiNetworkBackend,
 }
 
@@ -289,7 +287,7 @@ pub struct SoftNpuPort {
 #[derive(Clone, Debug, Default)]
 pub struct SoftNpu {
     pub pci_port: Option<SoftNpuPciPort>,
-    pub ports: HashMap<String, SoftNpuPort>,
+    pub ports: HashMap<SpecKey, SoftNpuPort>,
     pub p9_device: Option<SoftNpuP9>,
     pub p9fs: Option<P9fs>,
 }
@@ -306,23 +304,23 @@ impl SoftNpu {
 }
 
 struct ParsedDiskRequest {
-    name: String,
+    id: SpecKey,
     disk: Disk,
 }
 
 struct ParsedNicRequest {
-    name: String,
+    id: SpecKey,
     nic: Nic,
 }
 
 struct ParsedPciBridgeRequest {
-    name: String,
+    id: SpecKey,
     bridge: PciPciBridge,
 }
 
 #[cfg(feature = "falcon")]
 struct ParsedSoftNpuPort {
-    name: String,
+    id: SpecKey,
     port: SoftNpuPort,
 }
 
@@ -333,18 +331,4 @@ struct ParsedSoftNpu {
     pub ports: Vec<ParsedSoftNpuPort>,
     pub p9_device: Option<SoftNpuP9>,
     pub p9fs: Option<P9fs>,
-}
-
-/// Generates NIC device and backend names from the NIC's PCI path. This is
-/// needed because the `name` field in a propolis-client
-/// `NetworkInterfaceRequest` is actually the name of the host vNIC to bind to,
-/// and that can change between incarnations of an instance. The PCI path is
-/// unique to each NIC but must remain stable over a migration, so it's suitable
-/// for use in this naming scheme.
-///
-/// N.B. Migrating a NIC requires the source and target to agree on these names,
-///      so changing this routine's behavior will prevent Propolis processes
-///      with the old behavior from migrating processes with the new behavior.
-fn pci_path_to_nic_names(path: PciPath) -> (String, String) {
-    (format!("vnic-{}", path), format!("vnic-{}-backend", path))
 }

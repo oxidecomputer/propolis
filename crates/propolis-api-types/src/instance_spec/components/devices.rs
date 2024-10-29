@@ -5,7 +5,7 @@
 //! Device configuration data: components that define VM properties that are
 //! visible to a VM's guest software.
 
-use crate::instance_spec::PciPath;
+use crate::instance_spec::{PciPath, SpecKey};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct VirtioDisk {
     /// The name of the disk's backend component.
-    pub backend_name: String,
+    pub backend_id: SpecKey,
 
     /// The PCI bus/device/function at which this disk should be attached.
     pub pci_path: PciPath,
@@ -25,7 +25,7 @@ pub struct VirtioDisk {
 #[serde(deny_unknown_fields)]
 pub struct NvmeDisk {
     /// The name of the disk's backend component.
-    pub backend_name: String,
+    pub backend_id: SpecKey,
 
     /// The PCI bus/device/function at which this disk should be attached.
     pub pci_path: PciPath,
@@ -36,12 +36,15 @@ pub struct NvmeDisk {
 #[serde(deny_unknown_fields)]
 pub struct VirtioNic {
     /// The name of the device's backend.
-    pub backend_name: String,
+    pub backend_id: SpecKey,
 
     /// A caller-defined correlation identifier for this interface. If Propolis
     /// is configured to collect network interface kstats in its Oximeter
     /// metrics, the metric series for this interface will be associated with
     /// this identifier.
+    ///
+    // TODO(gjc) what we really want is to infer this from the `backend_id`
+    // provided that it's a UUID
     pub interface_id: uuid::Uuid,
 
     /// The PCI path at which to attach this device.
@@ -115,13 +118,13 @@ pub struct BootSettings {
 }
 
 /// An entry in the boot order stored in a [`BootSettings`] component.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, Default)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 pub struct BootOrderEntry {
-    /// The name of another component in the spec that Propolis should try to
+    /// The ID of another component in the spec that Propolis should try to
     /// boot from.
     ///
     /// Currently, only disk device components are supported.
-    pub name: String,
+    pub component_id: SpecKey,
 }
 
 //
@@ -147,10 +150,10 @@ pub struct SoftNpuPciPort {
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuPort {
     /// The name of the SoftNpu port.
-    pub name: String,
+    pub id: SpecKey,
 
     /// The name of the device's backend.
-    pub backend_name: String,
+    pub backend_id: SpecKey,
 }
 
 /// Describes a PCI device that shares host files with the guest using the P9
