@@ -1228,6 +1228,12 @@
               "$ref": "#/components/schemas/DiskRequest"
             }
           },
+          "memory": {
+            "description": "Size of memory allocated to the Instance, in MiB.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
           "migrate": {
             "nullable": true,
             "allOf": [
@@ -1245,10 +1251,18 @@
           },
           "properties": {
             "$ref": "#/components/schemas/InstanceProperties"
+          },
+          "vcpus": {
+            "description": "Number of vCPUs to be allocated to the Instance.",
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0
           }
         },
         "required": [
-          "properties"
+          "memory",
+          "properties",
+          "vcpus"
         ]
       },
       "InstanceEnsureResponse": {
@@ -1394,11 +1408,6 @@
       "InstanceProperties": {
         "type": "object",
         "properties": {
-          "bootrom_id": {
-            "description": "ID of the bootrom used to initialize this Instance.",
-            "type": "string",
-            "format": "uuid"
-          },
           "description": {
             "description": "Free-form text description of an Instance.",
             "type": "string"
@@ -1407,17 +1416,6 @@
             "description": "Unique identifier for this Instance.",
             "type": "string",
             "format": "uuid"
-          },
-          "image_id": {
-            "description": "ID of the image used to initialize this Instance.",
-            "type": "string",
-            "format": "uuid"
-          },
-          "memory": {
-            "description": "Size of memory allocated to the Instance, in MiB.",
-            "type": "integer",
-            "format": "uint64",
-            "minimum": 0
           },
           "metadata": {
             "description": "Metadata used to track statistics for this Instance.",
@@ -1430,23 +1428,13 @@
           "name": {
             "description": "Human-readable name of the Instance.",
             "type": "string"
-          },
-          "vcpus": {
-            "description": "Number of vCPUs to be allocated to the Instance.",
-            "type": "integer",
-            "format": "uint8",
-            "minimum": 0
           }
         },
         "required": [
-          "bootrom_id",
           "description",
           "id",
-          "image_id",
-          "memory",
           "metadata",
-          "name",
-          "vcpus"
+          "name"
         ]
       },
       "InstanceSerialConsoleHistoryResponse": {
