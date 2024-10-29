@@ -376,8 +376,6 @@ async fn instance_get(
             instance: api::Instance {
                 properties: full.properties,
                 state: full.state,
-                disks: vec![],
-                nics: vec![],
             },
         })
     })

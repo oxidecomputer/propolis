@@ -232,8 +232,6 @@ async fn instance_get(
     let instance_info = api::Instance {
         properties: instance.properties.clone(),
         state: instance.state,
-        disks: vec![],
-        nics: vec![],
     };
     Ok(HttpResponseOk(api::InstanceGetResponse { instance: instance_info }))
 }

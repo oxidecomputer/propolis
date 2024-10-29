@@ -1036,53 +1036,6 @@
         ],
         "additionalProperties": false
       },
-      "DiskAttachment": {
-        "type": "object",
-        "properties": {
-          "disk_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "generation_id": {
-            "type": "integer",
-            "format": "uint64",
-            "minimum": 0
-          },
-          "state": {
-            "$ref": "#/components/schemas/DiskAttachmentState"
-          }
-        },
-        "required": [
-          "disk_id",
-          "generation_id",
-          "state"
-        ]
-      },
-      "DiskAttachmentState": {
-        "oneOf": [
-          {
-            "type": "string",
-            "enum": [
-              "Detached",
-              "Destroyed",
-              "Faulted"
-            ]
-          },
-          {
-            "type": "object",
-            "properties": {
-              "Attached": {
-                "type": "string",
-                "format": "uuid"
-              }
-            },
-            "required": [
-              "Attached"
-            ],
-            "additionalProperties": false
-          }
-        ]
-      },
       "DiskRequest": {
         "type": "object",
         "properties": {
@@ -1179,18 +1132,6 @@
       "Instance": {
         "type": "object",
         "properties": {
-          "disks": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/DiskAttachment"
-            }
-          },
-          "nics": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/NetworkInterface"
-            }
-          },
           "properties": {
             "$ref": "#/components/schemas/InstanceProperties"
           },
@@ -1199,8 +1140,6 @@
           }
         },
         "required": [
-          "disks",
-          "nics",
           "properties",
           "state"
         ]
@@ -1609,44 +1548,6 @@
           "Server",
           "Finish",
           "Error"
-        ]
-      },
-      "NetworkInterface": {
-        "type": "object",
-        "properties": {
-          "attachment": {
-            "$ref": "#/components/schemas/NetworkInterfaceAttachmentState"
-          },
-          "name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "attachment",
-          "name"
-        ]
-      },
-      "NetworkInterfaceAttachmentState": {
-        "oneOf": [
-          {
-            "type": "string",
-            "enum": [
-              "Detached",
-              "Faulted"
-            ]
-          },
-          {
-            "type": "object",
-            "properties": {
-              "Attached": {
-                "$ref": "#/components/schemas/Slot"
-              }
-            },
-            "required": [
-              "Attached"
-            ],
-            "additionalProperties": false
-          }
         ]
       },
       "NetworkInterfaceRequest": {
