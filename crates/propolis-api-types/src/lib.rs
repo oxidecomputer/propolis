@@ -52,6 +52,12 @@ pub struct InstanceMetadata {
 pub struct InstanceEnsureRequest {
     pub properties: InstanceProperties,
 
+    /// Number of vCPUs to be allocated to the Instance.
+    pub vcpus: u8,
+
+    /// Size of memory allocated to the Instance, in MiB.
+    pub memory: u64,
+
     #[serde(default)]
     pub nics: Vec<NetworkInterfaceRequest>,
 
@@ -218,14 +224,6 @@ pub struct InstanceProperties {
     pub description: String,
     /// Metadata used to track statistics for this Instance.
     pub metadata: InstanceMetadata,
-    /// ID of the image used to initialize this Instance.
-    pub image_id: Uuid,
-    /// ID of the bootrom used to initialize this Instance.
-    pub bootrom_id: Uuid,
-    /// Size of memory allocated to the Instance, in MiB.
-    pub memory: u64,
-    /// Number of vCPUs to be allocated to the Instance.
-    pub vcpus: u8,
 }
 
 impl InstanceProperties {

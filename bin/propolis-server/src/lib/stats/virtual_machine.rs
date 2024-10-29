@@ -61,8 +61,11 @@ pub struct VirtualMachine {
     vm_name: String,
 }
 
-impl From<&propolis_api_types::InstanceProperties> for VirtualMachine {
-    fn from(properties: &propolis_api_types::InstanceProperties) -> Self {
+impl VirtualMachine {
+    pub fn new(
+        n_vcpus: u8,
+        properties: &propolis_api_types::InstanceProperties,
+    ) -> Self {
         Self {
             target: VirtualMachineTarget {
                 silo_id: properties.metadata.silo_id,
@@ -73,7 +76,7 @@ impl From<&propolis_api_types::InstanceProperties> for VirtualMachine {
                 sled_revision: properties.metadata.sled_revision,
                 sled_serial: properties.metadata.sled_serial.clone().into(),
             },
-            n_vcpus: properties.vcpus.into(),
+            n_vcpus: u32::from(n_vcpus),
             vm_name: properties.vm_name(),
         }
     }

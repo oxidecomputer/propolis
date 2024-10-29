@@ -191,6 +191,7 @@ pub struct MachineInitializer<'a> {
     pub(crate) producer_registry: Option<ProducerRegistry>,
     pub(crate) state: MachineInitializerState,
     pub(crate) kstat_sampler: Option<KstatSampler>,
+    pub(crate) stats_vm: crate::stats::VirtualMachine,
 }
 
 impl<'a> MachineInitializer<'a> {
@@ -744,7 +745,7 @@ impl<'a> MachineInitializer<'a> {
             track_network_interface_kstats(
                 &self.log,
                 sampler,
-                self.properties,
+                &self.stats_vm,
                 interface_ids.unwrap(),
             )
             .await
@@ -1031,15 +1032,15 @@ impl<'a> MachineInitializer<'a> {
             // unknown
             proc_upgrade: 0x2,
             // make core and thread counts equal for now
-            core_count: self.properties.vcpus,
-            core_enabled: self.properties.vcpus,
-            thread_count: self.properties.vcpus,
+            core_count: self.spec.board.cpus,
+            core_enabled: self.spec.board.cpus,
+            thread_count: self.spec.board.cpus,
             proc_characteristics: type4::Characteristics::IS_64_BIT
                 | type4::Characteristics::MULTI_CORE,
             ..Default::default()
         };
 
-        let memsize_bytes = (self.properties.memory as usize) * MB;
+        let memsize_bytes = (self.spec.board.memory_mb as usize) * MB;
         let mut smb_type16 = smbios::table::Type16 {
             location: type16::Location::SystemBoard,
             array_use: type16::ArrayUse::System,
@@ -1228,7 +1229,7 @@ impl<'a> MachineInitializer<'a> {
             self.devices.insert(format!("vcpu-{}", vcpu.id), vcpu.clone());
         }
         if let Some(sampler) = self.kstat_sampler.as_ref() {
-            track_vcpu_kstats(&self.log, sampler, self.properties).await;
+            track_vcpu_kstats(&self.log, sampler, &self.stats_vm).await;
         }
         Ok(())
     }

@@ -40,7 +40,7 @@ use crate::{
         build_instance, MachineInitializer, MachineInitializerState,
     },
     spec::Spec,
-    stats::create_kstat_sampler,
+    stats::{create_kstat_sampler, VirtualMachine},
     vm::request_queue::InstanceAutoStart,
 };
 
@@ -187,10 +187,10 @@ impl<'a> VmEnsureNotStarted<'a> {
             state: MachineInitializerState::default(),
             kstat_sampler: initialize_kstat_sampler(
                 self.log,
-                properties,
                 self.instance_spec(),
                 options.oximeter_registry.clone(),
             ),
+            stats_vm: VirtualMachine::new(spec.board.cpus, properties),
         };
 
         init.initialize_rom(options.toml_config.bootrom.as_path())?;
@@ -205,7 +205,10 @@ impl<'a> VmEnsureNotStarted<'a> {
         let com1 = Arc::new(init.initialize_uart(&chipset));
         let ps2ctrl = init.initialize_ps2(&chipset);
         init.initialize_qemu_debug_port()?;
-        init.initialize_qemu_pvpanic(properties.into())?;
+        init.initialize_qemu_pvpanic(VirtualMachine::new(
+            self.instance_spec().board.cpus,
+            properties,
+        ))?;
         init.initialize_network_devices(&chipset).await?;
 
         #[cfg(not(feature = "omicron-build"))]
@@ -378,12 +381,11 @@ impl<'a> VmEnsureActive<'a> {
 /// Create an object used to sample kstats.
 fn initialize_kstat_sampler(
     log: &slog::Logger,
-    properties: &InstanceProperties,
     spec: &Spec,
     producer_registry: Option<ProducerRegistry>,
 ) -> Option<KstatSampler> {
     let registry = producer_registry?;
-    let sampler = create_kstat_sampler(log, properties, spec)?;
+    let sampler = create_kstat_sampler(log, spec)?;
 
     match registry.register_producer(sampler.clone()) {
         Ok(_) => Some(sampler),
