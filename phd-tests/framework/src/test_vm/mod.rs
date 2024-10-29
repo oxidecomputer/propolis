@@ -311,10 +311,6 @@ impl TestVm {
             name: format!("phd-vm-{}", self.id),
             metadata: self.spec.metadata.clone(),
             description: "Pheidippides-managed VM".to_string(),
-            image_id: Uuid::default(),
-            bootrom_id: Uuid::default(),
-            memory: memory_mib,
-            vcpus,
         };
 
         // The non-spec ensure interface requires a set of `DiskRequest`
@@ -356,6 +352,8 @@ impl TestVm {
                 InstanceEnsureApi::Ensure => {
                     let ensure_req = InstanceEnsureRequest {
                         cloud_init_bytes: None,
+                        vcpus,
+                        memory: memory_mib,
                         disks: disk_reqs.clone().unwrap(),
                         migrate: migrate.clone(),
                         nics: vec![],

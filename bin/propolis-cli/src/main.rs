@@ -15,7 +15,7 @@ use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand};
 use futures::{future, SinkExt};
 use newtype_uuid::{GenericUuid, TypedUuid, TypedUuidKind, TypedUuidTag};
-use propolis_client::types::InstanceMetadata;
+use propolis_client::types::{InstanceMetadata, VersionedInstanceSpec};
 use slog::{o, Drain, Level, Logger};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::{
@@ -253,16 +253,12 @@ async fn new_instance(
         name,
         description: "propolis-cli generated instance".to_string(),
         metadata,
-        // TODO: Use real UUID
-        image_id: Uuid::default(),
-        // TODO: Use real UUID
-        bootrom_id: Uuid::default(),
-        memory,
-        vcpus,
     };
 
     let request = InstanceEnsureRequest {
         properties,
+        vcpus,
+        memory,
         // TODO: Allow specifying NICs
         nics: vec![],
         disks,
@@ -504,17 +500,20 @@ async fn migrate_instance(
 ) -> anyhow::Result<()> {
     // Grab the instance details
     let src_instance =
-        src_client.instance_get().send().await.with_context(|| {
+        src_client.instance_spec_get().send().await.with_context(|| {
             anyhow!("failed to get src instance properties")
         })?;
-    let src_uuid = src_instance.instance.properties.id;
+    let src_uuid = src_instance.properties.id;
+    let VersionedInstanceSpec::V0(spec) = &src_instance.spec;
 
     let request = InstanceEnsureRequest {
         properties: InstanceProperties {
             // Use a new ID for the destination instance we're creating
             id: dst_uuid,
-            ..src_instance.instance.properties.clone()
+            ..src_instance.properties.clone()
         },
+        vcpus: spec.board.cpus,
+        memory: spec.board.memory_mb,
         // TODO: Handle migrating NICs
         nics: vec![],
         disks,
