@@ -15,7 +15,7 @@ use propolis_api_types::{
         },
         PciPath,
     },
-    DiskRequest, InstanceProperties, NetworkInterfaceRequest,
+    DiskRequest, NetworkInterfaceRequest,
 };
 use thiserror::Error;
 
@@ -78,10 +78,10 @@ pub(crate) struct SpecBuilder {
 }
 
 impl SpecBuilder {
-    pub fn new(properties: &InstanceProperties) -> Self {
+    pub fn new(cpus: u8, memory_mb: u64) -> Self {
         let board = Board {
-            cpus: properties.vcpus,
-            memory_mb: properties.memory,
+            cpus,
+            memory_mb,
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
         };
 
@@ -455,7 +455,7 @@ mod test {
             backends::{BlobStorageBackend, VirtioNetworkBackend},
             devices::{VirtioDisk, VirtioNic},
         },
-        InstanceMetadata, Slot, VolumeConstructionRequest,
+        Slot, VolumeConstructionRequest,
     };
     use uuid::Uuid;
 
@@ -463,28 +463,8 @@ mod test {
 
     use super::*;
 
-    fn test_metadata() -> InstanceMetadata {
-        InstanceMetadata {
-            silo_id: uuid::uuid!("556a67f8-8b14-4659-bd9f-d8f85ecd36bf"),
-            project_id: uuid::uuid!("75f60038-daeb-4a1d-916a-5fa5b7237299"),
-            sled_id: uuid::uuid!("43a789ac-a0dd-4e1e-ac33-acdada142faa"),
-            sled_serial: "some-gimlet".into(),
-            sled_revision: 1,
-            sled_model: "abcd".into(),
-        }
-    }
-
     fn test_builder() -> SpecBuilder {
-        SpecBuilder::new(&InstanceProperties {
-            id: Default::default(),
-            name: Default::default(),
-            description: Default::default(),
-            metadata: test_metadata(),
-            image_id: Default::default(),
-            bootrom_id: Default::default(),
-            memory: 512,
-            vcpus: 4,
-        })
+        SpecBuilder::new(4, 512)
     }
 
     #[test]

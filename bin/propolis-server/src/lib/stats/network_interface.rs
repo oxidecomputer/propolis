@@ -151,7 +151,7 @@ impl InstanceNetworkInterfaces {
     /// metrics from.
     #[cfg(all(not(test), target_os = "illumos"))]
     pub(crate) fn new(
-        properties: &propolis_api_types::InstanceProperties,
+        virtual_machine: &super::VirtualMachine,
         interface_ids: &NetworkInterfaceIds,
     ) -> Self {
         Self {
@@ -160,9 +160,9 @@ impl InstanceNetworkInterfaces {
                 // multiple targets in the `to_samples` method and override
                 // this.
                 interface_id: uuid::Uuid::nil(),
-                instance_id: properties.id,
-                project_id: properties.metadata.project_id,
-                silo_id: properties.metadata.silo_id,
+                instance_id: virtual_machine.target.instance_id,
+                project_id: virtual_machine.target.project_id,
+                silo_id: virtual_machine.target.silo_id,
             },
             interface_ids: interface_ids.to_vec(),
         }

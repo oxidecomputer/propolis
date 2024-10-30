@@ -1036,53 +1036,6 @@
         ],
         "additionalProperties": false
       },
-      "DiskAttachment": {
-        "type": "object",
-        "properties": {
-          "disk_id": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "generation_id": {
-            "type": "integer",
-            "format": "uint64",
-            "minimum": 0
-          },
-          "state": {
-            "$ref": "#/components/schemas/DiskAttachmentState"
-          }
-        },
-        "required": [
-          "disk_id",
-          "generation_id",
-          "state"
-        ]
-      },
-      "DiskAttachmentState": {
-        "oneOf": [
-          {
-            "type": "string",
-            "enum": [
-              "Detached",
-              "Destroyed",
-              "Faulted"
-            ]
-          },
-          {
-            "type": "object",
-            "properties": {
-              "Attached": {
-                "type": "string",
-                "format": "uuid"
-              }
-            },
-            "required": [
-              "Attached"
-            ],
-            "additionalProperties": false
-          }
-        ]
-      },
       "DiskRequest": {
         "type": "object",
         "properties": {
@@ -1179,18 +1132,6 @@
       "Instance": {
         "type": "object",
         "properties": {
-          "disks": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/DiskAttachment"
-            }
-          },
-          "nics": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/NetworkInterface"
-            }
-          },
           "properties": {
             "$ref": "#/components/schemas/InstanceProperties"
           },
@@ -1199,8 +1140,6 @@
           }
         },
         "required": [
-          "disks",
-          "nics",
           "properties",
           "state"
         ]
@@ -1228,6 +1167,12 @@
               "$ref": "#/components/schemas/DiskRequest"
             }
           },
+          "memory": {
+            "description": "Size of memory allocated to the Instance, in MiB.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
           "migrate": {
             "nullable": true,
             "allOf": [
@@ -1245,10 +1190,18 @@
           },
           "properties": {
             "$ref": "#/components/schemas/InstanceProperties"
+          },
+          "vcpus": {
+            "description": "Number of vCPUs to be allocated to the Instance.",
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0
           }
         },
         "required": [
-          "properties"
+          "memory",
+          "properties",
+          "vcpus"
         ]
       },
       "InstanceEnsureResponse": {
@@ -1394,11 +1347,6 @@
       "InstanceProperties": {
         "type": "object",
         "properties": {
-          "bootrom_id": {
-            "description": "ID of the bootrom used to initialize this Instance.",
-            "type": "string",
-            "format": "uuid"
-          },
           "description": {
             "description": "Free-form text description of an Instance.",
             "type": "string"
@@ -1407,17 +1355,6 @@
             "description": "Unique identifier for this Instance.",
             "type": "string",
             "format": "uuid"
-          },
-          "image_id": {
-            "description": "ID of the image used to initialize this Instance.",
-            "type": "string",
-            "format": "uuid"
-          },
-          "memory": {
-            "description": "Size of memory allocated to the Instance, in MiB.",
-            "type": "integer",
-            "format": "uint64",
-            "minimum": 0
           },
           "metadata": {
             "description": "Metadata used to track statistics for this Instance.",
@@ -1430,23 +1367,13 @@
           "name": {
             "description": "Human-readable name of the Instance.",
             "type": "string"
-          },
-          "vcpus": {
-            "description": "Number of vCPUs to be allocated to the Instance.",
-            "type": "integer",
-            "format": "uint8",
-            "minimum": 0
           }
         },
         "required": [
-          "bootrom_id",
           "description",
           "id",
-          "image_id",
-          "memory",
           "metadata",
-          "name",
-          "vcpus"
+          "name"
         ]
       },
       "InstanceSerialConsoleHistoryResponse": {
@@ -1621,44 +1548,6 @@
           "Server",
           "Finish",
           "Error"
-        ]
-      },
-      "NetworkInterface": {
-        "type": "object",
-        "properties": {
-          "attachment": {
-            "$ref": "#/components/schemas/NetworkInterfaceAttachmentState"
-          },
-          "name": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "attachment",
-          "name"
-        ]
-      },
-      "NetworkInterfaceAttachmentState": {
-        "oneOf": [
-          {
-            "type": "string",
-            "enum": [
-              "Detached",
-              "Faulted"
-            ]
-          },
-          {
-            "type": "object",
-            "properties": {
-              "Attached": {
-                "$ref": "#/components/schemas/Slot"
-              }
-            },
-            "required": [
-              "Attached"
-            ],
-            "additionalProperties": false
-          }
         ]
       },
       "NetworkInterfaceRequest": {

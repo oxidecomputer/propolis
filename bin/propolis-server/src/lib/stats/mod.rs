@@ -14,7 +14,6 @@ use oximeter::{
 };
 use oximeter_instruments::kstat::KstatSampler;
 use oximeter_producer::{Config, Error, Server};
-use propolis_api_types::InstanceProperties;
 use slog::Logger;
 use uuid::Uuid;
 
@@ -188,11 +187,10 @@ pub fn start_oximeter_server(
 /// Create an object that can be used to sample kstat-based metrics.
 pub(crate) fn create_kstat_sampler(
     log: &Logger,
-    properties: &InstanceProperties,
     spec: &Spec,
 ) -> Option<KstatSampler> {
     let kstat_limit = usize::try_from(
-        (u32::from(properties.vcpus) * KSTAT_LIMIT_PER_VCPU)
+        (u32::from(spec.board.cpus) * KSTAT_LIMIT_PER_VCPU)
             + (spec.nics.len() as u32 * SAMPLE_BUFFER),
     )
     .unwrap();
@@ -216,7 +214,7 @@ pub(crate) fn create_kstat_sampler(
 pub(crate) async fn track_vcpu_kstats(
     log: &Logger,
     _: &KstatSampler,
-    _: &InstanceProperties,
+    _: &VirtualMachine,
 ) {
     slog::error!(log, "vCPU stats are not supported on this platform");
 }
@@ -226,13 +224,12 @@ pub(crate) async fn track_vcpu_kstats(
 pub(crate) async fn track_vcpu_kstats(
     log: &Logger,
     sampler: &KstatSampler,
-    properties: &InstanceProperties,
+    virtual_machine: &VirtualMachine,
 ) {
-    let virtual_machine = VirtualMachine::from(properties);
     let details = oximeter_instruments::kstat::CollectionDetails::never(
         VCPU_KSTAT_INTERVAL,
     );
-    if let Err(e) = sampler.add_target(virtual_machine, details).await {
+    if let Err(e) = sampler.add_target(virtual_machine.clone(), details).await {
         slog::error!(
             log,
             "failed to add VirtualMachine target, \
@@ -247,7 +244,7 @@ pub(crate) async fn track_vcpu_kstats(
 pub(crate) async fn track_network_interface_kstats(
     log: &Logger,
     _: &KstatSampler,
-    _: &InstanceProperties,
+    _: &VirtualMachine,
     _: NetworkInterfaceIds,
 ) {
     slog::error!(
@@ -261,10 +258,10 @@ pub(crate) async fn track_network_interface_kstats(
 pub(crate) async fn track_network_interface_kstats(
     log: &Logger,
     sampler: &KstatSampler,
-    properties: &InstanceProperties,
+    virtual_machine: &VirtualMachine,
     interface_ids: NetworkInterfaceIds,
 ) {
-    let nics = InstanceNetworkInterfaces::new(properties, &interface_ids);
+    let nics = InstanceNetworkInterfaces::new(virtual_machine, &interface_ids);
     let details = oximeter_instruments::kstat::CollectionDetails::never(
         NETWORK_INTERFACE_SAMPLE_INTERVAL,
     );

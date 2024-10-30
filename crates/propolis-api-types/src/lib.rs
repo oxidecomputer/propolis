@@ -52,6 +52,12 @@ pub struct InstanceMetadata {
 pub struct InstanceEnsureRequest {
     pub properties: InstanceProperties,
 
+    /// Number of vCPUs to be allocated to the Instance.
+    pub vcpus: u8,
+
+    /// Size of memory allocated to the Instance, in MiB.
+    pub memory: u64,
+
     #[serde(default)]
     pub nics: Vec<NetworkInterfaceRequest>,
 
@@ -218,14 +224,6 @@ pub struct InstanceProperties {
     pub description: String,
     /// Metadata used to track statistics for this Instance.
     pub metadata: InstanceMetadata,
-    /// ID of the image used to initialize this Instance.
-    pub image_id: Uuid,
-    /// ID of the bootrom used to initialize this Instance.
-    pub bootrom_id: Uuid,
-    /// Size of memory allocated to the Instance, in MiB.
-    pub memory: u64,
-    /// Number of vCPUs to be allocated to the Instance.
-    pub vcpus: u8,
 }
 
 impl InstanceProperties {
@@ -239,8 +237,6 @@ impl InstanceProperties {
 pub struct Instance {
     pub properties: InstanceProperties,
     pub state: InstanceState,
-    pub disks: Vec<DiskAttachment>,
-    pub nics: Vec<NetworkInterface>,
 }
 
 /// Request a specific range of an Instance's serial console output history.
@@ -340,27 +336,6 @@ pub struct Disk {
     pub interface: DiskType,
 }
 
-// TODO: Struggling to make this struct derive "JsonSchema"
-/*
-bitflags! {
-    #[derive(Deserialize, Serialize)]
-    pub struct DiskFlags: u32 {
-        const READ = 0b0000_0001;
-        const WRITE = 0b0000_0010;
-        const READ_WRITE = Self::READ.bits | Self::WRITE.bits;
-    }
-}
-*/
-
-// TODO: Remove this; it's a hack to workaround the above bug.
-#[allow(dead_code)]
-pub const DISK_FLAG_READ: u32 = 0b0000_0001;
-#[allow(dead_code)]
-pub const DISK_FLAG_WRITE: u32 = 0b0000_0010;
-#[allow(dead_code)]
-pub const DISK_FLAG_READ_WRITE: u32 = DISK_FLAG_READ | DISK_FLAG_WRITE;
-type DiskFlags = u32;
-
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct DiskRequest {
     pub name: String,
@@ -373,27 +348,6 @@ pub struct DiskRequest {
         crucible_client_types::VolumeConstructionRequest,
 }
 
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
-pub struct DiskAttachmentInfo {
-    pub flags: DiskFlags,
-    pub slot: u16,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub enum DiskAttachmentState {
-    Attached(Uuid),
-    Detached,
-    Destroyed,
-    Faulted,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct DiskAttachment {
-    pub generation_id: u64,
-    pub disk_id: Uuid,
-    pub state: DiskAttachmentState,
-}
-
 /// A stable index which is translated by Propolis
 /// into a PCI BDF, visible to the guest.
 #[derive(Copy, Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -404,19 +358,6 @@ pub struct NetworkInterfaceRequest {
     pub interface_id: Uuid,
     pub name: String,
     pub slot: Slot,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct NetworkInterface {
-    pub name: String,
-    pub attachment: NetworkInterfaceAttachmentState,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub enum NetworkInterfaceAttachmentState {
-    Attached(Slot),
-    Detached,
-    Faulted,
 }
 
 #[derive(Deserialize, JsonSchema)]

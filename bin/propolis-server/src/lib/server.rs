@@ -117,7 +117,7 @@ fn instance_spec_from_request(
     request: &api::InstanceEnsureRequest,
     toml_config: &VmTomlConfig,
 ) -> Result<Spec, SpecBuilderError> {
-    let mut spec_builder = SpecBuilder::new(&request.properties);
+    let mut spec_builder = SpecBuilder::new(request.vcpus, request.memory);
 
     spec_builder.add_devices_from_config(toml_config)?;
 
@@ -376,8 +376,6 @@ async fn instance_get(
             instance: api::Instance {
                 properties: full.properties,
                 state: full.state,
-                disks: vec![],
-                nics: vec![],
             },
         })
     })
