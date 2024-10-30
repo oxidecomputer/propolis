@@ -628,17 +628,50 @@ impl Instance {
                         ))
                     }
                     VmExitKind::Rdmsr(msr) => {
-                        slog::error!(
-                            &log,
-                            "Unhandled rdmsr {:#08x}", msr; "rip" => exit.rip
-                        );
+                        /// `Maximum Performance Frequency Clock Count` (MPERF)
+                        const MSR_MPERF: u32 = 0x000000e7;
+                        /// `Actual Performance Frequency Clock Count` (APERF)
+                        const MSR_APERF: u32 = 0x000000e8;
+
+                        // XXX: minimal glue to read a host MSR, but by no means is this *good*...
+                        unsafe fn real_rdmsr(msr_no: u32) -> u64 {
+                            let f = std::fs::File::open("/dev/cpu/self/cpuid").expect("can open");
+                            const CPUID_IOC: i32 = ((b'c' as i32) << 24) | ((b'i' as i32) << 16) | ((b'd' as i32) << 8);
+                            const CPUID_RDMSR: i32 = CPUID_IOC | 1;
+                            use libc::ioctl;
+                            use std::os::fd::AsRawFd;
+                            #[repr(C)]
+                            struct CpuidRdmsr {
+                                msr_nr: u64,
+                                msr_val: u64,
+                            }
+                            let mut crm = CpuidRdmsr {
+                                msr_nr: msr_no as u64,
+                                msr_val: 0,
+                            };
+                            let res = ioctl(f.as_raw_fd(), CPUID_RDMSR, &mut crm as *mut CpuidRdmsr as *mut std::ffi::c_void);
+                            assert_eq!(res, 0);
+                            crm.msr_val
+                        }
+
+                        let res = if msr == MSR_APERF {
+                            unsafe { real_rdmsr(MSR_APERF) }
+                        } else if msr == MSR_MPERF {
+                            unsafe { real_rdmsr(MSR_MPERF) }
+                        } else {
+                            slog::error!(
+                                &log,
+                                "Unhaandled rdmsr {:#08x}", msr; "rip" => exit.rip
+                            );
+                            0
+                        };
                         let _ = vcpu.set_reg(
                             bhyve_api::vm_reg_name::VM_REG_GUEST_RAX,
-                            0,
+                            res as u32 as u64,
                         );
                         let _ = vcpu.set_reg(
                             bhyve_api::vm_reg_name::VM_REG_GUEST_RDX,
-                            0,
+                            (res >> 32) as u32 as u64,
                         );
                         VmEntry::Run
                     }
