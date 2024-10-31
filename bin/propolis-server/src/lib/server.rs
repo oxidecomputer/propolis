@@ -22,7 +22,6 @@ use crate::{
     serial::history_buffer::SerialHistoryOffset,
     spec::{
         self,
-        api_spec_v0::ApiSpecError,
         builder::{SpecBuilder, SpecBuilderError},
         Spec,
     },
@@ -41,9 +40,8 @@ use internal_dns::ServiceName;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types as api;
-use propolis_api_types::instance_spec::SpecKey;
 use propolis_api_types::instance_spec::{
-    self, components::devices::QemuPvpanic, VersionedInstanceSpec,
+    self, components::devices::QemuPvpanic, SpecKey,
 };
 use propolis_api_types::InstanceInitializationMethod;
 pub use propolis_server_config::Config as VmTomlConfig;

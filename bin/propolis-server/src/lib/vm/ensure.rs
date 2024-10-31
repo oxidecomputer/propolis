@@ -30,8 +30,7 @@ use std::sync::Arc;
 use oximeter::types::ProducerRegistry;
 use oximeter_instruments::kstat::KstatSampler;
 use propolis_api_types::{
-    instance_spec::v0::InstanceSpecV0, InstanceEnsureResponse,
-    InstanceInitializationMethod, InstanceMigrateInitiateResponse,
+    InstanceEnsureResponse, InstanceMigrateInitiateResponse,
     InstanceProperties, InstanceState,
 };
 use slog::{debug, info};

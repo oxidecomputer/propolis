@@ -82,7 +82,7 @@
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 
 use active::ActiveVm;
-use ensure::VmEnsureRequest;
+use ensure::{VmEnsureRequest, VmInitializationMethod};
 use oximeter::types::ProducerRegistry;
 use propolis_api_types::{
     instance_spec::{SpecKey, VersionedInstanceSpec},
@@ -530,18 +530,22 @@ impl Vm {
             &log_for_driver,
             InstanceStateMonitorResponse {
                 gen: 1,
-                state: if ensure_request.migrate.is_some() {
-                    InstanceState::Migrating
-                } else {
-                    InstanceState::Creating
+                state: match ensure_request.init {
+                    VmInitializationMethod::Spec(_) => InstanceState::Creating,
+                    VmInitializationMethod::Migration(_) => {
+                        InstanceState::Migrating
+                    }
                 },
                 migration: InstanceMigrateStatusResponse {
-                    migration_in: ensure_request.migrate.as_ref().map(|req| {
-                        InstanceMigrationStatus {
-                            id: req.migration_id,
-                            state: MigrationState::Sync,
+                    migration_in: match ensure_request.init {
+                        VmInitializationMethod::Spec(_) => None,
+                        VmInitializationMethod::Migration(info) => {
+                            Some(InstanceMigrationStatus {
+                                id: info.migration_id,
+                                state: MigrationState::Sync,
+                            })
                         }
-                    }),
+                    },
                     migration_out: None,
                 },
             },
