@@ -20,11 +20,6 @@ use crate::migrate::destination::MigrationTargetInfo;
 use crate::vm::ensure::VmInitializationMethod;
 use crate::{
     serial::history_buffer::SerialHistoryOffset,
-    spec::{
-        self,
-        builder::{SpecBuilder, SpecBuilderError},
-        Spec,
-    },
     vm::{ensure::VmEnsureRequest, VmError},
     vnc::{self, VncServer},
 };
@@ -40,9 +35,6 @@ use internal_dns::ServiceName;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types as api;
-use propolis_api_types::instance_spec::{
-    self, components::devices::QemuPvpanic, SpecKey,
-};
 use propolis_api_types::InstanceInitializationMethod;
 pub use propolis_server_config::Config as VmTomlConfig;
 use rfb::tungstenite::BinaryWs;
@@ -111,36 +103,6 @@ impl DropshotEndpointContext {
             log,
         }
     }
-}
-
-fn instance_spec_from_toml(
-    cpus: u8,
-    memory_mib: u64,
-    toml_config: &VmTomlConfig,
-) -> Result<Spec, SpecBuilderError> {
-    let mut spec_builder = SpecBuilder::new(cpus, memory_mib);
-    spec_builder.add_devices_from_config(toml_config)?;
-
-    for (name, port) in [
-        ("com1", instance_spec::components::devices::SerialPortNumber::Com1),
-        ("com2", instance_spec::components::devices::SerialPortNumber::Com2),
-        ("com3", instance_spec::components::devices::SerialPortNumber::Com3),
-        // SoftNpu uses this port for ASIC management.
-        #[cfg(not(feature = "falcon"))]
-        ("com4", instance_spec::components::devices::SerialPortNumber::Com4),
-    ] {
-        spec_builder.add_serial_port(SpecKey::Name(name.to_owned()), port)?;
-    }
-
-    #[cfg(feature = "falcon")]
-    spec_builder.set_softnpu_com4(SpecKey::Name("com4".to_owned()))?;
-
-    spec_builder.add_pvpanic_device(spec::QemuPvpanic {
-        id: SpecKey::Name("pvpanic".to_owned()),
-        spec: QemuPvpanic { enable_isa: true },
-    })?;
-
-    Ok(spec_builder.finish())
 }
 
 /// Wrapper around a [`NexusClient`] object, which allows deferring
@@ -250,15 +212,6 @@ async fn instance_ensure(
     };
 
     let vm_init = match init {
-        InstanceInitializationMethod::ConfigToml { cpus, memory_mib } => {
-            instance_spec_from_toml(
-                cpus,
-                memory_mib,
-                &ensure_options.toml_config,
-            )
-            .map(VmInitializationMethod::Spec)
-            .map_err(|e| e.to_string())
-        }
         InstanceInitializationMethod::Spec { spec } => spec
             .try_into()
             .map(VmInitializationMethod::Spec)

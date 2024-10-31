@@ -42,7 +42,6 @@ use propolis_api_types::instance_spec::components::{
 
 pub(crate) mod api_spec_v0;
 pub(crate) mod builder;
-mod config_toml;
 
 #[derive(Debug, Error)]
 #[error("input component type can't convert to output type")]
@@ -288,36 +287,6 @@ pub struct SoftNpuPort {
 pub struct SoftNpu {
     pub pci_port: Option<SoftNpuPciPort>,
     pub ports: HashMap<SpecKey, SoftNpuPort>,
-    pub p9_device: Option<SoftNpuP9>,
-    pub p9fs: Option<P9fs>,
-}
-
-struct ParsedDiskRequest {
-    id: SpecKey,
-    disk: Disk,
-}
-
-struct ParsedNicRequest {
-    id: SpecKey,
-    nic: Nic,
-}
-
-struct ParsedPciBridgeRequest {
-    id: SpecKey,
-    bridge: PciPciBridge,
-}
-
-#[cfg(feature = "falcon")]
-struct ParsedSoftNpuPort {
-    id: SpecKey,
-    port: SoftNpuPort,
-}
-
-#[cfg(feature = "falcon")]
-#[derive(Default)]
-struct ParsedSoftNpu {
-    pub pci_port: Option<SoftNpuPciPort>,
-    pub ports: Vec<ParsedSoftNpuPort>,
     pub p9_device: Option<SoftNpuP9>,
     pub p9fs: Option<P9fs>,
 }

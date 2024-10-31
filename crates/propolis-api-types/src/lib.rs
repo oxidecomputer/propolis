@@ -85,10 +85,6 @@ impl From<ReplacementComponent> for instance_spec::v0::ComponentV0 {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "method", content = "value")]
 pub enum InstanceInitializationMethod {
-    /// Create a brand new VM with the devices specified in the configuration
-    /// TOML passed to propolis-server when it started.
-    ConfigToml { cpus: u8, memory_mib: u64 },
-
     /// Create a brand new VM with the devies specified in the supplied spec.
     Spec {
         /// The component manifest for the new VM.

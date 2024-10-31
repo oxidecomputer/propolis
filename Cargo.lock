@@ -4402,10 +4402,12 @@ name = "propolis-server-config"
 version = "0.0.0"
 dependencies = [
  "cpuid_profile_config",
+ "propolis_api_types",
  "serde",
  "serde_derive",
  "thiserror",
  "toml 0.7.8",
+ "uuid",
 ]
 
 [[package]]

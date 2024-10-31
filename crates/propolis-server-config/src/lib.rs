@@ -11,6 +11,8 @@ use thiserror::Error;
 
 pub use cpuid_profile_config::CpuidProfile;
 
+pub mod spec;
+
 /// Configuration for the Propolis server.
 // NOTE: This is expected to change over time; portions of the hard-coded
 // configuration will likely become more dynamic.

@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashSet};
 use cpuid_utils::CpuidMapConversionError;
 use propolis_api_types::instance_spec::{
     components::{
-        board::{Board as InstanceSpecBoard, Chipset, I440Fx},
+        board::Board as InstanceSpecBoard,
         devices::{PciPciBridge, SerialPortNumber},
     },
     PciPath, SpecKey,
@@ -21,22 +21,18 @@ use propolis_api_types::instance_spec::components::devices::{
     P9fs, SoftNpuP9, SoftNpuPciPort,
 };
 
-use crate::{config, spec::SerialPortDevice};
+use crate::spec::SerialPortDevice;
 
 use super::{
-    config_toml::{ConfigTomlError, ParsedConfig},
     Board, BootOrderEntry, BootSettings, Disk, Nic, QemuPvpanic, SerialPort,
 };
 
 #[cfg(feature = "falcon")]
-use super::{ParsedSoftNpu, SoftNpuPort};
+use super::SoftNpuPort;
 
 /// Errors that can arise while building an instance spec from component parts.
 #[derive(Debug, Error)]
 pub(crate) enum SpecBuilderError {
-    #[error("error parsing config TOML")]
-    ConfigToml(#[from] ConfigTomlError),
-
     #[error("device {0} has the same ID as its backend")]
     DeviceAndBackendNamesIdentical(SpecKey),
 
@@ -71,19 +67,6 @@ pub(crate) struct SpecBuilder {
 }
 
 impl SpecBuilder {
-    pub fn new(cpus: u8, memory_mb: u64) -> Self {
-        let board = Board {
-            cpus,
-            memory_mb,
-            chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
-        };
-
-        Self {
-            spec: super::Spec { board, ..Default::default() },
-            ..Default::default()
-        }
-    }
-
     pub(super) fn with_instance_spec_board(
         board: InstanceSpecBoard,
     ) -> Result<Self, SpecBuilderError> {
@@ -143,59 +126,6 @@ impl SpecBuilder {
         }
 
         self.spec.boot_settings = Some(BootSettings { component_id, order });
-        Ok(())
-    }
-
-    /// Adds all the devices and backends specified in the supplied
-    /// configuration TOML to the spec under construction.
-    pub fn add_devices_from_config(
-        &mut self,
-        config: &config::Config,
-    ) -> Result<(), SpecBuilderError> {
-        let parsed = ParsedConfig::try_from(config)?;
-
-        let Chipset::I440Fx(ref mut i440fx) = self.spec.board.chipset;
-        i440fx.enable_pcie = parsed.enable_pcie;
-
-        for disk in parsed.disks {
-            self.add_storage_device(disk.id, disk.disk)?;
-        }
-
-        for nic in parsed.nics {
-            self.add_network_device(nic.id, nic.nic)?;
-        }
-
-        for bridge in parsed.pci_bridges {
-            self.add_pci_bridge(bridge.id, bridge.bridge)?;
-        }
-
-        #[cfg(feature = "falcon")]
-        self.add_parsed_softnpu_devices(parsed.softnpu)?;
-
-        Ok(())
-    }
-
-    #[cfg(feature = "falcon")]
-    fn add_parsed_softnpu_devices(
-        &mut self,
-        devices: ParsedSoftNpu,
-    ) -> Result<(), SpecBuilderError> {
-        if let Some(pci_port) = devices.pci_port {
-            self.set_softnpu_pci_port(pci_port)?;
-        }
-
-        for port in devices.ports {
-            self.add_softnpu_port(port.id, port.port)?;
-        }
-
-        if let Some(p9) = devices.p9_device {
-            self.set_softnpu_p9(p9)?;
-        }
-
-        if let Some(p9fs) = devices.p9fs {
-            self.set_p9fs(p9fs)?;
-        }
-
         Ok(())
     }
 
@@ -329,33 +259,26 @@ impl SpecBuilder {
     }
 
     #[cfg(feature = "falcon")]
-    pub fn set_softnpu_com4(
-        &mut self,
-        id: SpecKey,
-    ) -> Result<&Self, SpecBuilderError> {
-        if self.component_ids.contains(&id) {
-            return Err(SpecBuilderError::ComponentIdInUse(id));
-        }
-
-        let num = SerialPortNumber::Com4;
-        if self.serial_ports.contains(&num) {
-            return Err(SpecBuilderError::SerialPortInUse(num));
-        }
-
-        let desc = SerialPort { num, device: SerialPortDevice::SoftNpu };
-        self.spec.serial.insert(id.clone(), desc);
-        self.component_ids.insert(id);
-        self.serial_ports.insert(num);
-        Ok(self)
-    }
-
-    #[cfg(feature = "falcon")]
     pub fn set_softnpu_pci_port(
         &mut self,
         pci_port: SoftNpuPciPort,
     ) -> Result<&Self, SpecBuilderError> {
+        // SoftNPU squats on COM4.
+        let id = SpecKey::Name("com4".to_string());
+        let num = SerialPortNumber::Com4;
+        if self.component_ids.contains(&id) {
+            return Err(SpecBuilderError::ComponentIdInUse(id));
+        }
+
+        if self.serial_ports.contains(&num) {
+            return Err(SpecBuilderError::SerialPortInUse(num));
+        }
+
         self.register_pci_device(pci_port.pci_path)?;
         self.spec.softnpu.pci_port = Some(pci_port);
+        self.spec
+            .serial
+            .insert(id, SerialPort { num, device: SerialPortDevice::SoftNpu });
         Ok(self)
     }
 

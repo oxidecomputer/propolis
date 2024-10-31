@@ -1078,41 +1078,6 @@
         "description": "The mechanism to use to create a new Propolis VM.",
         "oneOf": [
           {
-            "description": "Create a brand new VM with the devices specified in the configuration TOML passed to propolis-server when it started.",
-            "type": "object",
-            "properties": {
-              "method": {
-                "type": "string",
-                "enum": [
-                  "ConfigToml"
-                ]
-              },
-              "value": {
-                "type": "object",
-                "properties": {
-                  "cpus": {
-                    "type": "integer",
-                    "format": "uint8",
-                    "minimum": 0
-                  },
-                  "memory_mib": {
-                    "type": "integer",
-                    "format": "uint64",
-                    "minimum": 0
-                  }
-                },
-                "required": [
-                  "cpus",
-                  "memory_mib"
-                ]
-              }
-            },
-            "required": [
-              "method",
-              "value"
-            ]
-          },
-          {
             "description": "Create a brand new VM with the devies specified in the supplied spec.",
             "type": "object",
             "properties": {
