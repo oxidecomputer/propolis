@@ -58,6 +58,29 @@ pub enum ReplacementComponent {
     DlpiNetworkBackend(backends::DlpiNetworkBackend),
 }
 
+impl From<ReplacementComponent> for instance_spec::v0::ComponentV0 {
+    fn from(value: ReplacementComponent) -> Self {
+        use instance_spec::v0::ComponentV0;
+        match value {
+            ReplacementComponent::CrucibleStorageBackend(be) => {
+                ComponentV0::CrucibleStorageBackend(be)
+            }
+            ReplacementComponent::FileStorageBackend(be) => {
+                ComponentV0::FileStorageBackend(be)
+            }
+            ReplacementComponent::BlobStorageBackend(be) => {
+                ComponentV0::BlobStorageBackend(be)
+            }
+            ReplacementComponent::VirtioNetworkBackend(be) => {
+                ComponentV0::VirtioNetworkBackend(be)
+            }
+            ReplacementComponent::DlpiNetworkBackend(be) => {
+                ComponentV0::DlpiNetworkBackend(be)
+            }
+        }
+    }
+}
+
 /// The mechanism to use to create a new Propolis VM.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "method", content = "value")]

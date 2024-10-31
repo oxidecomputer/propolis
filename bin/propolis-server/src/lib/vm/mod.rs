@@ -179,9 +179,6 @@ pub(crate) enum VmError {
 
     #[error("Forbidden state change")]
     ForbiddenStateChange(#[from] request_queue::RequestDeniedReason),
-
-    #[error("Failed to initialize VM's tokio runtime")]
-    TokioRuntimeInitializationFailed(#[source] std::io::Error),
 }
 
 /// The top-level VM wrapper type.

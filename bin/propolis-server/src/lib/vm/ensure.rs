@@ -125,6 +125,10 @@ impl<'a> VmEnsureNotStarted<'a> {
         self.state_publisher
     }
 
+    pub(crate) fn migration_info(&self) -> Option<&MigrationTargetInfo> {
+        self.ensure_request.migration_info()
+    }
+
     pub(crate) async fn create_objects_for_new_vm(
         self,
     ) -> anyhow::Result<VmEnsureObjectsCreated<'a>> {
@@ -334,7 +338,7 @@ pub(crate) struct VmEnsureActive<'a> {
     kernel_vm_paused: bool,
 }
 
-pub(crate) struct VmEnsureActiveOutput {
+pub(super) struct VmEnsureActiveOutput {
     pub vm_objects: Arc<VmObjects>,
     pub input_queue: Arc<InputQueue>,
     pub vmm_rt_hdl: tokio::runtime::Handle,

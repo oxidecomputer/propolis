@@ -621,7 +621,7 @@ impl<'a> MachineInitializer<'a> {
             let StorageBackendInstance { be: backend, crucible } = self
                 .create_storage_backend_from_spec(
                     &disk.backend_spec,
-                    &backend_id,
+                    backend_id,
                     &nexus_client,
                 )
                 .await?;
@@ -808,7 +808,10 @@ impl<'a> MachineInitializer<'a> {
                     imports: fail_imports as usize,
                 },
             );
-            self.devices.insert(MigrationFailureDevice::NAME.into(), dev);
+            self.devices.insert(
+                SpecKey::Name(MigrationFailureDevice::NAME.into()),
+                dev,
+            );
         }
     }
 

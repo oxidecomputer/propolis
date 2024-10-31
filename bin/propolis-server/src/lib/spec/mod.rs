@@ -292,17 +292,6 @@ pub struct SoftNpu {
     pub p9fs: Option<P9fs>,
 }
 
-#[cfg(feature = "falcon")]
-impl SoftNpu {
-    /// Returns `true` if this struct specifies at least one SoftNPU component.
-    pub fn has_components(&self) -> bool {
-        self.pci_port.is_some()
-            || self.p9_device.is_some()
-            || self.p9fs.is_some()
-            || !self.ports.is_empty()
-    }
-}
-
 struct ParsedDiskRequest {
     id: SpecKey,
     disk: Disk,

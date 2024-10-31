@@ -358,18 +358,25 @@ impl<T: MigrateConn> RonV0<T> {
         }?;
         info!(self.log(), "Destination read Preamble: {:?}", preamble);
 
-        if let Err(e) =
-            preamble.check_compatibility(&ensure_ctx.instance_spec().clone())
-        {
-            error!(
-                self.log(),
-                "source and destination instance specs incompatible";
-                "error" => #%e
-            );
-            return Err(MigrateError::InstanceSpecsIncompatible(e.to_string()));
+        match preamble.get_amended_spec(
+            &ensure_ctx
+                .migration_info()
+                .expect("migration destination implies target info")
+                .replace_components,
+        ) {
+            Ok(spec) => {
+                self.send_msg(codec::Message::Okay).await?;
+                Ok(spec)
+            }
+            Err(e) => {
+                error!(
+                    self.log(),
+                    "source and destination instance specs incompatible";
+                    "error" => #%e
+                );
+                Err(MigrateError::InstanceSpecsIncompatible(e.to_string()))
+            }
         }
-
-        self.send_msg(codec::Message::Okay).await
     }
 
     async fn ram_push(
