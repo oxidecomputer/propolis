@@ -65,7 +65,7 @@ pub(crate) trait DestinationProtocol {
 /// that the caller can use to run the migration.
 pub(crate) async fn initiate(
     log: &slog::Logger,
-    migrate_info: MigrationTargetInfo,
+    migrate_info: &MigrationTargetInfo,
     local_addr: SocketAddr,
 ) -> Result<impl DestinationProtocol, MigrateError> {
     let migration_id = migrate_info.migration_id;

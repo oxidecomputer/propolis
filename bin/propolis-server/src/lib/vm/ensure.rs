@@ -63,6 +63,12 @@ pub(crate) struct VmEnsureRequest {
     pub(crate) init: VmInitializationMethod,
 }
 
+impl VmEnsureRequest {
+    pub(crate) fn is_migration(&self) -> bool {
+        matches!(self.init, VmInitializationmethod::Migration(_))
+    }
+}
+
 /// Holds state about an instance ensure request that has not yet produced any
 /// VM objects or driven the VM state machine to the `ActiveVm` state.
 pub(crate) struct VmEnsureNotStarted<'a> {

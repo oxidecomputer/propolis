@@ -175,7 +175,12 @@ pub struct InstanceGetResponse {
 pub struct InstanceSpecGetResponse {
     pub properties: InstanceProperties,
     pub state: InstanceState,
-    pub spec: VersionedInstanceSpec,
+
+    /// The instance's component manifest, if it is known at this point.
+    /// (Instances that initialize via live migration receive specs from their
+    /// sources, so this field will be None for an instance that is still
+    /// initializing via migration.)
+    pub spec: Option<VersionedInstanceSpec>,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]

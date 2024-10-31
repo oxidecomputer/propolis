@@ -85,7 +85,7 @@ use active::ActiveVm;
 use ensure::{VmEnsureRequest, VmInitializationMethod};
 use oximeter::types::ProducerRegistry;
 use propolis_api_types::{
-    instance_spec::{SpecKey, VersionedInstanceSpec},
+    instance_spec::{v0::InstanceSpecV0, SpecKey, VersionedInstanceSpec},
     InstanceEnsureResponse, InstanceMigrateStatusResponse,
     InstanceMigrationStatus, InstanceProperties, InstanceSpecGetResponse,
     InstanceState, InstanceStateMonitorResponse, MigrationState,
@@ -215,8 +215,9 @@ struct VmDescription {
     /// The VM's API-level instance properties.
     properties: InstanceProperties,
 
-    /// The VM's last-known instance specification.
-    spec: Spec,
+    /// The VM's last-known instance specification, or None if no specification
+    /// has yet been supplied for this VM.
+    spec: Option<Spec>,
 
     /// The runtime on which the VM's state driver is running (or on which it
     /// ran).
@@ -332,7 +333,7 @@ impl Vm {
                 let state = vm.external_state_rx.borrow().clone();
                 Some(InstanceSpecGetResponse {
                     properties: vm.properties.clone(),
-                    spec: VersionedInstanceSpec::V0(spec.into()),
+                    spec: Some(VersionedInstanceSpec::V0(spec.into())),
                     state: state.state,
                 })
             }
@@ -345,7 +346,10 @@ impl Vm {
             | VmState::RundownComplete(vm) => Some(InstanceSpecGetResponse {
                 properties: vm.properties.clone(),
                 state: vm.external_state_rx.borrow().state,
-                spec: VersionedInstanceSpec::V0(vm.spec.clone().into()),
+                spec: vm
+                    .spec
+                    .clone()
+                    .map(|s| VersionedInstanceSpec::V0(s.into())),
             }),
         }
     }
@@ -454,7 +458,7 @@ impl Vm {
             guard.state = VmState::Rundown(VmDescription {
                 external_state_rx,
                 properties,
-                spec,
+                spec: Some(spec),
                 tokio_rt: Some(tokio_rt),
             });
             vm.services

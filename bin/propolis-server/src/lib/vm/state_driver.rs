@@ -27,7 +27,10 @@ use crate::{
 };
 
 use super::{
-    ensure::{VmEnsureActive, VmEnsureNotStarted, VmEnsureRequest},
+    ensure::{
+        VmEnsureActive, VmEnsureNotStarted, VmEnsureRequest,
+        VmInitializationMethod,
+    },
     guest_event::{self, GuestEvent},
     objects::VmObjects,
     request_queue::{self, ExternalRequest, InstanceAutoStart},
@@ -296,7 +299,7 @@ pub(super) async fn run_state_driver(
 
     // Run the VM until it exits, then set rundown on the parent VM so that no
     // new external callers can access its objects or services.
-    let output = state_driver.run(ensure_request.migrate.is_some()).await;
+    let output = state_driver.run(ensure_request.is_migration()).await;
     vm.set_rundown().await;
     output
 }
@@ -320,10 +323,10 @@ async fn create_and_activate_vm<'a>(
         state_publisher,
     );
 
-    if let Some(migrate_request) = ensure_request.migrate.as_ref() {
+    if let VmInitializationMethod::Migration(info) = &ensure_request.init {
         let migration = match crate::migrate::destination::initiate(
             log,
-            migrate_request,
+            info,
             ensure_options.local_server_addr,
         )
         .await
