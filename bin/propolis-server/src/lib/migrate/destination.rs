@@ -29,6 +29,7 @@ use crate::migrate::probes;
 use crate::migrate::{
     Device, MigrateError, MigratePhase, MigrateRole, MigrationState, PageIter,
 };
+use crate::spec::Spec;
 use crate::vm::ensure::{VmEnsureActive, VmEnsureNotStarted};
 use crate::vm::state_publisher::{
     ExternalStateUpdate, MigrationStateUpdate, StatePublisher,
@@ -177,23 +178,26 @@ impl<T: MigrateConn + Sync> DestinationProtocol for RonV0<T> {
         info!(self.log(), "entering destination migration task");
 
         let result = async {
-            // Run the sync phase to ensure that the source's instance spec is
-            // compatible with the spec supplied in the ensure parameters.
-            if let Err(e) = self.run_sync_phases(&mut ensure).await {
-                self.update_state(
-                    ensure.state_publisher(),
-                    MigrationState::Error,
-                );
-                let e = ensure.fail(e.into()).await;
-                return Err(e
-                    .downcast::<MigrateError>()
-                    .expect("original error was a MigrateError"));
-            }
+            let spec = match self.run_sync_phases(&mut ensure).await {
+                Ok(spec) => spec,
+                Err(e) => {
+                    self.update_state(
+                        ensure.state_publisher(),
+                        MigrationState::Error,
+                    );
+                    let e = ensure.fail(e.into()).await;
+                    return Err(e
+                        .downcast::<MigrateError>()
+                        .expect("original error was a MigrateError"));
+                }
+            };
 
             // The sync phase succeeded, so it's OK to go ahead with creating
             // the objects in the target's instance spec.
-            let mut objects_created =
-                ensure.create_objects().await.map_err(|e| {
+            let mut objects_created = ensure
+                .create_objects_for_migration(spec)
+                .await
+                .map_err(|e| {
                     MigrateError::TargetInstanceInitializationFailed(
                         e.to_string(),
                     )
@@ -268,14 +272,14 @@ impl<T: MigrateConn> RonV0<T> {
     async fn run_sync_phases(
         &mut self,
         ensure_ctx: &mut VmEnsureNotStarted<'_>,
-    ) -> Result<(), MigrateError> {
+    ) -> Result<Spec, MigrateError> {
         let step = MigratePhase::MigrateSync;
 
         probes::migrate_phase_begin!(|| { step.to_string() });
-        self.sync(ensure_ctx).await?;
+        let res = self.sync(ensure_ctx).await;
         probes::migrate_phase_end!(|| { step.to_string() });
 
-        Ok(())
+        res
     }
 
     async fn run_import_phases(
@@ -338,7 +342,7 @@ impl<T: MigrateConn> RonV0<T> {
     async fn sync(
         &mut self,
         ensure_ctx: &mut VmEnsureNotStarted<'_>,
-    ) -> Result<(), MigrateError> {
+    ) -> Result<Spec, MigrateError> {
         self.update_state(ensure_ctx.state_publisher(), MigrationState::Sync);
         let preamble: Preamble = match self.read_msg().await? {
             codec::Message::Serialized(s) => {

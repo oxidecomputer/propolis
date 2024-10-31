@@ -85,7 +85,7 @@ use active::ActiveVm;
 use ensure::{VmEnsureRequest, VmInitializationMethod};
 use oximeter::types::ProducerRegistry;
 use propolis_api_types::{
-    instance_spec::{v0::InstanceSpecV0, SpecKey, VersionedInstanceSpec},
+    instance_spec::{SpecKey, VersionedInstanceSpec},
     InstanceEnsureResponse, InstanceMigrateStatusResponse,
     InstanceMigrationStatus, InstanceProperties, InstanceSpecGetResponse,
     InstanceState, InstanceStateMonitorResponse, MigrationState,
@@ -221,6 +221,10 @@ struct VmDescription {
 
     /// The runtime on which the VM's state driver is running (or on which it
     /// ran).
+    ///
+    /// This is preserved in the VM state machine so that the state driver task
+    /// doesn't drop its runtime out from under itself when it signals that the
+    /// state machine should transition from Active to Rundown.
     tokio_rt: Option<tokio::runtime::Runtime>,
 }
 
@@ -386,6 +390,7 @@ impl Vm {
         log: &slog::Logger,
         state_driver_queue: Arc<state_driver::InputQueue>,
         objects: &Arc<objects::VmObjects>,
+        vmm_rt: tokio::runtime::Runtime,
         services: services::VmServices,
     ) {
         info!(self.log, "installing active VM");
@@ -400,7 +405,7 @@ impl Vm {
                     properties: vm.properties,
                     objects: objects.clone(),
                     services,
-                    tokio_rt: vm.tokio_rt.expect("WaitingForInit has runtime"),
+                    tokio_rt: vmm_rt,
                 });
             }
             state => unreachable!(
@@ -541,7 +546,7 @@ impl Vm {
                     }
                 },
                 migration: InstanceMigrateStatusResponse {
-                    migration_in: match ensure_request.init {
+                    migration_in: match &ensure_request.init {
                         VmInitializationMethod::Spec(_) => None,
                         VmInitializationMethod::Migration(info) => {
                             Some(InstanceMigrationStatus {
@@ -569,23 +574,10 @@ impl Vm {
                 _ => {}
             };
 
-            let thread_count = usize::max(
-                VMM_MIN_RT_THREADS,
-                VMM_BASE_RT_THREADS
-                    + ensure_request.instance_spec.board.cpus as usize,
-            );
-
-            let tokio_rt = tokio::runtime::Builder::new_multi_thread()
-                .thread_name("tokio-rt-vmm")
-                .worker_threads(thread_count)
-                .enable_all()
-                .build()
-                .map_err(VmError::TokioRuntimeInitializationFailed)?;
-
             let properties = ensure_request.properties.clone();
-            let spec = ensure_request.instance_spec.clone();
+            let spec = ensure_request.spec().cloned();
             let vm_for_driver = self.clone();
-            guard.driver = Some(tokio_rt.spawn(async move {
+            guard.driver = Some(tokio::spawn(async move {
                 state_driver::run_state_driver(
                     log_for_driver,
                     vm_for_driver,
@@ -601,7 +593,7 @@ impl Vm {
                 external_state_rx: external_rx.clone(),
                 properties,
                 spec,
-                tokio_rt: Some(tokio_rt),
+                tokio_rt: None,
             });
         }
 
