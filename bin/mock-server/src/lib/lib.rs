@@ -4,17 +4,15 @@
 
 //! Implementation of a mock Propolis server
 
-use std::io::{Error as IoError, ErrorKind};
 use std::sync::Arc;
 
-use base64::Engine;
 use dropshot::{
     channel, endpoint, ApiDescription, HttpError, HttpResponseCreated,
     HttpResponseOk, HttpResponseUpdatedNoContent, Query, RequestContext,
     TypedBody, WebsocketConnection,
 };
 use futures::SinkExt;
-use slog::{error, info, Logger};
+use slog::{error, Logger};
 use thiserror::Error;
 use tokio::sync::{watch, Mutex};
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
@@ -22,10 +20,8 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
 mod api_types;
-mod copied;
 
-use crate::copied::{slot_to_pci_path, SlotType};
-use api_types::types as api;
+use api_types::types::{self as api, InstanceEnsureRequest};
 
 #[derive(Debug, Eq, PartialEq, Error)]
 pub enum Error {
@@ -140,13 +136,7 @@ async fn instance_ensure(
     request: TypedBody<api::InstanceEnsureRequest>,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let server_context = rqctx.context();
-    let request = request.into_inner();
-    let (properties, nics, disks, cloud_init_bytes) = (
-        request.properties,
-        request.nics,
-        request.disks,
-        request.cloud_init_bytes,
-    );
+    let InstanceEnsureRequest { properties, .. } = request.into_inner();
 
     // Handle an already-initialized instance
     let mut instance = server_context.instance.lock().await;
@@ -160,58 +150,6 @@ async fn instance_ensure(
             migrate: None,
         }));
     }
-
-    // Perform some basic validation of the requested properties
-    for nic in &nics {
-        info!(server_context.log, "Creating NIC: {:#?}", nic);
-        slot_to_pci_path(nic.slot, SlotType::Nic).map_err(|e| {
-            let err = IoError::new(
-                ErrorKind::InvalidData,
-                format!("Cannot parse vnic PCI: {}", e),
-            );
-            HttpError::for_internal_error(format!(
-                "Cannot build instance: {}",
-                err
-            ))
-        })?;
-    }
-
-    for disk in &disks {
-        info!(server_context.log, "Creating Disk: {:#?}", disk);
-        slot_to_pci_path(disk.slot, SlotType::Disk).map_err(|e| {
-            let err = IoError::new(
-                ErrorKind::InvalidData,
-                format!("Cannot parse disk PCI: {}", e),
-            );
-            HttpError::for_internal_error(format!(
-                "Cannot build instance: {}",
-                err
-            ))
-        })?;
-        info!(server_context.log, "Disk {} created successfully", disk.name);
-    }
-
-    if let Some(cloud_init_bytes) = &cloud_init_bytes {
-        info!(server_context.log, "Creating cloud-init disk");
-        slot_to_pci_path(api::Slot(0), SlotType::CloudInit).map_err(|e| {
-            let err = IoError::new(ErrorKind::InvalidData, e.to_string());
-            HttpError::for_internal_error(format!(
-                "Cannot build instance: {}",
-                err
-            ))
-        })?;
-        base64::engine::general_purpose::STANDARD
-            .decode(cloud_init_bytes)
-            .map_err(|e| {
-                let err = IoError::new(ErrorKind::InvalidInput, e.to_string());
-                HttpError::for_internal_error(format!(
-                    "Cannot build instance: {}",
-                    err
-                ))
-            })?;
-        info!(server_context.log, "cloud-init disk created");
-    }
-
     *instance = Some(InstanceContext::new(properties, &server_context.log));
     Ok(HttpResponseCreated(api::InstanceEnsureResponse { migrate: None }))
 }

@@ -12,10 +12,8 @@ use std::{
 };
 
 use anyhow::Context;
-use propolis_client::types::{
-    ComponentV0, CrucibleOpts, CrucibleStorageBackend,
-    VolumeConstructionRequest,
-};
+use crucible_client_types::{CrucibleOpts, VolumeConstructionRequest};
+use propolis_client::types::{ComponentV0, CrucibleStorageBackend};
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 use tracing::{error, info};
 use uuid::Uuid;
@@ -288,11 +286,8 @@ impl super::DiskConfig for CrucibleDisk {
 
     fn backend_spec(&self) -> ComponentV0 {
         let gen = self.generation.load(Ordering::Relaxed);
-        let downstairs_addrs = self
-            .downstairs_instances
-            .iter()
-            .map(|ds| ds.address.to_string())
-            .collect();
+        let downstairs_addrs =
+            self.downstairs_instances.iter().map(|ds| ds.address).collect();
 
         let vcr = VolumeConstructionRequest::Volume {
             id: self.id,

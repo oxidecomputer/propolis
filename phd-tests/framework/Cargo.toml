@@ -16,6 +16,7 @@ bhyve_api.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 cfg-if.workspace = true
 cpuid_utils.workspace = true
+crucible-client-types.workspace = true
 errno.workspace = true
 fatfs.workspace = true
 futures.workspace = true

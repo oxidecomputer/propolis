@@ -8,6 +8,9 @@ progenitor::generate_api!(
     spec = "../../openapi/propolis-server.json",
     interface = Builder,
     tags = Separate,
+    replace = {
+        SpecKey = propolis_api_types::instance_spec::SpecKey,
+    },
     patch = {
         // Some Crucible-related bits are re-exported through simulated
         // sled-agent and thus require JsonSchema

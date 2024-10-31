@@ -201,6 +201,12 @@ impl std::str::FromStr for SpecKey {
     }
 }
 
+impl From<Uuid> for SpecKey {
+    fn from(value: Uuid) -> Self {
+        Self::Uuid(value)
+    }
+}
+
 impl JsonSchema for SpecKey {
     fn schema_name() -> String {
         "SpecKey".to_string()
