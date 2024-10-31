@@ -23,6 +23,7 @@
 
 use std::collections::VecDeque;
 
+use propolis_api_types::instance_spec::SpecKey;
 use slog::{debug, info, Logger};
 use thiserror::Error;
 use uuid::Uuid;
@@ -78,11 +79,8 @@ pub enum ExternalRequest {
     /// is only allowed once the VM is started and the volume has activated, but
     /// it should be allowed even before the VM has started.
     ReconfigureCrucibleVolume {
-        /// The name of the Crucible backend component in the instance spec.
-        disk_name: String,
-
-        /// The ID of the Crucible backend in the VM's Crucible backend map.
-        backend_id: Uuid,
+        /// The
+        disk_id: SpecKey,
 
         /// The new volume construction request to supply to the Crucible
         /// upstairs.
@@ -103,12 +101,9 @@ impl std::fmt::Debug for ExternalRequest {
                 .finish(),
             Self::Reboot => write!(f, "Reboot"),
             Self::Stop => write!(f, "Stop"),
-            Self::ReconfigureCrucibleVolume {
-                disk_name, backend_id, ..
-            } => f
+            Self::ReconfigureCrucibleVolume { disk_id, .. } => f
                 .debug_struct("ReconfigureCrucibleVolume")
-                .field("disk_name", disk_name)
-                .field("backend_id", backend_id)
+                .field("disk_id", disk_id)
                 .finish(),
         }
     }
@@ -473,8 +468,7 @@ mod test {
     fn make_reconfigure_crucible_request() -> ExternalRequest {
         let (tx, _rx) = tokio::sync::oneshot::channel();
         ExternalRequest::ReconfigureCrucibleVolume {
-            disk_name: "".to_string(),
-            backend_id: Uuid::new_v4(),
+            disk_id: SpecKey::Uuid(Uuid::new_v4()),
             new_vcr_json: "".to_string(),
             result_tx: tx,
         }

@@ -634,14 +634,13 @@ async fn instance_issue_crucible_vcr_request(
     let path_params = path_params.into_inner();
     let request = request.into_inner();
     let new_vcr_json = request.vcr_json;
-    let disk_name = request.name;
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     let vm =
         rqctx.context().vm.active_vm().await.ok_or_else(not_created_error)?;
 
-    vm.reconfigure_crucible_volume(disk_name, path_params.id, new_vcr_json, tx)
-        .map_err(|e| match e {
+    vm.reconfigure_crucible_volume(path_params.id, new_vcr_json, tx).map_err(
+        |e| match e {
             VmError::ForbiddenStateChange(reason) => HttpError::for_status(
                 Some(format!("instance state change not allowed: {}", reason)),
                 hyper::StatusCode::FORBIDDEN,
@@ -649,7 +648,8 @@ async fn instance_issue_crucible_vcr_request(
             _ => HttpError::for_internal_error(format!(
                 "unexpected error from VM controller: {e}"
             )),
-        })?;
+        },
+    )?;
 
     let result = rx.await.map_err(|_| {
         HttpError::for_internal_error(

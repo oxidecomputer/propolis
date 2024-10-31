@@ -25,7 +25,6 @@ pub mod instance_spec;
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceVCRReplace {
-    pub name: String,
     pub vcr_json: String,
 }
 
@@ -307,18 +306,18 @@ pub enum InstanceSerialConsoleControlMessage {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct SnapshotRequestPathParams {
-    pub id: Uuid,
+    pub id: SpecKey,
     pub snapshot_id: Uuid,
 }
 
 #[derive(Deserialize, JsonSchema)]
 pub struct VCRRequestPathParams {
-    pub id: Uuid,
+    pub id: SpecKey,
 }
 
 #[derive(Deserialize, JsonSchema)]
 pub struct VolumeStatusPathParams {
-    pub id: Uuid,
+    pub id: SpecKey,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

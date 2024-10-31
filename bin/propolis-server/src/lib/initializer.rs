@@ -51,7 +51,6 @@ use propolis_types::{CpuidIdent, CpuidVendor};
 use slog::info;
 use strum::IntoEnumIterator;
 use thiserror::Error;
-use uuid::Uuid;
 
 /// An error that can arise while initializing a new machine.
 #[derive(Debug, Error)]
@@ -84,7 +83,7 @@ pub enum MachineInitError {
     InMemoryBackendDecodeFailed(#[from] base64::DecodeError),
 
     #[error("multiple Crucible disks with ID {0}")]
-    DuplicateCrucibleBackendId(Uuid),
+    DuplicateCrucibleBackendId(SpecKey),
 
     #[error("boot order entry {0:?} does not refer to an attached disk")]
     BootOrderEntryWithoutDevice(SpecKey),
@@ -171,7 +170,7 @@ impl RegisteredChipset {
 
 struct StorageBackendInstance {
     be: Arc<dyn block::Backend>,
-    crucible: Option<(uuid::Uuid, Arc<block::CrucibleBackend>)>,
+    crucible: Option<Arc<block::CrucibleBackend>>,
 }
 
 #[derive(Default)]
@@ -515,13 +514,7 @@ impl<'a> MachineInitializer<'a> {
                 .await
                 .context("failed to create Crucible backend")?;
 
-                let crucible = Some((
-                    be.get_uuid()
-                        .await
-                        .context("failed to get Crucible backend ID")?,
-                    be.clone(),
-                ));
-
+                let crucible = Some(be.clone());
                 Ok(StorageBackendInstance { be, crucible })
             }
             StorageBackend::File(spec) => {
@@ -659,12 +652,14 @@ impl<'a> MachineInitializer<'a> {
                 }
             };
 
-            if let Some((disk_id, backend)) = crucible {
+            if let Some(backend) = crucible {
                 let block_size = backend.block_size().await;
-                let prev = self.crucible_backends.insert(disk_id, backend);
+                let prev =
+                    self.crucible_backends.insert(backend_id.clone(), backend);
+
                 if prev.is_some() {
                     return Err(MachineInitError::DuplicateCrucibleBackendId(
-                        disk_id,
+                        backend_id.clone(),
                     ));
                 }
 
@@ -678,14 +673,16 @@ impl<'a> MachineInitializer<'a> {
                     continue;
                 };
 
-                // Register the block device as a metric producer, if we've been
-                // setup to do so. Note we currently only do this for the Crucible
-                // backend, in which case we have the disk ID.
-                if let Some(registry) = &self.producer_registry {
+                // Register the block device as a metric producer, provided that
+                // metrics are enabled and this Crucible backend is identified
+                // by its UUID.
+                if let (Some(registry), SpecKey::Uuid(disk_id)) =
+                    (&self.producer_registry, &backend_id)
+                {
                     let stats = VirtualDiskProducer::new(
                         block_size,
                         self.properties.id,
-                        disk_id,
+                        *disk_id,
                         &self.properties.metadata,
                     );
                     if let Err(e) = registry.register_producer(stats.clone()) {

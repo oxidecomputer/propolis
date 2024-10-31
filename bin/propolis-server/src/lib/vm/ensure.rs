@@ -65,7 +65,7 @@ pub(crate) struct VmEnsureRequest {
 
 impl VmEnsureRequest {
     pub(crate) fn is_migration(&self) -> bool {
-        matches!(self.init, VmInitializationmethod::Migration(_))
+        matches!(self.init, VmInitializationMethod::Migration(_))
     }
 }
 

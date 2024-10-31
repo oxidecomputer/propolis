@@ -121,7 +121,7 @@ pub(crate) type BlockBackendMap =
 
 /// Maps disk IDs to Crucible backend objects.
 pub(crate) type CrucibleBackendMap =
-    BTreeMap<uuid::Uuid, Arc<propolis::block::CrucibleBackend>>;
+    BTreeMap<SpecKey, Arc<propolis::block::CrucibleBackend>>;
 
 /// Type alias for the sender side of the channel that receives
 /// externally-visible instance state updates.

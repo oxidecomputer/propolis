@@ -11,8 +11,8 @@ use std::{
 
 use anyhow::Context;
 use propolis_api_types::{
-    instance_spec::components::backends::CrucibleStorageBackend, InstanceState,
-    MigrationState,
+    instance_spec::{components::backends::CrucibleStorageBackend, SpecKey},
+    InstanceState, MigrationState,
 };
 use slog::{error, info};
 use tokio::sync::Notify;
@@ -499,18 +499,13 @@ impl StateDriver {
                 }
             }
             ExternalRequest::ReconfigureCrucibleVolume {
-                disk_name,
-                backend_id,
+                disk_id,
                 new_vcr_json,
                 result_tx,
             } => {
                 let _ = result_tx.send(
-                    self.reconfigure_crucible_volume(
-                        disk_name,
-                        &backend_id,
-                        new_vcr_json,
-                    )
-                    .await,
+                    self.reconfigure_crucible_volume(disk_id, new_vcr_json)
+                        .await,
                 );
                 HandleEventOutcome::Continue
             }
@@ -649,15 +644,13 @@ impl StateDriver {
 
     async fn reconfigure_crucible_volume(
         &self,
-        disk_name: String,
-        backend_id: &Uuid,
+        disk_id: SpecKey,
         new_vcr_json: String,
     ) -> super::CrucibleReplaceResult {
         info!(self.log, "request to replace Crucible VCR";
-              "disk_name" => %disk_name,
-              "backend_id" => %backend_id);
+              "disk_id" => %disk_id);
 
-        fn spec_element_not_found(disk_name: &str) -> dropshot::HttpError {
+        fn spec_element_not_found(disk_name: &SpecKey) -> dropshot::HttpError {
             let msg = format!("Crucible backend for {:?} not found", disk_name);
             dropshot::HttpError::for_not_found(Some(msg.clone()), msg)
         }
@@ -665,16 +658,16 @@ impl StateDriver {
         let mut objects = self.objects.lock_exclusive().await;
         let backend = objects
             .crucible_backends()
-            .get(backend_id)
+            .get(&disk_id)
             .ok_or_else(|| {
-                let msg = format!("No crucible backend for id {backend_id}");
+                let msg = format!("No crucible backend for id {disk_id}");
                 dropshot::HttpError::for_not_found(Some(msg.clone()), msg)
             })?
             .clone();
 
-        let Some(disk) = objects.instance_spec_mut().disks.get_mut(&disk_name)
+        let Some(disk) = objects.instance_spec_mut().disks.get_mut(&disk_id)
         else {
-            return Err(spec_element_not_found(&disk_name));
+            return Err(spec_element_not_found(&disk_id));
         };
 
         let StorageBackend::Crucible(CrucibleStorageBackend {
@@ -682,7 +675,7 @@ impl StateDriver {
             readonly,
         }) = &disk.backend_spec
         else {
-            return Err(spec_element_not_found(&disk_name));
+            return Err(spec_element_not_found(&disk_id));
         };
 
         let replace_result = backend
@@ -700,7 +693,7 @@ impl StateDriver {
             request_json: new_vcr_json,
         });
 
-        info!(self.log, "replaced Crucible VCR"; "backend_id" => %backend_id);
+        info!(self.log, "replaced Crucible VCR"; "disk_id" => %disk_id);
 
         Ok(replace_result)
     }
