@@ -35,7 +35,7 @@ async fn cpuid_instance_spec_round_trip_test(ctx: &Framework) {
 
     let spec_get_response = vm.get_spec().await?;
     let propolis_client::types::VersionedInstanceSpec::V0(spec) =
-        spec_get_response.spec;
+        spec_get_response.spec.expect("launched VM should have a spec");
 
     let cpuid = spec.board.cpuid.expect("board should have explicit CPUID");
     assert_eq!(cpuid.entries.len(), entries.len());

@@ -4,12 +4,14 @@
 
 //! A client for the Propolis hypervisor frontend's server API.
 
+pub use propolis_api_types::instance_spec::SpecKey;
+
 progenitor::generate_api!(
     spec = "../../openapi/propolis-server.json",
     interface = Builder,
     tags = Separate,
     replace = {
-        SpecKey = propolis_api_types::instance_spec::SpecKey,
+        SpecKey = crate::SpecKey,
     },
     patch = {
         // Some Crucible-related bits are re-exported through simulated

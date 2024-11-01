@@ -2,15 +2,18 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::{collections::BTreeMap, str::FromStr};
 
 use anyhow::Context;
 use cpuid_utils::CpuidIdent;
-use propolis_client::types::{
-    Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
-    CpuidEntry, CpuidVendor, InstanceMetadata, InstanceSpecV0, NvmeDisk,
-    PciPath, SerialPort, SerialPortNumber, VirtioDisk,
+use propolis_client::{
+    types::{
+        Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
+        CpuidEntry, CpuidVendor, InstanceMetadata, InstanceSpecV0, NvmeDisk,
+        PciPath, SerialPort, SerialPortNumber, VirtioDisk,
+    },
+    SpecKey,
 };
 use uuid::Uuid;
 
@@ -297,14 +300,16 @@ impl<'dr> VmConfig<'dr> {
             let pci_path = PciPath::new(0, req.pci_device_num, 0).unwrap();
             let backend_spec = hdl.backend_spec();
             let device_name = hdl.device_name().clone();
-            let backend_name = device_name.clone().into_backend_name();
+            let backend_id = SpecKey::Name(
+                device_name.clone().into_backend_name().into_string(),
+            );
             let device_spec = match req.interface {
                 DiskInterface::Virtio => ComponentV0::VirtioDisk(VirtioDisk {
-                    backend_name: backend_name.clone().into_string(),
+                    backend_id: backend_id.clone(),
                     pci_path,
                 }),
                 DiskInterface::Nvme => ComponentV0::NvmeDisk(NvmeDisk {
-                    backend_name: backend_name.clone().into_string(),
+                    backend_id: backend_id.clone(),
                     pci_path,
                 }),
             };
@@ -312,9 +317,8 @@ impl<'dr> VmConfig<'dr> {
             let _old =
                 spec.components.insert(device_name.into_string(), device_spec);
             assert!(_old.is_none());
-            let _old = spec
-                .components
-                .insert(backend_name.into_string(), backend_spec);
+            let _old =
+                spec.components.insert(backend_id.to_string(), backend_spec);
             assert!(_old.is_none());
         }
 
@@ -330,7 +334,9 @@ impl<'dr> VmConfig<'dr> {
                 ComponentV0::BootSettings(BootSettings {
                     order: boot_order
                         .iter()
-                        .map(|item| BootOrderEntry { name: item.to_string() })
+                        .map(|item| BootOrderEntry {
+                            component_id: SpecKey::from_str(item).unwrap(),
+                        })
                         .collect(),
                 }),
             );
