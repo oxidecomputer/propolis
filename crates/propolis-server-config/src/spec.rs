@@ -12,12 +12,17 @@ use std::{
 use propolis_api_types::instance_spec::{
     components::{
         backends::{FileStorageBackend, VirtioNetworkBackend},
-        devices::{NvmeDisk, PciPciBridge, VirtioDisk, VirtioNic},
+        devices::{
+            MigrationFailureInjector, NvmeDisk, PciPciBridge, VirtioDisk,
+            VirtioNic,
+        },
     },
     v0::ComponentV0,
     PciPath, SpecKey,
 };
 use thiserror::Error;
+
+pub const MIGRATION_FAILURE_DEVICE_NAME: &str = "test-migration-failure";
 
 #[cfg(feature = "falcon")]
 use propolis_api_types::instance_spec::components::{
@@ -97,6 +102,32 @@ impl TryFrom<&super::Config> for SpecConfig {
         for (device_name, device) in config.devices.iter() {
             let device_id = SpecKey::from_str(device_name).unwrap();
             let driver = device.driver.as_str();
+            if device_name == MIGRATION_FAILURE_DEVICE_NAME {
+                const FAIL_EXPORTS: &str = "fail_exports";
+                const FAIL_IMPORTS: &str = "fail_imports";
+                let fail_exports = device
+                    .options
+                    .get(FAIL_EXPORTS)
+                    .and_then(|val| val.as_integer())
+                    .unwrap_or(0)
+                    .max(0) as u32;
+                let fail_imports = device
+                    .options
+                    .get(FAIL_IMPORTS)
+                    .and_then(|val| val.as_integer())
+                    .unwrap_or(0)
+                    .max(0) as u32;
+
+                spec.components.insert(
+                    SpecKey::Name(MIGRATION_FAILURE_DEVICE_NAME.to_owned()),
+                    ComponentV0::MigrationFailureInjector(
+                        MigrationFailureInjector { fail_exports, fail_imports },
+                    ),
+                );
+
+                continue;
+            }
+
             match driver {
                 // If this is a storage device, parse its "block_dev" property
                 // to get the name of its corresponding backend.

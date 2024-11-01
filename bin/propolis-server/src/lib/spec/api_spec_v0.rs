@@ -41,9 +41,9 @@ pub(crate) enum ApiSpecError {
     #[error("network backend {backend} not found for device {device}")]
     NetworkBackendNotFound { backend: SpecKey, device: SpecKey },
 
-    #[cfg(not(feature = "falcon"))]
-    #[error("softnpu component {0} compiled out")]
-    SoftNpuCompiledOut(SpecKey),
+    #[allow(dead_code)]
+    #[error("component {0} disabled by compile-time options")]
+    FeatureCompiledOut(SpecKey),
 
     #[error("backend {0} not used by any device")]
     BackendNotUsed(SpecKey),
@@ -62,6 +62,10 @@ impl From<Spec> for InstanceSpecV0 {
             serial,
             pci_pci_bridges,
             pvpanic,
+
+            #[cfg(not(feature = "omicron-build"))]
+            migration_failure,
+
             #[cfg(feature = "falcon")]
             softnpu,
         } = val;
@@ -148,6 +152,15 @@ impl From<Spec> for InstanceSpecV0 {
                 ComponentV0::BootSettings(BootSettings {
                     order: settings.order.into_iter().map(Into::into).collect(),
                 }),
+            );
+        }
+
+        #[cfg(not(feature = "omicron-build"))]
+        if let Some(migration_failure) = migration_failure {
+            insert_component(
+                &mut spec,
+                migration_failure.id,
+                ComponentV0::MigrationFailureInjector(migration_failure.spec),
             );
         }
 
@@ -300,7 +313,7 @@ impl TryFrom<InstanceSpecV0> for Spec {
                 | ComponentV0::SoftNpuPort(_)
                 | ComponentV0::SoftNpuP9(_)
                 | ComponentV0::P9fs(_) => {
-                    return Err(ApiSpecError::SoftNpuCompiledOut(device_id));
+                    return Err(ApiSpecError::FeatureCompiledOut(device_id));
                 }
                 #[cfg(feature = "falcon")]
                 ComponentV0::SoftNpuPciPort(port) => {
@@ -332,6 +345,22 @@ impl TryFrom<InstanceSpecV0> for Spec {
                 ComponentV0::P9fs(p9fs) => {
                     builder.set_p9fs(p9fs)?;
                 }
+
+                #[cfg(not(feature = "omicron-build"))]
+                ComponentV0::MigrationFailureInjector(injector) => {
+                    builder.add_migration_failure_device(
+                        super::MigrationFailure {
+                            id: device_id,
+                            spec: injector,
+                        },
+                    )?;
+                }
+
+                #[cfg(feature = "omicron-build")]
+                ComponentV0::MigrationFailureInjector(_) => {
+                    return Err(ApiSpecError::FeatureCompiledOut(device_id));
+                }
+
                 ComponentV0::CrucibleStorageBackend(_)
                 | ComponentV0::FileStorageBackend(_)
                 | ComponentV0::BlobStorageBackend(_)

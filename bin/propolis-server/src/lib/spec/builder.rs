@@ -16,6 +16,9 @@ use propolis_api_types::instance_spec::{
 };
 use thiserror::Error;
 
+#[cfg(not(feature = "omicron-build"))]
+use super::MigrationFailure;
+
 #[cfg(feature = "falcon")]
 use propolis_api_types::instance_spec::components::devices::{
     P9fs, SoftNpuP9, SoftNpuPciPort,
@@ -50,6 +53,10 @@ pub(crate) enum SpecBuilderError {
 
     #[error("boot settings were already specified")]
     BootSettingsInUse,
+
+    #[cfg(not(feature = "omicron-build"))]
+    #[error("migration failure injection settings were already specified")]
+    MigrationFailureInjectionInUse,
 
     #[error("boot option {0} is not an attached device")]
     BootOptionMissing(SpecKey),
@@ -255,6 +262,24 @@ impl SpecBuilder {
 
         self.component_ids.insert(pvpanic.id.clone());
         self.spec.pvpanic = Some(pvpanic);
+        Ok(self)
+    }
+
+    #[cfg(not(feature = "omicron-build"))]
+    pub fn add_migration_failure_device(
+        &mut self,
+        device: MigrationFailure,
+    ) -> Result<&Self, SpecBuilderError> {
+        if self.component_ids.contains(&device.id) {
+            return Err(SpecBuilderError::ComponentIdInUse(device.id));
+        }
+
+        if self.spec.migration_failure.is_some() {
+            return Err(SpecBuilderError::MigrationFailureInjectionInUse);
+        }
+
+        self.component_ids.insert(device.id.clone());
+        self.spec.migration_failure = Some(device);
         Ok(self)
     }
 

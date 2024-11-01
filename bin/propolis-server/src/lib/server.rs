@@ -14,6 +14,7 @@ use std::net::IpAddr;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::SocketAddrV6;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::migrate::destination::MigrationTargetInfo;
@@ -36,7 +37,6 @@ pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types as api;
 use propolis_api_types::InstanceInitializationMethod;
-pub use propolis_server_config::Config as VmTomlConfig;
 use rfb::tungstenite::BinaryWs;
 use slog::{error, warn, Logger};
 use tokio::sync::MutexGuard;
@@ -64,8 +64,8 @@ pub struct MetricsEndpointConfig {
 /// this configuration at startup time and refers to it when manipulating its
 /// objects.
 pub struct StaticConfig {
-    /// The TOML-driven configuration for this server's instances.
-    pub vm: Arc<VmTomlConfig>,
+    /// The path to the bootrom to supply to this server's guests.
+    pub bootrom_path: Arc<PathBuf>,
 
     /// Whether to use the host's guest memory reservoir to back guest memory.
     pub use_reservoir: bool,
@@ -86,7 +86,7 @@ pub struct DropshotEndpointContext {
 impl DropshotEndpointContext {
     /// Creates a new server context object.
     pub fn new(
-        config: VmTomlConfig,
+        bootrom_path: PathBuf,
         use_reservoir: bool,
         log: slog::Logger,
         metric_config: Option<MetricsEndpointConfig>,
@@ -94,7 +94,7 @@ impl DropshotEndpointContext {
         let vnc_server = VncServer::new(log.clone());
         Self {
             static_config: StaticConfig {
-                vm: Arc::new(config),
+                bootrom_path: Arc::new(bootrom_path),
                 use_reservoir,
                 metrics: metric_config,
             },
@@ -202,7 +202,7 @@ async fn instance_ensure(
             .await;
 
     let ensure_options = crate::vm::EnsureOptions {
-        toml_config: server_context.static_config.vm.clone(),
+        bootrom_path: server_context.static_config.bootrom_path.clone(),
         use_reservoir: server_context.static_config.use_reservoir,
         metrics_config: server_context.static_config.metrics.clone(),
         oximeter_registry,

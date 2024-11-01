@@ -25,7 +25,7 @@ use propolis_api_types::instance_spec::{
         },
         board::{Chipset, I440Fx},
         devices::{
-            NvmeDisk, PciPciBridge, QemuPvpanic as QemuPvpanicDesc,
+            NvmeDisk, PciPciBridge, QemuPvpanic as QemuPvpanicSpec,
             SerialPortNumber, VirtioDisk, VirtioNic,
         },
     },
@@ -33,6 +33,9 @@ use propolis_api_types::instance_spec::{
     PciPath, SpecKey,
 };
 use thiserror::Error;
+
+#[cfg(not(feature = "omicron-build"))]
+use propolis_api_types::instance_spec::components::devices::MigrationFailureInjector;
 
 #[cfg(feature = "falcon")]
 use propolis_api_types::instance_spec::components::{
@@ -68,6 +71,9 @@ pub(crate) struct Spec {
 
     pub pci_pci_bridges: HashMap<SpecKey, PciPciBridge>,
     pub pvpanic: Option<QemuPvpanic>,
+
+    #[cfg(not(feature = "omicron-build"))]
+    pub migration_failure: Option<MigrationFailure>,
 
     #[cfg(feature = "falcon")]
     pub softnpu: SoftNpu,
@@ -272,7 +278,14 @@ pub struct SerialPort {
 #[derive(Clone, Debug)]
 pub struct QemuPvpanic {
     pub id: SpecKey,
-    pub spec: QemuPvpanicDesc,
+    pub spec: QemuPvpanicSpec,
+}
+
+#[cfg(not(feature = "omicron-build"))]
+#[derive(Clone, Debug)]
+pub struct MigrationFailure {
+    pub id: SpecKey,
+    pub spec: MigrationFailureInjector,
 }
 
 #[cfg(feature = "falcon")]

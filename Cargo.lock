@@ -4370,7 +4370,6 @@ dependencies = [
  "oximeter-instruments",
  "oximeter-producer",
  "propolis",
- "propolis-server-config",
  "propolis_api_types",
  "propolis_types",
  "reqwest 0.12.7",

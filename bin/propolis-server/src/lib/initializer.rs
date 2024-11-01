@@ -186,7 +186,6 @@ pub struct MachineInitializer<'a> {
     pub(crate) crucible_backends: CrucibleBackendMap,
     pub(crate) spec: &'a Spec,
     pub(crate) properties: &'a InstanceProperties,
-    pub(crate) toml_config: &'a crate::server::VmTomlConfig,
     pub(crate) producer_registry: Option<ProducerRegistry>,
     pub(crate) state: MachineInitializerState,
     pub(crate) kstat_sampler: Option<KstatSampler>,
@@ -766,52 +765,34 @@ impl<'a> MachineInitializer<'a> {
     }
 
     #[cfg(not(feature = "omicron-build"))]
-    pub fn initialize_test_devices(
-        &mut self,
-        toml_cfg: &std::collections::BTreeMap<
-            String,
-            propolis_server_config::Device,
-        >,
-    ) {
+    pub fn initialize_test_devices(&mut self) {
         use propolis::hw::testdev::{
             MigrationFailureDevice, MigrationFailures,
         };
 
-        if let Some(dev) = toml_cfg.get(MigrationFailureDevice::NAME) {
+        if let Some(crate::spec::MigrationFailure { id, spec }) =
+            &self.spec.migration_failure
+        {
             const FAIL_EXPORTS: &str = "fail_exports";
             const FAIL_IMPORTS: &str = "fail_imports";
-            let fail_exports = dev
-                .options
-                .get(FAIL_EXPORTS)
-                .and_then(|val| val.as_integer())
-                .unwrap_or(0);
-            let fail_imports = dev
-                .options
-                .get(FAIL_IMPORTS)
-                .and_then(|val| val.as_integer())
-                .unwrap_or(0);
-
-            if fail_exports <= 0 && fail_imports <= 0 {
+            if spec.fail_exports == 0 && spec.fail_imports == 0 {
                 info!(
                     self.log,
                     "migration failure device will not fail, as both
                     `{FAIL_EXPORTS}` and `{FAIL_IMPORTS}` are 0";
-                    FAIL_EXPORTS => ?fail_exports,
-                    FAIL_IMPORTS => ?fail_imports,
+                    FAIL_EXPORTS => ?spec.fail_exports,
+                    FAIL_IMPORTS => ?spec.fail_imports,
                 );
             }
 
             let dev = MigrationFailureDevice::create(
                 &self.log,
                 MigrationFailures {
-                    exports: fail_exports as usize,
-                    imports: fail_imports as usize,
+                    exports: spec.fail_exports as usize,
+                    imports: spec.fail_imports as usize,
                 },
             );
-            self.devices.insert(
-                SpecKey::Name(MigrationFailureDevice::NAME.into()),
-                dev,
-            );
+            self.devices.insert(id.clone(), dev);
         }
     }
 
@@ -928,16 +909,9 @@ impl<'a> MachineInitializer<'a> {
 
         let rom_size =
             self.state.rom_size_bytes.expect("ROM is already populated");
-        let bios_version = self
-            .toml_config
-            .bootrom_version
-            .as_deref()
-            .unwrap_or("v0.8")
-            .try_into()
-            .expect("bootrom version string doesn't contain NUL bytes");
         let smb_type0 = smbios::table::Type0 {
             vendor: "Oxide".try_into().unwrap(),
-            bios_version,
+            bios_version: "v0.8".try_into().unwrap(),
             bios_release_date: "The Aftermath 30, 3185 YOLD"
                 .try_into()
                 .unwrap(),
