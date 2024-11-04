@@ -1,66 +1,28 @@
 # Propolis Server
 
+The Propolis server binary provides a REST API to create and manage Propolis
+VMs. It typically runs in the context of a complete Oxide deployment, where it
+is operated by the sled agent, but it can also be run as a freestanding binary
+for ad hoc testing and management of Propolis VMs.
+
 ## Running
 
-Propolis is mostly intended to be used via a REST API to drive all of its
-functionality. The standard `cargo build` will produce a `propolis-server`
-binary you can run:
+The server binary requires a path to a [guest bootrom
+image](../propolis-standalone#guest-bootrom) on the local filesystem. It also
+must run with privileges sufficient to create `bhyve` virtual machines; the
+`pfexec(1)` utility can help enable these privileges for sufficiently-privileged
+users.
+
+To build and run the server:
 
 ```
-# propolis-server run <config_file> <ip:port>
+# cargo build --bin propolis-server
+# pfexec target/debug/propolis-server <path_to_bootrom> <ip:port> <vnc_ip:port>
 ```
 
-Note that the server must run as root. One way to ensure propolis-server has
-sufficient privileges is by using `pfexec(1)`, as such:
+The API will be served on `ip:port`.
 
-```
-# pfexec propolis-server run <config_file> <ip:port>
-```
-
-## Example Configuration
-
-**Note**: the goal is to move the device config from the toml to instead be
-configured via REST API calls.
-
-```toml
-bootrom = "/path/to/bootrom/OVMF_CODE.fd"
-
-[block_dev.alpine_iso]
-type = "file"
-path = "/path/to/alpine-extended-3.12.0-x86_64.iso"
-
-[dev.block0]
-driver = "pci-virtio-block"
-block_dev = "alpine_iso"
-pci-path = "0.4.0"
-
-[dev.net0]
-driver = "pci-virtio-viona"
-vnic = "vnic_name"
-pci-path = "0.5.0"
-```
-
-## Prerequisites
-
-When running the server by hand, the appropriate bootrom is required to start
-guests properly.  See the [standalone
-documentation](../propolis-standalone#guest-bootrom) for more details.  Details
-for [creating necessary vnics](../propolis-standalone#vnic) can be found there
-as well, if exposing network devices to the guest.
-
-## CLI Interaction
-
-Once you've got `propolis-server` running you can interact with it via the REST
-API with any of the usual suspects (e.g. cURL, wget). Alternatively, there's a
-`propolis-cli` binary to make things a bit easier:
-
-### Running
-
-The following CLI commands will create a VM, start the VM, and then attach to
-its serial console:
-
-```
-# propolis-cli -s <propolis ip> -p <propolis port> new <VM name>
-# propolis-cli -s <propolis ip> -p <propolis port> state <VM name> run
-# propolis-cli -s <propolis ip> -p <propolis port> serial <VM name>
-```
+The easiest way to interact with the server is to use
+[`propolis-cli`](../propolis-cli), but you can also interact directly with the
+REST API using utilities like cURL. The server's [OpenAPI
+specification](../../openapi/propolis-server.json) is checked into the repo.
