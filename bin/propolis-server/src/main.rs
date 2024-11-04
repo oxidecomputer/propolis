@@ -77,6 +77,9 @@ enum Args {
         #[clap(action)]
         bootrom_path: PathBuf,
 
+        #[clap(long, action)]
+        bootrom_version: Option<String>,
+
         #[clap(name = "PROPOLIS_IP:PORT", action)]
         propolis_addr: SocketAddr,
 
@@ -118,6 +121,7 @@ pub fn run_openapi() -> Result<(), String> {
 
 fn run_server(
     bootrom_path: PathBuf,
+    bootrom_version: Option<String>,
     config_dropshot: dropshot::ConfigDropshot,
     config_metrics: Option<MetricsEndpointConfig>,
     vnc_addr: Option<SocketAddr>,
@@ -147,6 +151,7 @@ fn run_server(
 
     let context = server::DropshotEndpointContext::new(
         bootrom_path,
+        bootrom_version,
         use_reservoir,
         log.new(slog::o!()),
         config_metrics,
@@ -281,6 +286,7 @@ fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow!("Cannot generate OpenAPI spec: {}", e)),
         Args::Run {
             bootrom_path,
+            bootrom_version,
             propolis_addr,
             metric_addr,
             vnc_addr,
@@ -304,6 +310,7 @@ fn main() -> anyhow::Result<()> {
 
             run_server(
                 bootrom_path,
+                bootrom_version,
                 config_dropshot,
                 metric_config,
                 vnc_addr,

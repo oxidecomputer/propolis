@@ -67,6 +67,9 @@ pub struct StaticConfig {
     /// The path to the bootrom to supply to this server's guests.
     pub bootrom_path: Arc<PathBuf>,
 
+    /// The bootrom version to display to the guest.
+    pub bootrom_version: Option<String>,
+
     /// Whether to use the host's guest memory reservoir to back guest memory.
     pub use_reservoir: bool,
 
@@ -87,6 +90,7 @@ impl DropshotEndpointContext {
     /// Creates a new server context object.
     pub fn new(
         bootrom_path: PathBuf,
+        bootrom_version: Option<String>,
         use_reservoir: bool,
         log: slog::Logger,
         metric_config: Option<MetricsEndpointConfig>,
@@ -95,6 +99,7 @@ impl DropshotEndpointContext {
         Self {
             static_config: StaticConfig {
                 bootrom_path: Arc::new(bootrom_path),
+                bootrom_version,
                 use_reservoir,
                 metrics: metric_config,
             },
@@ -203,6 +208,7 @@ async fn instance_ensure(
 
     let ensure_options = crate::vm::EnsureOptions {
         bootrom_path: server_context.static_config.bootrom_path.clone(),
+        bootrom_version: server_context.static_config.bootrom_version.clone(),
         use_reservoir: server_context.static_config.use_reservoir,
         metrics_config: server_context.static_config.metrics.clone(),
         oximeter_registry,

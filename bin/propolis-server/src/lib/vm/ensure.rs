@@ -427,6 +427,7 @@ async fn initialize_vm_objects(
             options.oximeter_registry.clone(),
         ),
         stats_vm: VirtualMachine::new(spec.board.cpus, &properties),
+        bootrom_version: options.bootrom_version.clone(),
     };
 
     init.initialize_rom(options.bootrom_path.as_path())?;

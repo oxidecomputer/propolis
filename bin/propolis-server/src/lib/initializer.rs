@@ -190,6 +190,7 @@ pub struct MachineInitializer<'a> {
     pub(crate) state: MachineInitializerState,
     pub(crate) kstat_sampler: Option<KstatSampler>,
     pub(crate) stats_vm: crate::stats::VirtualMachine,
+    pub(crate) bootrom_version: Option<String>,
 }
 
 impl<'a> MachineInitializer<'a> {
@@ -911,7 +912,12 @@ impl<'a> MachineInitializer<'a> {
             self.state.rom_size_bytes.expect("ROM is already populated");
         let smb_type0 = smbios::table::Type0 {
             vendor: "Oxide".try_into().unwrap(),
-            bios_version: "v0.8".try_into().unwrap(),
+            bios_version: self
+                .bootrom_version
+                .as_deref()
+                .unwrap_or("v0.8")
+                .try_into()
+                .unwrap(),
             bios_release_date: "The Aftermath 30, 3185 YOLD"
                 .try_into()
                 .unwrap(),

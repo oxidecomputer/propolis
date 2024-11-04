@@ -267,6 +267,9 @@ pub(super) struct EnsureOptions {
     /// A reference to this server process's bootrom path.
     pub(super) bootrom_path: Arc<PathBuf>,
 
+    /// The bootrom version string to display to the guest.
+    pub(super) bootrom_version: Option<String>,
+
     /// True if VMs should allocate memory from the kernel VMM reservoir.
     pub(super) use_reservoir: bool,
 
