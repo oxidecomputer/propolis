@@ -4,13 +4,14 @@
 
 //! A client for the Propolis hypervisor frontend's server API.
 
-pub use propolis_api_types::instance_spec::SpecKey;
+pub use propolis_api_types::instance_spec::{PciPath, SpecKey};
 
 progenitor::generate_api!(
     spec = "../../openapi/propolis-server.json",
     interface = Builder,
     tags = Separate,
     replace = {
+        PciPath = crate::PciPath,
         SpecKey = crate::SpecKey,
     },
     patch = {
@@ -23,11 +24,6 @@ progenitor::generate_api!(
         VolumeConstructionRequest = { derives = [schemars::JsonSchema] },
         CrucibleOpts = { derives = [schemars::JsonSchema] },
         Slot = { derives = [schemars::JsonSchema] },
-
-        PciPath = { derives = [
-            Copy, Ord, Eq, PartialEq, PartialOrd
-        ] },
-
         InstanceMetadata = { derives = [ PartialEq ] },
     }
 );

@@ -9,26 +9,17 @@ use std::{
     str::{FromStr, ParseBoolError},
 };
 
-use propolis_api_types::instance_spec::{
-    components::{
-        backends::{FileStorageBackend, VirtioNetworkBackend},
-        devices::{
-            MigrationFailureInjector, NvmeDisk, PciPciBridge, VirtioDisk,
-            VirtioNic,
-        },
+use propolis_client::{
+    types::{
+        ComponentV0, DlpiNetworkBackend, FileStorageBackend,
+        MigrationFailureInjector, NvmeDisk, P9fs, PciPath, PciPciBridge,
+        SoftNpuP9, SoftNpuPciPort, VirtioDisk, VirtioNetworkBackend, VirtioNic,
     },
-    v0::ComponentV0,
-    PciPath, SpecKey,
+    SpecKey,
 };
 use thiserror::Error;
 
 pub const MIGRATION_FAILURE_DEVICE_NAME: &str = "test-migration-failure";
-
-#[cfg(feature = "falcon")]
-use propolis_api_types::instance_spec::components::{
-    backends::DlpiNetworkBackend,
-    devices::{P9fs, SoftNpuP9, SoftNpuPciPort},
-};
 
 #[derive(Debug, Error)]
 pub enum TomlToSpecError {

@@ -4302,7 +4302,7 @@ name = "propolis-config-toml"
 version = "0.0.0"
 dependencies = [
  "cpuid_profile_config",
- "propolis_api_types",
+ "propolis-client",
  "serde",
  "serde_derive",
  "thiserror",
