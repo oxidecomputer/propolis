@@ -46,7 +46,7 @@ bhyve_api_sys = { path = "crates/bhyve-api/sys" }
 cpuid_utils = { path = "crates/cpuid-utils" }
 cpuid_profile_config = { path = "crates/cpuid-profile-config" }
 dladm = { path = "crates/dladm" }
-propolis-server-config = { path = "crates/propolis-server-config" }
+propolis-config-toml = { path = "crates/propolis-config-toml" }
 propolis_api_types = { path = "crates/propolis-api-types" }
 propolis_types = { path = "crates/propolis-types" }
 rfb = { path = "crates/rfb" }
