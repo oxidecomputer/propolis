@@ -570,6 +570,12 @@ impl TestVm {
     fn generate_replacement_components(&self) -> ReplacementComponents {
         let mut map = ReplacementComponents::new();
         for (id, comp) in &self.spec.instance_spec.components {
+            if let ComponentV0::MigrationFailureInjector(inj) = comp {
+                map.insert(
+                    id.clone(),
+                    ReplacementComponent::MigrationFailureInjector(inj.clone()),
+                );
+            }
             if let ComponentV0::CrucibleStorageBackend(be) = comp {
                 map.insert(
                     id.clone(),

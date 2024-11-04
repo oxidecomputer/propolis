@@ -6,7 +6,11 @@
 
 use std::{collections::HashMap, fmt, net::SocketAddr};
 
-use instance_spec::{components::backends, v0::InstanceSpecV0, SpecKey};
+use instance_spec::{
+    components::{backends, devices},
+    v0::InstanceSpecV0,
+    SpecKey,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -51,6 +55,7 @@ pub struct InstanceMetadata {
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields, tag = "type", content = "component")]
 pub enum ReplacementComponent {
+    MigrationFailureInjector(devices::MigrationFailureInjector),
     CrucibleStorageBackend(backends::CrucibleStorageBackend),
     FileStorageBackend(backends::FileStorageBackend),
     BlobStorageBackend(backends::BlobStorageBackend),
@@ -62,6 +67,9 @@ impl From<ReplacementComponent> for instance_spec::v0::ComponentV0 {
     fn from(value: ReplacementComponent) -> Self {
         use instance_spec::v0::ComponentV0;
         match value {
+            ReplacementComponent::MigrationFailureInjector(dev) => {
+                ComponentV0::MigrationFailureInjector(dev)
+            }
             ReplacementComponent::CrucibleStorageBackend(be) => {
                 ComponentV0::CrucibleStorageBackend(be)
             }

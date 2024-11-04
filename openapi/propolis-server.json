@@ -1616,6 +1616,25 @@
             "type": "object",
             "properties": {
               "component": {
+                "$ref": "#/components/schemas/MigrationFailureInjector"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "MigrationFailureInjector"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
                 "$ref": "#/components/schemas/CrucibleStorageBackend"
               },
               "type": {
