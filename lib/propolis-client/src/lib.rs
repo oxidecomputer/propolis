@@ -29,3 +29,50 @@ progenitor::generate_api!(
 );
 
 pub mod support;
+
+impl types::InstanceSpecV0 {
+    /// Returns an instance spec with the following configuration:
+    ///
+    /// - CPUs and memory set to their supplied values
+    /// - Serial devices named "com1", "com2", "com3", and "com4" attached to
+    ///   the components
+    pub fn with_basic_config(cpus: u8, memory_mb: u64) -> Self {
+        use types::*;
+        Self {
+            board: Board {
+                chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
+                cpuid: None,
+                cpus,
+                memory_mb,
+            },
+            components: [
+                (
+                    "com1".to_string(),
+                    ComponentV0::SerialPort(SerialPort {
+                        num: SerialPortNumber::Com1,
+                    }),
+                ),
+                (
+                    "com2".to_string(),
+                    ComponentV0::SerialPort(SerialPort {
+                        num: SerialPortNumber::Com2,
+                    }),
+                ),
+                (
+                    "com3".to_string(),
+                    ComponentV0::SerialPort(SerialPort {
+                        num: SerialPortNumber::Com3,
+                    }),
+                ),
+                (
+                    "com4".to_string(),
+                    ComponentV0::SerialPort(SerialPort {
+                        num: SerialPortNumber::Com4,
+                    }),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        }
+    }
+}
