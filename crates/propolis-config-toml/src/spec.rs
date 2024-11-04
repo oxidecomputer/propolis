@@ -11,13 +11,17 @@ use std::{
 
 use propolis_client::{
     types::{
-        ComponentV0, DlpiNetworkBackend, FileStorageBackend,
-        MigrationFailureInjector, NvmeDisk, P9fs, PciPath, PciPciBridge,
-        SoftNpuP9, SoftNpuPciPort, VirtioDisk, VirtioNetworkBackend, VirtioNic,
+        ComponentV0, FileStorageBackend, MigrationFailureInjector, NvmeDisk,
+        PciPciBridge, VirtioDisk, VirtioNetworkBackend, VirtioNic,
     },
-    SpecKey,
+    PciPath, SpecKey,
 };
 use thiserror::Error;
+
+#[cfg(feature = "falcon")]
+use propolis_client::types::{
+    DlpiNetworkBackend, P9fs, SoftNpuP9, SoftNpuPciPort,
+};
 
 pub const MIGRATION_FAILURE_DEVICE_NAME: &str = "test-migration-failure";
 

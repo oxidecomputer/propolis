@@ -12,9 +12,9 @@ use propolis_client::{
     types::{
         Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
         CpuidEntry, CpuidVendor, InstanceMetadata, InstanceSpecV0, NvmeDisk,
-        PciPath, SerialPort, SerialPortNumber, VirtioDisk,
+        SerialPort, SerialPortNumber, VirtioDisk,
     },
-    SpecKey,
+    PciPath, SpecKey,
 };
 use uuid::Uuid;
 
