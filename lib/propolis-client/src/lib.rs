@@ -6,6 +6,10 @@
 
 pub use propolis_api_types::instance_spec::{PciPath, SpecKey};
 
+// Re-export Crucible VCRs to give Omicron a way to refer to the same VCR type
+// that Propolis uses.
+pub use crucible_client_types::{CrucibleOpts, VolumeConstructionRequest};
+
 progenitor::generate_api!(
     spec = "../../openapi/propolis-server.json",
     interface = Builder,
@@ -20,9 +24,6 @@ progenitor::generate_api!(
         BootOrderEntry = { derives = [schemars::JsonSchema] },
         BootSettings = { derives = [Default, schemars::JsonSchema] },
         CpuidEntry = { derives = [PartialEq, Eq, Copy] },
-        DiskRequest = { derives = [schemars::JsonSchema] },
-        VolumeConstructionRequest = { derives = [schemars::JsonSchema] },
-        CrucibleOpts = { derives = [schemars::JsonSchema] },
         Slot = { derives = [schemars::JsonSchema] },
         InstanceMetadata = { derives = [ PartialEq ] },
     }
