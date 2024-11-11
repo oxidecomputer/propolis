@@ -196,9 +196,9 @@ impl From<Spec> for InstanceSpecV0 {
             for (port_id, port) in softnpu.ports {
                 insert_component(
                     &mut spec,
-                    port_id.clone(),
+                    port_id,
                     ComponentV0::SoftNpuPort(SoftNpuPortSpec {
-                        id: port_id,
+                        link_name: port.link_name,
                         backend_id: port.backend_id.clone(),
                     }),
                 );
@@ -331,6 +331,7 @@ impl TryFrom<InstanceSpecV0> for Spec {
                         })?;
 
                     let port = SoftNpuPort {
+                        link_name: port.link_name,
                         backend_id: port.backend_id,
                         backend_spec,
                     };

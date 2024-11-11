@@ -20,7 +20,7 @@ use thiserror::Error;
 
 #[cfg(feature = "falcon")]
 use propolis_client::types::{
-    DlpiNetworkBackend, P9fs, SoftNpuP9, SoftNpuPciPort,
+    DlpiNetworkBackend, P9fs, SoftNpuP9, SoftNpuPciPort, SoftNpuPort,
 };
 
 pub const MIGRATION_FAILURE_DEVICE_NAME: &str = "test-migration-failure";
@@ -182,8 +182,19 @@ impl TryFrom<&super::Config> for SpecConfig {
                             TomlToSpecError::NoVnicName(device_name.to_owned())
                         })?;
 
+                    let backend_id =
+                        SpecKey::Name(format!("{}:backend", device_id));
+
                     spec.components.insert(
                         device_id,
+                        ComponentV0::SoftNpuPort(SoftNpuPort {
+                            link_name: device_name.to_string(),
+                            backend_id: backend_id.clone(),
+                        }),
+                    );
+
+                    spec.components.insert(
+                        backend_id,
                         ComponentV0::DlpiNetworkBackend(DlpiNetworkBackend {
                             vnic_name: vnic_name.to_owned(),
                         }),

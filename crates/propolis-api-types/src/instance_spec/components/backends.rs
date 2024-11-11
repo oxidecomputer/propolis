@@ -78,10 +78,10 @@ pub struct VirtioNetworkBackend {
     pub vnic_name: String,
 }
 
-/// A network backend associated with a DLPI VNIC on the host.
+/// A network backend associated with a DLPI network device on the host.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DlpiNetworkBackend {
-    /// The name of the VNIC to use as a backend.
+    /// The name of the DLPI device to use as a backend.
     pub vnic_name: String,
 }

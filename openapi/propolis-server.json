@@ -974,11 +974,11 @@
         "additionalProperties": false
       },
       "DlpiNetworkBackend": {
-        "description": "A network backend associated with a DLPI VNIC on the host.",
+        "description": "A network backend associated with a DLPI network device on the host.",
         "type": "object",
         "properties": {
           "vnic_name": {
-            "description": "The name of the VNIC to use as a backend.",
+            "description": "The name of the DLPI device to use as a backend.",
             "type": "string"
           }
         },
@@ -1793,29 +1793,25 @@
         "additionalProperties": false
       },
       "SoftNpuPort": {
-        "description": "Describes a SoftNPU network port.\n\nThis is only supported by Propolis servers compiled with the `falcon` feature.",
+        "description": "Describes a data link port on a SoftNPU emulated ASIC.\n\nThis is only supported by Propolis servers compiled with the `falcon` feature.",
         "type": "object",
         "properties": {
           "backend_id": {
-            "description": "The name of the device's backend.",
+            "description": "The name of the DLPI backend with which to associate this port.",
             "allOf": [
               {
                 "$ref": "#/components/schemas/SpecKey"
               }
             ]
           },
-          "id": {
-            "description": "The name of the SoftNpu port.",
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/SpecKey"
-              }
-            ]
+          "link_name": {
+            "description": "The data link name for this port.",
+            "type": "string"
           }
         },
         "required": [
           "backend_id",
-          "id"
+          "link_name"
         ],
         "additionalProperties": false
       },
@@ -1892,7 +1888,7 @@
         "type": "object",
         "properties": {
           "backend_id": {
-            "description": "The name of the device's backend.",
+            "description": "The ID of the device's backend.",
             "allOf": [
               {
                 "$ref": "#/components/schemas/SpecKey"

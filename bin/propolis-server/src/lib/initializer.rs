@@ -803,6 +803,8 @@ impl<'a> MachineInitializer<'a> {
         &mut self,
         chipset: &RegisteredChipset,
     ) -> Result<(), MachineInitError> {
+        use crate::spec::SoftNpuPort;
+
         let softnpu = &self.spec.softnpu;
 
         // Check to make sure we actually have both a pci port and at least one
@@ -817,19 +819,22 @@ impl<'a> MachineInitializer<'a> {
 
         // Get a Vec of references to the ports which will then be sorted by
         // port name.
-        let mut ports: Vec<_> = softnpu.ports.iter().collect();
+        let mut ports: Vec<SoftNpuPort> =
+            softnpu.ports.values().cloned().collect();
 
         // SoftNpu ports are named <topology>_<node>_vnic<N> by falcon, where
         // <N> indicates the intended order.
-        ports.sort_by_key(|p| p.0);
+        ports.sort_by(|p1, p2| p1.link_name.cmp(&p2.link_name));
         let data_links = ports
             .iter()
-            .map(|port| port.1.backend_spec.vnic_name.clone())
+            .map(|port| port.backend_spec.vnic_name.clone())
             .collect();
 
         // Set up an LPC uart for ASIC management comms from the guest.
         //
-        // NOTE: SoftNpu squats on com4.
+        // NOTE: SoftNpu uses COM4 to provide the guest with a P4 program
+        // management interface. See the docs for the Propolis `SoftNpu`
+        // structure for further details.
         let uart = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM4).unwrap());
         uart.set_autodiscard(true);
         LpcUart::attach(&uart, &self.machine.bus_pio, ibmpc::PORT_COM4);

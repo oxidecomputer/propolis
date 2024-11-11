@@ -139,17 +139,17 @@ pub struct SoftNpuPciPort {
     pub pci_path: PciPath,
 }
 
-/// Describes a SoftNPU network port.
+/// Describes a data link port on a SoftNPU emulated ASIC.
 ///
 /// This is only supported by Propolis servers compiled with the `falcon`
 /// feature.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuPort {
-    /// The name of the SoftNpu port.
-    pub id: SpecKey,
+    /// The data link name for this port.
+    pub link_name: String,
 
-    /// The name of the device's backend.
+    /// The name of the DLPI backend with which to associate this port.
     pub backend_id: SpecKey,
 }
 
