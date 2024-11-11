@@ -343,11 +343,6 @@ impl<'a> MachineInitializer<'a> {
                 do_pci_attach(i440fx::DEFAULT_PM_BDF, chipset_pm.clone());
                 chipset_pm.attach(&self.machine.bus_pio);
 
-                // TODO(gjc) these conversions into Name are a little iffy. the
-                // chipset components aren't actually part of the instance spec;
-                // if these ever change then migration breaks because the device
-                // names won't match during the data import stage. do we care
-                // about this?
                 self.devices.insert(
                     SpecKey::Name(chipset_hb.type_name().to_owned()),
                     chipset_hb.clone(),
@@ -365,12 +360,18 @@ impl<'a> MachineInitializer<'a> {
 
                 // Record attachment for any bridges in PCI topology too
                 for (bdf, bridge) in bridges {
-                    // TODO(gjc) we have the name from the spec here, we
-                    // could/should use that
-                    self.devices.insert(
-                        SpecKey::Name(format!("{}-{bdf}", bridge.type_name())),
-                        bridge,
-                    );
+                    let spec_element = self
+                        .spec
+                        .pci_pci_bridges
+                        .iter()
+                        .find(|(_, spec_bridge)| {
+                            bdf == spec_bridge.pci_path.into()
+                        })
+                        .expect(
+                            "all PCI bridges should appear in the topology",
+                        );
+
+                    self.devices.insert(spec_element.0.clone(), bridge);
                 }
 
                 Ok(RegisteredChipset { chipset: chipset_hb, isa: chipset_lpc })
