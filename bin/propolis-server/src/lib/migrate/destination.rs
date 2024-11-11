@@ -15,7 +15,6 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::io;
 use std::net::SocketAddr;
-use std::str::FromStr;
 use std::sync::Arc;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
@@ -524,9 +523,9 @@ impl<T: MigrateConn> RonV0<T> {
                 );
 
                 let target = vm_objects
-                    .device_by_name(
-                        &SpecKey::from_str(&device.instance_name).unwrap(),
-                    )
+                    .device_by_name(&SpecKey::from(
+                        device.instance_name.clone(),
+                    ))
                     .ok_or_else(|| {
                         MigrateError::UnknownDevice(
                             device.instance_name.clone(),

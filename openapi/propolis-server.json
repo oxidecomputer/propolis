@@ -74,7 +74,7 @@
             "name": "id",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/SpecKey"
+              "type": "string"
             }
           },
           {
@@ -121,7 +121,7 @@
             "name": "id",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/SpecKey"
+              "type": "string"
             }
           }
         ],
@@ -155,7 +155,7 @@
             "name": "id",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/SpecKey"
+              "type": "string"
             }
           }
         ],
@@ -1816,7 +1816,34 @@
         "additionalProperties": false
       },
       "SpecKey": {
-        "type": "string"
+        "description": "A key identifying a component in an instance spec.",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "Uuid": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "required": [
+              "Uuid"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "Name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "Name"
+            ],
+            "additionalProperties": false
+          }
+        ]
       },
       "VersionedInstanceSpec": {
         "description": "A versioned instance spec.",

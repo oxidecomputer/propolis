@@ -163,6 +163,11 @@ use uuid::Uuid;
 pub mod components;
 pub mod v0;
 
+/// A key identifying a component in an instance spec.
+//
+// This type impls `SerializeDisplay` and `DeserializeFromStr` so that it can be
+// used as a key type in maps that can be serialized to JSON (which requires
+// strings to be used as keys).
 #[derive(
     Clone,
     Debug,
@@ -173,6 +178,7 @@ pub mod v0;
     PartialEq,
     Ord,
     PartialOrd,
+    JsonSchema,
 )]
 pub enum SpecKey {
     Uuid(uuid::Uuid),
@@ -194,32 +200,25 @@ impl std::str::FromStr for SpecKey {
     type Err = &'static str;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match Uuid::from_str(s) {
+        Ok(match Uuid::parse_str(s) {
             Ok(uuid) => Self::Uuid(uuid),
             Err(_) => Self::Name(s.to_owned()),
         })
     }
 }
 
-impl From<Uuid> for SpecKey {
-    fn from(value: Uuid) -> Self {
-        Self::Uuid(value)
+impl From<String> for SpecKey {
+    fn from(s: String) -> Self {
+        match Uuid::parse_str(&s) {
+            Ok(uuid) => Self::Uuid(uuid),
+            Err(_) => Self::Name(s),
+        }
     }
 }
 
-impl JsonSchema for SpecKey {
-    fn schema_name() -> String {
-        "SpecKey".to_string()
-    }
-
-    fn json_schema(
-        _: &mut schemars::gen::SchemaGenerator,
-    ) -> schemars::schema::Schema {
-        schemars::schema::SchemaObject {
-            instance_type: Some(schemars::schema::InstanceType::String.into()),
-            ..Default::default()
-        }
-        .into()
+impl From<Uuid> for SpecKey {
+    fn from(value: Uuid) -> Self {
+        Self::Uuid(value)
     }
 }
 

@@ -95,7 +95,7 @@ impl TryFrom<&super::Config> for SpecConfig {
         };
 
         for (device_name, device) in config.devices.iter() {
-            let device_id = SpecKey::from_str(device_name).unwrap();
+            let device_id = SpecKey::from(device_name.clone());
             let driver = device.driver.as_str();
             if device_name == MIGRATION_FAILURE_DEVICE_NAME {
                 const FAIL_EXPORTS: &str = "fail_exports";
@@ -274,7 +274,7 @@ fn parse_storage_device_from_config(
         }
     };
 
-    let backend_id = SpecKey::from_str(
+    let backend_id = SpecKey::from(
         device
             .options
             .get("block_dev")
@@ -284,9 +284,9 @@ fn parse_storage_device_from_config(
             .as_str()
             .ok_or_else(|| {
                 TomlToSpecError::NoBackendNameForStorageDevice(name.to_owned())
-            })?,
-    )
-    .unwrap();
+            })?
+            .to_string(),
+    );
 
     let pci_path: PciPath = device
         .get("pci-path")

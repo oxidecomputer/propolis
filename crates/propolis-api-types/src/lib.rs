@@ -333,18 +333,18 @@ pub enum InstanceSerialConsoleControlMessage {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct SnapshotRequestPathParams {
-    pub id: SpecKey,
+    pub id: String,
     pub snapshot_id: Uuid,
 }
 
 #[derive(Deserialize, JsonSchema)]
 pub struct VCRRequestPathParams {
-    pub id: SpecKey,
+    pub id: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
 pub struct VolumeStatusPathParams {
-    pub id: SpecKey,
+    pub id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

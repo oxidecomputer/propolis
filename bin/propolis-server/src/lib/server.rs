@@ -36,6 +36,7 @@ use internal_dns::ServiceName;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types as api;
+use propolis_api_types::instance_spec::SpecKey;
 use propolis_api_types::InstanceInitializationMethod;
 use rfb::tungstenite::BinaryWs;
 use slog::{error, warn, Logger};
@@ -537,16 +538,16 @@ async fn instance_issue_crucible_snapshot_request(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
     path_params: Path<api::SnapshotRequestPathParams>,
 ) -> Result<HttpResponseOk<()>, HttpError> {
+    let path_params = path_params.into_inner();
+    let key = SpecKey::from(path_params.id);
     let vm =
         rqctx.context().vm.active_vm().await.ok_or_else(not_created_error)?;
     let objects = vm.objects().lock_shared().await;
-    let path_params = path_params.into_inner();
 
-    let backend =
-        objects.crucible_backends().get(&path_params.id).ok_or_else(|| {
-            let s = format!("no disk with id {}!", path_params.id);
-            HttpError::for_not_found(Some(s.clone()), s)
-        })?;
+    let backend = objects.crucible_backends().get(&key).ok_or_else(|| {
+        let s = format!("no disk with id {}!", key);
+        HttpError::for_not_found(Some(s.clone()), s)
+    })?;
     backend.snapshot(path_params.snapshot_id).await.map_err(|e| {
         HttpError::for_bad_request(Some(e.to_string()), e.to_string())
     })?;
@@ -564,14 +565,14 @@ async fn disk_volume_status(
     path_params: Path<api::VolumeStatusPathParams>,
 ) -> Result<HttpResponseOk<api::VolumeStatus>, HttpError> {
     let path_params = path_params.into_inner();
+    let key = SpecKey::from(path_params.id);
     let vm =
         rqctx.context().vm.active_vm().await.ok_or_else(not_created_error)?;
     let objects = vm.objects().lock_shared().await;
-    let backend =
-        objects.crucible_backends().get(&path_params.id).ok_or_else(|| {
-            let s = format!("No crucible backend for id {}", path_params.id);
-            HttpError::for_not_found(Some(s.clone()), s)
-        })?;
+    let backend = objects.crucible_backends().get(&key).ok_or_else(|| {
+        let s = format!("No crucible backend for id {}", key);
+        HttpError::for_not_found(Some(s.clone()), s)
+    })?;
 
     Ok(HttpResponseOk(api::VolumeStatus {
         active: backend.volume_is_active().await.map_err(|e| {
@@ -598,17 +599,20 @@ async fn instance_issue_crucible_vcr_request(
     let vm =
         rqctx.context().vm.active_vm().await.ok_or_else(not_created_error)?;
 
-    vm.reconfigure_crucible_volume(path_params.id, new_vcr_json, tx).map_err(
-        |e| match e {
-            VmError::ForbiddenStateChange(reason) => HttpError::for_status(
-                Some(format!("instance state change not allowed: {}", reason)),
-                hyper::StatusCode::FORBIDDEN,
-            ),
-            _ => HttpError::for_internal_error(format!(
-                "unexpected error from VM controller: {e}"
-            )),
-        },
-    )?;
+    vm.reconfigure_crucible_volume(
+        SpecKey::from(path_params.id),
+        new_vcr_json,
+        tx,
+    )
+    .map_err(|e| match e {
+        VmError::ForbiddenStateChange(reason) => HttpError::for_status(
+            Some(format!("instance state change not allowed: {}", reason)),
+            hyper::StatusCode::FORBIDDEN,
+        ),
+        _ => HttpError::for_internal_error(format!(
+            "unexpected error from VM controller: {e}"
+        )),
+    })?;
 
     let result = rx.await.map_err(|_| {
         HttpError::for_internal_error(
