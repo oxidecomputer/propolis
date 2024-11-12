@@ -179,9 +179,6 @@ pub(crate) enum VmError {
 
     #[error("Forbidden state change")]
     ForbiddenStateChange(#[from] request_queue::RequestDeniedReason),
-
-    #[error("Failed to initialize VM's tokio runtime")]
-    TokioRuntimeInitializationFailed(#[source] std::io::Error),
 }
 
 /// The top-level VM wrapper type.
@@ -383,6 +380,7 @@ impl Vm {
         state_driver_queue: Arc<state_driver::InputQueue>,
         objects: &Arc<objects::VmObjects>,
         services: services::VmServices,
+        vmm_rt: tokio::runtime::Runtime,
     ) {
         info!(self.log, "installing active VM");
         let mut guard = self.inner.write().await;
@@ -396,7 +394,7 @@ impl Vm {
                     properties: vm.properties,
                     objects: objects.clone(),
                     services,
-                    tokio_rt: vm.tokio_rt.expect("WaitingForInit has runtime"),
+                    tokio_rt: vmm_rt,
                 });
             }
             state => unreachable!(
@@ -561,23 +559,10 @@ impl Vm {
                 _ => {}
             };
 
-            let thread_count = usize::max(
-                VMM_MIN_RT_THREADS,
-                VMM_BASE_RT_THREADS
-                    + ensure_request.instance_spec.board.cpus as usize,
-            );
-
-            let tokio_rt = tokio::runtime::Builder::new_multi_thread()
-                .thread_name("tokio-rt-vmm")
-                .worker_threads(thread_count)
-                .enable_all()
-                .build()
-                .map_err(VmError::TokioRuntimeInitializationFailed)?;
-
             let properties = ensure_request.properties.clone();
             let spec = ensure_request.instance_spec.clone();
             let vm_for_driver = self.clone();
-            guard.driver = Some(tokio_rt.spawn(async move {
+            guard.driver = Some(tokio::spawn(async move {
                 state_driver::run_state_driver(
                     log_for_driver,
                     vm_for_driver,
@@ -593,7 +578,7 @@ impl Vm {
                 external_state_rx: external_rx.clone(),
                 properties,
                 spec,
-                tokio_rt: Some(tokio_rt),
+                tokio_rt: None,
             });
         }
 

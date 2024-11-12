@@ -41,7 +41,10 @@ use crate::{
     },
     spec::Spec,
     stats::{create_kstat_sampler, VirtualMachine},
-    vm::request_queue::InstanceAutoStart,
+    vm::{
+        request_queue::InstanceAutoStart, VMM_BASE_RT_THREADS,
+        VMM_MIN_RT_THREADS,
+    },
 };
 
 use super::{
@@ -64,7 +67,13 @@ pub(crate) struct VmEnsureNotStarted<'a> {
     log: &'a slog::Logger,
     vm: &'a Arc<super::Vm>,
     ensure_request: &'a VmEnsureRequest,
-    ensure_options: &'a EnsureOptions,
+
+    // VM objects are created on a separate tokio task from the one that drives
+    // the instance ensure state machine. This task needs its own copy of the
+    // ensure options. `EnsureOptions` is not `Clone`, so take a reference to an
+    // `Arc` wrapper around the options to have something that can be cloned and
+    // passed to the ensure task.
+    ensure_options: &'a Arc<EnsureOptions>,
     ensure_response_tx: InstanceEnsureResponseTx,
     state_publisher: &'a mut StatePublisher,
 }
@@ -74,7 +83,7 @@ impl<'a> VmEnsureNotStarted<'a> {
         log: &'a slog::Logger,
         vm: &'a Arc<super::Vm>,
         ensure_request: &'a VmEnsureRequest,
-        ensure_options: &'a EnsureOptions,
+        ensure_options: &'a Arc<EnsureOptions>,
         ensure_response_tx: InstanceEnsureResponseTx,
         state_publisher: &'a mut StatePublisher,
     ) -> Self {
@@ -96,10 +105,25 @@ impl<'a> VmEnsureNotStarted<'a> {
         self.state_publisher
     }
 
+    pub(crate) async fn create_objects_from_request(
+        self,
+    ) -> anyhow::Result<VmEnsureObjectsCreated<'a>> {
+        let spec = self.ensure_request.instance_spec.clone();
+        self.create_objects(spec).await
+    }
+
+    pub(crate) async fn create_objects_from_spec(
+        self,
+        spec: Spec,
+    ) -> anyhow::Result<VmEnsureObjectsCreated<'a>> {
+        self.create_objects(spec).await
+    }
+
     /// Creates a set of VM objects using the instance spec stored in this
     /// ensure request, but does not install them as an active VM.
-    pub(crate) async fn create_objects(
+    async fn create_objects(
         self,
+        spec: Spec,
     ) -> anyhow::Result<VmEnsureObjectsCreated<'a>> {
         debug!(self.log, "creating VM objects");
 
@@ -111,7 +135,38 @@ impl<'a> VmEnsureNotStarted<'a> {
             },
         ));
 
-        match self.initialize_vm_objects_from_spec(&input_queue).await {
+        // Create the runtime that will host tasks created by VMM components
+        // (e.g. block device runtime tasks).
+        let vmm_rt = tokio::runtime::Builder::new_multi_thread()
+            .thread_name("tokio-rt-vmm")
+            .worker_threads(usize::max(
+                VMM_MIN_RT_THREADS,
+                VMM_BASE_RT_THREADS + spec.board.cpus as usize,
+            ))
+            .enable_all()
+            .build()?;
+
+        let log_for_init = self.log.clone();
+        let properties = self.ensure_request.properties.clone();
+        let options = self.ensure_options.clone();
+        let queue_for_init = input_queue.clone();
+        let init_result = vmm_rt
+            .spawn(async move {
+                initialize_vm_objects(
+                    log_for_init,
+                    spec,
+                    properties,
+                    options,
+                    queue_for_init,
+                )
+                .await
+            })
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!("failed to join VM object creation task: {e}")
+            })?;
+
+        match init_result {
             Ok(objects) => {
                 // N.B. Once these `VmObjects` exist, it is no longer safe to
                 //      call `vm_init_failed`.
@@ -124,6 +179,7 @@ impl<'a> VmEnsureNotStarted<'a> {
                 Ok(VmEnsureObjectsCreated {
                     log: self.log,
                     vm: self.vm,
+                    vmm_rt,
                     ensure_request: self.ensure_request,
                     ensure_options: self.ensure_options,
                     ensure_response_tx: self.ensure_response_tx,
@@ -148,114 +204,6 @@ impl<'a> VmEnsureNotStarted<'a> {
 
         reason
     }
-
-    async fn initialize_vm_objects_from_spec(
-        &self,
-        event_queue: &Arc<InputQueue>,
-    ) -> anyhow::Result<InputVmObjects> {
-        let properties = &self.ensure_request.properties;
-        let spec = &self.ensure_request.instance_spec;
-        let options = self.ensure_options;
-
-        info!(self.log, "initializing new VM";
-              "spec" => #?spec,
-              "properties" => #?properties,
-              "use_reservoir" => options.use_reservoir,
-              "bootrom" => %options.toml_config.bootrom.display());
-
-        let vmm_log = self.log.new(slog::o!("component" => "vmm"));
-
-        // Set up the 'shell' instance into which the rest of this routine will
-        // add components.
-        let machine = build_instance(
-            &properties.vm_name(),
-            spec,
-            options.use_reservoir,
-            vmm_log,
-        )?;
-
-        let mut init = MachineInitializer {
-            log: self.log.clone(),
-            machine: &machine,
-            devices: Default::default(),
-            block_backends: Default::default(),
-            crucible_backends: Default::default(),
-            spec,
-            properties,
-            toml_config: &options.toml_config,
-            producer_registry: options.oximeter_registry.clone(),
-            state: MachineInitializerState::default(),
-            kstat_sampler: initialize_kstat_sampler(
-                self.log,
-                self.instance_spec(),
-                options.oximeter_registry.clone(),
-            ),
-            stats_vm: VirtualMachine::new(spec.board.cpus, properties),
-        };
-
-        init.initialize_rom(options.toml_config.bootrom.as_path())?;
-        let chipset = init.initialize_chipset(
-            &(event_queue.clone()
-                as Arc<dyn super::guest_event::ChipsetEventHandler>),
-        )?;
-
-        init.initialize_rtc(&chipset)?;
-        init.initialize_hpet();
-
-        let com1 = Arc::new(init.initialize_uart(&chipset));
-        let ps2ctrl = init.initialize_ps2(&chipset);
-        init.initialize_qemu_debug_port()?;
-        init.initialize_qemu_pvpanic(VirtualMachine::new(
-            self.instance_spec().board.cpus,
-            properties,
-        ))?;
-        init.initialize_network_devices(&chipset).await?;
-
-        #[cfg(not(feature = "omicron-build"))]
-        init.initialize_test_devices(&options.toml_config.devices);
-        #[cfg(feature = "omicron-build")]
-        info!(
-            self.log,
-            "`omicron-build` feature enabled, ignoring any test devices"
-        );
-
-        #[cfg(feature = "falcon")]
-        {
-            init.initialize_softnpu_ports(&chipset)?;
-            init.initialize_9pfs(&chipset);
-        }
-
-        init.initialize_storage_devices(&chipset, options.nexus_client.clone())
-            .await?;
-
-        let ramfb = init.initialize_fwcfg(self.instance_spec().board.cpus)?;
-        init.initialize_cpus().await?;
-        let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
-            &machine,
-            event_queue.clone()
-                as Arc<dyn super::guest_event::VcpuEventHandler>,
-            self.log.new(slog::o!("component" => "vcpu_tasks")),
-        )?);
-
-        let MachineInitializer {
-            devices,
-            block_backends,
-            crucible_backends,
-            ..
-        } = init;
-
-        Ok(InputVmObjects {
-            instance_spec: spec.clone(),
-            vcpu_tasks,
-            machine,
-            devices,
-            block_backends,
-            crucible_backends,
-            com1,
-            framebuffer: Some(ramfb),
-            ps2ctrl,
-        })
-    }
 }
 
 /// Represents an instance ensure request that has proceeded far enough to
@@ -264,6 +212,7 @@ impl<'a> VmEnsureNotStarted<'a> {
 pub(crate) struct VmEnsureObjectsCreated<'a> {
     log: &'a slog::Logger,
     vm: &'a Arc<super::Vm>,
+    vmm_rt: tokio::runtime::Runtime,
     ensure_request: &'a VmEnsureRequest,
     ensure_options: &'a EnsureOptions,
     ensure_response_tx: InstanceEnsureResponseTx,
@@ -301,12 +250,14 @@ impl<'a> VmEnsureObjectsCreated<'a> {
         )
         .await;
 
+        let vmm_rt_hdl = self.vmm_rt.handle().clone();
         self.vm
             .make_active(
                 self.log,
                 self.input_queue.clone(),
                 &self.vm_objects,
                 vm_services,
+                self.vmm_rt,
             )
             .await;
 
@@ -325,6 +276,7 @@ impl<'a> VmEnsureObjectsCreated<'a> {
 
         VmEnsureActive {
             vm: self.vm,
+            vmm_rt_hdl,
             state_publisher: self.state_publisher,
             vm_objects: self.vm_objects,
             input_queue: self.input_queue,
@@ -338,10 +290,17 @@ impl<'a> VmEnsureObjectsCreated<'a> {
 /// not started yet.
 pub(crate) struct VmEnsureActive<'a> {
     vm: &'a Arc<super::Vm>,
+    vmm_rt_hdl: tokio::runtime::Handle,
     state_publisher: &'a mut StatePublisher,
     vm_objects: Arc<VmObjects>,
     input_queue: Arc<InputQueue>,
     kernel_vm_paused: bool,
+}
+
+pub(super) struct VmEnsureActiveOutput {
+    pub vm_objects: Arc<VmObjects>,
+    pub input_queue: Arc<InputQueue>,
+    pub vmm_rt_hdl: tokio::runtime::Handle,
 }
 
 impl<'a> VmEnsureActive<'a> {
@@ -373,9 +332,113 @@ impl<'a> VmEnsureActive<'a> {
 
     /// Yields the VM objects and input queue for this VM so that they can be
     /// used to start a state driver loop.
-    pub(super) fn into_inner(self) -> (Arc<VmObjects>, Arc<InputQueue>) {
-        (self.vm_objects, self.input_queue)
+    pub(super) fn into_inner(self) -> VmEnsureActiveOutput {
+        VmEnsureActiveOutput {
+            vm_objects: self.vm_objects,
+            input_queue: self.input_queue,
+            vmm_rt_hdl: self.vmm_rt_hdl,
+        }
     }
+}
+
+async fn initialize_vm_objects(
+    log: slog::Logger,
+    spec: Spec,
+    properties: InstanceProperties,
+    options: Arc<EnsureOptions>,
+    event_queue: Arc<InputQueue>,
+) -> anyhow::Result<InputVmObjects> {
+    info!(log, "initializing new VM";
+              "spec" => #?spec,
+              "properties" => #?properties,
+              "use_reservoir" => options.use_reservoir,
+              "bootrom" => %options.toml_config.bootrom.display());
+
+    let vmm_log = log.new(slog::o!("component" => "vmm"));
+
+    // Set up the 'shell' instance into which the rest of this routine will
+    // add components.
+    let machine = build_instance(
+        &properties.vm_name(),
+        &spec,
+        options.use_reservoir,
+        vmm_log,
+    )?;
+
+    let mut init = MachineInitializer {
+        log: log.clone(),
+        machine: &machine,
+        devices: Default::default(),
+        block_backends: Default::default(),
+        crucible_backends: Default::default(),
+        spec: &spec,
+        properties: &properties,
+        toml_config: &options.toml_config,
+        producer_registry: options.oximeter_registry.clone(),
+        state: MachineInitializerState::default(),
+        kstat_sampler: initialize_kstat_sampler(
+            &log,
+            &spec,
+            options.oximeter_registry.clone(),
+        ),
+        stats_vm: VirtualMachine::new(spec.board.cpus, &properties),
+    };
+
+    init.initialize_rom(options.toml_config.bootrom.as_path())?;
+    let chipset = init.initialize_chipset(
+        &(event_queue.clone()
+            as Arc<dyn super::guest_event::ChipsetEventHandler>),
+    )?;
+
+    init.initialize_rtc(&chipset)?;
+    init.initialize_hpet();
+
+    let com1 = Arc::new(init.initialize_uart(&chipset));
+    let ps2ctrl = init.initialize_ps2(&chipset);
+    init.initialize_qemu_debug_port()?;
+    init.initialize_qemu_pvpanic(VirtualMachine::new(
+        spec.board.cpus,
+        &properties,
+    ))?;
+    init.initialize_network_devices(&chipset).await?;
+
+    #[cfg(not(feature = "omicron-build"))]
+    init.initialize_test_devices(&options.toml_config.devices);
+    #[cfg(feature = "omicron-build")]
+    info!(log, "`omicron-build` feature enabled, ignoring any test devices");
+
+    #[cfg(feature = "falcon")]
+    {
+        init.initialize_softnpu_ports(&chipset)?;
+        init.initialize_9pfs(&chipset);
+    }
+
+    init.initialize_storage_devices(&chipset, options.nexus_client.clone())
+        .await?;
+
+    let ramfb = init.initialize_fwcfg(spec.board.cpus)?;
+    init.initialize_cpus().await?;
+    let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
+        &machine,
+        event_queue.clone() as Arc<dyn super::guest_event::VcpuEventHandler>,
+        log.new(slog::o!("component" => "vcpu_tasks")),
+    )?);
+
+    let MachineInitializer {
+        devices, block_backends, crucible_backends, ..
+    } = init;
+
+    Ok(InputVmObjects {
+        instance_spec: spec.clone(),
+        vcpu_tasks,
+        machine,
+        devices,
+        block_backends,
+        crucible_backends,
+        com1,
+        framebuffer: Some(ramfb),
+        ps2ctrl,
+    })
 }
 
 /// Create an object used to sample kstats.
