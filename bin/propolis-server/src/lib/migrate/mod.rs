@@ -12,7 +12,6 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 mod codec;
-mod compat;
 pub mod destination;
 mod memx;
 mod preamble;

@@ -27,7 +27,10 @@ use crate::{
 };
 
 use super::{
-    ensure::{VmEnsureActive, VmEnsureNotStarted, VmEnsureRequest},
+    ensure::{
+        VmEnsureActive, VmEnsureActiveOutput, VmEnsureNotStarted,
+        VmEnsureRequest,
+    },
     guest_event::{self, GuestEvent},
     objects::VmObjects,
     request_queue::{self, ExternalRequest, InstanceAutoStart},
@@ -264,6 +267,7 @@ pub(super) async fn run_state_driver(
     ensure_result_tx: InstanceEnsureResponseTx,
     ensure_options: super::EnsureOptions,
 ) -> StateDriverOutput {
+    let ensure_options = Arc::new(ensure_options);
     let activated_vm = match create_and_activate_vm(
         &log,
         &vm,
@@ -284,10 +288,12 @@ pub(super) async fn run_state_driver(
         }
     };
 
-    let (objects, input_queue) = activated_vm.into_inner();
+    let VmEnsureActiveOutput { vm_objects, input_queue, vmm_rt_hdl } =
+        activated_vm.into_inner();
+
     let state_driver = StateDriver {
         log,
-        objects,
+        objects: vm_objects,
         input_queue,
         external_state: state_publisher,
         paused: false,
@@ -296,9 +302,18 @@ pub(super) async fn run_state_driver(
 
     // Run the VM until it exits, then set rundown on the parent VM so that no
     // new external callers can access its objects or services.
-    let output = state_driver.run(ensure_request.migrate.is_some()).await;
-    vm.set_rundown().await;
-    output
+    match vmm_rt_hdl
+        .spawn(async move {
+            let output =
+                state_driver.run(ensure_request.migrate.is_some()).await;
+            vm.set_rundown().await;
+            output
+        })
+        .await
+    {
+        Ok(output) => output,
+        Err(e) => panic!("failed to join state driver task: {e}"),
+    }
 }
 
 /// Processes the supplied `ensure_request` to create a set of VM objects that
@@ -309,7 +324,7 @@ async fn create_and_activate_vm<'a>(
     state_publisher: &'a mut StatePublisher,
     ensure_request: &'a VmEnsureRequest,
     ensure_result_tx: InstanceEnsureResponseTx,
-    ensure_options: &'a super::EnsureOptions,
+    ensure_options: &'a Arc<super::EnsureOptions>,
 ) -> anyhow::Result<VmEnsureActive<'a>> {
     let ensure = VmEnsureNotStarted::new(
         log,
@@ -347,7 +362,7 @@ async fn create_and_activate_vm<'a>(
             .context("running live migration protocol")?)
     } else {
         let created = ensure
-            .create_objects()
+            .create_objects_from_request()
             .await
             .context("creating VM objects for new instance")?;
 
