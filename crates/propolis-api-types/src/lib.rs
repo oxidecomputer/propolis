@@ -166,10 +166,17 @@ pub struct InstanceGetResponse {
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "type", content = "value")]
+pub enum InstanceSpecStatus {
+    WaitingForMigrationSource,
+    Present(VersionedInstanceSpec),
+}
+
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceSpecGetResponse {
     pub properties: InstanceProperties,
     pub state: InstanceState,
-    pub spec: VersionedInstanceSpec,
+    pub spec: InstanceSpecStatus,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
