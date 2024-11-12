@@ -87,8 +87,8 @@ use oximeter::types::ProducerRegistry;
 use propolis_api_types::{
     instance_spec::VersionedInstanceSpec, InstanceEnsureResponse,
     InstanceMigrateStatusResponse, InstanceMigrationStatus, InstanceProperties,
-    InstanceSpecGetResponse, InstanceState, InstanceStateMonitorResponse,
-    MigrationState,
+    InstanceSpecGetResponse, InstanceSpecStatus, InstanceState,
+    InstanceStateMonitorResponse, MigrationState,
 };
 use slog::info;
 use state_driver::StateDriverOutput;
@@ -204,6 +204,29 @@ struct VmInner {
     driver: Option<tokio::task::JoinHandle<StateDriverOutput>>,
 }
 
+/// Stores a possibly-absent instance spec with a reason for its absence.
+#[derive(Clone, Debug)]
+enum MaybeSpec {
+    Present(Spec),
+
+    /// The spec is not known yet because the VM is initializing via live
+    /// migration, and the source's spec is not available yet.
+    WaitingForMigrationSource,
+}
+
+impl From<MaybeSpec> for InstanceSpecStatus {
+    fn from(value: MaybeSpec) -> Self {
+        match value {
+            MaybeSpec::WaitingForMigrationSource => {
+                Self::WaitingForMigrationSource
+            }
+            MaybeSpec::Present(spec) => {
+                Self::Present(VersionedInstanceSpec::V0(spec.into()))
+            }
+        }
+    }
+}
+
 /// Describes a past or future VM and its properties.
 struct VmDescription {
     /// Records the VM's last externally-visible state.
@@ -211,9 +234,6 @@ struct VmDescription {
 
     /// The VM's API-level instance properties.
     properties: InstanceProperties,
-
-    /// The VM's last-known instance specification.
-    spec: Spec,
 
     /// The runtime on which the VM's state driver is running (or on which it
     /// ran).
@@ -228,17 +248,17 @@ enum VmState {
 
     /// A new state driver is attempting to initialize objects for a VM with the
     /// ecnlosed description.
-    WaitingForInit(VmDescription),
+    WaitingForInit { vm: VmDescription, spec: MaybeSpec },
 
     /// The VM is active, and callers can obtain a handle to its objects.
     Active(active::ActiveVm),
 
     /// The previous VM is shutting down, but its objects have not been fully
     /// destroyed yet.
-    Rundown(VmDescription),
+    Rundown { vm: VmDescription, spec: Spec },
 
     /// The previous VM and its objects have been cleaned up.
-    RundownComplete(VmDescription),
+    RundownComplete { vm: VmDescription, spec: MaybeSpec },
 }
 
 impl std::fmt::Display for VmState {
@@ -248,10 +268,10 @@ impl std::fmt::Display for VmState {
             "{}",
             match self {
                 Self::NoVm => "NoVm",
-                Self::WaitingForInit(_) => "WaitingForInit",
+                Self::WaitingForInit { .. } => "WaitingForInit",
                 Self::Active(_) => "Active",
-                Self::Rundown(_) => "Rundown",
-                Self::RundownComplete(_) => "RundownComplete",
+                Self::Rundown { .. } => "Rundown",
+                Self::RundownComplete { .. } => "RundownComplete",
             }
         )
     }
@@ -329,20 +349,26 @@ impl Vm {
                 let state = vm.external_state_rx.borrow().clone();
                 Some(InstanceSpecGetResponse {
                     properties: vm.properties.clone(),
-                    spec: VersionedInstanceSpec::V0(spec.into()),
+                    spec: InstanceSpecStatus::Present(
+                        VersionedInstanceSpec::V0(spec.into()),
+                    ),
                     state: state.state,
                 })
             }
-
-            // If the VM is not active yet, or there is only a
-            // previously-run-down VM, return the state saved in the state
-            // machine.
-            VmState::WaitingForInit(vm)
-            | VmState::Rundown(vm)
-            | VmState::RundownComplete(vm) => Some(InstanceSpecGetResponse {
+            VmState::WaitingForInit { vm, spec }
+            | VmState::RundownComplete { vm, spec } => {
+                Some(InstanceSpecGetResponse {
+                    properties: vm.properties.clone(),
+                    state: vm.external_state_rx.borrow().state,
+                    spec: spec.clone().into(),
+                })
+            }
+            VmState::Rundown { vm, spec } => Some(InstanceSpecGetResponse {
                 properties: vm.properties.clone(),
                 state: vm.external_state_rx.borrow().state,
-                spec: VersionedInstanceSpec::V0(vm.spec.clone().into()),
+                spec: InstanceSpecStatus::Present(VersionedInstanceSpec::V0(
+                    spec.clone().into(),
+                )),
             }),
         }
     }
@@ -359,9 +385,9 @@ impl Vm {
         match &guard.state {
             VmState::NoVm => None,
             VmState::Active(vm) => Some(vm.external_state_rx.clone()),
-            VmState::WaitingForInit(vm)
-            | VmState::Rundown(vm)
-            | VmState::RundownComplete(vm) => {
+            VmState::WaitingForInit { vm, .. }
+            | VmState::Rundown { vm, .. }
+            | VmState::RundownComplete { vm, .. } => {
                 Some(vm.external_state_rx.clone())
             }
         }
@@ -386,7 +412,7 @@ impl Vm {
         let mut guard = self.inner.write().await;
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         match old {
-            VmState::WaitingForInit(vm) => {
+            VmState::WaitingForInit { vm, .. } => {
                 guard.state = VmState::Active(ActiveVm {
                     log: log.clone(),
                     state_driver_queue,
@@ -417,8 +443,8 @@ impl Vm {
         let mut guard = self.inner.write().await;
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         match old {
-            VmState::WaitingForInit(vm) => {
-                guard.state = VmState::RundownComplete(vm)
+            VmState::WaitingForInit { vm, spec } => {
+                guard.state = VmState::RundownComplete { vm, spec }
             }
             state => unreachable!(
                 "start failures should only occur before an active VM is \
@@ -449,12 +475,14 @@ impl Vm {
 
             let spec = vm.objects().lock_shared().await.instance_spec().clone();
             let ActiveVm { external_state_rx, properties, tokio_rt, .. } = vm;
-            guard.state = VmState::Rundown(VmDescription {
-                external_state_rx,
-                properties,
+            guard.state = VmState::Rundown {
+                vm: VmDescription {
+                    external_state_rx,
+                    properties,
+                    tokio_rt: Some(tokio_rt),
+                },
                 spec,
-                tokio_rt: Some(tokio_rt),
-            });
+            };
             vm.services
         };
 
@@ -473,9 +501,12 @@ impl Vm {
         let mut guard = self.inner.write().await;
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         let rt = match old {
-            VmState::Rundown(mut vm) => {
+            VmState::Rundown { mut vm, spec } => {
                 let rt = vm.tokio_rt.take().expect("rundown VM has a runtime");
-                guard.state = VmState::RundownComplete(vm);
+                guard.state = VmState::RundownComplete {
+                    vm,
+                    spec: MaybeSpec::Present(spec),
+                };
                 rt
             }
             state => unreachable!(
@@ -551,16 +582,25 @@ impl Vm {
         {
             let mut guard = self.inner.write().await;
             match guard.state {
-                VmState::WaitingForInit(_) => {
-                    return Err(VmError::WaitingToInitialize);
+                VmState::WaitingForInit { .. } => {
+                    return Err(VmError::WaitingToInitialize)
                 }
-                VmState::Active(_) => return Err(VmError::AlreadyInitialized),
-                VmState::Rundown(_) => return Err(VmError::RundownInProgress),
+                VmState::Active { .. } => {
+                    return Err(VmError::AlreadyInitialized)
+                }
+                VmState::Rundown { .. } => {
+                    return Err(VmError::RundownInProgress)
+                }
                 _ => {}
             };
 
             let properties = ensure_request.properties.clone();
-            let spec = ensure_request.instance_spec.clone();
+            let spec = if ensure_request.migrate.is_some() {
+                MaybeSpec::WaitingForMigrationSource
+            } else {
+                MaybeSpec::Present(ensure_request.instance_spec.clone())
+            };
+
             let vm_for_driver = self.clone();
             guard.driver = Some(tokio::spawn(async move {
                 state_driver::run_state_driver(
@@ -574,12 +614,14 @@ impl Vm {
                 .await
             }));
 
-            guard.state = VmState::WaitingForInit(VmDescription {
-                external_state_rx: external_rx.clone(),
-                properties,
+            guard.state = VmState::WaitingForInit {
+                vm: VmDescription {
+                    external_state_rx: external_rx.clone(),
+                    properties,
+                    tokio_rt: None,
+                },
                 spec,
-                tokio_rt: None,
-            });
+            };
         }
 
         // Wait for the state driver task to dispose of this request.
