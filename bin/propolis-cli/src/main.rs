@@ -12,12 +12,18 @@ use std::{
 };
 
 use anyhow::{anyhow, Context};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use futures::{future, SinkExt};
 use newtype_uuid::{GenericUuid, TypedUuid, TypedUuidKind, TypedUuidTag};
 use propolis_client::types::{
-    InstanceMetadata, InstanceSpecStatus, VersionedInstanceSpec,
+    BlobStorageBackend, Board, Chipset, ComponentV0, CrucibleStorageBackend,
+    I440Fx, InstanceMetadata, InstanceSpecEnsureRequest,
+    InstanceSpecGetResponse, InstanceSpecStatus, InstanceSpecV0, NvmeDisk,
+    QemuPvpanic, SerialPort, SerialPortNumber, VersionedInstanceSpec,
+    VirtioDisk,
 };
+use propolis_client::PciPath;
+use propolis_config_toml::spec::SpecConfig;
 use slog::{o, Drain, Level, Logger};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::{
@@ -29,9 +35,8 @@ use uuid::Uuid;
 use propolis_client::{
     support::{InstanceSerialConsoleHelper, WSClientOffset},
     types::{
-        DiskRequest, InstanceEnsureRequest, InstanceMigrateInitiateRequest,
-        InstanceProperties, InstanceStateRequested, InstanceVcrReplace,
-        MigrationState,
+        DiskRequest, InstanceMigrateInitiateRequest, InstanceProperties,
+        InstanceStateRequested, InstanceVcrReplace, MigrationState,
     },
     Client,
 };
@@ -68,21 +73,8 @@ enum Command {
         #[clap(short = 'u', action)]
         uuid: Option<Uuid>,
 
-        /// Number of vCPUs allocated to instance
-        #[clap(short = 'c', default_value = "4", action)]
-        vcpus: u8,
-
-        /// Memory allocated to instance (MiB)
-        #[clap(short, default_value = "1024", action)]
-        memory: u64,
-
-        /// File with a JSON array of DiskRequest structs
-        #[clap(long, action)]
-        crucible_disks: Option<PathBuf>,
-
-        // cloud_init ISO file
-        #[clap(long, action)]
-        cloud_init: Option<PathBuf>,
+        #[clap(flatten)]
+        config: VmConfig,
 
         /// A UUID to use for the instance's silo, attached to instance metrics.
         #[clap(long)]
@@ -169,6 +161,197 @@ enum Command {
     },
 }
 
+#[derive(Args, Clone, Debug)]
+struct VmConfig {
+    /// A path to a file containing a JSON-formatted instance spec
+    #[clap(short = 's', long, action)]
+    spec: Option<PathBuf>,
+
+    /// Number of vCPUs allocated to instance
+    #[clap(short = 'c', default_value = "4", action, conflicts_with = "spec")]
+    vcpus: u8,
+
+    /// Memory allocated to instance (MiB)
+    #[clap(short, default_value = "1024", action, conflicts_with = "spec")]
+    memory: u64,
+
+    /// A path to a file containing a config TOML
+    #[clap(short = 't', long, action, conflicts_with = "spec")]
+    config_toml: Option<PathBuf>,
+
+    /// File with a JSON array of DiskRequest structs
+    #[clap(long, action, conflicts_with = "spec")]
+    crucible_disks: Option<PathBuf>,
+
+    // cloud_init ISO file
+    #[clap(long, action, conflicts_with = "spec")]
+    cloud_init: Option<PathBuf>,
+}
+
+fn add_component_to_spec(
+    spec: &mut InstanceSpecV0,
+    name: String,
+    component: ComponentV0,
+) -> anyhow::Result<()> {
+    if spec.components.insert(name.clone(), component).is_some() {
+        anyhow::bail!("duplicate component ID {name:?}");
+    }
+    Ok(())
+}
+
+fn add_disk_request_to_spec(
+    spec: &mut InstanceSpecV0,
+    req: &DiskRequest,
+) -> anyhow::Result<()> {
+    let slot = req.slot.0 + 0x10;
+    let backend_name = format!("{}-backend", req.name);
+    let pci_path = PciPath::new(0, slot, 0)
+        .with_context(|| format!("processing disk request {:?}", req.name))?;
+    let device_spec = match req.device.as_ref() {
+        "virtio" => ComponentV0::VirtioDisk(VirtioDisk {
+            backend_name: backend_name.clone(),
+            pci_path,
+        }),
+        "nvme" => ComponentV0::NvmeDisk(NvmeDisk {
+            backend_name: backend_name.clone(),
+            pci_path,
+        }),
+        _ => anyhow::bail!(
+            "invalid device type in disk request: {:?}",
+            req.device
+        ),
+    };
+
+    let backend_spec =
+        ComponentV0::CrucibleStorageBackend(CrucibleStorageBackend {
+            readonly: req.read_only,
+            request_json: serde_json::to_string(
+                &req.volume_construction_request,
+            )?,
+        });
+
+    add_component_to_spec(spec, req.name.clone(), device_spec)?;
+    add_component_to_spec(spec, backend_name, backend_spec)?;
+    Ok(())
+}
+
+impl VmConfig {
+    fn instance_spec(&self) -> anyhow::Result<InstanceSpecV0> {
+        // If the configuration specifies an instance spec path, just read the
+        // spec from that path and return it. Otherwise, construct a spec from
+        // this configuration's component parts.
+        if let Some(path) = &self.spec {
+            return parse_json_file(path);
+        }
+
+        let from_toml = &self
+            .config_toml
+            .as_ref()
+            .map(propolis_config_toml::parse)
+            .transpose()?
+            .as_ref()
+            .map(SpecConfig::try_from)
+            .transpose()?;
+
+        let enable_pcie =
+            from_toml.as_ref().map(|cfg| cfg.enable_pcie).unwrap_or(false);
+
+        let mut spec = InstanceSpecV0 {
+            board: Board {
+                chipset: Chipset::I440Fx(I440Fx { enable_pcie }),
+                cpuid: None,
+                cpus: self.vcpus,
+                memory_mb: self.memory,
+            },
+            components: Default::default(),
+        };
+
+        if let Some(from_toml) = from_toml {
+            for (id, component) in from_toml.components.iter() {
+                add_component_to_spec(
+                    &mut spec,
+                    id.clone(),
+                    component.clone(),
+                )?;
+            }
+        }
+
+        for disk_request in self
+            .crucible_disks
+            .as_ref()
+            .map(|path| parse_json_file::<Vec<DiskRequest>>(path))
+            .transpose()?
+            .iter()
+            .flatten()
+        {
+            add_disk_request_to_spec(&mut spec, disk_request)?;
+        }
+
+        if let Some(cloud_init) = self.cloud_init.as_ref() {
+            let bytes = base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                std::fs::read(cloud_init)?,
+            );
+
+            const CLOUD_INIT_NAME: &str = "cloud-init";
+            const CLOUD_INIT_BACKEND_NAME: &str = "cloud-init-backend";
+
+            add_component_to_spec(
+                &mut spec,
+                CLOUD_INIT_NAME.to_owned(),
+                ComponentV0::VirtioDisk(VirtioDisk {
+                    backend_name: CLOUD_INIT_BACKEND_NAME.to_owned(),
+                    pci_path: PciPath::new(0, 0x18, 0).unwrap(),
+                }),
+            )?;
+
+            add_component_to_spec(
+                &mut spec,
+                CLOUD_INIT_BACKEND_NAME.to_owned(),
+                ComponentV0::BlobStorageBackend(BlobStorageBackend {
+                    base64: bytes,
+                    readonly: true,
+                }),
+            )?;
+        }
+
+        for (name, port) in [
+            ("com1", SerialPortNumber::Com1),
+            ("com2", SerialPortNumber::Com2),
+            ("com3", SerialPortNumber::Com3),
+        ] {
+            add_component_to_spec(
+                &mut spec,
+                name.to_owned(),
+                ComponentV0::SerialPort(SerialPort { num: port }),
+            )?;
+        }
+
+        // If there are no SoftNPU devices, also enable COM4.
+        if !spec
+            .components
+            .iter()
+            .any(|(_, c)| matches!(c, ComponentV0::SoftNpuPort(_)))
+        {
+            add_component_to_spec(
+                &mut spec,
+                "com4".to_owned(),
+                ComponentV0::SerialPort(SerialPort {
+                    num: SerialPortNumber::Com4,
+                }),
+            )?;
+        }
+
+        add_component_to_spec(
+            &mut spec,
+            "pvpanic".to_owned(),
+            ComponentV0::QemuPvpanic(QemuPvpanic { enable_isa: true }),
+        )?;
+
+        Ok(spec)
+    }
+}
+
 fn parse_state(state: &str) -> anyhow::Result<InstanceStateRequested> {
     match state.to_lowercase().as_str() {
         "run" => Ok(InstanceStateRequested::Run),
@@ -244,10 +427,7 @@ async fn new_instance(
     client: &Client,
     name: String,
     id: Uuid,
-    vcpus: u8,
-    memory: u64,
-    disks: Vec<DiskRequest>,
-    cloud_init_bytes: Option<String>,
+    spec: InstanceSpecV0,
     metadata: InstanceMetadata,
 ) -> anyhow::Result<()> {
     let properties = InstanceProperties {
@@ -257,21 +437,15 @@ async fn new_instance(
         metadata,
     };
 
-    let request = InstanceEnsureRequest {
-        properties,
-        vcpus,
-        memory,
-        // TODO: Allow specifying NICs
-        nics: vec![],
-        disks,
-        boot_settings: None,
+    let request = InstanceSpecEnsureRequest {
+        instance_spec: VersionedInstanceSpec::V0(spec),
         migrate: None,
-        cloud_init_bytes,
+        properties,
     };
 
     // Try to create the instance
     client
-        .instance_ensure()
+        .instance_spec_ensure()
         .body(request)
         .send()
         .await
@@ -501,41 +675,37 @@ async fn migrate_instance(
     disks: Vec<DiskRequest>,
 ) -> anyhow::Result<()> {
     // Grab the instance details
-    let src_instance =
-        src_client.instance_spec_get().send().await.with_context(|| {
-            anyhow!("failed to get src instance properties")
-        })?;
-    let src_uuid = src_instance.properties.id;
-    let InstanceSpecStatus::Present(spec) = &src_instance.spec else {
+    let InstanceSpecGetResponse { mut properties, spec, .. } = src_client
+        .instance_spec_get()
+        .send()
+        .await
+        .with_context(|| anyhow!("failed to get src instance properties"))?
+        .into_inner();
+    let src_uuid = properties.id;
+    properties.id = dst_uuid;
+    let InstanceSpecStatus::Present(spec) = spec else {
         anyhow::bail!("source instance doesn't have a spec yet");
     };
-    let VersionedInstanceSpec::V0(spec) = &spec;
 
-    let request = InstanceEnsureRequest {
-        properties: InstanceProperties {
-            // Use a new ID for the destination instance we're creating
-            id: dst_uuid,
-            ..src_instance.properties.clone()
-        },
-        vcpus: spec.board.cpus,
-        memory: spec.board.memory_mb,
-        // TODO: Handle migrating NICs
-        nics: vec![],
-        disks,
-        // TODO: Handle retaining boot settings? Or extant boot settings
-        // forwarded along outside InstanceEnsure anyway.
-        boot_settings: None,
+    let VersionedInstanceSpec::V0(mut spec) = spec;
+    spec.components.clear();
+    for disk in disks.iter() {
+        add_disk_request_to_spec(&mut spec, disk)?;
+    }
+
+    let request = InstanceSpecEnsureRequest {
+        properties,
         migrate: Some(InstanceMigrateInitiateRequest {
             migration_id: Uuid::new_v4(),
             src_addr: src_addr.to_string(),
             src_uuid,
         }),
-        cloud_init_bytes: None,
+        instance_spec: VersionedInstanceSpec::V0(spec),
     };
 
     // Initiate the migration via the destination instance
     let migration_res =
-        dst_client.instance_ensure().body(request).send().await?;
+        dst_client.instance_spec_ensure().body(request).send().await?;
     let migration_id = migration_res
         .migrate
         .as_ref()
@@ -660,10 +830,7 @@ async fn main() -> anyhow::Result<()> {
         Command::New {
             name,
             uuid,
-            vcpus,
-            memory,
-            crucible_disks,
-            cloud_init,
+            config,
             silo_id,
             project_id,
             sled_id,
@@ -671,19 +838,6 @@ async fn main() -> anyhow::Result<()> {
             sled_revision,
             sled_serial,
         } => {
-            let disks = if let Some(crucible_disks) = crucible_disks {
-                parse_json_file(&crucible_disks)?
-            } else {
-                vec![]
-            };
-            let cloud_init_bytes = if let Some(cloud_init) = cloud_init {
-                Some(base64::Engine::encode(
-                    &base64::engine::general_purpose::STANDARD,
-                    std::fs::read(cloud_init)?,
-                ))
-            } else {
-                None
-            };
             let metadata = InstanceMetadata {
                 project_id: project_id
                     .unwrap_or_else(TypedUuid::new_v4)
@@ -702,10 +856,7 @@ async fn main() -> anyhow::Result<()> {
                 &client,
                 name.to_string(),
                 uuid.unwrap_or_else(Uuid::new_v4),
-                vcpus,
-                memory,
-                disks,
-                cloud_init_bytes,
+                config.instance_spec()?,
                 metadata,
             )
             .await?

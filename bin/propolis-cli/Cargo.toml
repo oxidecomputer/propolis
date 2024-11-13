@@ -7,10 +7,12 @@ edition = "2021"
 [dependencies]
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
+crucible-client-types.workspace = true
 futures.workspace = true
 libc.workspace = true
 newtype-uuid.workspace = true
 propolis-client.workspace = true
+propolis-config-toml.workspace = true
 slog.workspace = true
 slog-async.workspace = true
 slog-term.workspace = true
