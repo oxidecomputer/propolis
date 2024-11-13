@@ -49,7 +49,7 @@ cpuid_profile_config = { path = "crates/cpuid-profile-config" }
 dladm = { path = "crates/dladm" }
 nvpair = { path = "crates/nvpair" }
 nvpair_sys = { path = "crates/nvpair/sys" }
-propolis-server-config = { path = "crates/propolis-server-config" }
+propolis-config-toml = { path = "crates/propolis-config-toml" }
 propolis_api_types = { path = "crates/propolis-api-types" }
 propolis_types = { path = "crates/propolis-types" }
 rfb = { path = "crates/rfb" }

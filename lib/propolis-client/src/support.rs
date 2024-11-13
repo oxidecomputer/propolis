@@ -18,27 +18,8 @@ use tokio_tungstenite::tungstenite::{Error as WSError, Message as WSMessage};
 // re-export as an escape hatch for crate-version-matching problems
 pub use tokio_tungstenite::{tungstenite, WebSocketStream};
 
-use crate::types::{Chipset, I440Fx, PciPath};
+use crate::types::{Chipset, I440Fx};
 use crate::Client as PropolisClient;
-
-const PCI_DEV_PER_BUS: u8 = 32;
-const PCI_FUNC_PER_DEV: u8 = 8;
-
-impl PciPath {
-    pub const fn new(
-        bus: u8,
-        device: u8,
-        function: u8,
-    ) -> Result<Self, &'static str> {
-        if device > PCI_DEV_PER_BUS {
-            Err("device outside possible range")
-        } else if function > PCI_FUNC_PER_DEV {
-            Err("function outside possible range")
-        } else {
-            Ok(Self { bus, device, function })
-        }
-    }
-}
 
 impl Default for Chipset {
     fn default() -> Self {

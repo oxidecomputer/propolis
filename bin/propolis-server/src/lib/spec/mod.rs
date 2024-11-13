@@ -293,6 +293,7 @@ pub struct MigrationFailure {
 #[cfg(feature = "falcon")]
 #[derive(Clone, Debug)]
 pub struct SoftNpuPort {
+    pub link_name: String,
     pub backend_name: String,
     pub backend_spec: DlpiNetworkBackend,
 }

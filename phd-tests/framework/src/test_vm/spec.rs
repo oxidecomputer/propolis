@@ -9,8 +9,9 @@ use crate::{
     guest_os::GuestOsKind,
 };
 use camino::Utf8PathBuf;
-use propolis_client::types::{
-    ComponentV0, DiskRequest, InstanceMetadata, InstanceSpecV0, PciPath, Slot,
+use propolis_client::{
+    types::{ComponentV0, DiskRequest, InstanceMetadata, InstanceSpecV0, Slot},
+    PciPath,
 };
 use uuid::Uuid;
 
@@ -91,11 +92,11 @@ impl VmSpec {
         }
 
         fn convert_to_slot(pci_path: PciPath) -> anyhow::Result<Slot> {
-            match pci_path.device {
+            match pci_path.device() {
                 dev @ 0x10..=0x17 => Ok(Slot(dev - 0x10)),
                 _ => Err(anyhow::anyhow!(
                     "PCI device number {} out of range",
-                    pci_path.device
+                    pci_path.device()
                 )),
             }
         }

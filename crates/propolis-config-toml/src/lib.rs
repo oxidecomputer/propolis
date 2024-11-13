@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::str::FromStr;
 
 use serde_derive::{Deserialize, Serialize};
@@ -11,15 +11,13 @@ use thiserror::Error;
 
 pub use cpuid_profile_config::CpuidProfile;
 
+pub mod spec;
+
 /// Configuration for the Propolis server.
 // NOTE: This is expected to change over time; portions of the hard-coded
 // configuration will likely become more dynamic.
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Config {
-    pub bootrom: PathBuf,
-
-    pub bootrom_version: Option<String>,
-
     #[serde(default, rename = "pci_bridge")]
     pub pci_bridges: Vec<PciBridge>,
 
@@ -38,8 +36,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            bootrom: PathBuf::new(),
-            bootrom_version: None,
             pci_bridges: Vec::new(),
             chipset: Chipset { options: BTreeMap::new() },
             devices: BTreeMap::new(),
@@ -151,8 +147,7 @@ mod test {
 
     #[test]
     fn config_can_be_serialized_as_toml() {
-        let dummy_config =
-            Config { bootrom: "/boot".into(), ..Default::default() };
+        let dummy_config = Config { ..Default::default() };
         let serialized = toml::ser::to_string(&dummy_config).unwrap();
         let deserialized: Config = toml::de::from_str(&serialized).unwrap();
         assert_eq!(dummy_config, deserialized);
@@ -161,7 +156,6 @@ mod test {
     #[test]
     fn parse_basic_config() {
         let raw = r#"
-bootrom = "/path/to/bootrom"
 [chipset]
 chipset-opt = "copt"
 
@@ -183,10 +177,8 @@ path = "/etc/passwd"
 "#;
         let cfg: Config = toml::de::from_str(raw).unwrap();
 
-        use std::path::PathBuf;
         use toml::Value;
 
-        assert_eq!(cfg.bootrom, PathBuf::from("/path/to/bootrom"));
         assert_eq!(cfg.chipset.get_string("chipset-opt"), Some("copt"));
 
         assert!(cfg.devices.contains_key("drv0"));
