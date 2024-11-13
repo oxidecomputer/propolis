@@ -4,10 +4,17 @@
 
 //! A client for the Propolis hypervisor frontend's server API.
 
+// Re-export the PCI path type from propolis_api_types so that users can access
+// its constructor and From impls.
+pub use propolis_api_types::instance_spec::PciPath;
+
 progenitor::generate_api!(
     spec = "../../openapi/propolis-server.json",
     interface = Builder,
     tags = Separate,
+    replace = {
+        PciPath = crate::PciPath,
+    },
     patch = {
         // Some Crucible-related bits are re-exported through simulated
         // sled-agent and thus require JsonSchema

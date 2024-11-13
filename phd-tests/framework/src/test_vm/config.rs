@@ -6,11 +6,14 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use cpuid_utils::CpuidIdent;
-use propolis_client::types::{
-    Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
-    CpuidEntry, CpuidVendor, InstanceMetadata, InstanceSpecV0,
-    MigrationFailureInjector, NvmeDisk, PciPath, SerialPort, SerialPortNumber,
-    VirtioDisk,
+use propolis_client::{
+    types::{
+        Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
+        CpuidEntry, CpuidVendor, InstanceMetadata, InstanceSpecV0,
+        MigrationFailureInjector, NvmeDisk, SerialPort, SerialPortNumber,
+        VirtioDisk,
+    },
+    PciPath,
 };
 use uuid::Uuid;
 
