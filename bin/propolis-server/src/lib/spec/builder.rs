@@ -32,6 +32,9 @@ use super::{
     Board, BootOrderEntry, BootSettings, Disk, Nic, QemuPvpanic, SerialPort,
 };
 
+#[cfg(not(feature = "omicron-build"))]
+use super::MigrationFailure;
+
 #[cfg(feature = "falcon")]
 use super::{ParsedSoftNpu, SoftNpuPort};
 
@@ -58,6 +61,10 @@ pub(crate) enum SpecBuilderError {
 
     #[error("pvpanic device already specified")]
     PvpanicInUse,
+
+    #[cfg(not(feature = "omicron-build"))]
+    #[error("migration failure injection already enabled")]
+    MigrationFailureInjectionInUse,
 
     #[error("boot settings were already specified")]
     BootSettingsInUse,
@@ -364,6 +371,24 @@ impl SpecBuilder {
 
         self.component_names.insert(pvpanic.name.clone());
         self.spec.pvpanic = Some(pvpanic);
+        Ok(self)
+    }
+
+    #[cfg(not(feature = "omicron-build"))]
+    pub fn add_migration_failure_device(
+        &mut self,
+        mig: MigrationFailure,
+    ) -> Result<&Self, SpecBuilderError> {
+        if self.component_names.contains(&mig.name) {
+            return Err(SpecBuilderError::ComponentNameInUse(mig.name));
+        }
+
+        if self.spec.migration_failure.is_some() {
+            return Err(SpecBuilderError::MigrationFailureInjectionInUse);
+        }
+
+        self.component_names.insert(mig.name.clone());
+        self.spec.migration_failure = Some(mig);
         Ok(self)
     }
 

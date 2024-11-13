@@ -34,6 +34,9 @@ use propolis_api_types::instance_spec::{
 };
 use thiserror::Error;
 
+#[cfg(not(feature = "omicron-build"))]
+use propolis_api_types::instance_spec::components::devices::MigrationFailureInjector;
+
 #[cfg(feature = "falcon")]
 use propolis_api_types::instance_spec::components::{
     backends::DlpiNetworkBackend,
@@ -70,6 +73,9 @@ pub(crate) struct Spec {
 
     pub pci_pci_bridges: HashMap<String, PciPciBridge>,
     pub pvpanic: Option<QemuPvpanic>,
+
+    #[cfg(not(feature = "omicron-build"))]
+    pub migration_failure: Option<MigrationFailure>,
 
     #[cfg(feature = "falcon")]
     pub softnpu: SoftNpu,
@@ -276,6 +282,13 @@ pub struct QemuPvpanic {
     #[allow(dead_code)]
     pub name: String,
     pub spec: QemuPvpanicDesc,
+}
+
+#[cfg(not(feature = "omicron-build"))]
+#[derive(Clone, Debug)]
+pub struct MigrationFailure {
+    pub name: String,
+    pub spec: MigrationFailureInjector,
 }
 
 #[cfg(feature = "falcon")]
