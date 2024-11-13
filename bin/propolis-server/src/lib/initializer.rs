@@ -783,49 +783,29 @@ impl<'a> MachineInitializer<'a> {
     }
 
     #[cfg(not(feature = "omicron-build"))]
-    pub fn initialize_test_devices(
-        &mut self,
-        toml_cfg: &std::collections::BTreeMap<
-            String,
-            propolis_server_config::Device,
-        >,
-    ) {
+    pub fn initialize_test_devices(&mut self) {
         use propolis::hw::testdev::{
             MigrationFailureDevice, MigrationFailures,
         };
 
-        if let Some(dev) = toml_cfg.get(MigrationFailureDevice::NAME) {
-            const FAIL_EXPORTS: &str = "fail_exports";
-            const FAIL_IMPORTS: &str = "fail_imports";
-            let fail_exports = dev
-                .options
-                .get(FAIL_EXPORTS)
-                .and_then(|val| val.as_integer())
-                .unwrap_or(0);
-            let fail_imports = dev
-                .options
-                .get(FAIL_IMPORTS)
-                .and_then(|val| val.as_integer())
-                .unwrap_or(0);
-
-            if fail_exports <= 0 && fail_imports <= 0 {
+        if let Some(mig) = &self.spec.migration_failure {
+            if mig.spec.fail_exports == 0 && mig.spec.fail_imports == 0 {
                 info!(
                     self.log,
-                    "migration failure device will not fail, as both
-                    `{FAIL_EXPORTS}` and `{FAIL_IMPORTS}` are 0";
-                    FAIL_EXPORTS => ?fail_exports,
-                    FAIL_IMPORTS => ?fail_imports,
+                    "migration failure device's failure counts are both 0";
+                    "device_spec" => ?mig.spec
                 );
             }
 
             let dev = MigrationFailureDevice::create(
                 &self.log,
                 MigrationFailures {
-                    exports: fail_exports as usize,
-                    imports: fail_imports as usize,
+                    exports: mig.spec.fail_exports as usize,
+                    imports: mig.spec.fail_imports as usize,
                 },
             );
-            self.devices.insert(MigrationFailureDevice::NAME.into(), dev);
+
+            self.devices.insert(mig.name.clone(), dev);
         }
     }
 

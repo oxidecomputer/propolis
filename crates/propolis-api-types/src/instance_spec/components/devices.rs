@@ -185,3 +185,18 @@ pub struct P9fs {
     /// The PCI path at which to attach the guest to this P9 filesystem.
     pub pci_path: PciPath,
 }
+
+/// Describes a synthetic device that registers for VM lifecycle notifications
+/// and returns errors during attempts to migrate.
+///
+/// This is only supported by Propolis servers compiled without the
+/// `omicron-build` feature.
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MigrationFailureInjector {
+    /// The number of times this device should fail requests to export state.
+    pub fail_exports: u32,
+
+    /// The number of times this device should fail requests to import state.
+    pub fail_imports: u32,
+}

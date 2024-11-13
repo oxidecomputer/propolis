@@ -787,6 +787,25 @@
             "type": "object",
             "properties": {
               "component": {
+                "$ref": "#/components/schemas/MigrationFailureInjector"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "MigrationFailureInjector"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
                 "$ref": "#/components/schemas/CrucibleStorageBackend"
               },
               "type": {
@@ -1570,6 +1589,29 @@
           "name",
           "vcr_json"
         ]
+      },
+      "MigrationFailureInjector": {
+        "description": "Describes a synthetic device that registers for VM lifecycle notifications and returns errors during attempts to migrate.\n\nThis is only supported by Propolis servers compiled without the `omicron-build` feature.",
+        "type": "object",
+        "properties": {
+          "fail_exports": {
+            "description": "The number of times this device should fail requests to export state.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "fail_imports": {
+            "description": "The number of times this device should fail requests to import state.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "fail_exports",
+          "fail_imports"
+        ],
+        "additionalProperties": false
       },
       "MigrationState": {
         "type": "string",
