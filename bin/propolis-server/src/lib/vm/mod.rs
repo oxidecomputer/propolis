@@ -79,7 +79,7 @@
 //! In the latter case, the driver moves to `Rundown` and allows `VmObjects`
 //! teardown to drive the state machine to `RundownComplete`.
 
-use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
+use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use active::ActiveVm;
 use ensure::VmEnsureRequest;
@@ -279,9 +279,12 @@ impl std::fmt::Display for VmState {
 
 /// Parameters to an instance ensure operation.
 pub(super) struct EnsureOptions {
-    /// A reference to the VM configuration specified in the config TOML passed
-    /// to this propolis-server process.
-    pub(super) toml_config: Arc<crate::server::VmTomlConfig>,
+    /// The path to the bootrom to load into the guest.
+    pub(super) bootrom_path: PathBuf,
+
+    /// The bootrom version string to expose to the guest. If None, the machine
+    /// initializer chooses a default.
+    pub(super) bootrom_version: Option<String>,
 
     /// True if VMs should allocate memory from the kernel VMM reservoir.
     pub(super) use_reservoir: bool,

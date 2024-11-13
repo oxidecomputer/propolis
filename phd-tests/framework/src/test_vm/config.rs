@@ -209,20 +209,11 @@ impl<'dr> VmConfig<'dr> {
             migration_failure,
         } = self;
 
-        // Figure out where the bootrom is and generate the serialized contents
-        // of a Propolis server config TOML that points to it.
-        let bootrom = framework
+        let bootrom_path = framework
             .artifact_store
             .get_bootrom(bootrom_artifact)
             .await
             .context("looking up bootrom artifact")?;
-
-        let config_toml_contents =
-            toml::ser::to_string(&propolis_server_config::Config {
-                bootrom: bootrom.clone().into(),
-                ..Default::default()
-            })
-            .context("serializing Propolis server config")?;
 
         // The first disk in the boot list might not be the disk a test
         // *actually* expects to boot.
@@ -370,7 +361,7 @@ impl<'dr> VmConfig<'dr> {
             instance_spec: spec,
             disk_handles,
             guest_os_kind,
-            config_toml_contents,
+            bootrom_path,
             metadata,
         })
     }

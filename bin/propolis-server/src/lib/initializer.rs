@@ -187,7 +187,6 @@ pub struct MachineInitializer<'a> {
     pub(crate) crucible_backends: CrucibleBackendMap,
     pub(crate) spec: &'a Spec,
     pub(crate) properties: &'a InstanceProperties,
-    pub(crate) toml_config: &'a crate::server::VmTomlConfig,
     pub(crate) producer_registry: Option<ProducerRegistry>,
     pub(crate) state: MachineInitializerState,
     pub(crate) kstat_sampler: Option<KstatSampler>,
@@ -911,14 +910,15 @@ impl<'a> MachineInitializer<'a> {
         chipset.pci_attach(p9fs.pci_path.into(), vio9p);
     }
 
-    fn generate_smbios(&self) -> smbios::TableBytes {
+    fn generate_smbios(
+        &self,
+        bootrom_version: &Option<String>,
+    ) -> smbios::TableBytes {
         use smbios::table::{type0, type1, type16, type4};
 
         let rom_size =
             self.state.rom_size_bytes.expect("ROM is already populated");
-        let bios_version = self
-            .toml_config
-            .bootrom_version
+        let bios_version = bootrom_version
             .as_deref()
             .unwrap_or("v0.8")
             .try_into()
@@ -1153,6 +1153,7 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_fwcfg(
         &mut self,
         cpus: u8,
+        bootrom_version: &Option<String>,
     ) -> Result<Arc<ramfb::RamFb>, MachineInitError> {
         let fwcfg = fwcfg::FwCfg::new();
         fwcfg
@@ -1163,7 +1164,7 @@ impl<'a> MachineInitializer<'a> {
             .map_err(|e| MachineInitError::FwcfgInsertFailed("cpu count", e))?;
 
         let smbios::TableBytes { entry_point, structure_table } =
-            self.generate_smbios();
+            self.generate_smbios(bootrom_version);
         fwcfg
             .insert_named(
                 "etc/smbios/smbios-tables",

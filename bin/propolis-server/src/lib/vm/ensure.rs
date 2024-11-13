@@ -352,7 +352,7 @@ async fn initialize_vm_objects(
               "spec" => #?spec,
               "properties" => #?properties,
               "use_reservoir" => options.use_reservoir,
-              "bootrom" => %options.toml_config.bootrom.display());
+              "bootrom" => %options.bootrom_path.display());
 
     let vmm_log = log.new(slog::o!("component" => "vmm"));
 
@@ -373,7 +373,6 @@ async fn initialize_vm_objects(
         crucible_backends: Default::default(),
         spec: &spec,
         properties: &properties,
-        toml_config: &options.toml_config,
         producer_registry: options.oximeter_registry.clone(),
         state: MachineInitializerState::default(),
         kstat_sampler: initialize_kstat_sampler(
@@ -384,7 +383,7 @@ async fn initialize_vm_objects(
         stats_vm: VirtualMachine::new(spec.board.cpus, &properties),
     };
 
-    init.initialize_rom(options.toml_config.bootrom.as_path())?;
+    init.initialize_rom(options.bootrom_path.as_path())?;
     let chipset = init.initialize_chipset(
         &(event_queue.clone()
             as Arc<dyn super::guest_event::ChipsetEventHandler>),
@@ -416,7 +415,9 @@ async fn initialize_vm_objects(
     init.initialize_storage_devices(&chipset, options.nexus_client.clone())
         .await?;
 
-    let ramfb = init.initialize_fwcfg(spec.board.cpus)?;
+    let ramfb =
+        init.initialize_fwcfg(spec.board.cpus, &options.bootrom_version)?;
+
     init.initialize_cpus().await?;
     let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
         &machine,

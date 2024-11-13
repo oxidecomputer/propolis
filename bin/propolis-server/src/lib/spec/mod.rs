@@ -46,7 +46,6 @@ use propolis_api_types::instance_spec::components::{
 mod api_request;
 pub(crate) mod api_spec_v0;
 pub(crate) mod builder;
-mod config_toml;
 
 #[derive(Debug, Error)]
 #[error("input component type can't convert to output type")]
@@ -315,26 +314,6 @@ struct ParsedDiskRequest {
 struct ParsedNicRequest {
     name: String,
     nic: Nic,
-}
-
-struct ParsedPciBridgeRequest {
-    name: String,
-    bridge: PciPciBridge,
-}
-
-#[cfg(feature = "falcon")]
-struct ParsedSoftNpuPort {
-    name: String,
-    port: SoftNpuPort,
-}
-
-#[cfg(feature = "falcon")]
-#[derive(Default)]
-struct ParsedSoftNpu {
-    pub pci_port: Option<SoftNpuPciPort>,
-    pub ports: Vec<ParsedSoftNpuPort>,
-    pub p9_device: Option<SoftNpuP9>,
-    pub p9fs: Option<P9fs>,
 }
 
 /// Generates NIC device and backend names from the NIC's PCI path. This is
