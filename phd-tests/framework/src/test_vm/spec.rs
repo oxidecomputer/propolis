@@ -8,6 +8,7 @@ use crate::{
     disk::{self, DiskConfig},
     guest_os::GuestOsKind,
 };
+use camino::Utf8PathBuf;
 use propolis_client::types::{
     ComponentV0, DiskRequest, InstanceMetadata, InstanceSpecV0, PciPath, Slot,
 };
@@ -27,8 +28,8 @@ pub struct VmSpec {
     /// The guest OS adapter to use for the VM.
     pub guest_os_kind: GuestOsKind,
 
-    /// The contents of the config TOML to write to run this VM.
-    pub config_toml_contents: String,
+    /// The bootrom path to pass to this VM's Propolis server processes.
+    pub bootrom_path: Utf8PathBuf,
 
     /// Metadata used to track instance timeseries data.
     pub metadata: InstanceMetadata,

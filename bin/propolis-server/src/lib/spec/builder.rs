@@ -24,11 +24,10 @@ use propolis_api_types::instance_spec::components::devices::{
     P9fs, SoftNpuP9, SoftNpuPciPort,
 };
 
-use crate::{config, spec::SerialPortDevice};
+use crate::spec::SerialPortDevice;
 
 use super::{
     api_request::{self, DeviceRequestError},
-    config_toml::{ConfigTomlError, ParsedConfig},
     Board, BootOrderEntry, BootSettings, Disk, Nic, QemuPvpanic, SerialPort,
 };
 
@@ -36,14 +35,11 @@ use super::{
 use super::MigrationFailure;
 
 #[cfg(feature = "falcon")]
-use super::{ParsedSoftNpu, SoftNpuPort};
+use super::SoftNpuPort;
 
 /// Errors that can arise while building an instance spec from component parts.
 #[derive(Debug, Error)]
 pub(crate) enum SpecBuilderError {
-    #[error("error parsing config TOML")]
-    ConfigToml(#[from] ConfigTomlError),
-
     #[error("error parsing device in ensure request")]
     DeviceRequest(#[from] DeviceRequestError),
 
@@ -189,59 +185,6 @@ impl SpecBuilder {
     ) -> Result<(), SpecBuilderError> {
         let parsed = api_request::parse_cloud_init_from_request(base64)?;
         self.add_storage_device(parsed.name, parsed.disk)?;
-        Ok(())
-    }
-
-    /// Adds all the devices and backends specified in the supplied
-    /// configuration TOML to the spec under construction.
-    pub fn add_devices_from_config(
-        &mut self,
-        config: &config::Config,
-    ) -> Result<(), SpecBuilderError> {
-        let parsed = ParsedConfig::try_from(config)?;
-
-        let Chipset::I440Fx(ref mut i440fx) = self.spec.board.chipset;
-        i440fx.enable_pcie = parsed.enable_pcie;
-
-        for disk in parsed.disks {
-            self.add_storage_device(disk.name, disk.disk)?;
-        }
-
-        for nic in parsed.nics {
-            self.add_network_device(nic.name, nic.nic)?;
-        }
-
-        for bridge in parsed.pci_bridges {
-            self.add_pci_bridge(bridge.name, bridge.bridge)?;
-        }
-
-        #[cfg(feature = "falcon")]
-        self.add_parsed_softnpu_devices(parsed.softnpu)?;
-
-        Ok(())
-    }
-
-    #[cfg(feature = "falcon")]
-    fn add_parsed_softnpu_devices(
-        &mut self,
-        devices: ParsedSoftNpu,
-    ) -> Result<(), SpecBuilderError> {
-        if let Some(pci_port) = devices.pci_port {
-            self.set_softnpu_pci_port(pci_port)?;
-        }
-
-        for port in devices.ports {
-            self.add_softnpu_port(port.name, port.port)?;
-        }
-
-        if let Some(p9) = devices.p9_device {
-            self.set_softnpu_p9(p9)?;
-        }
-
-        if let Some(p9fs) = devices.p9fs {
-            self.set_p9fs(p9fs)?;
-        }
-
         Ok(())
     }
 

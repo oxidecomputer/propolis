@@ -24,7 +24,6 @@ hex.workspace = true
 libc.workspace = true
 newtype_derive.workspace = true
 propolis-client.workspace = true
-propolis-server-config.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 ring.workspace = true
 serde = { workspace = true, features = ["derive"] }
