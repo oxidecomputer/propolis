@@ -22,14 +22,15 @@ impl Preamble {
         Preamble { instance_spec, blobs: Vec::new() }
     }
 
-    /// Given the instance spec in this preamble (transmitted from the migration
-    /// source), replace any Crucible and viona backends with their
+    /// Consume the spec in this Preamble and produce an instance spec suitable
+    /// for initializing the target VM.
     ///
-    /// This check runs on the destination.
-    pub fn get_amended_spec(
-        self,
-        target_spec: &Spec,
-    ) -> Result<Spec, MigrateError> {
+    /// This routine enumerates the disks and NICs in the `target_spec` and
+    /// looks for disks with a Crucible backend and NICs with a viona backend.
+    /// Any such backends will replace the corresponding backend entries in the
+    /// source spec. If the target spec contains a replacement backend that is
+    /// not present in the source spec, this routine fails.
+    pub fn amend_spec(self, target_spec: &Spec) -> Result<Spec, MigrateError> {
         let VersionedInstanceSpec::V0(mut source_spec) = self.instance_spec;
         for disk in target_spec.disks.values() {
             let StorageBackend::Crucible(crucible) = &disk.backend_spec else {

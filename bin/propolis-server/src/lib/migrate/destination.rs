@@ -350,7 +350,7 @@ impl<T: MigrateConn> RonV0<T> {
         }?;
         info!(self.log(), "Destination read Preamble: {:?}", preamble);
 
-        let spec = match preamble.get_amended_spec(ensure_ctx.instance_spec()) {
+        let spec = match preamble.amend_spec(ensure_ctx.instance_spec()) {
             Ok(spec) => spec,
             Err(e) => {
                 error!(
