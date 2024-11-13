@@ -14,7 +14,7 @@ use dropshot::{
     TypedBody, WebsocketConnection,
 };
 use futures::SinkExt;
-use slog::{error, info, Logger};
+use slog::{error, info, o, Logger};
 use thiserror::Error;
 use tokio::sync::{watch, Mutex};
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
@@ -678,7 +678,8 @@ pub type Config = dropshot::ConfigDropshot;
 /// the dropshot server itself
 pub type Server = dropshot::HttpServer<Arc<Context>>;
 /// errors returned from attempting to start a dropshot server
-pub type ServerStartError = dropshot::GenericError;
+// Dropshot should expose this, but it's going to be removed anyway.
+pub type ServerStartError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Starts a Propolis mock server
 pub async fn start(
@@ -688,6 +689,11 @@ pub async fn start(
     let propolis_log = log.new(o!("component" => "propolis-server-mock"));
     let dropshot_log = log.new(o!("component" => "dropshot"));
     let private = Arc::new(Context::new(propolis_log));
-    dropshot::HttpServerStarter::new(&config, api(), private, &dropshot_log)?
-        .start()
+    let starter = dropshot::HttpServerStarter::new(
+        &config,
+        api(),
+        private,
+        &dropshot_log,
+    )?;
+    Ok(starter.start())
 }
