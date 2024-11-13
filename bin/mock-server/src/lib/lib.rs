@@ -682,7 +682,7 @@ pub type Server = dropshot::HttpServer<Arc<Context>>;
 pub type ServerStartError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Starts a Propolis mock server
-pub async fn start(
+pub fn start(
     config: Config,
     log: Logger,
 ) -> Result<Server, ServerStartError> {
