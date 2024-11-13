@@ -682,10 +682,7 @@ pub type Server = dropshot::HttpServer<Arc<Context>>;
 pub type ServerStartError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Starts a Propolis mock server
-pub fn start(
-    config: Config,
-    log: Logger,
-) -> Result<Server, ServerStartError> {
+pub fn start(config: Config, log: Logger) -> Result<Server, ServerStartError> {
     let propolis_log = log.new(o!("component" => "propolis-server-mock"));
     let dropshot_log = log.new(o!("component" => "dropshot"));
     let private = Arc::new(Context::new(propolis_log));
