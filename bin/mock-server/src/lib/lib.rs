@@ -654,6 +654,10 @@ mod serial {
 
 /// Returns a Dropshot [`ApiDescription`] object to launch a mock Propolis
 /// server.
+///
+/// This function should be avoided in favor of `start()` because using this
+/// function requires that the consumer and Propolis update Dropshot
+/// dependencies in lockstep due to the sharing of various types.
 pub fn api() -> ApiDescription<Arc<Context>> {
     let mut api = ApiDescription::new();
     api.register(instance_ensure).unwrap();
@@ -663,4 +667,27 @@ pub fn api() -> ApiDescription<Arc<Context>> {
     api.register(instance_serial).unwrap();
     api.register(instance_serial_history_get).unwrap();
     api
+}
+
+// These types need to be exposed so that consumers have names for them without
+// having to maintain a dropshot dependency in lockstep with their dependency on
+// this crate.
+
+/// configuration for the dropshot server
+pub type Config = dropshot::ConfigDropshot;
+/// the dropshot server itself
+pub type Server = dropshot::HttpServer<Arc<Context>>;
+/// errors returned from attempting to start a dropshot server
+pub type ServerStartError = dropshot::GenericError;
+
+/// Starts a Propolis mock server
+pub async fn start(
+    config: Config,
+    log: Logger,
+) -> Result<Server, ServerStartError> {
+    let propolis_log = log.new(o!("component" => "propolis-server-mock"));
+    let dropshot_log = log.new(o!("component" => "dropshot"));
+    let private = Arc::new(Context::new(propolis_log));
+    dropshot::HttpServerStarter::new(&config, api(), private, &dropshot_log)?
+        .start()
 }
