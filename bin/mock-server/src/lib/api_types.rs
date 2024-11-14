@@ -22,7 +22,6 @@ impl TryFrom<types::PciPath> for propolis_types::PciPath {
             .map_err(|e| e.to_string())
     }
 }
-pub use propolis_types::PciPath;
 
 // Duplicate the parameter types for the endpoints related to the serial console
 

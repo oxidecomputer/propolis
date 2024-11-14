@@ -304,8 +304,7 @@ pub(super) async fn run_state_driver(
     // new external callers can access its objects or services.
     match vmm_rt_hdl
         .spawn(async move {
-            let output =
-                state_driver.run(ensure_request.migrate.is_some()).await;
+            let output = state_driver.run(ensure_request.is_migration()).await;
             vm.set_rundown().await;
             output
         })
@@ -335,7 +334,7 @@ async fn create_and_activate_vm<'a>(
         state_publisher,
     );
 
-    if let Some(migrate_request) = ensure_request.migrate.as_ref() {
+    if let Some(migrate_request) = ensure_request.migration_info() {
         let migration = match crate::migrate::destination::initiate(
             log,
             migrate_request,

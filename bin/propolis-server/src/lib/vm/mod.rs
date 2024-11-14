@@ -562,13 +562,13 @@ impl Vm {
             &log_for_driver,
             InstanceStateMonitorResponse {
                 gen: 1,
-                state: if ensure_request.migrate.is_some() {
+                state: if ensure_request.is_migration() {
                     InstanceState::Migrating
                 } else {
                     InstanceState::Creating
                 },
                 migration: InstanceMigrateStatusResponse {
-                    migration_in: ensure_request.migrate.as_ref().map(|req| {
+                    migration_in: ensure_request.migration_info().map(|req| {
                         InstanceMigrationStatus {
                             id: req.migration_id,
                             state: MigrationState::Sync,
@@ -598,10 +598,13 @@ impl Vm {
             };
 
             let properties = ensure_request.properties.clone();
-            let spec = if ensure_request.migrate.is_some() {
-                MaybeSpec::WaitingForMigrationSource
-            } else {
-                MaybeSpec::Present(ensure_request.instance_spec.clone())
+            let spec = match &ensure_request.init {
+                ensure::VmInitializationMethod::Spec(s) => {
+                    MaybeSpec::Present(s.clone())
+                }
+                ensure::VmInitializationMethod::Migration(_) => {
+                    MaybeSpec::WaitingForMigrationSource
+                }
             };
 
             let vm_for_driver = self.clone();

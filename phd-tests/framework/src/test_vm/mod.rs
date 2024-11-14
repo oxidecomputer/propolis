@@ -5,7 +5,10 @@
 //! Routines for starting VMs, changing their states, and interacting with their
 //! guest OSes.
 
-use std::{fmt::Debug, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap, fmt::Debug, net::SocketAddr, sync::Arc,
+    time::Duration,
+};
 
 use crate::{
     guest_os::{
@@ -24,11 +27,11 @@ use core::result::Result as StdResult;
 use propolis_client::{
     support::{InstanceSerialConsoleHelper, WSClientOffset},
     types::{
-        InstanceEnsureRequest, InstanceGetResponse,
-        InstanceMigrateInitiateRequest, InstanceMigrateStatusResponse,
+        ComponentV0, InstanceEnsureRequest, InstanceGetResponse,
+        InstanceInitializationMethod, InstanceMigrateStatusResponse,
         InstanceProperties, InstanceSerialConsoleHistoryResponse,
-        InstanceSpecEnsureRequest, InstanceSpecGetResponse, InstanceState,
-        InstanceStateRequested, MigrationState, VersionedInstanceSpec,
+        InstanceSpecGetResponse, InstanceState, InstanceStateRequested,
+        MigrationState, ReplacementComponent,
     },
 };
 use propolis_client::{Client, ResponseValue};
@@ -64,6 +67,15 @@ pub enum VmStateError {
         "Operation can only be performed on a new VM that has not been ensured"
     )]
     InstanceAlreadyEnsured,
+}
+
+type ReplacementComponents = HashMap<String, ReplacementComponent>;
+
+#[derive(Clone, Debug)]
+struct MigrationInfo {
+    migration_id: Uuid,
+    src_addr: SocketAddr,
+    replace_components: ReplacementComponents,
 }
 
 /// Specifies the timeout to apply to an attempt to migrate.
@@ -126,15 +138,6 @@ enum InstanceConsoleSource<'a> {
 
     // Clone an existing console connection from the supplied VM.
     InheritFrom(&'a TestVm),
-}
-
-/// Specifies the propolis-server interface to use when starting a VM.
-enum InstanceEnsureApi {
-    /// Use the `instance_spec_ensure` interface.
-    SpecEnsure,
-
-    /// Use the `instance_ensure` interface.
-    Ensure,
 }
 
 enum VmState {
@@ -271,19 +274,12 @@ impl TestVm {
     #[instrument(skip_all, fields(vm = self.spec.vm_name, vm_id = %self.id))]
     async fn instance_ensure_internal<'a>(
         &self,
-        api: InstanceEnsureApi,
-        migrate: Option<InstanceMigrateInitiateRequest>,
+        migrate: Option<MigrationInfo>,
         console_source: InstanceConsoleSource<'a>,
     ) -> Result<SerialConsole> {
-        let (vcpus, memory_mib) = match self.state {
-            VmState::New => (
-                self.spec.instance_spec.board.cpus,
-                self.spec.instance_spec.board.memory_mb,
-            ),
-            VmState::Ensured { .. } => {
-                return Err(VmStateError::InstanceAlreadyEnsured.into())
-            }
-        };
+        if let VmState::Ensured { .. } = self.state {
+            return Err(VmStateError::InstanceAlreadyEnsured.into());
+        }
 
         let properties = InstanceProperties {
             id: self.id,
@@ -292,14 +288,18 @@ impl TestVm {
             description: "Pheidippides-managed VM".to_string(),
         };
 
-        // The non-spec ensure interface requires a set of `DiskRequest`
-        // structures to specify disks. Create those once and clone them if the
-        // ensure call needs to be retried.
-        let disk_reqs = if let InstanceEnsureApi::Ensure = api {
-            Some(self.spec.make_disk_requests()?)
-        } else {
-            None
+        let init = match migrate {
+            None => InstanceInitializationMethod::Spec {
+                spec: self.spec.instance_spec.clone(),
+            },
+            Some(info) => InstanceInitializationMethod::MigrationTarget {
+                migration_id: info.migration_id,
+                replace_components: info.replace_components,
+                src_addr: info.src_addr.to_string(),
+            },
         };
+        let ensure_req =
+            InstanceEnsureRequest { properties: properties.clone(), init };
 
         // There is a brief period where the Propolis server process has begun
         // to run but hasn't started its Dropshot server yet. Ensure requests
@@ -310,39 +310,8 @@ impl TestVm {
         // it's possible to create a boxed future that abstracts over the
         // caller's chosen endpoint.
         let ensure_fn = || async {
-            let result = match api {
-                InstanceEnsureApi::SpecEnsure => {
-                    let versioned_spec = VersionedInstanceSpec::V0(
-                        self.spec.instance_spec.clone(),
-                    );
-
-                    let ensure_req = InstanceSpecEnsureRequest {
-                        properties: properties.clone(),
-                        instance_spec: versioned_spec,
-                        migrate: migrate.clone(),
-                    };
-
-                    self.client
-                        .instance_spec_ensure()
-                        .body(&ensure_req)
-                        .send()
-                        .await
-                }
-                InstanceEnsureApi::Ensure => {
-                    let ensure_req = InstanceEnsureRequest {
-                        cloud_init_bytes: None,
-                        vcpus,
-                        memory: memory_mib,
-                        disks: disk_reqs.clone().unwrap(),
-                        migrate: migrate.clone(),
-                        nics: vec![],
-                        boot_settings: None,
-                        properties: properties.clone(),
-                    };
-
-                    self.client.instance_ensure().body(&ensure_req).send().await
-                }
-            };
+            let result =
+                self.client.instance_ensure().body(&ensure_req).send().await;
             if let Err(e) = result {
                 match e {
                     propolis_client::Error::CommunicationError(_) => {
@@ -433,29 +402,7 @@ impl TestVm {
         match self.state {
             VmState::New => {
                 let console = self
-                    .instance_ensure_internal(
-                        InstanceEnsureApi::SpecEnsure,
-                        None,
-                        InstanceConsoleSource::New,
-                    )
-                    .await?;
-                self.state = VmState::Ensured { serial: console };
-            }
-            VmState::Ensured { .. } => {}
-        }
-
-        Ok(())
-    }
-
-    pub async fn instance_ensure_using_api_request(&mut self) -> Result<()> {
-        match self.state {
-            VmState::New => {
-                let console = self
-                    .instance_ensure_internal(
-                        InstanceEnsureApi::Ensure,
-                        None,
-                        InstanceConsoleSource::New,
-                    )
+                    .instance_ensure_internal(None, InstanceConsoleSource::New)
                     .await?;
                 self.state = VmState::Ensured { serial: console };
             }
@@ -558,11 +505,11 @@ impl TestVm {
 
                 let serial = self
                     .instance_ensure_internal(
-                        InstanceEnsureApi::SpecEnsure,
-                        Some(InstanceMigrateInitiateRequest {
+                        Some(MigrationInfo {
                             migration_id,
-                            src_addr: server_addr.to_string(),
-                            src_uuid: Uuid::default(),
+                            src_addr: SocketAddr::V4(server_addr),
+                            replace_components: self
+                                .generate_replacement_components(),
                         }),
                         InstanceConsoleSource::InheritFrom(source),
                     )
@@ -614,6 +561,33 @@ impl TestVm {
                 Err(VmStateError::InstanceAlreadyEnsured.into())
             }
         }
+    }
+
+    fn generate_replacement_components(&self) -> ReplacementComponents {
+        let mut map = ReplacementComponents::new();
+        for (id, comp) in &self.spec.instance_spec.components {
+            match comp {
+                ComponentV0::MigrationFailureInjector(inj) => {
+                    map.insert(
+                        id.clone(),
+                        ReplacementComponent::MigrationFailureInjector(
+                            inj.clone(),
+                        ),
+                    );
+                }
+                ComponentV0::CrucibleStorageBackend(be) => {
+                    map.insert(
+                        id.clone(),
+                        ReplacementComponent::CrucibleStorageBackend(
+                            be.clone(),
+                        ),
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        map
     }
 
     pub async fn get_migration_state(

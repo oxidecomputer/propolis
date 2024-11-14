@@ -8,7 +8,6 @@ mod boot_order;
 mod cpuid;
 mod crucible;
 mod disk;
-mod ensure_api;
 mod framework;
 mod hw;
 mod migrate;

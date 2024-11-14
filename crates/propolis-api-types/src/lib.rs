@@ -4,8 +4,9 @@
 
 //! Definitions for types exposed by the propolis-server API
 
-use std::{fmt, net::SocketAddr};
+use std::{collections::BTreeMap, fmt, net::SocketAddr};
 
+use instance_spec::v0::InstanceSpecV0;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -15,7 +16,9 @@ use uuid::Uuid;
 pub use crate::instance_spec::components::devices::{
     BootOrderEntry, BootSettings,
 };
-use crate::instance_spec::VersionedInstanceSpec;
+use crate::instance_spec::{
+    components, v0::ComponentV0, VersionedInstanceSpec,
+};
 
 // Re-export volume construction requests since they're part of a disk request.
 pub use crucible_client_types::VolumeConstructionRequest;
@@ -48,36 +51,49 @@ pub struct InstanceMetadata {
     pub sled_model: String,
 }
 
+/// Describes an instance spec component that should be replaced during a live
+/// migration.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct InstanceEnsureRequest {
-    pub properties: InstanceProperties,
+#[serde(deny_unknown_fields, tag = "component", content = "spec")]
+pub enum ReplacementComponent {
+    MigrationFailureInjector(components::devices::MigrationFailureInjector),
+    CrucibleStorageBackend(components::backends::CrucibleStorageBackend),
+    VirtioNetworkBackend(components::backends::VirtioNetworkBackend),
+}
 
-    /// Number of vCPUs to be allocated to the Instance.
-    pub vcpus: u8,
-
-    /// Size of memory allocated to the Instance, in MiB.
-    pub memory: u64,
-
-    #[serde(default)]
-    pub nics: Vec<NetworkInterfaceRequest>,
-
-    #[serde(default)]
-    pub disks: Vec<DiskRequest>,
-
-    #[serde(default)]
-    pub boot_settings: Option<BootSettings>,
-
-    pub migrate: Option<InstanceMigrateInitiateRequest>,
-
-    // base64 encoded cloud-init ISO
-    pub cloud_init_bytes: Option<String>,
+impl From<ReplacementComponent> for instance_spec::v0::ComponentV0 {
+    fn from(value: ReplacementComponent) -> Self {
+        match value {
+            ReplacementComponent::MigrationFailureInjector(c) => {
+                ComponentV0::MigrationFailureInjector(c)
+            }
+            ReplacementComponent::CrucibleStorageBackend(c) => {
+                ComponentV0::CrucibleStorageBackend(c)
+            }
+            ReplacementComponent::VirtioNetworkBackend(c) => {
+                ComponentV0::VirtioNetworkBackend(c)
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct InstanceSpecEnsureRequest {
+#[serde(tag = "method", content = "value")]
+pub enum InstanceInitializationMethod {
+    Spec {
+        spec: InstanceSpecV0,
+    },
+    MigrationTarget {
+        migration_id: Uuid,
+        src_addr: SocketAddr,
+        replace_components: BTreeMap<String, ReplacementComponent>,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceEnsureRequest {
     pub properties: InstanceProperties,
-    pub instance_spec: VersionedInstanceSpec,
-    pub migrate: Option<InstanceMigrateInitiateRequest>,
+    pub init: InstanceInitializationMethod,
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
@@ -299,72 +315,6 @@ pub struct InstanceSerialConsoleStreamRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum InstanceSerialConsoleControlMessage {
     Migrating { destination: SocketAddr, from_start: u64 },
-}
-
-/// Describes how to connect to one or more storage agent services.
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
-pub struct StorageAgentDescription {
-    /// Addresses of storage agents.
-    pub agents: Vec<std::net::SocketAddrV6>,
-
-    /// Opaque key material for encryption and decryption.
-    /// May become more structured as encryption scheme is solidified.
-    pub key: Vec<u8>,
-
-    /// Minimum number of redundant copies of a block which must
-    /// be written until data is considered "persistent".
-    pub write_redundancy_threshold: u32,
-}
-
-/// Refer to RFD 135 for more information on Virtual Storage Interfaces.
-/// This describes the type of disk which should be exposed to the guest VM.
-#[derive(Clone, Copy, Deserialize, Serialize, JsonSchema)]
-pub enum DiskType {
-    NVMe,
-    VirtioBlock,
-}
-
-/// Describes a virtual disk.
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
-pub struct Disk {
-    /// Unique identifier for this disk.
-    pub id: Uuid,
-
-    /// Storage agents which implement networked block device servers.
-    pub storage_agents: StorageAgentDescription,
-
-    /// Size of the disk (blocks).
-    pub block_count: u64,
-
-    /// Block size (bytes).
-    pub block_size: u32,
-
-    /// Storage interface.
-    pub interface: DiskType,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct DiskRequest {
-    pub name: String,
-    pub slot: Slot,
-    pub read_only: bool,
-    pub device: String,
-
-    // Crucible related opts
-    pub volume_construction_request:
-        crucible_client_types::VolumeConstructionRequest,
-}
-
-/// A stable index which is translated by Propolis
-/// into a PCI BDF, visible to the guest.
-#[derive(Copy, Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct Slot(pub u8);
-
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct NetworkInterfaceRequest {
-    pub interface_id: Uuid,
-    pub name: String,
-    pub slot: Slot,
 }
 
 #[derive(Deserialize, JsonSchema)]
