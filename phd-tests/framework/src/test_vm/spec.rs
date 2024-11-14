@@ -9,10 +9,7 @@ use crate::{
     guest_os::GuestOsKind,
 };
 use camino::Utf8PathBuf;
-use propolis_client::{
-    types::{ComponentV0, DiskRequest, InstanceMetadata, InstanceSpecV0, Slot},
-    PciPath,
-};
+use propolis_client::types::{ComponentV0, InstanceMetadata, InstanceSpecV0};
 use uuid::Uuid;
 
 /// The set of objects needed to start and run a guest in a `TestVm`.
@@ -75,81 +72,5 @@ impl VmSpec {
         let id = Uuid::new_v4();
         self.metadata.sled_id = id;
         self.metadata.sled_serial = id.to_string();
-    }
-
-    /// Generates a set of [`propolis_client::types::DiskRequest`] structures
-    /// corresponding to the disks in this VM spec.
-    ///
-    /// All of the disks in the spec must be Crucible disks. If one is not, this
-    /// routine returns an error.
-    pub(crate) fn make_disk_requests(
-        &self,
-    ) -> anyhow::Result<Vec<DiskRequest>> {
-        struct DeviceInfo<'a> {
-            backend_name: &'a str,
-            interface: &'static str,
-            slot: Slot,
-        }
-
-        fn convert_to_slot(pci_path: PciPath) -> anyhow::Result<Slot> {
-            match pci_path.device() {
-                dev @ 0x10..=0x17 => Ok(Slot(dev - 0x10)),
-                _ => Err(anyhow::anyhow!(
-                    "PCI device number {} out of range",
-                    pci_path.device()
-                )),
-            }
-        }
-
-        fn get_device_info(device: &ComponentV0) -> anyhow::Result<DeviceInfo> {
-            match device {
-                ComponentV0::VirtioDisk(d) => Ok(DeviceInfo {
-                    backend_name: &d.backend_name,
-                    interface: "virtio",
-                    slot: convert_to_slot(d.pci_path)?,
-                }),
-                ComponentV0::NvmeDisk(d) => Ok(DeviceInfo {
-                    backend_name: &d.backend_name,
-                    interface: "nvme",
-                    slot: convert_to_slot(d.pci_path)?,
-                }),
-                _ => {
-                    panic!("asked to get device info for a non-storage device")
-                }
-            }
-        }
-
-        let mut reqs = vec![];
-        for (name, device) in
-            self.instance_spec.components.iter().filter(|(_, c)| {
-                matches!(
-                    c,
-                    ComponentV0::VirtioDisk(_) | ComponentV0::NvmeDisk(_)
-                )
-            })
-        {
-            let info = get_device_info(device)?;
-            let backend = self
-                .instance_spec
-                .components
-                .get(info.backend_name)
-                .expect("storage device should have a matching backend");
-
-            let ComponentV0::CrucibleStorageBackend(backend) = backend else {
-                anyhow::bail!("disk {name} does not have a Crucible backend");
-            };
-
-            reqs.push(DiskRequest {
-                device: info.interface.to_owned(),
-                name: name.clone(),
-                read_only: backend.readonly,
-                slot: info.slot,
-                volume_construction_request: serde_json::from_str(
-                    &backend.request_json,
-                )?,
-            })
-        }
-
-        Ok(reqs)
     }
 }

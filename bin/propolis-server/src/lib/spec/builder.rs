@@ -7,15 +7,12 @@
 use std::collections::{BTreeSet, HashSet};
 
 use cpuid_utils::CpuidMapConversionError;
-use propolis_api_types::{
-    instance_spec::{
-        components::{
-            board::{Board as InstanceSpecBoard, Chipset, I440Fx},
-            devices::{PciPciBridge, SerialPortNumber},
-        },
-        PciPath,
+use propolis_api_types::instance_spec::{
+    components::{
+        board::Board as InstanceSpecBoard,
+        devices::{PciPciBridge, SerialPortNumber},
     },
-    DiskRequest, NetworkInterfaceRequest,
+    PciPath,
 };
 use thiserror::Error;
 
@@ -27,7 +24,6 @@ use propolis_api_types::instance_spec::components::devices::{
 use crate::spec::SerialPortDevice;
 
 use super::{
-    api_request::{self, DeviceRequestError},
     Board, BootOrderEntry, BootSettings, Disk, Nic, QemuPvpanic, SerialPort,
 };
 
@@ -40,9 +36,6 @@ use super::SoftNpuPort;
 /// Errors that can arise while building an instance spec from component parts.
 #[derive(Debug, Error)]
 pub(crate) enum SpecBuilderError {
-    #[error("error parsing device in ensure request")]
-    DeviceRequest(#[from] DeviceRequestError),
-
     #[error("device {0} has the same name as its backend")]
     DeviceAndBackendNamesIdentical(String),
 
@@ -81,19 +74,6 @@ pub(crate) struct SpecBuilder {
 }
 
 impl SpecBuilder {
-    pub fn new(cpus: u8, memory_mb: u64) -> Self {
-        let board = Board {
-            cpus,
-            memory_mb,
-            chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
-        };
-
-        Self {
-            spec: super::Spec { board, ..Default::default() },
-            ..Default::default()
-        }
-    }
-
     pub(super) fn with_instance_spec_board(
         board: InstanceSpecBoard,
     ) -> Result<Self, SpecBuilderError> {
@@ -119,28 +99,6 @@ impl SpecBuilder {
             },
             ..Default::default()
         })
-    }
-
-    /// Converts an HTTP API request to add a NIC to an instance into
-    /// device/backend entries in the spec under construction.
-    pub fn add_nic_from_request(
-        &mut self,
-        nic: &NetworkInterfaceRequest,
-    ) -> Result<(), SpecBuilderError> {
-        let parsed = api_request::parse_nic_from_request(nic)?;
-        self.add_network_device(parsed.name, parsed.nic)?;
-        Ok(())
-    }
-
-    /// Converts an HTTP API request to add a disk to an instance into
-    /// device/backend entries in the spec under construction.
-    pub fn add_disk_from_request(
-        &mut self,
-        disk: &DiskRequest,
-    ) -> Result<(), SpecBuilderError> {
-        let parsed = api_request::parse_disk_from_request(disk)?;
-        self.add_storage_device(parsed.name, parsed.disk)?;
-        Ok(())
     }
 
     /// Sets the spec's boot order to the list of disk devices specified in
@@ -174,17 +132,6 @@ impl SpecBuilder {
 
         self.spec.boot_settings =
             Some(BootSettings { name: component_name, order });
-        Ok(())
-    }
-
-    /// Converts an HTTP API request to add a cloud-init disk to an instance
-    /// into device/backend entries in the spec under construction.
-    pub fn add_cloud_init_from_request(
-        &mut self,
-        base64: String,
-    ) -> Result<(), SpecBuilderError> {
-        let parsed = api_request::parse_cloud_init_from_request(base64)?;
-        self.add_storage_device(parsed.name, parsed.disk)?;
         Ok(())
     }
 
@@ -336,33 +283,26 @@ impl SpecBuilder {
     }
 
     #[cfg(feature = "falcon")]
-    pub fn set_softnpu_com4(
-        &mut self,
-        name: String,
-    ) -> Result<&Self, SpecBuilderError> {
-        if self.component_names.contains(&name) {
-            return Err(SpecBuilderError::ComponentNameInUse(name));
-        }
-
-        let num = SerialPortNumber::Com4;
-        if self.serial_ports.contains(&num) {
-            return Err(SpecBuilderError::SerialPortInUse(num));
-        }
-
-        let desc = SerialPort { num, device: SerialPortDevice::SoftNpu };
-        self.spec.serial.insert(name.clone(), desc);
-        self.component_names.insert(name);
-        self.serial_ports.insert(num);
-        Ok(self)
-    }
-
-    #[cfg(feature = "falcon")]
     pub fn set_softnpu_pci_port(
         &mut self,
         pci_port: SoftNpuPciPort,
     ) -> Result<&Self, SpecBuilderError> {
+        // SoftNPU squats on COM4.
+        let id = "com4".to_string();
+        let num = SerialPortNumber::Com4;
+        if self.component_names.contains(&id) {
+            return Err(SpecBuilderError::ComponentNameInUse(id));
+        }
+
+        if self.serial_ports.contains(&num) {
+            return Err(SpecBuilderError::SerialPortInUse(num));
+        }
+
         self.register_pci_device(pci_port.pci_path)?;
         self.spec.softnpu.pci_port = Some(pci_port);
+        self.spec
+            .serial
+            .insert(id, SerialPort { num, device: SerialPortDevice::SoftNpu });
         Ok(self)
     }
 
@@ -418,12 +358,10 @@ impl SpecBuilder {
 
 #[cfg(test)]
 mod test {
-    use propolis_api_types::{
-        instance_spec::components::{
-            backends::{BlobStorageBackend, VirtioNetworkBackend},
-            devices::{VirtioDisk, VirtioNic},
-        },
-        Slot, VolumeConstructionRequest,
+    use propolis_api_types::instance_spec::components::{
+        backends::{BlobStorageBackend, VirtioNetworkBackend},
+        board::{Chipset, I440Fx},
+        devices::{VirtioDisk, VirtioNic},
     };
     use uuid::Uuid;
 
@@ -432,39 +370,51 @@ mod test {
     use super::*;
 
     fn test_builder() -> SpecBuilder {
-        SpecBuilder::new(4, 512)
+        let board = Board {
+            cpus: 4,
+            memory_mb: 512,
+            chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
+        };
+
+        SpecBuilder {
+            spec: crate::spec::Spec { board, ..Default::default() },
+            ..Default::default()
+        }
     }
 
     #[test]
     fn duplicate_pci_slot() {
         let mut builder = test_builder();
-        // Adding the same disk device twice should fail.
         assert!(builder
-            .add_disk_from_request(&DiskRequest {
-                name: "disk1".to_string(),
-                slot: Slot(0),
-                read_only: true,
-                device: "nvme".to_string(),
-                volume_construction_request: VolumeConstructionRequest::File {
-                    id: Uuid::new_v4(),
-                    block_size: 512,
-                    path: "disk1.img".to_string()
-                },
-            })
+            .add_storage_device(
+                "storage".to_owned(),
+                Disk {
+                    device_spec: StorageDevice::Virtio(VirtioDisk {
+                        backend_name: "storage-backend".to_owned(),
+                        pci_path: PciPath::new(0, 4, 0).unwrap()
+                    }),
+                    backend_spec: StorageBackend::Blob(BlobStorageBackend {
+                        base64: "".to_string(),
+                        readonly: false
+                    })
+                }
+            )
             .is_ok());
 
         assert!(builder
-            .add_disk_from_request(&DiskRequest {
-                name: "disk2".to_string(),
-                slot: Slot(0),
-                read_only: true,
-                device: "virtio".to_string(),
-                volume_construction_request: VolumeConstructionRequest::File {
-                    id: Uuid::new_v4(),
-                    block_size: 512,
-                    path: "disk2.img".to_string()
-                },
-            })
+            .add_network_device(
+                "network".to_owned(),
+                Nic {
+                    device_spec: VirtioNic {
+                        backend_name: "network-backend".to_owned(),
+                        interface_id: Uuid::nil(),
+                        pci_path: PciPath::new(0, 4, 0).unwrap()
+                    },
+                    backend_spec: VirtioNetworkBackend {
+                        vnic_name: "vnic0".to_owned()
+                    }
+                }
+            )
             .is_err());
     }
 
@@ -485,24 +435,6 @@ mod test {
             .is_ok());
         assert!(builder
             .add_serial_port("com1".to_owned(), SerialPortNumber::Com1)
-            .is_err());
-    }
-
-    #[test]
-    fn unknown_storage_device_type() {
-        let mut builder = test_builder();
-        assert!(builder
-            .add_disk_from_request(&DiskRequest {
-                name: "disk3".to_string(),
-                slot: Slot(0),
-                read_only: true,
-                device: "virtio-scsi".to_string(),
-                volume_construction_request: VolumeConstructionRequest::File {
-                    id: Uuid::new_v4(),
-                    block_size: 512,
-                    path: "disk3.img".to_string()
-                },
-            })
             .is_err());
     }
 

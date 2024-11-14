@@ -43,7 +43,7 @@ use propolis_api_types::instance_spec::components::{
     devices::{P9fs, SoftNpuP9, SoftNpuPciPort},
 };
 
-mod api_request;
+// mod api_request;
 pub(crate) mod api_spec_v0;
 pub(crate) mod builder;
 
@@ -305,28 +305,4 @@ pub struct SoftNpu {
     pub ports: HashMap<String, SoftNpuPort>,
     pub p9_device: Option<SoftNpuP9>,
     pub p9fs: Option<P9fs>,
-}
-
-struct ParsedDiskRequest {
-    name: String,
-    disk: Disk,
-}
-
-struct ParsedNicRequest {
-    name: String,
-    nic: Nic,
-}
-
-/// Generates NIC device and backend names from the NIC's PCI path. This is
-/// needed because the `name` field in a propolis-client
-/// `NetworkInterfaceRequest` is actually the name of the host vNIC to bind to,
-/// and that can change between incarnations of an instance. The PCI path is
-/// unique to each NIC but must remain stable over a migration, so it's suitable
-/// for use in this naming scheme.
-///
-/// N.B. Migrating a NIC requires the source and target to agree on these names,
-///      so changing this routine's behavior will prevent Propolis processes
-///      with the old behavior from migrating processes with the new behavior.
-fn pci_path_to_nic_names(path: PciPath) -> (String, String) {
-    (format!("vnic-{}", path), format!("vnic-{}-backend", path))
 }

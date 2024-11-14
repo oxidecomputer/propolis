@@ -17,14 +17,10 @@ use std::net::SocketAddrV6;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::migrate::destination::MigrationTargetInfo;
+use crate::vm::ensure::VmInitializationMethod;
 use crate::{
     serial::history_buffer::SerialHistoryOffset,
-    spec::{
-        self,
-        api_spec_v0::ApiSpecError,
-        builder::{SpecBuilder, SpecBuilderError},
-        Spec,
-    },
     vm::{ensure::VmEnsureRequest, VmError},
     vnc::{self, VncServer},
 };
@@ -40,9 +36,7 @@ use internal_dns::ServiceName;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types as api;
-use propolis_api_types::instance_spec::{
-    self, components::devices::QemuPvpanic, VersionedInstanceSpec,
-};
+use propolis_api_types::InstanceInitializationMethod;
 use rfb::tungstenite::BinaryWs;
 use slog::{error, warn, Logger};
 use tokio::sync::MutexGuard;
@@ -115,55 +109,6 @@ impl DropshotEndpointContext {
             log,
         }
     }
-}
-
-/// Creates an instance spec from an ensure request. (Both types are foreign to
-/// this crate, so implementing TryFrom for them is not allowed.)
-fn instance_spec_from_request(
-    request: &api::InstanceEnsureRequest,
-) -> Result<Spec, SpecBuilderError> {
-    let mut spec_builder = SpecBuilder::new(request.vcpus, request.memory);
-
-    for nic in &request.nics {
-        spec_builder.add_nic_from_request(nic)?;
-    }
-
-    for disk in &request.disks {
-        spec_builder.add_disk_from_request(disk)?;
-    }
-
-    if let Some(boot_settings) = request.boot_settings.as_ref() {
-        let order = boot_settings.order.clone();
-        spec_builder.add_boot_order(
-            "boot-settings".to_string(),
-            order.into_iter().map(Into::into),
-        )?;
-    }
-
-    if let Some(base64) = &request.cloud_init_bytes {
-        spec_builder.add_cloud_init_from_request(base64.clone())?;
-    }
-
-    for (name, port) in [
-        ("com1", instance_spec::components::devices::SerialPortNumber::Com1),
-        ("com2", instance_spec::components::devices::SerialPortNumber::Com2),
-        ("com3", instance_spec::components::devices::SerialPortNumber::Com3),
-        // SoftNpu uses this port for ASIC management.
-        #[cfg(not(feature = "falcon"))]
-        ("com4", instance_spec::components::devices::SerialPortNumber::Com4),
-    ] {
-        spec_builder.add_serial_port(name.to_owned(), port)?;
-    }
-
-    #[cfg(feature = "falcon")]
-    spec_builder.set_softnpu_com4("com4".to_owned())?;
-
-    spec_builder.add_pvpanic_device(spec::QemuPvpanic {
-        name: "pvpanic".to_string(),
-        spec: QemuPvpanic { enable_isa: true },
-    })?;
-
-    Ok(spec_builder.finish())
 }
 
 /// Wrapper around a [`NexusClient`] object, which allows deferring
@@ -242,13 +187,16 @@ async fn find_local_nexus_client(
     }
 }
 
-async fn instance_ensure_common(
+#[endpoint {
+    method = PUT,
+    path = "/instance",
+}]
+async fn instance_ensure(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    properties: api::InstanceProperties,
-    migrate: Option<api::InstanceMigrateInitiateRequest>,
-    instance_spec: Spec,
+    request: TypedBody<api::InstanceEnsureRequest>,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let server_context = rqctx.context();
+    let api::InstanceEnsureRequest { properties, init } = request.into_inner();
     let oximeter_registry = server_context
         .static_config
         .metrics
@@ -270,7 +218,29 @@ async fn instance_ensure_common(
         local_server_addr: rqctx.server.local_addr,
     };
 
-    let request = VmEnsureRequest { properties, migrate, instance_spec };
+    let vm_init = match init {
+        InstanceInitializationMethod::Spec { spec } => spec
+            .try_into()
+            .map(VmInitializationMethod::Spec)
+            .map_err(|e| e.to_string()),
+        InstanceInitializationMethod::MigrationTarget {
+            migration_id,
+            src_addr,
+            replace_components,
+        } => Ok(VmInitializationMethod::Migration(MigrationTargetInfo {
+            migration_id,
+            src_addr,
+            replace_components,
+        })),
+    }
+    .map_err(|e| {
+        HttpError::for_bad_request(
+            None,
+            format!("failed to generate internal instance spec: {e}"),
+        )
+    })?;
+
+    let request = VmEnsureRequest { properties, init: vm_init };
     server_context
         .vm
         .ensure(&server_context.log, request, ensure_options)
@@ -294,55 +264,6 @@ async fn instance_ensure_common(
                 "unexpected error from VM controller: {e}"
             )),
         })
-}
-
-#[endpoint {
-    method = PUT,
-    path = "/instance",
-}]
-async fn instance_ensure(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    request: TypedBody<api::InstanceEnsureRequest>,
-) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
-    let request = request.into_inner();
-    let instance_spec = instance_spec_from_request(&request).map_err(|e| {
-        HttpError::for_bad_request(
-            None,
-            format!("failed to generate instance spec from request: {:#?}", e),
-        )
-    })?;
-
-    instance_ensure_common(
-        rqctx,
-        request.properties,
-        request.migrate,
-        instance_spec,
-    )
-    .await
-}
-
-#[endpoint {
-    method = PUT,
-    path = "/instance/spec",
-}]
-async fn instance_spec_ensure(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    request: TypedBody<api::InstanceSpecEnsureRequest>,
-) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
-    let request = request.into_inner();
-    let VersionedInstanceSpec::V0(v0_spec) = request.instance_spec;
-    let spec = Spec::try_from(v0_spec).map_err(|e: ApiSpecError| {
-        HttpError::for_bad_request(
-            None,
-            format!(
-                "failed to create internal instance spec from API spec: {:#?}",
-                e
-            ),
-        )
-    })?;
-
-    instance_ensure_common(rqctx, request.properties, request.migrate, spec)
-        .await
 }
 
 async fn instance_get_common(
@@ -718,7 +639,6 @@ async fn instance_issue_nmi(
 pub fn api() -> ApiDescription<Arc<DropshotEndpointContext>> {
     let mut api = ApiDescription::new();
     api.register(instance_ensure).unwrap();
-    api.register(instance_spec_ensure).unwrap();
     api.register(instance_get).unwrap();
     api.register(instance_spec_get).unwrap();
     api.register(instance_state_monitor).unwrap();

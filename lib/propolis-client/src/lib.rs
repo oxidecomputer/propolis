@@ -8,6 +8,12 @@
 // its constructor and From impls.
 pub use propolis_api_types::instance_spec::PciPath;
 
+// Re-export Crucible client types that appear in their serialized forms in
+// instance specs. This allows clients to ensure they serialize/deserialize
+// these types using the same versions as the Propolis client associated with
+// the server they want to talk to.
+pub use crucible_client_types::{CrucibleOpts, VolumeConstructionRequest};
+
 progenitor::generate_api!(
     spec = "../../openapi/propolis-server.json",
     interface = Builder,
@@ -16,20 +22,9 @@ progenitor::generate_api!(
         PciPath = crate::PciPath,
     },
     patch = {
-        // Some Crucible-related bits are re-exported through simulated
-        // sled-agent and thus require JsonSchema
         BootOrderEntry = { derives = [schemars::JsonSchema] },
         BootSettings = { derives = [Default, schemars::JsonSchema] },
         CpuidEntry = { derives = [PartialEq, Eq, Copy] },
-        DiskRequest = { derives = [schemars::JsonSchema] },
-        VolumeConstructionRequest = { derives = [schemars::JsonSchema] },
-        CrucibleOpts = { derives = [schemars::JsonSchema] },
-        Slot = { derives = [schemars::JsonSchema] },
-
-        PciPath = { derives = [
-            Copy, Ord, Eq, PartialEq, PartialOrd
-        ] },
-
         InstanceMetadata = { derives = [ PartialEq ] },
     }
 );
