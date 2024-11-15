@@ -44,8 +44,8 @@ pub(crate) enum ApiSpecError {
     NetworkBackendNotFound { backend: String, device: String },
 
     #[allow(dead_code)]
-    #[error("support for component {0} compiled out")]
-    FeatureCompiledOut(String),
+    #[error("support for component {component} compiled out via {feature}")]
+    FeatureCompiledOut { component: String, feature: &'static str },
 
     #[error("backend {0} not used by any device")]
     BackendNotUsed(String),
@@ -308,7 +308,10 @@ impl TryFrom<InstanceSpecV0> for Spec {
                 }
                 #[cfg(feature = "omicron-build")]
                 ComponentV0::MigrationFailureInjector(_) => {
-                    return Err(ApiSpecError::FeatureCompiledOut(device_name));
+                    return Err(ApiSpecError::FeatureCompiledOut {
+                        component: device_name,
+                        feature: "omicron-build",
+                    });
                 }
                 #[cfg(not(feature = "omicron-build"))]
                 ComponentV0::MigrationFailureInjector(mig) => {
@@ -322,7 +325,10 @@ impl TryFrom<InstanceSpecV0> for Spec {
                 | ComponentV0::SoftNpuPort(_)
                 | ComponentV0::SoftNpuP9(_)
                 | ComponentV0::P9fs(_) => {
-                    return Err(ApiSpecError::FeatureCompiledOut(device_name));
+                    return Err(ApiSpecError::FeatureCompiledOut {
+                        component: device_name,
+                        feature: "falcon",
+                    });
                 }
                 #[cfg(feature = "falcon")]
                 ComponentV0::SoftNpuPciPort(port) => {
