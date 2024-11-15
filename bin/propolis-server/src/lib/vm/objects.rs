@@ -17,6 +17,7 @@ use propolis::{
     vmm::VmmHdl,
     Machine,
 };
+use propolis_api_types::instance_spec::SpecKey;
 use slog::{error, info};
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -159,12 +160,12 @@ impl VmObjectsLocked {
     }
 
     /// Obtains a handle to the lifecycle trait object for the component with
-    /// the supplied `name`.
-    pub(crate) fn device_by_name(
+    /// the supplied `id`.
+    pub(crate) fn device_by_id(
         &self,
-        name: &str,
+        id: &SpecKey,
     ) -> Option<Arc<dyn propolis::common::Lifecycle>> {
-        self.devices.get(name).cloned()
+        self.devices.get(id).cloned()
     }
 
     /// Yields the VM's current Crucible backend map.
@@ -192,7 +193,7 @@ impl VmObjectsLocked {
     /// `func` on each one.
     pub(crate) fn for_each_device(
         &self,
-        mut func: impl FnMut(&str, &Arc<dyn propolis::common::Lifecycle>),
+        mut func: impl FnMut(&SpecKey, &Arc<dyn propolis::common::Lifecycle>),
     ) {
         for (name, dev) in self.devices.iter() {
             func(name, dev);
@@ -205,7 +206,7 @@ impl VmObjectsLocked {
     pub(crate) fn for_each_device_fallible<E>(
         &self,
         mut func: impl FnMut(
-            &str,
+            &SpecKey,
             &Arc<dyn propolis::common::Lifecycle>,
         ) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E> {
@@ -377,7 +378,7 @@ impl VmObjectsLocked {
             .iter()
             .map(|(name, dev)| {
                 info!(self.log, "got paused future from dev {}", name);
-                NamedFuture { name: name.clone(), future: dev.paused() }
+                NamedFuture { name: name.to_string(), future: dev.paused() }
             })
             .collect();
 
@@ -408,12 +409,12 @@ impl VmObjectsLocked {
             });
         });
 
-        for (name, backend) in self.block_backends.iter() {
-            info!(self.log, "stopping and detaching block backend {}", name);
+        for (id, backend) in self.block_backends.iter() {
+            info!(self.log, "stopping and detaching block backend {}", id);
             backend.stop().await;
             if let Err(err) = backend.detach() {
                 error!(self.log, "error detaching block backend";
-                       "name" => name,
+                       "id" => %id,
                        "error" => ?err);
             }
         }

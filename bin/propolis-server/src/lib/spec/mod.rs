@@ -14,7 +14,7 @@
 //! [`Spec`] and its component types to take forms that might otherwise be hard
 //! to change in a backward-compatible way.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use cpuid_utils::CpuidSet;
 use propolis_api_types::instance_spec::{
@@ -30,7 +30,7 @@ use propolis_api_types::instance_spec::{
         },
     },
     v0::ComponentV0,
-    PciPath,
+    PciPath, SpecKey,
 };
 use thiserror::Error;
 
@@ -64,13 +64,13 @@ pub struct ComponentTypeMismatch;
 pub(crate) struct Spec {
     pub board: Board,
     pub cpuid: Option<CpuidSet>,
-    pub disks: HashMap<String, Disk>,
-    pub nics: HashMap<String, Nic>,
+    pub disks: BTreeMap<SpecKey, Disk>,
+    pub nics: BTreeMap<SpecKey, Nic>,
     pub boot_settings: Option<BootSettings>,
 
-    pub serial: HashMap<String, SerialPort>,
+    pub serial: BTreeMap<SpecKey, SerialPort>,
 
-    pub pci_pci_bridges: HashMap<String, PciPciBridge>,
+    pub pci_pci_bridges: BTreeMap<SpecKey, PciPciBridge>,
     pub pvpanic: Option<QemuPvpanic>,
 
     #[cfg(not(feature = "omicron-build"))]
@@ -106,13 +106,13 @@ impl Default for Board {
 
 #[derive(Clone, Debug)]
 pub(crate) struct BootSettings {
-    pub name: String,
+    pub name: SpecKey,
     pub order: Vec<BootOrderEntry>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct BootOrderEntry {
-    pub name: String,
+    pub device_id: SpecKey,
 }
 
 impl
@@ -122,7 +122,7 @@ impl
     fn from(
         value: propolis_api_types::instance_spec::components::devices::BootOrderEntry,
     ) -> Self {
-        Self { name: value.name.clone() }
+        Self { device_id: value.id.clone() }
     }
 }
 
@@ -130,7 +130,7 @@ impl From<BootOrderEntry>
     for propolis_api_types::instance_spec::components::devices::BootOrderEntry
 {
     fn from(value: BootOrderEntry) -> Self {
-        Self { name: value.name }
+        Self { id: value.device_id }
     }
 }
 
@@ -156,10 +156,10 @@ impl StorageDevice {
         }
     }
 
-    pub fn backend_name(&self) -> &str {
+    pub fn backend_id(&self) -> &SpecKey {
         match self {
-            StorageDevice::Virtio(disk) => &disk.backend_name,
-            StorageDevice::Nvme(disk) => &disk.backend_name,
+            StorageDevice::Virtio(disk) => &disk.backend_id,
+            StorageDevice::Nvme(disk) => &disk.backend_id,
         }
     }
 }
@@ -279,14 +279,14 @@ pub struct SerialPort {
 #[derive(Clone, Debug)]
 pub struct QemuPvpanic {
     #[allow(dead_code)]
-    pub name: String,
+    pub id: SpecKey,
     pub spec: QemuPvpanicDesc,
 }
 
 #[cfg(not(feature = "omicron-build"))]
 #[derive(Clone, Debug)]
 pub struct MigrationFailure {
-    pub name: String,
+    pub id: SpecKey,
     pub spec: MigrationFailureInjector,
 }
 
@@ -294,7 +294,7 @@ pub struct MigrationFailure {
 #[derive(Clone, Debug)]
 pub struct SoftNpuPort {
     pub link_name: String,
-    pub backend_name: String,
+    pub backend_name: SpecKey,
     pub backend_spec: DlpiNetworkBackend,
 }
 
@@ -302,7 +302,7 @@ pub struct SoftNpuPort {
 #[derive(Clone, Debug, Default)]
 pub struct SoftNpu {
     pub pci_port: Option<SoftNpuPciPort>,
-    pub ports: HashMap<String, SoftNpuPort>,
+    pub ports: BTreeMap<SpecKey, SoftNpuPort>,
     pub p9_device: Option<SoftNpuP9>,
     pub p9fs: Option<P9fs>,
 }

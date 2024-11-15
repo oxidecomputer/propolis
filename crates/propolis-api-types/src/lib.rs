@@ -6,7 +6,7 @@
 
 use std::{collections::BTreeMap, fmt, net::SocketAddr};
 
-use instance_spec::v0::InstanceSpecV0;
+use instance_spec::{v0::InstanceSpecV0, SpecKey};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -27,7 +27,6 @@ pub mod instance_spec;
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceVCRReplace {
-    pub name: String,
     pub vcr_json: String,
 }
 
@@ -109,7 +108,7 @@ pub enum InstanceInitializationMethod {
     MigrationTarget {
         migration_id: Uuid,
         src_addr: SocketAddr,
-        replace_components: BTreeMap<String, ReplacementComponent>,
+        replace_components: BTreeMap<SpecKey, ReplacementComponent>,
     },
 }
 
@@ -342,18 +341,18 @@ pub enum InstanceSerialConsoleControlMessage {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct SnapshotRequestPathParams {
-    pub id: Uuid,
+    pub id: String,
     pub snapshot_id: Uuid,
 }
 
 #[derive(Deserialize, JsonSchema)]
 pub struct VCRRequestPathParams {
-    pub id: Uuid,
+    pub id: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
 pub struct VolumeStatusPathParams {
-    pub id: Uuid,
+    pub id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
