@@ -9,6 +9,7 @@ use propolis::migrate::{
     MigrateCtx, MigrateStateError, Migrator, PayloadOffer, PayloadOffers,
 };
 use propolis::vmm;
+use propolis_api_types::instance_spec::SpecKey;
 use propolis_api_types::ReplacementComponent;
 use slog::{error, info, trace, warn};
 use std::collections::BTreeMap;
@@ -40,7 +41,7 @@ use super::MigrateConn;
 pub(crate) struct MigrationTargetInfo {
     pub migration_id: Uuid,
     pub src_addr: SocketAddr,
-    pub replace_components: BTreeMap<String, ReplacementComponent>,
+    pub replace_components: BTreeMap<SpecKey, ReplacementComponent>,
 }
 
 /// The interface to an arbitrary version of the target half of the live
@@ -519,16 +520,13 @@ impl<T: MigrateConn> RonV0<T> {
             let migrate_ctx =
                 MigrateCtx { mem: &vm_objects.access_mem().unwrap() };
             for device in devices {
-                info!(
-                    self.log(),
-                    "Applying state to device {}", device.instance_name
-                );
+                let key = SpecKey::from(device.instance_name.clone());
+                info!(self.log(), "Applying state to device {key}");
 
-                let target = vm_objects
-                    .device_by_name(&device.instance_name)
-                    .ok_or_else(|| {
-                    MigrateError::UnknownDevice(device.instance_name.clone())
-                })?;
+                let target =
+                    vm_objects.device_by_id(&key).ok_or_else(|| {
+                        MigrateError::UnknownDevice(key.to_string())
+                    })?;
                 self.import_device(&target, &device, &migrate_ctx)?;
             }
         }

@@ -6,7 +6,9 @@
 
 use std::sync::Arc;
 
-use propolis_api_types::{InstanceProperties, InstanceStateRequested};
+use propolis_api_types::{
+    instance_spec::SpecKey, InstanceProperties, InstanceStateRequested,
+};
 use slog::info;
 use uuid::Uuid;
 
@@ -99,15 +101,13 @@ impl ActiveVm {
     ///   replacement result after it completes this operation.
     pub(crate) fn reconfigure_crucible_volume(
         &self,
-        disk_name: String,
-        backend_id: Uuid,
+        backend_id: SpecKey,
         new_vcr_json: String,
         result_tx: CrucibleReplaceResultTx,
     ) -> Result<(), VmError> {
         self.state_driver_queue
             .queue_external_request(
                 ExternalRequest::ReconfigureCrucibleVolume {
-                    disk_name,
                     backend_id,
                     new_vcr_json,
                     result_tx,
