@@ -250,3 +250,57 @@ impl From<Uuid> for SpecKey {
 pub enum VersionedInstanceSpec {
     V0(v0::InstanceSpecV0),
 }
+
+#[cfg(test)]
+mod test {
+    use std::collections::BTreeMap;
+
+    use uuid::Uuid;
+
+    use super::{components::devices::QemuPvpanic, v0::ComponentV0, SpecKey};
+
+    type TestMap = BTreeMap<SpecKey, ComponentV0>;
+
+    // Verifies that UUID-type spec keys that are serialized and deserialized
+    // continue to be interpreted as UUID-type spec keys.
+    #[test]
+    fn spec_key_uuid_roundtrip() {
+        let id = Uuid::new_v4();
+        let mut map = TestMap::new();
+        map.insert(
+            SpecKey::Uuid(id),
+            ComponentV0::QemuPvpanic(QemuPvpanic { enable_isa: true }),
+        );
+
+        let ser = serde_json::to_string(&map).unwrap();
+        let unser: TestMap = serde_json::from_str(&ser).unwrap();
+        let key = unser.keys().next().expect("one key in the map");
+        let SpecKey::Uuid(got_id) = key else {
+            panic!("expected SpecKey::Uuid, got {}", key);
+        };
+
+        assert_eq!(*got_id, id);
+    }
+
+    // Verifies that serializing a name-type spec key that happens to be the
+    // string representation of a UUID causes the key to deserialize as a
+    // UUID-type key.
+    #[test]
+    fn spec_key_uuid_string_deserializes_as_uuid_variant() {
+        let id = Uuid::new_v4();
+        let mut map = TestMap::new();
+        map.insert(
+            SpecKey::Name(id.to_string()),
+            ComponentV0::QemuPvpanic(QemuPvpanic { enable_isa: true }),
+        );
+
+        let ser = serde_json::to_string(&map).unwrap();
+        let unser: TestMap = serde_json::from_str(&ser).unwrap();
+        let key = unser.keys().next().expect("one key in the map");
+        let SpecKey::Uuid(got_id) = key else {
+            panic!("expected SpecKey::Uuid, got {}", key);
+        };
+
+        assert_eq!(*got_id, id);
+    }
+}
