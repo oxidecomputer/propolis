@@ -85,7 +85,7 @@ pub fn phd_skip(args: TokenStream) -> TokenStream {
     let args = if args.is_empty() {
         None
     } else {
-        let lit = parse_macro_input!(args as syn::Lit);
+        let lit = parse_macro_input!(args as proc_macro2::TokenStream);
         Some(lit)
     };
 

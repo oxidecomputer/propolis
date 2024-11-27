@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 mod alpine;
 mod debian11_nocloud;
+mod linux;
 mod shell_commands;
 mod ubuntu22_04;
 mod windows;
@@ -59,6 +60,13 @@ impl<'a> CommandSequenceEntry<'a> {
 }
 
 pub(super) struct CommandSequence<'a>(pub Vec<CommandSequenceEntry<'a>>);
+
+impl<'a> CommandSequence<'a> {
+    fn extend(mut self, other: CommandSequence<'a>) -> CommandSequence<'a> {
+        self.0.extend(other.0);
+        self
+    }
+}
 
 pub(super) trait GuestOs: Send + Sync {
     /// Retrieves the command sequence used to wait for the OS to boot and log

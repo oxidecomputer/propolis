@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use anyhow::{bail, Error};
+use anyhow::bail;
 use phd_framework::{
     disk::{fat::FatFilesystem, DiskSource},
     test_vm::{DiskBackend, DiskInterface},
@@ -19,37 +19,6 @@ use efi_utils::{
     BOOT_CURRENT_VAR, BOOT_ORDER_VAR, EDK2_EFI_SHELL_GUID,
     EDK2_FIRMWARE_VOL_GUID, EDK2_UI_APP_GUID,
 };
-
-pub(crate) async fn run_long_command(
-    vm: &phd_framework::TestVm,
-    cmd: &str,
-) -> Result<String, Error> {
-    // Ok, this is a bit whacky: something about the line wrapping for long
-    // commands causes `run_shell_command` to hang instead of ever actually
-    // seeing a response prompt.
-    //
-    // I haven't gone and debugged that; instead, chunk the input command up
-    // into segments short enough to not wrap when input, put them all in a
-    // file, then run the file.
-    vm.run_shell_command("rm cmd").await?;
-    let mut offset = 0;
-    // Escape any internal `\`. This isn't comprehensive escaping (doesn't
-    // handle \n, for example)..
-    let cmd = cmd.replace("\\", "\\\\");
-    while offset < cmd.len() {
-        let lim = std::cmp::min(cmd.len() - offset, 50);
-        let chunk = &cmd[offset..][..lim];
-        offset += lim;
-
-        // Catch this before it causes weird issues in half-executed commands.
-        //
-        // Could escape these here, but right now that's not really necessary.
-        assert!(!chunk.contains("\n"));
-
-        vm.run_shell_command(&format!("echo -n \'{}\' >>cmd", chunk)).await?;
-    }
-    vm.run_shell_command(". cmd").await
-}
 
 // This test checks that with a specified boot order, the guest boots whichever
 // disk we wanted to come first. This is simple enough, until you want to know
@@ -305,7 +274,8 @@ async fn guest_can_adjust_boot_order(ctx: &Framework) {
 
     // Try adding a few new boot options, then add them to the boot order,
     // reboot, and make sure they're all as we set them.
-    if !run_long_command(&vm, &format!("ls {}", efipath(&bootvar(0xffff))))
+    if !vm
+        .run_shell_command(&format!("ls {}", efipath(&bootvar(0xffff))))
         .await?
         .is_empty()
     {
