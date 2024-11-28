@@ -35,6 +35,7 @@ use camino::Utf8PathBuf;
 
 use disk::DiskFactory;
 use futures::{stream::FuturesUnordered, StreamExt};
+use guest_os::GuestOsKind;
 use port_allocator::PortAllocator;
 use server_log_mode::ServerLogMode;
 pub use test_vm::TestVm;
@@ -302,6 +303,16 @@ impl Framework {
     /// builder defaults.
     pub fn default_guest_os_artifact(&self) -> &str {
         &self.default_guest_os_artifact
+    }
+
+    /// Yields the guest OS adapter corresponding to the default guest OS
+    /// artifact.
+    pub async fn default_guest_os_kind(&self) -> anyhow::Result<GuestOsKind> {
+        Ok(self
+            .artifact_store
+            .get_guest_os_image(&self.default_guest_os_artifact)
+            .await?
+            .1)
     }
 
     /// Indicates whether the disk factory in this framework supports the

@@ -18,6 +18,7 @@ impl GuestOs for Ubuntu2204 {
             CommandSequenceEntry::write_str("1!Passw0rd"),
             CommandSequenceEntry::wait_for(self.get_shell_prompt()),
         ])
+        .extend(super::linux::stty_enable_long_lines(self))
     }
 
     fn get_shell_prompt(&self) -> &'static str {

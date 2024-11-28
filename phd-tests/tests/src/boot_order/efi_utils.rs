@@ -20,8 +20,6 @@ use std::fmt::Write;
 use std::io::{Cursor, Read};
 use tracing::{info, trace, warn};
 
-use super::run_long_command;
-
 // First, some GUIDs. These GUIDs come from EDK2, and OVMF reuses them. Notably
 // these are the raw bytes of the GUID: textual values will have slightly
 // different ordering of bytes.
@@ -326,7 +324,7 @@ pub(crate) async fn read_efivar(
         efipath(varname)
     );
 
-    let hex = run_long_command(vm, &cmd).await?;
+    let hex = vm.run_shell_command(&cmd).await?;
 
     Ok(unhex(&hex))
 }
@@ -345,7 +343,7 @@ pub(crate) async fn write_efivar(
         efipath(varname)
     );
 
-    let attr_read_bytes = run_long_command(vm, &attr_cmd).await?;
+    let attr_read_bytes = vm.run_shell_command(&attr_cmd).await?;
     let attrs = if attr_read_bytes.ends_with(": No such file or directory") {
         // Default attributes if the variable does not exist yet. We expect it
         // to be non-volatile because we are writing it, we expect it to be
@@ -390,7 +388,7 @@ pub(crate) async fn write_efivar(
         efipath(varname)
     );
 
-    let res = run_long_command(vm, &cmd).await?;
+    let res = vm.run_shell_command(&cmd).await?;
     // If something went sideways and the write failed with something like
     // `invalid argument`...
     if !res.is_empty() {
