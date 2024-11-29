@@ -351,7 +351,7 @@ mod kstat_types {
         fn as_u64(&self) -> Result<u64, Error>;
     }
 
-    impl<'a> ConvertNamedData for NamedData<'a> {
+    impl ConvertNamedData for NamedData<'_> {
         fn as_i32(&self) -> Result<i32, Error> {
             unimplemented!()
         }
