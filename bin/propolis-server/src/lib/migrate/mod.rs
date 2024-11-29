@@ -242,7 +242,7 @@ impl<'a> PageIter<'a> {
     }
 }
 
-impl<'a> Iterator for PageIter<'a> {
+impl Iterator for PageIter<'_> {
     type Item = u64;
     fn next(&mut self) -> Option<Self::Item> {
         while self.current < self.end {

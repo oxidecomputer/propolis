@@ -299,7 +299,7 @@ pin_project! {
         since: Instant,
     }
 }
-impl<'a> Future for UpdatedSince<'a> {
+impl Future for UpdatedSince<'_> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

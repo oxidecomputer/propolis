@@ -404,9 +404,7 @@ impl SubMapping<'_> {
         let prot = base.prot;
         SubMapping { backing: Backing::Base(base), ptr, len, prot }
     }
-}
 
-impl<'a> SubMapping<'a> {
     /// Acquire a reference to a region of memory within the
     /// current mapping.
     ///
@@ -1034,7 +1032,7 @@ pub struct MemMany<'a, T: Copy> {
     pos: usize,
     phantom: PhantomData<T>,
 }
-impl<'a, T: Copy + FromBytes> GuestData<MemMany<'a, T>> {
+impl<T: Copy + FromBytes> GuestData<MemMany<'_, T>> {
     /// Gets the object at position `pos` within the memory region.
     ///
     /// Returns [`Option::None`] if out of range.
@@ -1051,7 +1049,7 @@ impl<'a, T: Copy + FromBytes> GuestData<MemMany<'a, T>> {
         }
     }
 }
-impl<'a, T: Copy + FromBytes> Iterator for GuestData<MemMany<'a, T>> {
+impl<T: Copy + FromBytes> Iterator for GuestData<MemMany<'_, T>> {
     type Item = GuestData<T>;
 
     fn next(&mut self) -> Option<Self::Item> {

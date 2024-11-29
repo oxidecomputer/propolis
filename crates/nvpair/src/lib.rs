@@ -180,7 +180,7 @@ pub enum NvName<'a> {
     Owned(Vec<u8>),
     Loaned(&'a [u8]),
 }
-impl<'a> NvName<'a> {
+impl NvName<'_> {
     pub fn as_ptr(&self) -> *const i8 {
         match self {
             NvName::Owned(v) => v.as_ptr().cast(),

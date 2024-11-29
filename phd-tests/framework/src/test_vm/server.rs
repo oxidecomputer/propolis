@@ -131,7 +131,9 @@ impl PropolisServer {
         std::process::Command::new("pfexec")
             .args(["kill", &pid.to_string()])
             .spawn()
-            .expect("should be able to kill a phd-spawned propolis");
+            .expect("should be able to kill a phd-spawned propolis")
+            .wait()
+            .expect("kill of phd-spawned propolis was run");
 
         server
             .wait()
