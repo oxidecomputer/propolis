@@ -181,12 +181,12 @@ pub mod v0;
 // - Propolis users outside the control plane may not have any component UUIDs
 //   at all and may just want to use strings to identify all their components.
 //
-// For these reasons, the key type is a union of a UUID and a String. This
-// allows the more compact, more-easily-compared UUID format to be used wherever
-// it is practical while still allowing callers to use strings as names if they
-// have no UUIDs available or the most obvious UUID is in use elsewhere. The key
-// type's From impls will try to parse strings into UUIDs before storing keys as
-// strings.
+// For these reasons, the key type may be represented as either a UUID or a
+// String. This allows the more compact, more-easily-compared UUID format to be
+// used wherever it is practical while still allowing callers to use strings as
+// names if they have no UUIDs available or the most obvious UUID is in use
+// elsewhere. The key type's From impls will try to parse strings into UUIDs
+// before storing keys as strings.
 //
 // This type derives `SerializeDisplay` and `DeserializeFromStr` so that it can
 // be used as a map key when serializing to JSON, which requires strings (and
