@@ -5,7 +5,7 @@
 //! Routines for starting VMs, changing their states, and interacting with their
 //! guest OSes.
 
-use std::{fmt::Debug, io::Write, sync::Arc, time::Duration};
+use std::{fmt::Debug, sync::Arc, time::Duration};
 
 use crate::{
     guest_os::{
@@ -227,33 +227,12 @@ impl TestVm {
         params: ServerProcessParameters,
         cleanup_task_tx: UnboundedSender<JoinHandle<()>>,
     ) -> Result<Self> {
-        let config_filename = format!("{}.config.toml", &vm_spec.vm_name);
-        let mut config_toml_path = params.data_dir.to_path_buf();
-        config_toml_path.push(config_filename);
-        let mut config_file = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(&config_toml_path)
-            .with_context(|| {
-                format!("opening config file {} for writing", config_toml_path)
-            })?;
-
-        config_file
-            .write_all(vm_spec.config_toml_contents.as_bytes())
-            .with_context(|| {
-                format!(
-                    "writing config toml to config file {}",
-                    config_toml_path
-                )
-            })?;
-
         let data_dir = params.data_dir.to_path_buf();
         let server_addr = params.server_addr;
         let server = server::PropolisServer::new(
             &vm_spec.vm_name,
             params,
-            &config_toml_path,
+            &vm_spec.bootrom_path,
         )?;
 
         let client = Client::new(&format!("http://{}", server_addr));

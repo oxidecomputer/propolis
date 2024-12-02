@@ -30,7 +30,7 @@ route get -inet6 default -inet6 "$GATEWAY" || route add -inet6 default -inet6 "$
 
 args=(
   'run'
-  '/var/svc/manifest/site/propolis-server/config.toml'
+  '/opt/oxide/propolis-server/blob/OVMF_CODE.fd'
   "[$LISTEN_ADDR]:$LISTEN_PORT"
   '--metric-addr' "$METRIC_ADDR"
 )

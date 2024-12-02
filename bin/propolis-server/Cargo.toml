@@ -59,7 +59,6 @@ strum = { workspace = true, features = ["derive"] }
 propolis = { workspace = true, features = ["crucible-full", "oximeter"] }
 propolis_api_types = { workspace = true }
 propolis_types.workspace = true
-propolis-server-config.workspace = true
 rgb_frame.workspace = true
 rfb = { workspace = true, features = ["tungstenite"] }
 uuid.workspace = true

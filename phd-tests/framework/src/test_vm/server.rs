@@ -42,7 +42,7 @@ impl PropolisServer {
     pub(crate) fn new(
         vm_name: &str,
         process_params: ServerProcessParameters,
-        config_toml_path: &Utf8Path,
+        bootrom_path: &Utf8Path,
     ) -> Result<Self> {
         let ServerProcessParameters {
             server_path,
@@ -54,7 +54,7 @@ impl PropolisServer {
 
         info!(
             ?server_path,
-            ?config_toml_path,
+            ?bootrom_path,
             ?server_addr,
             "Launching Propolis server"
         );
@@ -67,7 +67,7 @@ impl PropolisServer {
             .args([
                 server_path.as_str(),
                 "run",
-                config_toml_path.as_str(),
+                bootrom_path.as_str(),
                 server_addr.to_string().as_str(),
                 vnc_addr.to_string().as_str(),
             ])

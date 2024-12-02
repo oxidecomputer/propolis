@@ -8,8 +8,10 @@ use crate::{
     disk::{self, DiskConfig},
     guest_os::GuestOsKind,
 };
-use propolis_client::types::{
-    ComponentV0, DiskRequest, InstanceMetadata, InstanceSpecV0, PciPath, Slot,
+use camino::Utf8PathBuf;
+use propolis_client::{
+    types::{ComponentV0, DiskRequest, InstanceMetadata, InstanceSpecV0, Slot},
+    PciPath,
 };
 use uuid::Uuid;
 
@@ -27,8 +29,8 @@ pub struct VmSpec {
     /// The guest OS adapter to use for the VM.
     pub guest_os_kind: GuestOsKind,
 
-    /// The contents of the config TOML to write to run this VM.
-    pub config_toml_contents: String,
+    /// The bootrom path to pass to this VM's Propolis server processes.
+    pub bootrom_path: Utf8PathBuf,
 
     /// Metadata used to track instance timeseries data.
     pub metadata: InstanceMetadata,
@@ -90,11 +92,11 @@ impl VmSpec {
         }
 
         fn convert_to_slot(pci_path: PciPath) -> anyhow::Result<Slot> {
-            match pci_path.device {
+            match pci_path.device() {
                 dev @ 0x10..=0x17 => Ok(Slot(dev - 0x10)),
                 _ => Err(anyhow::anyhow!(
                     "PCI device number {} out of range",
-                    pci_path.device
+                    pci_path.device()
                 )),
             }
         }

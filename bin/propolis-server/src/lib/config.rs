@@ -4,8 +4,6 @@
 
 //! Describes a server config which may be parsed from a TOML file.
 
-pub use propolis_server_config::*;
-
 #[cfg(not(feature = "omicron-build"))]
 pub fn reservoir_decide(log: &slog::Logger) -> bool {
     // Automatically enable use of the memory reservoir (rather than transient

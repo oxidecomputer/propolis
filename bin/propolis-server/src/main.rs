@@ -75,10 +75,13 @@ enum Args {
     /// Runs the Propolis server.
     Run {
         #[clap(action)]
-        cfg: PathBuf,
+        bootrom_path: PathBuf,
 
         #[clap(name = "PROPOLIS_IP:PORT", action)]
         propolis_addr: SocketAddr,
+
+        #[clap(long, action)]
+        bootrom_version: Option<String>,
 
         /// Method for registering as an Oximeter metric producer.
         ///
@@ -117,7 +120,8 @@ pub fn run_openapi() -> Result<(), String> {
 }
 
 fn run_server(
-    config_app: config::Config,
+    bootrom_path: PathBuf,
+    bootrom_version: Option<String>,
     config_dropshot: dropshot::ConfigDropshot,
     config_metrics: Option<MetricsEndpointConfig>,
     vnc_addr: Option<SocketAddr>,
@@ -146,7 +150,8 @@ fn run_server(
     let use_reservoir = config::reservoir_decide(&log);
 
     let context = server::DropshotEndpointContext::new(
-        config_app,
+        bootrom_path,
+        bootrom_version,
         use_reservoir,
         log.new(slog::o!()),
         config_metrics,
@@ -279,9 +284,14 @@ fn main() -> anyhow::Result<()> {
     match args {
         Args::OpenApi => run_openapi()
             .map_err(|e| anyhow!("Cannot generate OpenAPI spec: {}", e)),
-        Args::Run { cfg, propolis_addr, metric_addr, vnc_addr, log_level } => {
-            let config = config::parse(cfg)?;
-
+        Args::Run {
+            bootrom_path,
+            bootrom_version,
+            propolis_addr,
+            metric_addr,
+            vnc_addr,
+            log_level,
+        } => {
             // Dropshot configuration.
             let config_dropshot = ConfigDropshot {
                 bind_address: propolis_addr,
@@ -298,7 +308,14 @@ fn main() -> anyhow::Result<()> {
                 propolis_addr.ip(),
             )?;
 
-            run_server(config, config_dropshot, metric_config, vnc_addr, log)
+            run_server(
+                bootrom_path,
+                bootrom_version,
+                config_dropshot,
+                metric_config,
+                vnc_addr,
+                log,
+            )
         }
     }
 }
