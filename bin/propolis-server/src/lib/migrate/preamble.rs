@@ -78,6 +78,27 @@ impl Preamble {
                 ComponentV0::VirtioNetworkBackend(nic.backend_spec.clone());
         }
 
+        #[cfg(not(feature = "omicron-build"))]
+        if let Some(mig) = &target_spec.migration_failure {
+            let Some(to_amend) = source_spec.components.get_mut(&mig.name)
+            else {
+                return Err(MigrateError::InstanceSpecsIncompatible(format!(
+                    "replacement component {} not in source spec",
+                    mig.name
+                )));
+            };
+
+            if !matches!(to_amend, ComponentV0::MigrationFailureInjector(_)) {
+                return Err(MigrateError::InstanceSpecsIncompatible(format!(
+                    "component {} is not a migration failure injector \
+                            in the source spec",
+                    mig.name
+                )));
+            }
+
+            *to_amend = ComponentV0::MigrationFailureInjector(mig.spec.clone());
+        }
+
         let amended_spec =
             source_spec.try_into().map_err(|e: ApiSpecError| {
                 MigrateError::PreambleParse(e.to_string())

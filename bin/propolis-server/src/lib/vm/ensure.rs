@@ -403,7 +403,7 @@ async fn initialize_vm_objects(
     init.initialize_network_devices(&chipset).await?;
 
     #[cfg(not(feature = "omicron-build"))]
-    init.initialize_test_devices(&options.toml_config.devices);
+    init.initialize_test_devices();
     #[cfg(feature = "omicron-build")]
     info!(log, "`omicron-build` feature enabled, ignoring any test devices");
 
