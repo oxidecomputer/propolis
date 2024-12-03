@@ -30,6 +30,19 @@ impl Default for Chipset {
 /// Generates a 20-byte NVMe device serial number from the bytes in a string
 /// slice. If the slice is too short to populate the entire serial number, the
 /// remaining bytes are filled with `pad`.
+///
+/// NOTE: Version 1.2.1 of the NVMe specification (June 5, 2016) specifies in
+/// section 1.5 that ASCII data fields, including serial numbers, must be
+/// left-justified and must use 0x20 bytes (spaces) as the padding value. This
+/// function allows callers to choose a non-0x20 padding value to preserve the
+/// serial numbers for existing disks, which serial numbers may have been used
+/// previously and persisted into a VM's nonvolatile EFI variables (such as its
+/// boot order variables).
+//
+// TODO(#790): Ideally, this routine would have no `pad` parameter at all and
+// would always pad with spaces, but whether this is ultimately possible depends
+// on whether Omicron can start space-padding serial numbers for disks that were
+// attached to a Propolis VM that zero-padded their serial numbers.
 pub fn nvme_serial_from_str(s: &str, pad: u8) -> [u8; 20] {
     let mut sn = [0u8; 20];
 
@@ -600,5 +613,8 @@ mod test {
             nvme_serial_from_str("very_long_disk_name_goes_here", b'?'),
             *expected
         );
+
+        let expected = b"nonvolatile EFI\0\0\0\0\0";
+        assert_eq!(nvme_serial_from_str("nonvolatile EFI", 0), *expected);
     }
 }
