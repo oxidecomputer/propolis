@@ -29,6 +29,10 @@ pub struct NvmeDisk {
 
     /// The PCI bus/device/function at which this disk should be attached.
     pub pci_path: PciPath,
+
+    /// The serial number to return in response to an NVMe Identify Controller
+    /// command.
+    pub serial_number: [u8; 20],
 }
 
 /// A network card that presents a virtio-net interface to the guest.

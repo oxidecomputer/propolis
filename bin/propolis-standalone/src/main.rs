@@ -1230,7 +1230,14 @@ fn setup_instance(
                         log.new(slog::o!("dev" => format!("nvme-{}", name)));
                     // Limit data transfers to 1MiB (2^8 * 4k) in size
                     let mdts = Some(8);
-                    let nvme = hw::nvme::PciNvme::create(dev_serial, mdts, log);
+
+                    let mut serial_number = [0u8; 20];
+                    let sz = dev_serial.len().min(20);
+                    serial_number[..sz]
+                        .clone_from_slice(&dev_serial.as_bytes()[..sz]);
+
+                    let nvme =
+                        hw::nvme::PciNvme::create(&serial_number, mdts, log);
 
                     guard.inventory.register_instance(&nvme, &bdf.to_string());
                     guard.inventory.register_block(&backend, name);

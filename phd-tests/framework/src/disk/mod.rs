@@ -95,6 +95,10 @@ impl DeviceName {
     pub fn into_string(self) -> String {
         self.0
     }
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
 }
 
 /// The name for a backend implementing storage for a disk. This is derived
