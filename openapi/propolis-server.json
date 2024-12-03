@@ -1513,11 +1513,23 @@
                 "$ref": "#/components/schemas/PciPath"
               }
             ]
+          },
+          "serial_number": {
+            "description": "The serial number to return in response to an NVMe Identify Controller command.",
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "uint8",
+              "minimum": 0
+            },
+            "minItems": 20,
+            "maxItems": 20
           }
         },
         "required": [
           "backend_id",
-          "pci_path"
+          "pci_path",
+          "serial_number"
         ],
         "additionalProperties": false
       },

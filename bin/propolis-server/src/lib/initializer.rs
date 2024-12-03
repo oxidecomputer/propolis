@@ -633,11 +633,17 @@ impl<'a> MachineInitializer<'a> {
                     vioblk
                 }
                 DeviceInterface::Nvme => {
+                    let spec::StorageDevice::Nvme(nvme_spec) =
+                        &disk.device_spec
+                    else {
+                        unreachable!("disk is known to be an NVMe disk");
+                    };
+
                     // Limit data transfers to 1MiB (2^8 * 4k) in size
                     let mdts = Some(8);
                     let component = format!("nvme-{}", device_id);
                     let nvme = nvme::PciNvme::create(
-                        device_id.to_string(),
+                        &nvme_spec.serial_number,
                         mdts,
                         self.log.new(slog::o!("component" => component)),
                     );

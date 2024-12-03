@@ -16,6 +16,7 @@ use anyhow::{anyhow, Context};
 use clap::{Args, Parser, Subcommand};
 use futures::{future, SinkExt};
 use newtype_uuid::{GenericUuid, TypedUuid, TypedUuidKind, TypedUuidTag};
+use propolis_client::support::nvme_serial_from_str;
 use propolis_client::types::{
     BlobStorageBackend, Board, Chipset, ComponentV0, CrucibleStorageBackend,
     I440Fx, InstanceEnsureRequest, InstanceInitializationMethod,
@@ -241,6 +242,7 @@ impl DiskRequest {
             "nvme" => ComponentV0::NvmeDisk(NvmeDisk {
                 backend_id: backend_id.clone(),
                 pci_path,
+                serial_number: nvme_serial_from_str(&self.name, b' '),
             }),
             _ => anyhow::bail!(
                 "invalid device type in disk request: {:?}",

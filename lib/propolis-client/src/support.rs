@@ -27,6 +27,18 @@ impl Default for Chipset {
     }
 }
 
+/// Generates a 20-byte NVMe device serial number from the bytes in a string
+/// slice. If the slice is too short to populate the entire serial number, the
+/// remaining bytes are filled with `pad`.
+pub fn nvme_serial_from_str(s: &str, pad: u8) -> [u8; 20] {
+    let mut sn = [0u8; 20];
+
+    let bytes_from_slice = sn.len().min(s.len());
+    sn[..bytes_from_slice].copy_from_slice(&s.as_bytes()[..bytes_from_slice]);
+    sn[bytes_from_slice..].fill(pad);
+    sn
+}
+
 /// Clone of `InstanceSerialConsoleControlMessage` type defined in
 /// `propolis_api_types`, with which this must be kept in sync.
 ///
@@ -571,5 +583,22 @@ mod test {
         S: AsyncRead + AsyncWrite + Unpin,
     {
         WebSocketStream::from_raw_socket(conn, Role::Server, None).await
+    }
+
+    #[test]
+    fn test_nvme_serial_from_str() {
+        use super::nvme_serial_from_str;
+
+        let expected = b"hello world         ";
+        assert_eq!(nvme_serial_from_str("hello world", b' '), *expected);
+
+        let expected = b"enthusiasm!!!!!!!!!!";
+        assert_eq!(nvme_serial_from_str("enthusiasm", b'!'), *expected);
+
+        let expected = b"very_long_disk_name_";
+        assert_eq!(
+            nvme_serial_from_str("very_long_disk_name_goes_here", b'?'),
+            *expected
+        );
     }
 }

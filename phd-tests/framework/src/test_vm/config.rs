@@ -7,6 +7,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use cpuid_utils::CpuidIdent;
 use propolis_client::{
+    support::nvme_serial_from_str,
     types::{
         Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
         CpuidEntry, CpuidVendor, InstanceMetadata, InstanceSpecV0,
@@ -313,6 +314,30 @@ impl<'dr> VmConfig<'dr> {
                         backend_name.clone().into_string(),
                     ),
                     pci_path,
+                    serial_number: nvme_serial_from_str(
+                        device_name.as_str(),
+                        // TODO(#790): Propolis's NVMe controller used to pad
+                        // serial numbers with 0 bytes by default. This causes
+                        // disk serial numbers to appear in the guest to be
+                        // null-terminated strings. This, in turn, affects (or
+                        // at least may affect) how guest firmware images
+                        // identify disks when determining a VM's boot order: a
+                        // disk whose serial number is padded to 20 bytes with
+                        // spaces may not match a disk whose serial number was
+                        // padded with \0 bytes.
+                        //
+                        // Unfortunately for us, guest firmware may persist disk
+                        // identifiers to a VM's nonvolatile EFI variable store.
+                        // This means that changing from zero-padded to
+                        // space-padded serial numbers may break an existing
+                        // VM's saved boot order.
+                        //
+                        // Until we decide whether and how to preserve
+                        // compatibility for existing VMs that may have
+                        // preserved a zero-padded disk ID, continue to zero-pad
+                        // disk IDs in PHD to match previous behavior.
+                        0,
+                    ),
                 }),
             };
 

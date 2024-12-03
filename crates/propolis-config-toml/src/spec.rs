@@ -10,6 +10,7 @@ use std::{
 };
 
 use propolis_client::{
+    support::nvme_serial_from_str,
     types::{
         ComponentV0, DlpiNetworkBackend, FileStorageBackend,
         MigrationFailureInjector, NvmeDisk, P9fs, PciPciBridge, SoftNpuP9,
@@ -289,9 +290,11 @@ fn parse_storage_device_from_config(
             Interface::Virtio => {
                 ComponentV0::VirtioDisk(VirtioDisk { backend_id, pci_path })
             }
-            Interface::Nvme => {
-                ComponentV0::NvmeDisk(NvmeDisk { backend_id, pci_path })
-            }
+            Interface::Nvme => ComponentV0::NvmeDisk(NvmeDisk {
+                backend_id,
+                pci_path,
+                serial_number: nvme_serial_from_str(name, b' '),
+            }),
         },
         id_to_return,
     ))
