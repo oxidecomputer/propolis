@@ -30,8 +30,8 @@ use std::sync::Arc;
 use oximeter::types::ProducerRegistry;
 use oximeter_instruments::kstat::KstatSampler;
 use propolis_api_types::{
-    InstanceEnsureResponse, InstanceMigrateInitiateRequest,
-    InstanceMigrateInitiateResponse, InstanceProperties, InstanceState,
+    InstanceEnsureResponse, InstanceMigrateInitiateResponse,
+    InstanceProperties, InstanceState,
 };
 use slog::{debug, info};
 
@@ -39,6 +39,7 @@ use crate::{
     initializer::{
         build_instance, MachineInitializer, MachineInitializerState,
     },
+    migrate::destination::MigrationTargetInfo,
     spec::Spec,
     stats::{create_kstat_sampler, VirtualMachine},
     vm::{
@@ -55,10 +56,34 @@ use super::{
     EnsureOptions, InstanceEnsureResponseTx, VmError,
 };
 
+pub(crate) enum VmInitializationMethod {
+    Spec(Spec),
+    Migration(MigrationTargetInfo),
+}
+
 pub(crate) struct VmEnsureRequest {
     pub(crate) properties: InstanceProperties,
-    pub(crate) migrate: Option<InstanceMigrateInitiateRequest>,
-    pub(crate) instance_spec: Spec,
+    pub(crate) init: VmInitializationMethod,
+}
+
+impl VmEnsureRequest {
+    pub(crate) fn is_migration(&self) -> bool {
+        matches!(self.init, VmInitializationMethod::Migration(_))
+    }
+
+    pub(crate) fn migration_info(&self) -> Option<&MigrationTargetInfo> {
+        match &self.init {
+            VmInitializationMethod::Spec(_) => None,
+            VmInitializationMethod::Migration(info) => Some(info),
+        }
+    }
+
+    pub(crate) fn spec(&self) -> Option<&Spec> {
+        match &self.init {
+            VmInitializationMethod::Spec(spec) => Some(spec),
+            VmInitializationMethod::Migration(_) => None,
+        }
+    }
 }
 
 /// Holds state about an instance ensure request that has not yet produced any
@@ -97,18 +122,25 @@ impl<'a> VmEnsureNotStarted<'a> {
         }
     }
 
-    pub(crate) fn instance_spec(&self) -> &Spec {
-        &self.ensure_request.instance_spec
-    }
-
     pub(crate) fn state_publisher(&mut self) -> &mut StatePublisher {
         self.state_publisher
+    }
+
+    pub(crate) fn migration_info(&self) -> Option<&MigrationTargetInfo> {
+        self.ensure_request.migration_info()
     }
 
     pub(crate) async fn create_objects_from_request(
         self,
     ) -> anyhow::Result<VmEnsureObjectsCreated<'a>> {
-        let spec = self.ensure_request.instance_spec.clone();
+        let spec = self
+            .ensure_request
+            .spec()
+            .expect(
+                "create_objects_from_request is called with an explicit spec",
+            )
+            .clone();
+
         self.create_objects(spec).await
     }
 
@@ -129,9 +161,10 @@ impl<'a> VmEnsureNotStarted<'a> {
 
         let input_queue = Arc::new(InputQueue::new(
             self.log.new(slog::o!("component" => "request_queue")),
-            match &self.ensure_request.migrate {
-                Some(_) => InstanceAutoStart::Yes,
-                None => InstanceAutoStart::No,
+            if self.ensure_request.is_migration() {
+                InstanceAutoStart::Yes
+            } else {
+                InstanceAutoStart::No
             },
         ));
 
@@ -267,7 +300,7 @@ impl<'a> VmEnsureObjectsCreated<'a> {
         // state and using the state change API to send commands to the state
         // driver.
         let _ = self.ensure_response_tx.send(Ok(InstanceEnsureResponse {
-            migrate: self.ensure_request.migrate.as_ref().map(|req| {
+            migrate: self.ensure_request.migration_info().map(|req| {
                 InstanceMigrateInitiateResponse {
                     migration_id: req.migration_id,
                 }

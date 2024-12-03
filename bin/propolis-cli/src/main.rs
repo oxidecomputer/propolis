@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -17,13 +18,14 @@ use futures::{future, SinkExt};
 use newtype_uuid::{GenericUuid, TypedUuid, TypedUuidKind, TypedUuidTag};
 use propolis_client::types::{
     BlobStorageBackend, Board, Chipset, ComponentV0, CrucibleStorageBackend,
-    I440Fx, InstanceMetadata, InstanceSpecEnsureRequest,
-    InstanceSpecGetResponse, InstanceSpecStatus, InstanceSpecV0, NvmeDisk,
-    QemuPvpanic, SerialPort, SerialPortNumber, VersionedInstanceSpec,
+    I440Fx, InstanceEnsureRequest, InstanceInitializationMethod,
+    InstanceMetadata, InstanceSpecGetResponse, InstanceSpecV0, NvmeDisk,
+    QemuPvpanic, ReplacementComponent, SerialPort, SerialPortNumber,
     VirtioDisk,
 };
 use propolis_client::PciPath;
 use propolis_config_toml::spec::SpecConfig;
+use serde::{Deserialize, Serialize};
 use slog::{o, Drain, Level, Logger};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::{
@@ -35,8 +37,8 @@ use uuid::Uuid;
 use propolis_client::{
     support::{InstanceSerialConsoleHelper, WSClientOffset},
     types::{
-        DiskRequest, InstanceMigrateInitiateRequest, InstanceProperties,
-        InstanceStateRequested, InstanceVcrReplace, MigrationState,
+        InstanceProperties, InstanceStateRequested, InstanceVcrReplace,
+        MigrationState,
     },
     Client,
 };
@@ -199,40 +201,67 @@ fn add_component_to_spec(
     Ok(())
 }
 
-fn add_disk_request_to_spec(
-    spec: &mut InstanceSpecV0,
-    req: &DiskRequest,
-) -> anyhow::Result<()> {
-    let slot = req.slot.0 + 0x10;
-    let backend_name = format!("{}-backend", req.name);
-    let pci_path = PciPath::new(0, slot, 0)
-        .with_context(|| format!("processing disk request {:?}", req.name))?;
-    let device_spec = match req.device.as_ref() {
-        "virtio" => ComponentV0::VirtioDisk(VirtioDisk {
-            backend_name: backend_name.clone(),
-            pci_path,
-        }),
-        "nvme" => ComponentV0::NvmeDisk(NvmeDisk {
-            backend_name: backend_name.clone(),
-            pci_path,
-        }),
-        _ => anyhow::bail!(
-            "invalid device type in disk request: {:?}",
-            req.device
-        ),
-    };
+/// A legacy Propolis API disk request, preserved here for compatibility with
+/// the `--crucible-disks` option.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct DiskRequest {
+    name: String,
+    slot: u8,
+    read_only: bool,
+    device: String,
+    volume_construction_request: propolis_client::VolumeConstructionRequest,
+}
 
-    let backend_spec =
-        ComponentV0::CrucibleStorageBackend(CrucibleStorageBackend {
-            readonly: req.read_only,
+#[derive(Clone, Debug)]
+struct ParsedDiskRequest {
+    device_name: String,
+    device_spec: ComponentV0,
+    backend_name: String,
+    backend_spec: CrucibleStorageBackend,
+}
+
+impl DiskRequest {
+    fn parse(&self) -> anyhow::Result<ParsedDiskRequest> {
+        // Preserve compatibility with the old Propolis API by adding 16 to the
+        // slot number, which must be between 0 and 7 inclusive.
+        if !(0..8).contains(&self.slot) {
+            anyhow::bail!("disk request slots must be in [0..7]");
+        }
+
+        let slot = self.slot + 0x10;
+        let backend_name = format!("{}-backend", self.name);
+        let pci_path = PciPath::new(0, slot, 0).with_context(|| {
+            format!("processing disk request {:?}", self.name)
+        })?;
+        let device_spec = match self.device.as_ref() {
+            "virtio" => ComponentV0::VirtioDisk(VirtioDisk {
+                backend_name: backend_name.clone(),
+                pci_path,
+            }),
+            "nvme" => ComponentV0::NvmeDisk(NvmeDisk {
+                backend_name: backend_name.clone(),
+                pci_path,
+            }),
+            _ => anyhow::bail!(
+                "invalid device type in disk request: {:?}",
+                self.device
+            ),
+        };
+
+        let backend_spec = CrucibleStorageBackend {
+            readonly: self.read_only,
             request_json: serde_json::to_string(
-                &req.volume_construction_request,
+                &self.volume_construction_request,
             )?,
-        });
+        };
 
-    add_component_to_spec(spec, req.name.clone(), device_spec)?;
-    add_component_to_spec(spec, backend_name, backend_spec)?;
-    Ok(())
+        Ok(ParsedDiskRequest {
+            device_name: self.name.clone(),
+            device_spec,
+            backend_name,
+            backend_spec,
+        })
+    }
 }
 
 impl VmConfig {
@@ -284,7 +313,18 @@ impl VmConfig {
             .iter()
             .flatten()
         {
-            add_disk_request_to_spec(&mut spec, disk_request)?;
+            let ParsedDiskRequest {
+                device_name,
+                device_spec,
+                backend_name,
+                backend_spec,
+            } = disk_request.parse()?;
+            add_component_to_spec(&mut spec, device_name, device_spec)?;
+            add_component_to_spec(
+                &mut spec,
+                backend_name,
+                ComponentV0::CrucibleStorageBackend(backend_spec),
+            )?;
         }
 
         if let Some(cloud_init) = self.cloud_init.as_ref() {
@@ -437,15 +477,14 @@ async fn new_instance(
         metadata,
     };
 
-    let request = InstanceSpecEnsureRequest {
-        instance_spec: VersionedInstanceSpec::V0(spec),
-        migrate: None,
+    let request = InstanceEnsureRequest {
         properties,
+        init: InstanceInitializationMethod::Spec { spec },
     };
 
     // Try to create the instance
     client
-        .instance_spec_ensure()
+        .instance_ensure()
         .body(request)
         .send()
         .await
@@ -675,7 +714,7 @@ async fn migrate_instance(
     disks: Vec<DiskRequest>,
 ) -> anyhow::Result<()> {
     // Grab the instance details
-    let InstanceSpecGetResponse { mut properties, spec, .. } = src_client
+    let InstanceSpecGetResponse { mut properties, .. } = src_client
         .instance_spec_get()
         .send()
         .await
@@ -683,29 +722,37 @@ async fn migrate_instance(
         .into_inner();
     let src_uuid = properties.id;
     properties.id = dst_uuid;
-    let InstanceSpecStatus::Present(spec) = spec else {
-        anyhow::bail!("source instance doesn't have a spec yet");
-    };
 
-    let VersionedInstanceSpec::V0(mut spec) = spec;
-    spec.components.clear();
-    for disk in disks.iter() {
-        add_disk_request_to_spec(&mut spec, disk)?;
+    let mut replace_components = HashMap::new();
+    for disk in disks {
+        let ParsedDiskRequest { backend_name, backend_spec, .. } =
+            disk.parse()?;
+
+        let old = replace_components.insert(
+            backend_name.clone(),
+            ReplacementComponent::CrucibleStorageBackend(backend_spec),
+        );
+
+        if old.is_some() {
+            anyhow::bail!(
+                "duplicate backend name {backend_name} in replacement disk \
+                list"
+            );
+        }
     }
 
-    let request = InstanceSpecEnsureRequest {
+    let request = InstanceEnsureRequest {
         properties,
-        migrate: Some(InstanceMigrateInitiateRequest {
+        init: InstanceInitializationMethod::MigrationTarget {
             migration_id: Uuid::new_v4(),
             src_addr: src_addr.to_string(),
-            src_uuid,
-        }),
-        instance_spec: VersionedInstanceSpec::V0(spec),
+            replace_components,
+        },
     };
 
     // Initiate the migration via the destination instance
     let migration_res =
-        dst_client.instance_spec_ensure().body(request).send().await?;
+        dst_client.instance_ensure().body(request).send().await?;
     let migration_id = migration_res
         .migrate
         .as_ref()
