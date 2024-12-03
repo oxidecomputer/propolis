@@ -1630,7 +1630,7 @@
         ]
       },
       "ReplacementComponent": {
-        "description": "Describes an instance spec component that should be replaced during a live migration.",
+        "description": "An instance spec component that should be replaced during a live migration.",
         "oneOf": [
           {
             "type": "object",

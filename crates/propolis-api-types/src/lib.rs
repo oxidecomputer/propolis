@@ -52,30 +52,30 @@ pub struct InstanceMetadata {
 }
 
 /// An instance spec component that should be replaced during a live migration.
-///
-/// When a caller asks Propolis to initialize via live migration, the target VM
-/// inherits the migration source's current instance spec. For the most part,
-/// the target can (and indeed in some cases must) use this spec without
-/// modifying it; this helps Propolis ensure that guest-visible configuration
-/// remains unchanged when a VM migrates. However, there are some components
-/// with no guest-visible state that may need to be reconfigured when a VM
-/// migrates. These include the following:
-///
-/// - Crucible disks: After migrating, the target Propolis presents itself as a
-///   new client of the Crucible downstairs servers backing the VM's disks.
-///   Crucible requires the target to present a newer client generation number
-///   to allow the target to connect. In a full Oxide deployment, these numbers
-///   are managed by the control plane (i.e. it is not safe for Propolis to
-///   manage these values directly--new Crucible volume connection information
-///   must always come from Nexus).
-/// - Virtio network devices: Each virtio NIC in the guest needs to bind to a
-///   named VNIC object on the host. These names can change when a VM migrates
-///   from host to host.
-///
-/// Each component that can be reconfigured this way has a variant in this enum;
-/// components not in the enum can't be reconfigured during migration. This
-/// saves the initialization API from having to reason about requests to replace
-/// a component that can't legally be replaced.
+//
+// When a caller asks Propolis to initialize via live migration, the target VM
+// inherits the migration source's current instance spec. For the most part,
+// the target can (and indeed in some cases must) use this spec without
+// modifying it; this helps Propolis ensure that guest-visible configuration
+// remains unchanged when a VM migrates. However, there are some components
+// with no guest-visible state that may need to be reconfigured when a VM
+// migrates. These include the following:
+//
+// - Crucible disks: After migrating, the target Propolis presents itself as a
+//   new client of the Crucible downstairs servers backing the VM's disks.
+//   Crucible requires the target to present a newer client generation number
+//   to allow the target to connect. In a full Oxide deployment, these numbers
+//   are managed by the control plane (i.e. it is not safe for Propolis to
+//   manage these values directly--new Crucible volume connection information
+//   must always come from Nexus).
+// - Virtio network devices: Each virtio NIC in the guest needs to bind to a
+//   named VNIC object on the host. These names can change when a VM migrates
+//   from host to host.
+//
+// Each component that can be reconfigured this way has a variant in this enum;
+// components not in the enum can't be reconfigured during migration. This
+// saves the initialization API from having to reason about requests to replace
+// a component that can't legally be replaced.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, tag = "component", content = "spec")]
 pub enum ReplacementComponent {
