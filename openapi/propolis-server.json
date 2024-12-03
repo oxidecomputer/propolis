@@ -1431,7 +1431,7 @@
             "$ref": "#/components/schemas/InstanceProperties"
           },
           "spec": {
-            "$ref": "#/components/schemas/VersionedInstanceSpec"
+            "$ref": "#/components/schemas/InstanceSpecStatus"
           },
           "state": {
             "$ref": "#/components/schemas/InstanceState"
@@ -1441,6 +1441,42 @@
           "properties",
           "spec",
           "state"
+        ]
+      },
+      "InstanceSpecStatus": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "WaitingForMigrationSource"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Present"
+                ]
+              },
+              "value": {
+                "$ref": "#/components/schemas/VersionedInstanceSpec"
+              }
+            },
+            "required": [
+              "type",
+              "value"
+            ]
+          }
         ]
       },
       "InstanceSpecV0": {

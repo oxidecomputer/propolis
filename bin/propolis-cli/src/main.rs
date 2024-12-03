@@ -15,7 +15,9 @@ use anyhow::{anyhow, Context};
 use clap::{Parser, Subcommand};
 use futures::{future, SinkExt};
 use newtype_uuid::{GenericUuid, TypedUuid, TypedUuidKind, TypedUuidTag};
-use propolis_client::types::{InstanceMetadata, VersionedInstanceSpec};
+use propolis_client::types::{
+    InstanceMetadata, InstanceSpecStatus, VersionedInstanceSpec,
+};
 use slog::{o, Drain, Level, Logger};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::{
@@ -504,7 +506,10 @@ async fn migrate_instance(
             anyhow!("failed to get src instance properties")
         })?;
     let src_uuid = src_instance.properties.id;
-    let VersionedInstanceSpec::V0(spec) = &src_instance.spec;
+    let InstanceSpecStatus::Present(spec) = &src_instance.spec else {
+        anyhow::bail!("source instance doesn't have a spec yet");
+    };
+    let VersionedInstanceSpec::V0(spec) = &spec;
 
     let request = InstanceEnsureRequest {
         properties: InstanceProperties {

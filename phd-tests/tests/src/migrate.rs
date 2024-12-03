@@ -275,56 +275,6 @@ mod running_process {
 }
 
 #[phd_testcase]
-async fn incompatible_vms(ctx: &Framework) {
-    let mut builders = vec![
-        ctx.vm_config_builder("migration_incompatible_target_1"),
-        ctx.vm_config_builder("migration_incompatible_target_2"),
-    ];
-
-    builders[0].cpus(8);
-    builders[1].memory_mib(1024);
-
-    for (i, cfg) in builders.into_iter().enumerate() {
-        let mut source = ctx
-            .spawn_vm(
-                ctx.vm_config_builder(&format!(
-                    "migration_incompatible_source_{}",
-                    i
-                ))
-                .cpus(4)
-                .memory_mib(512),
-                None,
-            )
-            .await?;
-
-        source.launch().await?;
-        let mut target = ctx.spawn_vm(&cfg, None).await?;
-
-        let migration_id = Uuid::new_v4();
-        assert!(target
-            .migrate_from(&source, migration_id, MigrationTimeout::default())
-            .await
-            .is_err());
-
-        let src_migration_state = source
-            .get_migration_state()
-            .await?
-            .migration_out
-            .expect("source should have a migration-out status")
-            .state;
-        assert_eq!(src_migration_state, MigrationState::Error);
-
-        let target_migration_state = target
-            .get_migration_state()
-            .await?
-            .migration_in
-            .expect("target should have a migration-in status")
-            .state;
-        assert_eq!(target_migration_state, MigrationState::Error);
-    }
-}
-
-#[phd_testcase]
 async fn multiple_migrations(ctx: &Framework) {
     let mut vm0 = ctx.spawn_default_vm("multiple_migrations_0").await?;
     let mut vm1 =

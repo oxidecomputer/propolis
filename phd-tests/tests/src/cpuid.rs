@@ -4,7 +4,9 @@
 
 use cpuid_utils::{CpuidIdent, CpuidValues, CpuidVendor};
 use phd_testcase::*;
-use propolis_client::types::CpuidEntry;
+use propolis_client::types::{
+    CpuidEntry, InstanceSpecStatus, VersionedInstanceSpec,
+};
 use tracing::info;
 
 fn cpuid_entry(
@@ -34,8 +36,11 @@ async fn cpuid_instance_spec_round_trip_test(ctx: &Framework) {
     vm.launch().await?;
 
     let spec_get_response = vm.get_spec().await?;
-    let propolis_client::types::VersionedInstanceSpec::V0(spec) =
-        spec_get_response.spec;
+    let InstanceSpecStatus::Present(VersionedInstanceSpec::V0(spec)) =
+        spec_get_response.spec
+    else {
+        panic!("instance spec should be present for a running VM");
+    };
 
     let cpuid = spec.board.cpuid.expect("board should have explicit CPUID");
     assert_eq!(cpuid.entries.len(), entries.len());
