@@ -649,8 +649,21 @@ impl<'a> MachineInitializer<'a> {
             };
 
             if let Some(crucible) = crucible {
-                let block_size = crucible.block_size().await;
-                let Some(block_size) = block_size else {
+                let crucible =
+                    match self.crucible_backends.entry(backend_id.clone()) {
+                        std::collections::btree_map::Entry::Occupied(_) => {
+                            return Err(
+                                MachineInitError::DuplicateCrucibleBackendId(
+                                    backend_id.clone(),
+                                ),
+                            );
+                        }
+                        std::collections::btree_map::Entry::Vacant(e) => {
+                            e.insert(crucible)
+                        }
+                    };
+
+                let Some(block_size) = crucible.block_size().await else {
                     slog::error!(
                         self.log,
                         "Could not get Crucible backend block size, \
@@ -660,32 +673,31 @@ impl<'a> MachineInitializer<'a> {
                     continue;
                 };
 
-                let prev =
-                    self.crucible_backends.insert(backend_id.clone(), crucible);
-                if prev.is_some() {
-                    return Err(MachineInitError::DuplicateCrucibleBackendId(
-                        backend_id.clone(),
-                    ));
-                }
+                let Ok(volume_id) = crucible.get_uuid().await else {
+                    slog::error!(
+                        self.log,
+                        "Could not get Crucible volume ID, \
+                        virtual disk metrics can't be reported for it";
+                        "disk_id" => %backend_id,
+                    );
+                    continue;
+                };
 
-                // If metrics are enabled and this Crucible backend was
-                // identified with a UUID-format spec key, register this disk
-                // for metrics collection, using the key as the disk ID.
-                if let (Some(registry), SpecKey::Uuid(disk_id)) =
-                    (&self.producer_registry, &backend_id)
-                {
+                if let Some(registry) = &self.producer_registry {
                     let stats = VirtualDiskProducer::new(
                         block_size,
                         self.properties.id,
-                        *disk_id,
+                        volume_id,
                         &self.properties.metadata,
                     );
+
                     if let Err(e) = registry.register_producer(stats.clone()) {
                         slog::error!(
                             self.log,
                             "Could not register virtual disk producer, \
                             metrics will not be produced";
-                            "disk_id" => %disk_id,
+                            "disk_id" => %backend_id,
+                            "volume_id" => %volume_id,
                             "error" => ?e,
                         );
                         continue;
