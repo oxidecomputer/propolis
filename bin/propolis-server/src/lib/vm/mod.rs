@@ -85,10 +85,11 @@ use active::ActiveVm;
 use ensure::VmEnsureRequest;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types::{
-    instance_spec::VersionedInstanceSpec, InstanceEnsureResponse,
-    InstanceMigrateStatusResponse, InstanceMigrationStatus, InstanceProperties,
-    InstanceSpecGetResponse, InstanceSpecStatus, InstanceState,
-    InstanceStateMonitorResponse, MigrationState,
+    instance_spec::{SpecKey, VersionedInstanceSpec},
+    InstanceEnsureResponse, InstanceMigrateStatusResponse,
+    InstanceMigrationStatus, InstanceProperties, InstanceSpecGetResponse,
+    InstanceSpecStatus, InstanceState, InstanceStateMonitorResponse,
+    MigrationState,
 };
 use slog::info;
 use state_driver::StateDriverOutput;
@@ -109,7 +110,7 @@ pub(crate) mod state_publisher;
 /// Maps component names to lifecycle trait objects that allow
 /// components to be started, paused, resumed, and halted.
 pub(crate) type DeviceMap =
-    BTreeMap<String, Arc<dyn propolis::common::Lifecycle>>;
+    BTreeMap<SpecKey, Arc<dyn propolis::common::Lifecycle>>;
 
 /// Mapping of NIC identifiers to viona device instance IDs.
 /// We use a Vec here due to the limited size of the NIC array.
@@ -117,11 +118,11 @@ pub(crate) type NetworkInterfaceIds = Vec<(uuid::Uuid, KstatInstanceId)>;
 
 /// Maps component names to block backend trait objects.
 pub(crate) type BlockBackendMap =
-    BTreeMap<String, Arc<dyn propolis::block::Backend>>;
+    BTreeMap<SpecKey, Arc<dyn propolis::block::Backend>>;
 
 /// Maps component names to Crucible backend objects.
 pub(crate) type CrucibleBackendMap =
-    BTreeMap<uuid::Uuid, Arc<propolis::block::CrucibleBackend>>;
+    BTreeMap<SpecKey, Arc<propolis::block::CrucibleBackend>>;
 
 /// Type alias for the sender side of the channel that receives
 /// externally-visible instance state updates.

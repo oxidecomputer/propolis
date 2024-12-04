@@ -7,13 +7,14 @@ use std::sync::Arc;
 use anyhow::Context;
 use cpuid_utils::CpuidIdent;
 use propolis_client::{
+    support::nvme_serial_from_str,
     types::{
         Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
         CpuidEntry, CpuidVendor, InstanceMetadata, InstanceSpecV0,
         MigrationFailureInjector, NvmeDisk, SerialPort, SerialPortNumber,
         VirtioDisk,
     },
-    PciPath,
+    PciPath, SpecKey,
 };
 use uuid::Uuid;
 
@@ -303,12 +304,25 @@ impl<'dr> VmConfig<'dr> {
             let backend_name = device_name.clone().into_backend_name();
             let device_spec = match req.interface {
                 DiskInterface::Virtio => ComponentV0::VirtioDisk(VirtioDisk {
-                    backend_name: backend_name.clone().into_string(),
+                    backend_id: SpecKey::from(
+                        backend_name.clone().into_string(),
+                    ),
                     pci_path,
                 }),
                 DiskInterface::Nvme => ComponentV0::NvmeDisk(NvmeDisk {
-                    backend_name: backend_name.clone().into_string(),
+                    backend_id: SpecKey::from(
+                        backend_name.clone().into_string(),
+                    ),
                     pci_path,
+                    serial_number: nvme_serial_from_str(
+                        device_name.as_str(),
+                        // Omicron supplies (or will supply, as of this writing)
+                        // 0 as the padding byte to maintain compatibility for
+                        // existing disks. Match that behavior here so that PHD
+                        // and Omicron VM configurations are as similar as
+                        // possible.
+                        0,
+                    ),
                 }),
             };
 
@@ -333,7 +347,9 @@ impl<'dr> VmConfig<'dr> {
                 ComponentV0::BootSettings(BootSettings {
                     order: boot_order
                         .iter()
-                        .map(|item| BootOrderEntry { name: item.to_string() })
+                        .map(|item| BootOrderEntry {
+                            id: SpecKey::from(item.to_string()),
+                        })
                         .collect(),
                 }),
             );

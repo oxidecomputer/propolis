@@ -74,8 +74,7 @@
             "name": "id",
             "required": true,
             "schema": {
-              "type": "string",
-              "format": "uuid"
+              "type": "string"
             }
           },
           {
@@ -122,8 +121,7 @@
             "name": "id",
             "required": true,
             "schema": {
-              "type": "string",
-              "format": "uuid"
+              "type": "string"
             }
           }
         ],
@@ -157,8 +155,7 @@
             "name": "id",
             "required": true,
             "schema": {
-              "type": "string",
-              "format": "uuid"
+              "type": "string"
             }
           }
         ],
@@ -490,13 +487,17 @@
         "description": "An entry in the boot order stored in a [`BootSettings`] component.",
         "type": "object",
         "properties": {
-          "name": {
-            "description": "The name of another component in the spec that Propolis should try to boot from.\n\nCurrently, only disk device components are supported.",
-            "type": "string"
+          "id": {
+            "description": "The ID of another component in the spec that Propolis should try to boot from.\n\nCurrently, only disk device components are supported.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SpecKey"
+              }
+            ]
           }
         },
         "required": [
-          "name"
+          "id"
         ]
       },
       "BootSettings": {
@@ -1447,15 +1448,11 @@
       "InstanceVCRReplace": {
         "type": "object",
         "properties": {
-          "name": {
-            "type": "string"
-          },
           "vcr_json": {
             "type": "string"
           }
         },
         "required": [
-          "name",
           "vcr_json"
         ]
       },
@@ -1501,9 +1498,13 @@
         "description": "A disk that presents an NVMe interface to the guest.",
         "type": "object",
         "properties": {
-          "backend_name": {
+          "backend_id": {
             "description": "The name of the disk's backend component.",
-            "type": "string"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SpecKey"
+              }
+            ]
           },
           "pci_path": {
             "description": "The PCI bus/device/function at which this disk should be attached.",
@@ -1512,11 +1513,23 @@
                 "$ref": "#/components/schemas/PciPath"
               }
             ]
+          },
+          "serial_number": {
+            "description": "The serial number to return in response to an NVMe Identify Controller command.",
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "uint8",
+              "minimum": 0
+            },
+            "minItems": 20,
+            "maxItems": 20
           }
         },
         "required": [
-          "backend_name",
-          "pci_path"
+          "backend_id",
+          "pci_path",
+          "serial_number"
         ],
         "additionalProperties": false
       },
@@ -1759,9 +1772,13 @@
         "description": "Describes a port in a SoftNPU emulated ASIC.\n\nThis is only supported by Propolis servers compiled with the `falcon` feature.",
         "type": "object",
         "properties": {
-          "backend_name": {
+          "backend_id": {
             "description": "The name of the port's associated DLPI backend.",
-            "type": "string"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SpecKey"
+              }
+            ]
           },
           "link_name": {
             "description": "The data link name for this port.",
@@ -1769,10 +1786,40 @@
           }
         },
         "required": [
-          "backend_name",
+          "backend_id",
           "link_name"
         ],
         "additionalProperties": false
+      },
+      "SpecKey": {
+        "description": "A key identifying a component in an instance spec.",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "Uuid": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "required": [
+              "Uuid"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "Name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "Name"
+            ],
+            "additionalProperties": false
+          }
+        ]
       },
       "VersionedInstanceSpec": {
         "description": "A versioned instance spec.",
@@ -1802,9 +1849,13 @@
         "description": "A disk that presents a virtio-block interface to the guest.",
         "type": "object",
         "properties": {
-          "backend_name": {
+          "backend_id": {
             "description": "The name of the disk's backend component.",
-            "type": "string"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SpecKey"
+              }
+            ]
           },
           "pci_path": {
             "description": "The PCI bus/device/function at which this disk should be attached.",
@@ -1816,7 +1867,7 @@
           }
         },
         "required": [
-          "backend_name",
+          "backend_id",
           "pci_path"
         ],
         "additionalProperties": false
@@ -1839,9 +1890,13 @@
         "description": "A network card that presents a virtio-net interface to the guest.",
         "type": "object",
         "properties": {
-          "backend_name": {
+          "backend_id": {
             "description": "The name of the device's backend.",
-            "type": "string"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SpecKey"
+              }
+            ]
           },
           "interface_id": {
             "description": "A caller-defined correlation identifier for this interface. If Propolis is configured to collect network interface kstats in its Oximeter metrics, the metric series for this interface will be associated with this identifier.",
@@ -1858,7 +1913,7 @@
           }
         },
         "required": [
-          "backend_name",
+          "backend_id",
           "interface_id",
           "pci_path"
         ],

@@ -4,9 +4,9 @@
 
 //! A client for the Propolis hypervisor frontend's server API.
 
-// Re-export the PCI path type from propolis_api_types so that users can access
-// its constructor and From impls.
-pub use propolis_api_types::instance_spec::PciPath;
+// Re-export types from propolis_api_types where callers may want to use
+// constructors or From impls.
+pub use propolis_api_types::instance_spec::{PciPath, SpecKey};
 
 // Re-export Crucible client types that appear in their serialized forms in
 // instance specs. This allows clients to ensure they serialize/deserialize
@@ -20,6 +20,7 @@ progenitor::generate_api!(
     tags = Separate,
     replace = {
         PciPath = crate::PciPath,
+        SpecKey = crate::SpecKey,
     },
     patch = {
         BootOrderEntry = { derives = [schemars::JsonSchema] },

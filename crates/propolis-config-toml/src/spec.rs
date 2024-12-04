@@ -10,19 +10,18 @@ use std::{
 };
 
 use propolis_client::{
+    support::nvme_serial_from_str,
     types::{
         ComponentV0, DlpiNetworkBackend, FileStorageBackend,
         MigrationFailureInjector, NvmeDisk, P9fs, PciPciBridge, SoftNpuP9,
         SoftNpuPciPort, SoftNpuPort, VirtioDisk, VirtioNetworkBackend,
         VirtioNic,
     },
-    PciPath,
+    PciPath, SpecKey,
 };
 use thiserror::Error;
 
 pub const MIGRATION_FAILURE_DEVICE_NAME: &str = "test-migration-failure";
-
-type SpecKey = String;
 
 #[derive(Debug, Error)]
 pub enum TomlToSpecError {
@@ -111,7 +110,7 @@ impl TryFrom<&super::Config> for SpecConfig {
                     .max(0) as u32;
 
                 spec.components.insert(
-                    MIGRATION_FAILURE_DEVICE_NAME.to_owned(),
+                    SpecKey::Name(MIGRATION_FAILURE_DEVICE_NAME.to_owned()),
                     ComponentV0::MigrationFailureInjector(
                         MigrationFailureInjector { fail_exports, fail_imports },
                     ),
@@ -177,13 +176,14 @@ impl TryFrom<&super::Config> for SpecConfig {
                             TomlToSpecError::NoVnicName(device_name.to_owned())
                         })?;
 
-                    let backend_name = format!("{}:backend", device_id);
+                    let backend_name =
+                        SpecKey::Name(format!("{device_id}:backend"));
 
                     spec.components.insert(
                         device_id,
                         ComponentV0::SoftNpuPort(SoftNpuPort {
                             link_name: device_name.to_string(),
-                            backend_name: backend_name.clone(),
+                            backend_id: backend_name.clone(),
                         }),
                     );
 
@@ -234,7 +234,7 @@ impl TryFrom<&super::Config> for SpecConfig {
                 })?;
 
             spec.components.insert(
-                format!("pci-bridge-{}", bridge.pci_path),
+                SpecKey::Name(format!("pci-bridge-{}", bridge.pci_path)),
                 ComponentV0::PciPciBridge(PciPciBridge {
                     downstream_bus: bridge.downstream_bus,
                     pci_path,
@@ -266,31 +266,35 @@ fn parse_storage_device_from_config(
         }
     };
 
-    let backend_name = device
-        .options
-        .get("block_dev")
-        .ok_or_else(|| {
-            TomlToSpecError::NoBackendNameForStorageDevice(name.to_owned())
-        })?
-        .as_str()
-        .ok_or_else(|| {
-            TomlToSpecError::NoBackendNameForStorageDevice(name.to_owned())
-        })?
-        .to_string();
+    let backend_id = SpecKey::from_str(
+        device
+            .options
+            .get("block_dev")
+            .ok_or_else(|| {
+                TomlToSpecError::NoBackendNameForStorageDevice(name.to_owned())
+            })?
+            .as_str()
+            .ok_or_else(|| {
+                TomlToSpecError::NoBackendNameForStorageDevice(name.to_owned())
+            })?,
+    )
+    .expect("SpecKey::from_str is infallible");
 
     let pci_path: PciPath = device
         .get("pci-path")
         .ok_or_else(|| TomlToSpecError::InvalidPciPath(name.to_owned()))?;
 
-    let id_to_return = backend_name.clone();
+    let id_to_return = backend_id.clone();
     Ok((
         match interface {
             Interface::Virtio => {
-                ComponentV0::VirtioDisk(VirtioDisk { backend_name, pci_path })
+                ComponentV0::VirtioDisk(VirtioDisk { backend_id, pci_path })
             }
-            Interface::Nvme => {
-                ComponentV0::NvmeDisk(NvmeDisk { backend_name, pci_path })
-            }
+            Interface::Nvme => ComponentV0::NvmeDisk(NvmeDisk {
+                backend_id,
+                pci_path,
+                serial_number: nvme_serial_from_str(name, b' '),
+            }),
         },
         id_to_return,
     ))
@@ -356,10 +360,10 @@ fn parse_network_device_from_config(
         .get("pci-path")
         .ok_or_else(|| TomlToSpecError::InvalidPciPath(name.to_owned()))?;
 
-    let backend_id = format!("{name}-backend");
+    let backend_id = SpecKey::Name(format!("{name}-backend"));
     Ok(ParsedNic {
         device_spec: VirtioNic {
-            backend_name: backend_id.clone(),
+            backend_id: backend_id.clone(),
             interface_id: uuid::Uuid::nil(),
             pci_path,
         },

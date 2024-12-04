@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use propolis_api_types::{
-    instance_spec::{v0::ComponentV0, VersionedInstanceSpec},
+    instance_spec::{v0::ComponentV0, SpecKey, VersionedInstanceSpec},
     ReplacementComponent,
 };
 use serde::{Deserialize, Serialize};
@@ -35,9 +35,9 @@ impl Preamble {
     /// not present in the source spec, this routine fails.
     pub fn amend_spec(
         self,
-        replacements: &BTreeMap<String, ReplacementComponent>,
+        replacements: &BTreeMap<SpecKey, ReplacementComponent>,
     ) -> Result<Spec, MigrateError> {
-        fn wrong_type_error(id: &str, kind: &str) -> MigrateError {
+        fn wrong_type_error(id: &SpecKey, kind: &str) -> MigrateError {
             let msg =
                 format!("component {id} is not a {kind} in the source spec");
             MigrateError::InstanceSpecsIncompatible(msg)
@@ -45,8 +45,7 @@ impl Preamble {
 
         let VersionedInstanceSpec::V0(mut source_spec) = self.instance_spec;
         for (id, comp) in replacements {
-            let Some(to_amend) = source_spec.components.get_mut(id.as_str())
-            else {
+            let Some(to_amend) = source_spec.components.get_mut(id) else {
                 return Err(MigrateError::InstanceSpecsIncompatible(format!(
                     "replacement component {id} not in source spec",
                 )));

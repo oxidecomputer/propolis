@@ -16,6 +16,7 @@ use anyhow::{anyhow, Context};
 use clap::{Args, Parser, Subcommand};
 use futures::{future, SinkExt};
 use newtype_uuid::{GenericUuid, TypedUuid, TypedUuidKind, TypedUuidTag};
+use propolis_client::support::nvme_serial_from_str;
 use propolis_client::types::{
     BlobStorageBackend, Board, Chipset, ComponentV0, CrucibleStorageBackend,
     I440Fx, InstanceEnsureRequest, InstanceInitializationMethod,
@@ -23,7 +24,7 @@ use propolis_client::types::{
     QemuPvpanic, ReplacementComponent, SerialPort, SerialPortNumber,
     VirtioDisk,
 };
-use propolis_client::PciPath;
+use propolis_client::{PciPath, SpecKey};
 use propolis_config_toml::spec::SpecConfig;
 use serde::{Deserialize, Serialize};
 use slog::{o, Drain, Level, Logger};
@@ -192,11 +193,11 @@ struct VmConfig {
 
 fn add_component_to_spec(
     spec: &mut InstanceSpecV0,
-    name: String,
+    id: SpecKey,
     component: ComponentV0,
 ) -> anyhow::Result<()> {
-    if spec.components.insert(name.clone(), component).is_some() {
-        anyhow::bail!("duplicate component ID {name:?}");
+    if spec.components.insert(id.to_string(), component).is_some() {
+        anyhow::bail!("duplicate component ID {id:?}");
     }
     Ok(())
 }
@@ -214,9 +215,9 @@ struct DiskRequest {
 
 #[derive(Clone, Debug)]
 struct ParsedDiskRequest {
-    device_name: String,
+    device_id: SpecKey,
     device_spec: ComponentV0,
-    backend_name: String,
+    backend_id: SpecKey,
     backend_spec: CrucibleStorageBackend,
 }
 
@@ -229,18 +230,19 @@ impl DiskRequest {
         }
 
         let slot = self.slot + 0x10;
-        let backend_name = format!("{}-backend", self.name);
+        let backend_id = SpecKey::Name(format!("{}-backend", self.name));
         let pci_path = PciPath::new(0, slot, 0).with_context(|| {
             format!("processing disk request {:?}", self.name)
         })?;
         let device_spec = match self.device.as_ref() {
             "virtio" => ComponentV0::VirtioDisk(VirtioDisk {
-                backend_name: backend_name.clone(),
+                backend_id: backend_id.clone(),
                 pci_path,
             }),
             "nvme" => ComponentV0::NvmeDisk(NvmeDisk {
-                backend_name: backend_name.clone(),
+                backend_id: backend_id.clone(),
                 pci_path,
+                serial_number: nvme_serial_from_str(&self.name, b' '),
             }),
             _ => anyhow::bail!(
                 "invalid device type in disk request: {:?}",
@@ -256,9 +258,9 @@ impl DiskRequest {
         };
 
         Ok(ParsedDiskRequest {
-            device_name: self.name.clone(),
+            device_id: SpecKey::Name(self.name.clone()),
             device_spec,
-            backend_name,
+            backend_id,
             backend_spec,
         })
     }
@@ -314,15 +316,15 @@ impl VmConfig {
             .flatten()
         {
             let ParsedDiskRequest {
-                device_name,
+                device_id,
                 device_spec,
-                backend_name,
+                backend_id,
                 backend_spec,
             } = disk_request.parse()?;
-            add_component_to_spec(&mut spec, device_name, device_spec)?;
+            add_component_to_spec(&mut spec, device_id, device_spec)?;
             add_component_to_spec(
                 &mut spec,
-                backend_name,
+                backend_id,
                 ComponentV0::CrucibleStorageBackend(backend_spec),
             )?;
         }
@@ -338,16 +340,18 @@ impl VmConfig {
 
             add_component_to_spec(
                 &mut spec,
-                CLOUD_INIT_NAME.to_owned(),
+                SpecKey::Name(CLOUD_INIT_NAME.to_owned()),
                 ComponentV0::VirtioDisk(VirtioDisk {
-                    backend_name: CLOUD_INIT_BACKEND_NAME.to_owned(),
+                    backend_id: SpecKey::Name(
+                        CLOUD_INIT_BACKEND_NAME.to_owned(),
+                    ),
                     pci_path: PciPath::new(0, 0x18, 0).unwrap(),
                 }),
             )?;
 
             add_component_to_spec(
                 &mut spec,
-                CLOUD_INIT_BACKEND_NAME.to_owned(),
+                SpecKey::Name(CLOUD_INIT_BACKEND_NAME.to_owned()),
                 ComponentV0::BlobStorageBackend(BlobStorageBackend {
                     base64: bytes,
                     readonly: true,
@@ -362,7 +366,7 @@ impl VmConfig {
         ] {
             add_component_to_spec(
                 &mut spec,
-                name.to_owned(),
+                SpecKey::Name(name.to_owned()),
                 ComponentV0::SerialPort(SerialPort { num: port }),
             )?;
         }
@@ -375,7 +379,7 @@ impl VmConfig {
         {
             add_component_to_spec(
                 &mut spec,
-                "com4".to_owned(),
+                SpecKey::Name("com4".to_owned()),
                 ComponentV0::SerialPort(SerialPort {
                     num: SerialPortNumber::Com4,
                 }),
@@ -384,7 +388,7 @@ impl VmConfig {
 
         add_component_to_spec(
             &mut spec,
-            "pvpanic".to_owned(),
+            SpecKey::Name("pvpanic".to_owned()),
             ComponentV0::QemuPvpanic(QemuPvpanic { enable_isa: true }),
         )?;
 
@@ -725,17 +729,17 @@ async fn migrate_instance(
 
     let mut replace_components = HashMap::new();
     for disk in disks {
-        let ParsedDiskRequest { backend_name, backend_spec, .. } =
+        let ParsedDiskRequest { backend_id, backend_spec, .. } =
             disk.parse()?;
 
         let old = replace_components.insert(
-            backend_name.clone(),
+            backend_id.to_string(),
             ReplacementComponent::CrucibleStorageBackend(backend_spec),
         );
 
         if old.is_some() {
             anyhow::bail!(
-                "duplicate backend name {backend_name} in replacement disk \
+                "duplicate backend name {backend_id} in replacement disk \
                 list"
             );
         }
