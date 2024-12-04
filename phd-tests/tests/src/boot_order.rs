@@ -506,3 +506,111 @@ async fn boot_order_source_priority(ctx: &Framework) {
         Some(unbootable_idx)
     );
 }
+
+#[phd_testcase]
+async fn nvme_boot_option_description(ctx: &Framework) {
+    let mut cfg = ctx.vm_config_builder("nvme_boot_option_description");
+
+    cfg.data_disk(
+        "nvme-test-disk",
+        DiskSource::Artifact(ctx.default_guest_os_artifact()),
+        DiskInterface::Nvme,
+        DiskBackend::File,
+        8,
+    );
+
+    // We'll boot to `boot-disk`, but this test actually cares about the
+    // description of `nvme-test-disk`. Ensure it's in the boot order list so
+    // that we'll have a `BootNNNN` option for it.
+    cfg.boot_order(vec!["boot-disk", "nvme-test-disk"]);
+
+    let mut vm = ctx.spawn_vm(&cfg, None).await?;
+    vm.launch().await?;
+    vm.wait_to_boot().await?;
+
+    let boot_option_numbers = discover_boot_option_numbers(
+        &vm,
+        &[((4, 0), "boot-disk"), ((8, 0), "nvme-test-disk")],
+    )
+    .await?;
+
+    let test_disk_option: u16 = boot_option_numbers["nvme-test-disk"];
+
+    let test_disk_option_bytes =
+        read_efivar(&vm, &bootvar(test_disk_option)).await?;
+
+    let mut cursor = Cursor::new(test_disk_option_bytes.as_slice());
+
+    let load_option = EfiLoadOption::parse_from(&mut cursor).unwrap();
+
+    // Just a quick integrity check: we just put `nvme-test-disk` at PCI slot 8,
+    // so we should be comparing to a load option describing PCI slot 8. If
+    // these don't match, the description checking below would probably be a red
+    // herring.
+    assert!(load_option.path.matches_pci_device_function(8, 0));
+
+    // The test assertion here is "UEFI  2" because we currently expect an NVMe
+    // boot option to be named via the following procedure:
+    // * fw_cfg bootorder (via `cfg_boot_order()` above) specifies `boot-disk`
+    //   first, and `nvme-test-disk` second.
+    // * OVMF processes boot options in that order. For each option:
+    //   * try determining a boot description via these handlers in order:
+    //     https://github.com/oxidecomputer/edk2/blob/propolis/edk2-stable202105/MdeModulePkg/Library/UefiBootManagerLib/BmBootDescription.c#L749-L756
+    // * `boot-disk` is NVMe and described by BmGetNvmeDescription
+    // * in that function, OVMF sends an NVMe IDENTIFY CONTROLLER command:
+    //   https://github.com/oxidecomputer/edk2/blob/propolis/edk2-stable202105/MdeModulePkg/Library/UefiBootManagerLib/BmBootDescription.c#L600-L618
+    // * the returned identification information has the following Mn/Sn:
+    //   - Mn: default (`[0; 40]`):
+    //     https://github.com/oxidecomputer/propolis/blob/5fe523a/lib/propolis/src/hw/nvme/bits.rs#L1001
+    //   - Sn: the first 20 characters of the disk name. Here: "boot-disk"
+    //     https://github.com/oxidecomputer/propolis/blob/5fe523a/lib/propolis/src/hw/nvme/mod.rs#L507-L532
+    // * OVMF assembles the identification information into a wide-char string
+    //   like "\x00\x00\x00\x00\x00... boot-disk\x00\x00...":
+    //   https://github.com/oxidecomputer/edk2/blob/propolis/edk2-stable202105/MdeModulePkg/Library/UefiBootManagerLib/BmBootDescription.c#L628-L643
+    // * The preliminary description has "UEFI " prepended to it:
+    //   https://github.com/oxidecomputer/edk2/blob/propolis/edk2-stable202105/MdeModulePkg/Library/UefiBootManagerLib/BmBootDescription.c#L788-L790
+    // * `StrCatS` appends the preliminary description to this new string.
+    //   Because the model number is all nulls, the first character of
+    //   "boot-disk"'s description is \x00, and `StrCatS` immediately returns
+    //   having added nothing to the description:
+    //   https://github.com/oxidecomputer/edk2/blob/propolis/edk2-stable202105/MdeModulePkg/Library/UefiBootManagerLib/BmBootDescription.c#L791
+    // * At this point "boot-disk"'s description is "UEFI ". The same procedure
+    //   runs for "nvme-test-disk" and describes it "UEFI " as well.
+    // * Finally, `BmMakeBootOptionDescriptionUnique` runs and appends " 2" to
+    //   make "nvme-test-disk"'s description distinct from "boot-disk". At this
+    //   point, "nvme-test-disk"'s description is "UEFI  2":
+    //   https://github.com/oxidecomputer/edk2/blob/propolis/edk2-stable202105/MdeModulePkg/Library/UefiBootManagerLib/BmBootDescription.c#L863-L868
+    const EXPECTED_BOOT_DESCRIPTION: &str = "UEFI  2";
+
+    // Hey! If this assertion failed, you may have done a good thing!
+    //
+    // This test's primary purpose is to ensure we do not *unknowingly* change
+    // the description of OVMF-determined boot options. It is not unacceptable
+    // that these options change, but changing them requires careful
+    // consideration. Specifically, as of writing this test, if a device has:
+    // * a boot option automatically determined by EDK2
+    // * has that option persisted to NvVars
+    // * a boot option with changed name on subsequent boot
+    // the previously valid automatically-added boot option will be removed from
+    // the boot order, and a new option with the new name will be added to the
+    // end of the boot order.
+    //
+    // At this point, if the EFI shell is in the boot order list and in front of
+    // a disk with a bootable OS on it, a guest VM could end up simply booting
+    // into the EFI shell and get "stuck" there. This is not ideal, especially
+    // since operating the EFI shell is not very well documented.
+    //
+    // So, if this assertion failed, something caused the
+    // automatically-determined boot option description to change. You may be
+    // providing a model number in the NVMe IDENTIFY CONTROLLER command, or OVMF
+    // may be using different logic to determine descriptions. Presumably you've
+    // changed something, so you'd have a better guess than me. If UEFI NvVars
+    // are still retained in user-managed disks, where we are not managing the
+    // ESP or NvVars data ourselves, then we probably should preserve existing
+    // disk boot option descriptions. This test would be a great place to ensure
+    // any new compatibility mechanism also works correctly. If UEFI NvVars are
+    // provided through an emulated firmware device, or we're being more
+    // invasive with changes to OVMF including boot order determination, then
+    // maybe the assertion should fail and this test is no longer useful!
+    assert_eq!(load_option.description, EXPECTED_BOOT_DESCRIPTION);
+}
