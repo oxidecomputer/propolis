@@ -14,7 +14,7 @@ mod debian11_nocloud;
 mod linux;
 mod shell_commands;
 mod ubuntu22_04;
-mod windows;
+pub mod windows;
 mod windows_server_2016;
 mod windows_server_2019;
 mod windows_server_2022;

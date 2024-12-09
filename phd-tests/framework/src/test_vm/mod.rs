@@ -12,7 +12,8 @@ use std::{
 
 use crate::{
     guest_os::{
-        self, CommandSequence, CommandSequenceEntry, GuestOs, GuestOsKind,
+        self, windows::WindowsVm, CommandSequence, CommandSequenceEntry,
+        GuestOs, GuestOsKind,
     },
     serial::{BufferKind, SerialConsole},
     test_vm::{
@@ -385,6 +386,12 @@ impl TestVm {
     /// Returns the kind of guest OS running in this VM.
     pub fn guest_os_kind(&self) -> GuestOsKind {
         self.spec.guest_os_kind
+    }
+
+    /// If this VM is running a Windows guest, returns a wrapper that provides
+    /// Windows-specific VM functions.
+    pub fn get_windows_vm(&self) -> Option<WindowsVm> {
+        self.guest_os_kind().is_windows().then_some(WindowsVm { vm: self })
     }
 
     /// Sets the VM to the running state. If the VM has not yet been launched
