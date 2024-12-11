@@ -44,6 +44,14 @@ impl WindowsVm<'_> {
     }
 }
 
+impl<'a> std::ops::Deref for WindowsVm<'a> {
+    type Target = TestVm;
+
+    fn deref(&self) -> &Self::Target {
+        self.vm
+    }
+}
+
 const CYGWIN_CMD: &str = "C:\\cygwin\\cygwin.bat\r";
 
 /// Prepends a `reset` command to the shell command supplied in `cmd`. Windows

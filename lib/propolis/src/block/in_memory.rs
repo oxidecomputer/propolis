@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::accessors::MemAccessor;
 use crate::block;
+use crate::common::Lifecycle;
 use crate::migrate::{
     MigrateCtx, MigrateSingle, MigrateStateError, Migrator, PayloadOffer,
     PayloadOutput,
@@ -16,8 +17,6 @@ use crate::tasks::ThreadGroup;
 use crate::vmm::{MemCtx, SubMapping};
 
 use anyhow::Context;
-
-use super::Lifecycle;
 
 pub struct InMemoryBackend {
     state: Arc<WorkingState>,

@@ -34,13 +34,13 @@ async fn launch_vm_and_find_in_memory_disk(
     vm.launch().await?;
     vm.wait_to_boot().await?;
 
-    let device_path = if let Some(win_vm) = vm.get_windows_vm() {
+    let device_path = if let Some(vm) = vm.get_windows_vm() {
         // Cygwin documents that \Device\HardDisk devices in the NT device
         // namespace map to /dev/sd devices in the emulated POSIX namespace:
         // disk 0 is /dev/sda, disk 1 is /dev/sdb, and so on. Get the NT device
         // number of the attached in-memory disk.
         let cmd = "(Get-PhysicalDisk | Where {$_.BusType -ne 'NVMe'}).DeviceId";
-        let num = win_vm.run_powershell_command(cmd).await?.parse::<u8>()?;
+        let num = vm.run_powershell_command(cmd).await?.parse::<u8>()?;
 
         // If the test requires the disk to be writable, run diskpart to ensure
         // that its readonly attribute is cleared.
