@@ -145,19 +145,6 @@ async fn in_memory_backend_smoke_test(ctx: &Framework) {
 
 #[phd_testcase]
 async fn in_memory_backend_migration_test(ctx: &Framework) {
-    // This test verifies that live-migrating a disk with an in-memory backend
-    // copies the backend's data from the source to the target. To do that, it
-    // uses `dd` flags to (try to) force writes to be synchronized to disk
-    // immediately and to force reads to bypass the guest OS's caches.
-    //
-    // Dynamic tracing of block backend activity shows that Alpine guests don't
-    // reliably read from underlying storage even when `iflag=direct` is used.
-    // This can cause this test to pass incorrectly. Unless and until a more
-    // reliable way to bypass caches is found, skip this test on Alpine.
-    if let GuestOsKind::Alpine = ctx.default_guest_os_kind().await? {
-        phd_skip!("iflag=direct doesn't work as required on Alpine");
-    }
-
     // A blank disk is fine for this test: the rest of the test will address the
     // disk device directly instead of assuming it has a file system. This works
     // around #824 for Windows guests (which may not recognize the FAT
@@ -170,11 +157,17 @@ async fn in_memory_backend_migration_test(ctx: &Framework) {
     )
     .await?;
 
-    // Scribble random data into the first kilobyte of the data disk. Use
-    // `oflag=sync` to force the guest OS to ensure this data is actually
-    // persisted to the device (and not just held in an in-memory cache).
+    // Scribble random data into the first kilobyte of the data disk, passing
+    // the appropriate flags to ensure that the guest actually writes the data
+    // to the disk (instead of just holding it in memory).
+    let force_sync = if let GuestOsKind::Alpine = vm.guest_os_kind() {
+        "conv=sync"
+    } else {
+        "oflag=sync"
+    };
+
     vm.run_shell_command(&format!(
-        "dd if=/dev/random of={device_path} oflag=sync bs=1K count=1"
+        "dd if=/dev/random of={device_path} {force_sync} bs=1K count=1"
     ))
     .await?;
 
@@ -197,15 +190,24 @@ async fn in_memory_backend_migration_test(ctx: &Framework) {
         .migrate_from(&vm, Uuid::new_v4(), MigrationTimeout::default())
         .await?;
 
-    // Read the scribbled data again. Use `iflag=direct` to try to get the guest
-    // to read this data back from the physical device instead of its disk
-    // cache.
+    // Read the scribbled data back from the disk. On most guests, adding
+    // `iflag=direct` to the `dd` invocation is sufficient to bypass the guest's
+    // caches and read from the underlying disk. Alpine guests appear also to
+    // need a procfs poke to drop page caches before they'll read from the disk.
+    if let GuestOsKind::Alpine = vm.guest_os_kind() {
+        target.run_shell_command("sync").await?;
+        target.run_shell_command("echo 3 > /proc/sys/vm/drop_caches").await?;
+    }
+
     target
         .run_shell_command(&format!(
             "dd if={device_path} of=/tmp/after iflag=direct bs=1K"
         ))
         .await?;
 
+    // The data that was scribbled before migrating should match what was read
+    // back from the disk. If it doesn't, migration restored the original
+    // (blank) disk contents, which is incorrect.
     let out = target
         .run_shell_command("diff --report-identical /tmp/before /tmp/after")
         .await?;
