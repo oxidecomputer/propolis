@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use phd_testcase::*;
+use propolis_client::types::{InstanceSpecStatus, VersionedInstanceSpec};
 
 #[phd_testcase]
 async fn nproc_test(ctx: &Framework) {
@@ -46,8 +47,11 @@ async fn instance_spec_get_test(ctx: &Framework) {
     vm.launch().await?;
 
     let spec_get_response = vm.get_spec().await?;
-    let propolis_client::types::VersionedInstanceSpec::V0(spec) =
-        spec_get_response.spec;
+    let InstanceSpecStatus::Present(spec) = spec_get_response.spec else {
+        panic!("launched instance should have a spec");
+    };
+
+    let VersionedInstanceSpec::V0(spec) = spec;
     assert_eq!(spec.board.cpus, 4);
     assert_eq!(spec.board.memory_mb, 3072);
 }
