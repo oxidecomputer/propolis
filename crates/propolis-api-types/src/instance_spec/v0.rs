@@ -22,6 +22,7 @@ pub enum ComponentV0 {
     SoftNpuPort(components::devices::SoftNpuPort),
     SoftNpuP9(components::devices::SoftNpuP9),
     P9fs(components::devices::P9fs),
+    MigrationFailureInjector(components::devices::MigrationFailureInjector),
     CrucibleStorageBackend(components::backends::CrucibleStorageBackend),
     FileStorageBackend(components::backends::FileStorageBackend),
     BlobStorageBackend(components::backends::BlobStorageBackend),

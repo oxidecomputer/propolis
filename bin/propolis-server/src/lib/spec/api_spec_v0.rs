@@ -26,6 +26,9 @@ use super::{
     StorageDevice,
 };
 
+#[cfg(not(feature = "omicron-build"))]
+use super::MigrationFailure;
+
 #[cfg(feature = "falcon")]
 use super::SoftNpuPort;
 
@@ -40,9 +43,9 @@ pub(crate) enum ApiSpecError {
     #[error("network backend {backend} not found for device {device}")]
     NetworkBackendNotFound { backend: String, device: String },
 
-    #[cfg(not(feature = "falcon"))]
-    #[error("softnpu component {0} compiled out")]
-    SoftNpuCompiledOut(String),
+    #[allow(dead_code)]
+    #[error("support for component {component} compiled out via {feature}")]
+    FeatureCompiledOut { component: String, feature: &'static str },
 
     #[error("backend {0} not used by any device")]
     BackendNotUsed(String),
@@ -61,6 +64,8 @@ impl From<Spec> for InstanceSpecV0 {
             serial,
             pci_pci_bridges,
             pvpanic,
+            #[cfg(not(feature = "omicron-build"))]
+            migration_failure,
             #[cfg(feature = "falcon")]
             softnpu,
         } = val;
@@ -148,6 +153,15 @@ impl From<Spec> for InstanceSpecV0 {
                 ComponentV0::BootSettings(BootSettings {
                     order: settings.order.into_iter().map(Into::into).collect(),
                 }),
+            );
+        }
+
+        #[cfg(not(feature = "omicron-build"))]
+        if let Some(mig) = migration_failure {
+            insert_component(
+                &mut spec,
+                mig.name,
+                ComponentV0::MigrationFailureInjector(mig.spec),
             );
         }
 
@@ -292,12 +306,29 @@ impl TryFrom<InstanceSpecV0> for Spec {
                     // apply it to the builder later.
                     boot_settings = Some((device_name, settings));
                 }
+                #[cfg(feature = "omicron-build")]
+                ComponentV0::MigrationFailureInjector(_) => {
+                    return Err(ApiSpecError::FeatureCompiledOut {
+                        component: device_name,
+                        feature: "omicron-build",
+                    });
+                }
+                #[cfg(not(feature = "omicron-build"))]
+                ComponentV0::MigrationFailureInjector(mig) => {
+                    builder.add_migration_failure_device(MigrationFailure {
+                        name: device_name,
+                        spec: mig,
+                    })?;
+                }
                 #[cfg(not(feature = "falcon"))]
                 ComponentV0::SoftNpuPciPort(_)
                 | ComponentV0::SoftNpuPort(_)
                 | ComponentV0::SoftNpuP9(_)
                 | ComponentV0::P9fs(_) => {
-                    return Err(ApiSpecError::SoftNpuCompiledOut(device_name));
+                    return Err(ApiSpecError::FeatureCompiledOut {
+                        component: device_name,
+                        feature: "falcon",
+                    });
                 }
                 #[cfg(feature = "falcon")]
                 ComponentV0::SoftNpuPciPort(port) => {
