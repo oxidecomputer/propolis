@@ -44,7 +44,7 @@ impl WindowsVm<'_> {
     }
 }
 
-impl<'a> std::ops::Deref for WindowsVm<'a> {
+impl std::ops::Deref for WindowsVm<'_> {
     type Target = TestVm;
 
     fn deref(&self) -> &Self::Target {
