@@ -2,12 +2,15 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use propolis_api_types::instance_spec::{
-    v0::ComponentV0, VersionedInstanceSpec,
+use std::collections::BTreeMap;
+
+use propolis_api_types::{
+    instance_spec::{v0::ComponentV0, VersionedInstanceSpec},
+    ReplacementComponent,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::spec::{api_spec_v0::ApiSpecError, Spec, StorageBackend};
+use crate::spec::{api_spec_v0::ApiSpecError, Spec};
 
 use super::MigrateError;
 
@@ -30,73 +33,65 @@ impl Preamble {
     /// Any such backends will replace the corresponding backend entries in the
     /// source spec. If the target spec contains a replacement backend that is
     /// not present in the source spec, this routine fails.
-    pub fn amend_spec(self, target_spec: &Spec) -> Result<Spec, MigrateError> {
+    pub fn amend_spec(
+        self,
+        replacements: &BTreeMap<String, ReplacementComponent>,
+    ) -> Result<Spec, MigrateError> {
+        fn wrong_type_error(id: &str, kind: &str) -> MigrateError {
+            let msg =
+                format!("component {id} is not a {kind} in the source spec");
+            MigrateError::InstanceSpecsIncompatible(msg)
+        }
+
         let VersionedInstanceSpec::V0(mut source_spec) = self.instance_spec;
-        for disk in target_spec.disks.values() {
-            let StorageBackend::Crucible(crucible) = &disk.backend_spec else {
-                continue;
-            };
-
-            let Some(to_amend) =
-                source_spec.components.get_mut(disk.device_spec.backend_name())
+        for (id, comp) in replacements {
+            let Some(to_amend) = source_spec.components.get_mut(id.as_str())
             else {
                 return Err(MigrateError::InstanceSpecsIncompatible(format!(
-                    "replacement component {} not in source spec",
-                    disk.device_spec.backend_name()
+                    "replacement component {id} not in source spec",
                 )));
             };
 
-            if !matches!(to_amend, ComponentV0::CrucibleStorageBackend(_)) {
-                return Err(MigrateError::InstanceSpecsIncompatible(format!(
-                    "component {} is not a Crucible backend in the source spec",
-                    disk.device_spec.backend_name()
-                )));
+            match comp {
+                #[cfg(feature = "omicron-build")]
+                ReplacementComponent::MigrationFailureInjector(_) => {
+                    return Err(MigrateError::InstanceSpecsIncompatible(
+                        format!(
+                            "replacing migration failure injector {id} is \
+                            impossible because the feature is compiled out"
+                        ),
+                    ));
+                }
+
+                #[cfg(not(feature = "omicron-build"))]
+                ReplacementComponent::MigrationFailureInjector(comp) => {
+                    let ComponentV0::MigrationFailureInjector(src) = to_amend
+                    else {
+                        return Err(wrong_type_error(
+                            id,
+                            "migration failure injector",
+                        ));
+                    };
+
+                    *src = comp.clone();
+                }
+                ReplacementComponent::CrucibleStorageBackend(comp) => {
+                    let ComponentV0::CrucibleStorageBackend(src) = to_amend
+                    else {
+                        return Err(wrong_type_error(id, "crucible backend"));
+                    };
+
+                    *src = comp.clone();
+                }
+                ReplacementComponent::VirtioNetworkBackend(comp) => {
+                    let ComponentV0::VirtioNetworkBackend(src) = to_amend
+                    else {
+                        return Err(wrong_type_error(id, "viona backend"));
+                    };
+
+                    *src = comp.clone();
+                }
             }
-
-            *to_amend = ComponentV0::CrucibleStorageBackend(crucible.clone());
-        }
-
-        for nic in target_spec.nics.values() {
-            let Some(to_amend) =
-                source_spec.components.get_mut(&nic.device_spec.backend_name)
-            else {
-                return Err(MigrateError::InstanceSpecsIncompatible(format!(
-                    "replacement component {} not in source spec",
-                    nic.device_spec.backend_name
-                )));
-            };
-
-            if !matches!(to_amend, ComponentV0::VirtioNetworkBackend(_)) {
-                return Err(MigrateError::InstanceSpecsIncompatible(format!(
-                    "component {} is not a virtio network backend \
-                            in the source spec",
-                    nic.device_spec.backend_name
-                )));
-            }
-
-            *to_amend =
-                ComponentV0::VirtioNetworkBackend(nic.backend_spec.clone());
-        }
-
-        #[cfg(not(feature = "omicron-build"))]
-        if let Some(mig) = &target_spec.migration_failure {
-            let Some(to_amend) = source_spec.components.get_mut(&mig.name)
-            else {
-                return Err(MigrateError::InstanceSpecsIncompatible(format!(
-                    "replacement component {} not in source spec",
-                    mig.name
-                )));
-            };
-
-            if !matches!(to_amend, ComponentV0::MigrationFailureInjector(_)) {
-                return Err(MigrateError::InstanceSpecsIncompatible(format!(
-                    "component {} is not a migration failure injector \
-                            in the source spec",
-                    mig.name
-                )));
-            }
-
-            *to_amend = ComponentV0::MigrationFailureInjector(mig.spec.clone());
         }
 
         let amended_spec =

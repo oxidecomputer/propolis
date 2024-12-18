@@ -4298,6 +4298,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.21.7",
+ "crucible-client-types",
  "futures",
  "progenitor",
  "propolis_api_types",

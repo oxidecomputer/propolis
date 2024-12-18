@@ -9,8 +9,9 @@ use propolis::migrate::{
     MigrateCtx, MigrateStateError, Migrator, PayloadOffer, PayloadOffers,
 };
 use propolis::vmm;
-use propolis_api_types::InstanceMigrateInitiateRequest;
+use propolis_api_types::ReplacementComponent;
 use slog::{error, info, trace, warn};
+use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::io;
 use std::net::SocketAddr;
@@ -36,6 +37,12 @@ use crate::vm::state_publisher::{
 use super::protocol::Protocol;
 use super::MigrateConn;
 
+pub(crate) struct MigrationTargetInfo {
+    pub migration_id: Uuid,
+    pub src_addr: SocketAddr,
+    pub replace_components: BTreeMap<String, ReplacementComponent>,
+}
+
 /// The interface to an arbitrary version of the target half of the live
 /// migration protocol.
 //
@@ -58,7 +65,7 @@ pub(crate) trait DestinationProtocol {
 /// that the caller can use to run the migration.
 pub(crate) async fn initiate(
     log: &slog::Logger,
-    migrate_info: &InstanceMigrateInitiateRequest,
+    migrate_info: &MigrationTargetInfo,
     local_addr: SocketAddr,
 ) -> Result<impl DestinationProtocol, MigrateError> {
     let migration_id = migrate_info.migration_id;
@@ -350,7 +357,12 @@ impl<T: MigrateConn> RonV0<T> {
         }?;
         info!(self.log(), "Destination read Preamble: {:?}", preamble);
 
-        let spec = match preamble.amend_spec(ensure_ctx.instance_spec()) {
+        let spec = match preamble.amend_spec(
+            &ensure_ctx
+                .migration_info()
+                .expect("migration in was requested")
+                .replace_components,
+        ) {
             Ok(spec) => spec,
             Err(e) => {
                 error!(
