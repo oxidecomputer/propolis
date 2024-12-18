@@ -1851,21 +1851,21 @@
         "additionalProperties": false
       },
       "SoftNpuPort": {
-        "description": "Describes a SoftNPU network port.\n\nThis is only supported by Propolis servers compiled with the `falcon` feature.",
+        "description": "Describes a port in a SoftNPU emulated ASIC.\n\nThis is only supported by Propolis servers compiled with the `falcon` feature.",
         "type": "object",
         "properties": {
           "backend_name": {
-            "description": "The name of the device's backend.",
+            "description": "The name of the port's associated DLPI backend.",
             "type": "string"
           },
-          "name": {
-            "description": "The name of the SoftNpu port.",
+          "link_name": {
+            "description": "The data link name for this port.",
             "type": "string"
           }
         },
         "required": [
           "backend_name",
-          "name"
+          "link_name"
         ],
         "additionalProperties": false
       },

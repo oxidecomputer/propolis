@@ -3833,7 +3833,6 @@ dependencies = [
  "libc",
  "newtype_derive",
  "propolis-client",
- "propolis-server-config",
  "rand",
  "reqwest 0.12.7",
  "ring 0.17.8",
@@ -4276,10 +4275,12 @@ dependencies = [
  "anyhow",
  "base64 0.21.7",
  "clap",
+ "crucible-client-types",
  "futures",
  "libc",
  "newtype-uuid",
  "propolis-client",
+ "propolis-config-toml",
  "reqwest 0.12.7",
  "serde",
  "serde_json",
@@ -4299,6 +4300,7 @@ dependencies = [
  "base64 0.21.7",
  "futures",
  "progenitor",
+ "propolis_api_types",
  "rand",
  "reqwest 0.12.7",
  "schemars",
@@ -4308,6 +4310,19 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-tungstenite",
+ "uuid",
+]
+
+[[package]]
+name = "propolis-config-toml"
+version = "0.0.0"
+dependencies = [
+ "cpuid_profile_config",
+ "propolis-client",
+ "serde",
+ "serde_derive",
+ "thiserror",
+ "toml 0.7.8",
  "uuid",
 ]
 
@@ -4383,7 +4398,6 @@ dependencies = [
  "oximeter-instruments",
  "oximeter-producer",
  "propolis",
- "propolis-server-config",
  "propolis_api_types",
  "propolis_types",
  "reqwest 0.12.7",
@@ -4408,17 +4422,6 @@ dependencies = [
  "toml 0.7.8",
  "usdt 0.5.0",
  "uuid",
-]
-
-[[package]]
-name = "propolis-server-config"
-version = "0.0.0"
-dependencies = [
- "cpuid_profile_config",
- "serde",
- "serde_derive",
- "thiserror",
- "toml 0.7.8",
 ]
 
 [[package]]

@@ -14,6 +14,7 @@ use std::net::IpAddr;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::SocketAddrV6;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::{
@@ -42,7 +43,6 @@ use propolis_api_types as api;
 use propolis_api_types::instance_spec::{
     self, components::devices::QemuPvpanic, VersionedInstanceSpec,
 };
-pub use propolis_server_config::Config as VmTomlConfig;
 use rfb::tungstenite::BinaryWs;
 use slog::{error, warn, Logger};
 use tokio::sync::MutexGuard;
@@ -70,8 +70,12 @@ pub struct MetricsEndpointConfig {
 /// this configuration at startup time and refers to it when manipulating its
 /// objects.
 pub struct StaticConfig {
-    /// The TOML-driven configuration for this server's instances.
-    pub vm: Arc<VmTomlConfig>,
+    /// The path to the bootrom image to expose to the guest.
+    pub bootrom_path: PathBuf,
+
+    /// The bootrom version string to expose to the guest. If None, machine
+    /// initialization chooses a default value.
+    pub bootrom_version: Option<String>,
 
     /// Whether to use the host's guest memory reservoir to back guest memory.
     pub use_reservoir: bool,
@@ -92,7 +96,8 @@ pub struct DropshotEndpointContext {
 impl DropshotEndpointContext {
     /// Creates a new server context object.
     pub fn new(
-        config: VmTomlConfig,
+        bootrom_path: PathBuf,
+        bootrom_version: Option<String>,
         use_reservoir: bool,
         log: slog::Logger,
         metric_config: Option<MetricsEndpointConfig>,
@@ -100,7 +105,8 @@ impl DropshotEndpointContext {
         let vnc_server = VncServer::new(log.clone());
         Self {
             static_config: StaticConfig {
-                vm: Arc::new(config),
+                bootrom_path,
+                bootrom_version,
                 use_reservoir,
                 metrics: metric_config,
             },
@@ -115,11 +121,8 @@ impl DropshotEndpointContext {
 /// this crate, so implementing TryFrom for them is not allowed.)
 fn instance_spec_from_request(
     request: &api::InstanceEnsureRequest,
-    toml_config: &VmTomlConfig,
 ) -> Result<Spec, SpecBuilderError> {
     let mut spec_builder = SpecBuilder::new(request.vcpus, request.memory);
-
-    spec_builder.add_devices_from_config(toml_config)?;
 
     for nic in &request.nics {
         spec_builder.add_nic_from_request(nic)?;
@@ -257,7 +260,8 @@ async fn instance_ensure_common(
             .await;
 
     let ensure_options = crate::vm::EnsureOptions {
-        toml_config: server_context.static_config.vm.clone(),
+        bootrom_path: server_context.static_config.bootrom_path.clone(),
+        bootrom_version: server_context.static_config.bootrom_version.clone(),
         use_reservoir: server_context.static_config.use_reservoir,
         metrics_config: server_context.static_config.metrics.clone(),
         oximeter_registry,
@@ -300,19 +304,13 @@ async fn instance_ensure(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
     request: TypedBody<api::InstanceEnsureRequest>,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
-    let server_context = rqctx.context();
     let request = request.into_inner();
-    let instance_spec =
-        instance_spec_from_request(&request, &server_context.static_config.vm)
-            .map_err(|e| {
-                HttpError::for_bad_request(
-                    None,
-                    format!(
-                        "failed to generate instance spec from request: {:#?}",
-                        e
-                    ),
-                )
-            })?;
+    let instance_spec = instance_spec_from_request(&request).map_err(|e| {
+        HttpError::for_bad_request(
+            None,
+            format!("failed to generate instance spec from request: {:#?}", e),
+        )
+    })?;
 
     instance_ensure_common(
         rqctx,
