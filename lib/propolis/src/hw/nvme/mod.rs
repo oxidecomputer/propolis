@@ -505,7 +505,7 @@ pub struct PciNvme {
 impl PciNvme {
     /// Create a new pci-nvme device with the given values
     pub fn create(
-        serial_number: String,
+        serial_number: &[u8; 20],
         mdts: Option<u8>,
         log: slog::Logger,
     ) -> Arc<Self> {
@@ -527,16 +527,12 @@ impl PciNvme {
         let cqes = size_of::<CompletionQueueEntry>().trailing_zeros() as u8;
         let sqes = size_of::<SubmissionQueueEntry>().trailing_zeros() as u8;
 
-        let sz = std::cmp::min(20, serial_number.len());
-        let mut sn: [u8; 20] = [0u8; 20];
-        sn[..sz].clone_from_slice(&serial_number.as_bytes()[..sz]);
-
         // Initialize the Identify structure returned when the host issues
         // an Identify Controller command.
         let ctrl_ident = bits::IdentifyController {
             vid: VENDOR_OXIDE,
             ssvid: VENDOR_OXIDE,
-            sn,
+            sn: *serial_number,
             ieee: OXIDE_OUI,
             mdts: mdts.unwrap_or(0),
             // We use standard Completion/Submission Queue Entry structures with no extra

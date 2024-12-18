@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::instance_spec::{components, SpecKey};
 use schemars::JsonSchema;
@@ -34,5 +34,5 @@ pub enum ComponentV0 {
 #[serde(deny_unknown_fields)]
 pub struct InstanceSpecV0 {
     pub board: components::board::Board,
-    pub components: HashMap<SpecKey, ComponentV0>,
+    pub components: BTreeMap<SpecKey, ComponentV0>,
 }
