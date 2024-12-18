@@ -487,7 +487,10 @@ fn file_hash_equals(
     path: impl AsRef<std::path::Path>,
     expected_digest: &str,
 ) -> anyhow::Result<()> {
-    let file = File::open(path)?;
+    let file = File::open(&path).with_context(|| {
+        format!("checking hash for file {}", path.as_ref().display())
+    })?;
+
     let mut reader = BufReader::new(file);
     hash_equals(&mut reader, expected_digest)
 }

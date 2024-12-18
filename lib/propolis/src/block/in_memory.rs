@@ -8,6 +8,11 @@ use std::sync::{Arc, Mutex};
 
 use crate::accessors::MemAccessor;
 use crate::block;
+use crate::common::Lifecycle;
+use crate::migrate::{
+    MigrateCtx, MigrateSingle, MigrateStateError, Migrator, PayloadOffer,
+    PayloadOutput,
+};
 use crate::tasks::ThreadGroup;
 use crate::vmm::{MemCtx, SubMapping};
 
@@ -231,4 +236,69 @@ fn process_write_request(
     }
 
     Ok(())
+}
+
+impl Lifecycle for InMemoryBackend {
+    fn type_name(&self) -> &'static str {
+        "in-memory-storage"
+    }
+
+    fn migrate(&self) -> Migrator {
+        Migrator::Single(self)
+    }
+}
+
+impl MigrateSingle for InMemoryBackend {
+    fn export(
+        &self,
+        _ctx: &MigrateCtx,
+    ) -> std::result::Result<PayloadOutput, MigrateStateError> {
+        let bytes = self.state.bytes.lock().unwrap();
+        Ok(migrate::InMemoryBlockBackendV1 { bytes: bytes.clone() }.into())
+    }
+
+    fn import(
+        &self,
+        mut offer: PayloadOffer,
+        _ctx: &MigrateCtx,
+    ) -> std::result::Result<(), MigrateStateError> {
+        let data: migrate::InMemoryBlockBackendV1 = offer.parse()?;
+        let mut guard = self.state.bytes.lock().unwrap();
+        if guard.len() != data.bytes.len() {
+            return Err(MigrateStateError::ImportFailed(format!(
+                "imported in-memory block backend data has length {}, \
+                        but backend's original length was {}",
+                data.bytes.len(),
+                guard.len()
+            )));
+        }
+
+        *guard = data.bytes;
+        Ok(())
+    }
+}
+
+mod migrate {
+    use serde::{Deserialize, Serialize};
+
+    use crate::migrate::{Schema, SchemaId};
+
+    #[derive(Serialize, Deserialize)]
+    pub struct InMemoryBlockBackendV1 {
+        pub(super) bytes: Vec<u8>,
+    }
+
+    impl std::fmt::Debug for InMemoryBlockBackendV1 {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("InMemoryBlockBackendV1")
+                .field("bytes", &"<redacted>".to_string())
+                .finish()
+        }
+    }
+
+    impl Schema<'_> for InMemoryBlockBackendV1 {
+        fn id() -> SchemaId {
+            ("in-memory-block-backend", 1)
+        }
+    }
 }

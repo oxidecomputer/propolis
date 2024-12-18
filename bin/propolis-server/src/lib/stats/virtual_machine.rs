@@ -190,7 +190,7 @@ impl KstatTarget for VirtualMachine {
             .find_map(|(_, kstat, data)| {
                 kstat_instance_from_instance_id(kstat, data, &self.vm_name)
             })
-            .ok_or_else(|| Error::NoSuchKstat)?;
+            .ok_or(Error::NoSuchKstat)?;
 
         // Armed with the kstat instance, find all relevant metrics related to
         // this particular VM. For now, we produce only vCPU usage metrics, but

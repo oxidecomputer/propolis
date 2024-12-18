@@ -468,7 +468,7 @@ impl<'a> MachineInitializer<'a> {
     }
 
     async fn create_storage_backend_from_spec(
-        &self,
+        &mut self,
         backend_spec: &StorageBackend,
         backend_id: &SpecKey,
         nexus_client: &Option<NexusClient>,
@@ -573,6 +573,10 @@ impl<'a> MachineInitializer<'a> {
                 )
                 .context("failed to create in-memory storage backend")?;
 
+                // In-memory backends need to be registered for lifecycle
+                // notifications so that they can export/import changes to the
+                // backing disk across migrations.
+                self.devices.insert(backend_id.clone(), be.clone());
                 Ok(StorageBackendInstance { be, crucible: None })
             }
         }
