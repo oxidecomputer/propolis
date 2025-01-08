@@ -525,6 +525,9 @@ async fn nvme_boot_option_description(ctx: &Framework) {
     cfg.boot_order(vec!["boot-disk", "nvme-test-disk"]);
 
     let mut vm = ctx.spawn_vm(&cfg, None).await?;
+    if !vm.guest_os_kind().is_linux() {
+        phd_skip!("boot option description test depends on efivarfs");
+    }
     vm.launch().await?;
     vm.wait_to_boot().await?;
 
