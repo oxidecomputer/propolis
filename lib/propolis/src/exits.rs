@@ -15,6 +15,7 @@ use bhyve_api::{
 use crate::common::GuestData;
 
 /// Describes the reason for exiting execution of a vCPU.
+#[derive(Debug)]
 pub struct VmExit {
     /// The instruction pointer of the guest at the time of exit.
     pub rip: u64,
