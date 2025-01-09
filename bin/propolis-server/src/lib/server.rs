@@ -425,6 +425,7 @@ async fn instance_serial(
     let ctx = rqctx.context();
     let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
     let serial = vm.objects().lock_shared().await.com1().clone();
+    let query = query.into_inner();
 
     // Use the default buffering paramters for the websocket configuration
     //
@@ -440,7 +441,7 @@ async fn instance_serial(
     )
     .await;
 
-    let byte_offset = SerialHistoryOffset::try_from(&query.into_inner()).ok();
+    let byte_offset = SerialHistoryOffset::try_from(&query).ok();
     if let Some(mut byte_offset) = byte_offset {
         loop {
             let (data, offset) = serial.history_vec(byte_offset, None)?;
@@ -459,7 +460,14 @@ async fn instance_serial(
     serial_mgr
         .as_ref()
         .ok_or("Instance has no serial console manager")?
-        .connect(ws_stream, crate::serial::ClientKind::ReadWrite)
+        .connect(
+            ws_stream,
+            if query.writable {
+                crate::serial::ClientKind::ReadWrite
+            } else {
+                crate::serial::ClientKind::ReadOnly
+            },
+        )
         .await;
 
     Ok(())

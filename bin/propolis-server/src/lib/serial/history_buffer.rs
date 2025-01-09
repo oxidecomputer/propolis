@@ -53,10 +53,12 @@ impl TryFrom<&api::InstanceSerialConsoleStreamRequest> for SerialHistoryOffset {
             api::InstanceSerialConsoleStreamRequest {
                 from_start: Some(offset),
                 most_recent: None,
+                ..
             } => Ok(SerialHistoryOffset::FromStart(*offset as usize)),
             api::InstanceSerialConsoleStreamRequest {
                 from_start: None,
                 most_recent: Some(offset),
+                ..
             } => Ok(SerialHistoryOffset::MostRecent(*offset as usize)),
             _ => Err(()),
         }

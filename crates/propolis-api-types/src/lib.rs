@@ -325,6 +325,11 @@ pub struct InstanceSerialConsoleStreamRequest {
     /// recently buffered data retrieved from the instance. (See note on `from_start` about mutual
     /// exclusivity)
     pub most_recent: Option<u64>,
+    /// True if the connection should allow writing. If this option is set, any
+    /// existing writer to the serial console will be disconnected when this
+    /// client connects.
+    #[serde(default)]
+    pub writable: bool,
 }
 
 /// Control message(s) sent through the websocket to serial console clients.
