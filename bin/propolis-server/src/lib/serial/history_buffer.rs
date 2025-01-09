@@ -7,7 +7,6 @@
 
 use dropshot::HttpError;
 use propolis_api_types as api;
-use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::convert::TryFrom;
 
@@ -29,7 +28,7 @@ const DEFAULT_MAX_LENGTH: isize = 16 * 1024;
 /// An abstraction for storing the contents of the instance's serial console
 /// output, intended for retrieval by the web console or other monitoring or
 /// troubleshooting tools.
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Clone)]
 pub(crate) struct HistoryBuffer {
     beginning: Vec<u8>,
     rolling: VecDeque<u8>,
@@ -222,6 +221,48 @@ impl HistoryBuffer {
     /// Returns the number of bytes output since instance boot.
     pub fn bytes_from_start(&self) -> usize {
         self.total_bytes
+    }
+
+    pub(super) fn export(&self) -> migrate::HistoryBufferContentsV1 {
+        let slices = self.rolling.as_slices();
+        let mut most_recent = Vec::with_capacity(self.rolling.len());
+        most_recent.extend(slices.0);
+        most_recent.extend(slices.1);
+        migrate::HistoryBufferContentsV1 {
+            beginning: self.beginning.clone(),
+            most_recent,
+            total_bytes: self.total_bytes,
+            buffer_size: self.buffer_size,
+        }
+    }
+
+    pub(super) fn import(
+        &mut self,
+        contents: migrate::HistoryBufferContentsV1,
+    ) {
+        self.beginning = contents.beginning;
+        self.rolling.clear();
+        self.rolling.extend(contents.most_recent.iter());
+        self.total_bytes = contents.total_bytes;
+        self.buffer_size = contents.buffer_size;
+    }
+}
+
+pub(crate) mod migrate {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Deserialize, Serialize, Clone)]
+    pub(crate) struct HistoryBufferContentsV1 {
+        pub(super) beginning: Vec<u8>,
+        pub(super) most_recent: Vec<u8>,
+        pub(super) total_bytes: usize,
+        pub(super) buffer_size: usize,
+    }
+
+    impl propolis::migrate::Schema<'_> for HistoryBufferContentsV1 {
+        fn id() -> propolis::migrate::SchemaId {
+            ("serial-console-backend", 1)
+        }
     }
 }
 

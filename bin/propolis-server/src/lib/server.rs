@@ -459,7 +459,8 @@ async fn instance_serial(
     serial_mgr
         .as_ref()
         .ok_or("Instance has no serial console manager")?
-        .connect(ws_stream, crate::serial::ClientKind::ReadWrite);
+        .connect(ws_stream, crate::serial::ClientKind::ReadWrite)
+        .await;
 
     Ok(())
 }

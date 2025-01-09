@@ -25,9 +25,6 @@ use super::history_buffer::{HistoryBuffer, SerialHistoryOffset};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ClientId(u64);
 
-trait ConsoleDevice: Source + Sink {}
-impl<T: Source + Sink> ConsoleDevice for T {}
-
 /// A client's rights when accessing a character backend.
 #[derive(Clone, Copy)]
 pub(super) enum Permissions {
@@ -188,7 +185,6 @@ impl Inner {
 /// access a single serial device.
 pub struct ConsoleBackend {
     inner: Arc<Mutex<Inner>>,
-    dev: Arc<dyn ConsoleDevice>,
     sink: Arc<dyn Sink>,
     sink_buffer: Arc<SinkBuffer>,
     done_tx: oneshot::Sender<()>,
@@ -211,7 +207,6 @@ impl ConsoleBackend {
 
         let this = Arc::new(Self {
             inner: Arc::new(Mutex::new(Inner::new(history_bytes))),
-            dev: device,
             sink,
             sink_buffer,
             done_tx,
@@ -265,6 +260,36 @@ impl Drop for ConsoleBackend {
         let (tx, _rx) = oneshot::channel();
         let done_tx = std::mem::replace(&mut self.done_tx, tx);
         let _ = done_tx.send(());
+    }
+}
+
+mod migrate {
+    use propolis::migrate::{
+        MigrateCtx, MigrateSingle, MigrateStateError, PayloadOffer,
+    };
+
+    use crate::serial::history_buffer::migrate::HistoryBufferContentsV1;
+
+    use super::ConsoleBackend;
+
+    impl MigrateSingle for ConsoleBackend {
+        fn export(
+            &self,
+            _ctx: &MigrateCtx,
+        ) -> Result<propolis::migrate::PayloadOutput, MigrateStateError>
+        {
+            Ok(self.inner.lock().unwrap().buffer.export().into())
+        }
+
+        fn import(
+            &self,
+            mut offer: PayloadOffer,
+            _ctx: &MigrateCtx,
+        ) -> Result<(), MigrateStateError> {
+            let contents: HistoryBufferContentsV1 = offer.parse()?;
+            self.inner.lock().unwrap().buffer.import(contents);
+            Ok(())
+        }
     }
 }
 

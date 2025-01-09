@@ -145,48 +145,52 @@ impl SerialConsoleManager {
             ),
         };
 
-        let mut client_tasks = self.client_tasks.lock().unwrap();
-        let client_id = client_tasks.next_id();
-        let prev_rw_task = if kind == ClientKind::ReadWrite {
-            client_tasks.remove_rw_client()
-        } else {
-            None
-        };
+        let prev_rw_task;
+        {
+            let mut client_tasks = self.client_tasks.lock().unwrap();
+            let client_id = client_tasks.next_id();
+            prev_rw_task = if kind == ClientKind::ReadWrite {
+                client_tasks.remove_rw_client()
+            } else {
+                None
+            };
 
-        let backend_hdl =
-            self.backend.attach_client(console_tx, permissions, discipline);
+            let backend_hdl =
+                self.backend.attach_client(console_tx, permissions, discipline);
 
-        let ctx = SerialTaskContext {
-            log: self.log.clone(),
-            ws,
-            backend_hdl,
-            console_rx,
-            control_rx,
-            start_rx: task_start_rx,
-            done_rx: task_done_rx,
-            client_tasks: self.client_tasks.clone(),
-            client_id,
-        };
+            let ctx = SerialTaskContext {
+                log: self.log.clone(),
+                ws,
+                backend_hdl,
+                console_rx,
+                control_rx,
+                start_rx: task_start_rx,
+                done_rx: task_done_rx,
+                client_tasks: self.client_tasks.clone(),
+                client_id,
+            };
 
-        let task = ClientTask {
-            hdl: tokio::spawn(async move { serial_task(ctx).await }),
-            control_tx,
-            done_tx: task_done_tx,
-        };
+            let task = ClientTask {
+                hdl: tokio::spawn(async move { serial_task(ctx).await }),
+                control_tx,
+                done_tx: task_done_tx,
+            };
 
-        client_tasks.tasks.insert(client_id, task);
-        if kind == ClientKind::ReadWrite {
-            assert!(client_tasks.rw_client_id.is_none());
-            client_tasks.rw_client_id = Some(client_id);
+            client_tasks.tasks.insert(client_id, task);
+            if kind == ClientKind::ReadWrite {
+                assert!(client_tasks.rw_client_id.is_none());
+                client_tasks.rw_client_id = Some(client_id);
+            }
         }
 
-        drop(client_tasks);
         if let Some(task) = prev_rw_task {
-            task.done_tx.send(());
-            task.hdl.await;
+            let _ = task.done_tx.send(());
+            let _ = task.hdl.await;
         }
 
-        task_start_tx.send(());
+        task_start_tx
+            .send(())
+            .expect("new serial task shouldn't exit before starting");
     }
 
     pub async fn notify_migration(&self, destination: SocketAddr) {
@@ -468,5 +472,5 @@ async fn serial_task(
         close(&log, client_id, sink, stream, close_reason).await;
     }
 
-    client_tasks.lock().unwrap().tasks.remove(&client_id);
+    client_tasks.lock().unwrap().remove_by_id(client_id);
 }

@@ -6,7 +6,7 @@ use bitvec::prelude::{BitSlice, Lsb0};
 use futures::{SinkExt, StreamExt};
 use propolis::common::{GuestAddr, GuestData, PAGE_SIZE};
 use propolis::migrate::{
-    MigrateCtx, MigrateStateError, Migrator, PayloadOutputs,
+    MigrateCtx, MigrateSingle, MigrateStateError, Migrator, PayloadOutputs,
 };
 use propolis::vmm;
 use propolis_api_types::instance_spec::VersionedInstanceSpec;
@@ -685,6 +685,7 @@ impl<T: MigrateConn> RonV0Runner<'_, T> {
     async fn device_state(&mut self) -> Result<(), MigrateError> {
         self.update_state(MigrationState::Device);
         let mut device_states = vec![];
+        let com1_payload;
         {
             let objects = self.vm.lock_shared().await;
             let migrate_ctx =
@@ -733,6 +734,14 @@ impl<T: MigrateConn> RonV0Runner<'_, T> {
                 }
                 Ok(())
             })?;
+
+            let com1_state = objects.com1().export(&migrate_ctx)?;
+            com1_payload = DevicePayload {
+                kind: com1_state.kind.to_owned(),
+                version: com1_state.version,
+                data: ron::ser::to_string(&com1_state.payload)
+                    .map_err(codec::ProtocolError::from)?,
+            };
         }
 
         info!(self.log(), "Device States: {device_states:#?}");
@@ -743,7 +752,14 @@ impl<T: MigrateConn> RonV0Runner<'_, T> {
         ))
         .await?;
 
+        self.send_msg(codec::Message::Serialized(
+            ron::ser::to_string(&com1_payload)
+                .map_err(codec::ProtocolError::from)?,
+        ))
+        .await?;
+
         self.send_msg(codec::Message::Okay).await?;
+
         self.read_ok().await
     }
 
@@ -787,15 +803,15 @@ impl<T: MigrateConn> RonV0Runner<'_, T> {
             }
             _ => return Err(MigrateError::UnexpectedMessage),
         };
-        let com1_history = self
-            .vm
-            .lock_shared()
-            .await
-            .com1()
-            .export_history(remote_addr)
-            .await?;
-        self.send_msg(codec::Message::Serialized(com1_history)).await?;
-        self.read_ok().await
+
+        {
+            let mgr = self.vm_services.serial_mgr.lock().await;
+            if let Some(mgr) = mgr.as_ref() {
+                mgr.notify_migration(remote_addr).await;
+            }
+        }
+
+        Ok(())
     }
 
     async fn finish(&mut self) -> Result<(), MigrateError> {
