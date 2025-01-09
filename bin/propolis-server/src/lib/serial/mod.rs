@@ -4,398 +4,447 @@
 
 //! Routines to expose a connection to an instance's serial port.
 
-use crate::migrate::MigrateError;
-
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::num::NonZeroUsize;
-use std::ops::Range;
-use std::sync::Arc;
-use std::time::Duration;
-
-use crate::serial::history_buffer::{HistoryBuffer, SerialHistoryOffset};
-use futures::future::Fuse;
-use futures::stream::SplitSink;
-use futures::{FutureExt, SinkExt, StreamExt};
-use propolis::chardev::{pollers, Sink, Source};
-use propolis_api_types::InstanceSerialConsoleControlMessage;
-use slog::{info, warn, Logger};
-use thiserror::Error;
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock as AsyncRwLock};
-use tokio::task::JoinHandle;
-use tokio_tungstenite::tungstenite::protocol::{
-    frame::coding::CloseCode, CloseFrame,
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::{Arc, Mutex},
 };
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{tungstenite, WebSocketStream};
 
+use backend::ConsoleBackend;
+use dropshot::WebsocketConnectionRaw;
+use futures::{
+    stream::{SplitSink, SplitStream},
+    SinkExt, StreamExt,
+};
+use propolis_api_types::InstanceSerialConsoleControlMessage;
+use slog::{info, warn};
+use tokio::{
+    select,
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+};
+use tokio_tungstenite::{
+    tungstenite::{
+        protocol::{frame::coding::CloseCode, CloseFrame},
+        Message,
+    },
+    WebSocketStream,
+};
+
+mod backend;
 pub(crate) mod history_buffer;
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
-    fn serial_close_recv() {}
-    fn serial_new_ws() {}
-    fn serial_uart_write(n: usize) {}
-    fn serial_uart_out() {}
-    fn serial_uart_read(n: usize) {}
-    fn serial_inject_uart() {}
-    fn serial_ws_recv() {}
+    fn serial_event_done() {}
+    fn serial_event_read(b: u8) {}
+    fn serial_event_console_disconnect() {}
+    fn serial_event_ws_recv(len: usize) {}
+    fn serial_event_ws_error() {}
+    fn serial_event_ws_disconnect() {}
     fn serial_buffer_size(n: usize) {}
 }
 
-/// Errors which may occur during the course of a serial connection.
-#[derive(Error, Debug)]
-pub enum SerialTaskError {
-    #[error("Cannot upgrade HTTP request to WebSockets: {0}")]
-    Upgrade(#[from] hyper::Error),
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ClientId(u64);
 
-    #[error("WebSocket Error: {0}")]
-    WebSocket(#[from] tungstenite::Error),
-
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("Mismatched websocket streams while closing")]
-    MismatchedStreams,
-
-    #[error("Error while waiting for notification: {0}")]
-    OneshotRecv(#[from] oneshot::error::RecvError),
-
-    #[error("JSON marshalling error while processing control message: {0}")]
-    Json(#[from] serde_json::Error),
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ClientKind {
+    ReadWrite,
+    ReadOnly,
 }
 
-pub enum SerialTaskControlMessage {
-    Stopping,
-    Migration { destination: SocketAddr, from_start: u64 },
+struct ClientTask {
+    hdl: JoinHandle<()>,
+    control_tx: mpsc::Sender<InstanceSerialConsoleControlMessage>,
+    done_tx: oneshot::Sender<()>,
 }
 
-pub struct SerialTask {
-    /// Handle to attached serial session
-    pub task: JoinHandle<()>,
-    /// Channel used to signal the task to terminate gracefully or notify
-    /// clients of a migration
-    pub control_ch: mpsc::Sender<SerialTaskControlMessage>,
-    /// Channel used to send new client connections to the streaming task
-    pub websocks_ch:
-        mpsc::Sender<WebSocketStream<dropshot::WebsocketConnectionRaw>>,
+#[derive(Default)]
+struct ClientTasks {
+    tasks: BTreeMap<ClientId, ClientTask>,
+    next_id: u64,
+    rw_client_id: Option<ClientId>,
 }
 
-pub async fn instance_serial_task<Device: Sink + Source>(
-    mut websocks_recv: mpsc::Receiver<
-        WebSocketStream<dropshot::WebsocketConnectionRaw>,
-    >,
-    mut control_recv: mpsc::Receiver<SerialTaskControlMessage>,
-    serial: Arc<Serial<Device>>,
-    log: Logger,
-) -> Result<(), SerialTaskError> {
-    info!(log, "Entered serial task");
-    let mut output = [0u8; 1024];
-    let mut cur_output: Option<Range<usize>> = None;
-    let mut cur_input: Option<(Vec<u8>, usize)> = None;
+impl ClientTasks {
+    fn next_id(&mut self) -> ClientId {
+        let id = self.next_id;
+        self.next_id += 1;
+        ClientId(id)
+    }
 
-    let mut ws_sinks: HashMap<
-        usize,
-        SplitSink<WebSocketStream<dropshot::WebsocketConnectionRaw>, Message>,
-    > = HashMap::new();
-    let mut ws_streams: HashMap<
-        usize,
-        futures::stream::SplitStream<
-            WebSocketStream<dropshot::WebsocketConnectionRaw>,
-        >,
-    > = HashMap::new();
+    fn remove_by_id(&mut self, id: ClientId) {
+        self.tasks.remove(&id);
+        match self.rw_client_id {
+            Some(existing_id) if existing_id == id => {
+                self.rw_client_id = None;
+            }
+            _ => {}
+        }
+    }
 
-    let (send_ch, mut recv_ch) = mpsc::channel(4);
+    fn remove_rw_client(&mut self) -> Option<ClientTask> {
+        if let Some(id) = self.rw_client_id.take() {
+            self.tasks.remove(&id)
+        } else {
+            None
+        }
+    }
+}
 
-    let mut next_stream_id = 0usize;
+pub struct SerialConsoleManager {
+    log: slog::Logger,
+    backend: Arc<ConsoleBackend>,
+    client_tasks: Arc<Mutex<ClientTasks>>,
+}
 
-    loop {
-        let (uart_read, ws_send) =
-            if ws_sinks.is_empty() || cur_output.is_none() {
-                (serial.read_source(&mut output).fuse(), Fuse::terminated())
-            } else {
-                let range = cur_output.clone().unwrap();
-                (
-                    Fuse::terminated(),
-                    if !ws_sinks.is_empty() {
-                        futures::stream::iter(
-                            ws_sinks.iter_mut().zip(std::iter::repeat(
-                                Vec::from(&output[range]),
-                            )),
-                        )
-                        .for_each_concurrent(4, |((_i, ws), bin)| {
-                            ws.send(Message::binary(bin)).map(|_| ())
-                        })
-                        .fuse()
-                    } else {
-                        Fuse::terminated()
-                    },
-                )
-            };
+impl SerialConsoleManager {
+    pub fn new(log: slog::Logger, backend: Arc<ConsoleBackend>) -> Self {
+        Self {
+            log,
+            backend,
+            client_tasks: Arc::new(Mutex::new(ClientTasks::default())),
+        }
+    }
 
-        let (ws_recv, uart_write) = match &cur_input {
-            None => (
-                if !ws_streams.is_empty() {
-                    futures::stream::iter(ws_streams.iter_mut())
-                        .for_each_concurrent(4, |(i, ws)| {
-                            ws.next()
-                                .then(|msg| send_ch.send((*i, msg)))
-                                .map(|_| ())
-                        })
-                        .fuse()
-                } else {
-                    Fuse::terminated()
-                },
-                Fuse::terminated(),
+    pub async fn stop(self) {
+        let tasks = {
+            let mut guard = self.client_tasks.lock().unwrap();
+            std::mem::take(&mut guard.tasks)
+        };
+
+        let mut tasks: Vec<_> = tasks.into_values().collect();
+        for task in &mut tasks {
+            let (tx, _rx) = oneshot::channel();
+            let done_tx = std::mem::replace(&mut task.done_tx, tx);
+            let _ = done_tx.send(());
+        }
+
+        futures::future::join_all(tasks.into_iter().map(|task| task.hdl)).await;
+    }
+
+    pub async fn connect(
+        &self,
+        ws: WebSocketStream<WebsocketConnectionRaw>,
+        kind: ClientKind,
+    ) {
+        const SERIAL_CHANNEL_SIZE: usize = 256;
+        let (console_tx, console_rx) = mpsc::channel(SERIAL_CHANNEL_SIZE);
+        let (control_tx, control_rx) = mpsc::channel(1);
+        let (task_start_tx, task_start_rx) = oneshot::channel();
+        let (task_done_tx, task_done_rx) = oneshot::channel();
+        let (permissions, discipline) = match kind {
+            ClientKind::ReadWrite => (
+                backend::Permissions::ReadWrite,
+                backend::ReadWaitDiscipline::Block,
             ),
-            Some((data, consumed)) => (
-                Fuse::terminated(),
-                serial.write_sink(&data[*consumed..]).fuse(),
+            ClientKind::ReadOnly => (
+                backend::Permissions::ReadOnly,
+                backend::ReadWaitDiscipline::Close,
             ),
         };
 
-        let input_recv_ch_fut = recv_ch.recv().fuse();
-        let new_ws_recv = websocks_recv.recv().fuse();
-        let control_recv_fut = control_recv.recv().fuse();
+        let mut client_tasks = self.client_tasks.lock().unwrap();
+        let client_id = client_tasks.next_id();
+        let prev_rw_task = if kind == ClientKind::ReadWrite {
+            client_tasks.remove_rw_client()
+        } else {
+            None
+        };
 
-        tokio::select! {
-            // Poll in the order written
+        let backend_hdl =
+            self.backend.attach_client(console_tx, permissions, discipline);
+
+        let ctx = SerialTaskContext {
+            log: self.log.clone(),
+            ws,
+            backend_hdl,
+            console_rx,
+            control_rx,
+            start_rx: task_start_rx,
+            done_rx: task_done_rx,
+            client_tasks: self.client_tasks.clone(),
+            client_id,
+        };
+
+        let task = ClientTask {
+            hdl: tokio::spawn(async move { serial_task(ctx).await }),
+            control_tx,
+            done_tx: task_done_tx,
+        };
+
+        client_tasks.tasks.insert(client_id, task);
+        if kind == ClientKind::ReadWrite {
+            assert!(client_tasks.rw_client_id.is_none());
+            client_tasks.rw_client_id = Some(client_id);
+        }
+
+        drop(client_tasks);
+        if let Some(task) = prev_rw_task {
+            task.done_tx.send(());
+            task.hdl.await;
+        }
+
+        task_start_tx.send(());
+    }
+}
+
+/// Context passed to every serial console task.
+struct SerialTaskContext {
+    /// The logger this task should use.
+    log: slog::Logger,
+
+    /// The websocket connection this task uses to communicate with its client.
+    ws: WebSocketStream<WebsocketConnectionRaw>,
+
+    /// A handle representing this task's connection to the console backend.
+    backend_hdl: backend::ClientHandle,
+
+    /// Receives output bytes from the guest.
+    console_rx: mpsc::Receiver<u8>,
+
+    /// Receives control commands that should be relayed to websocket clients
+    /// (e.g. impending migrations).
+    control_rx: mpsc::Receiver<InstanceSerialConsoleControlMessage>,
+
+    start_rx: oneshot::Receiver<()>,
+
+    /// Signaled when the task is
+    done_rx: oneshot::Receiver<()>,
+
+    /// A reference to the manager's client task map, used to deregister this
+    /// task on disconnection.
+    client_tasks: Arc<Mutex<ClientTasks>>,
+
+    /// This task's ID, used to deregister this task on disconnection.
+    client_id: ClientId,
+}
+
+async fn serial_task(
+    SerialTaskContext {
+        log,
+        ws,
+        mut backend_hdl,
+        mut console_rx,
+        mut control_rx,
+        start_rx,
+        mut done_rx,
+        client_tasks,
+        client_id,
+    }: SerialTaskContext,
+) {
+    enum Event {
+        Done,
+        ConsoleRead(u8),
+        ConsoleDisconnected,
+        WroteToBackend(Result<usize, std::io::Error>),
+        ControlMessage(InstanceSerialConsoleControlMessage),
+        WebsocketMessage(Message),
+        WebsocketError(tokio_tungstenite::tungstenite::Error),
+        WebsocketDisconnected,
+    }
+
+    async fn close(
+        log: &slog::Logger,
+        client_id: ClientId,
+        sink: SplitSink<WebSocketStream<WebsocketConnectionRaw>, Message>,
+        stream: SplitStream<WebSocketStream<WebsocketConnectionRaw>>,
+        reason: &str,
+    ) {
+        let mut ws =
+            sink.reunite(stream).expect("sink and stream should match");
+        if let Err(e) = ws
+            .close(Some(CloseFrame {
+                code: CloseCode::Away,
+                reason: reason.into(),
+            }))
+            .await
+        {
+            warn!(
+                log, "error sending close frame to client";
+                "client_id" => client_id.0,
+                "error" => ?e,
+            );
+        }
+    }
+
+    let _ = start_rx.await;
+
+    info!(
+        log,
+        "serial console task started";
+        "client_id" => client_id.0,
+    );
+
+    let mut remaining_to_send: VecDeque<u8> = VecDeque::new();
+    let (mut sink, mut stream) = ws.split();
+    let mut close_reason: Option<&'static str> = None;
+    loop {
+        use futures::future::Either;
+
+        let (will_send, send_fut) =
+            if backend_hdl.is_writable() && !remaining_to_send.is_empty() {
+                remaining_to_send.make_contiguous();
+                (
+                    true,
+                    Either::Left(
+                        backend_hdl.write(remaining_to_send.as_slices().0),
+                    ),
+                )
+            } else {
+                (false, Either::Right(futures::future::pending()))
+            };
+
+        // If there are no bytes to be sent to the guest, accept another message
+        // from the websocket.
+        let ws_fut = if !will_send {
+            Either::Left(stream.next())
+        } else {
+            Either::Right(futures::future::pending())
+        };
+
+        let event = select! {
+            // The priority of these branches is important:
+            //
+            // 1. Requests to stop the client take precedence over everything
+            //    else.
+            // 2. New bytes written by the guest need to be processed before any
+            //    other requests: if a guest outputs a byte while a read-write
+            //    client is attached, the relevant vCPU will be blocked until
+            //    the client processes the byte.
             biased;
 
-            // It's important we always poll the close channel first
-            // so that a constant stream of incoming/outgoing messages
-            // don't cause us to ignore it
-            message = control_recv_fut => {
-                probes::serial_close_recv!(|| {});
-                match message {
-                    Some(SerialTaskControlMessage::Stopping) | None => {
-                        // Gracefully close the connections to any clients
-                        for (i, ws0) in ws_sinks.into_iter() {
-                            let ws1 = ws_streams.remove(&i).ok_or(SerialTaskError::MismatchedStreams)?;
-                            let mut ws = ws0.reunite(ws1).map_err(|_| SerialTaskError::MismatchedStreams)?;
-                            let _ = ws.close(Some(CloseFrame {
-                                code: CloseCode::Away,
-                                reason: "VM stopped".into(),
-                            })).await;
-                        }
-                    }
-                    Some(SerialTaskControlMessage::Migration { destination, from_start }) => {
-                        let mut failures = 0;
-                        for sink in ws_sinks.values_mut() {
-                            if sink.send(Message::Text(serde_json::to_string(
-                                &InstanceSerialConsoleControlMessage::Migrating {
-                                    destination,
-                                    from_start,
-                                }
-                            )?)).await.is_err() {
-                                failures += 1;
-                            }
-                        }
-                        if failures > 0 {
-                            warn!(log, "Failed to send migration info to {} connected clients.", failures);
-                        }
-                    }
+            _ = &mut done_rx => {
+                Event::Done
+            }
+
+            res = console_rx.recv() => {
+                match res {
+                    Some(b) => Event::ConsoleRead(b),
+                    None => Event::ConsoleDisconnected,
                 }
-                info!(log, "Terminating serial task");
+            }
+
+            control = control_rx.recv() => {
+                Event::ControlMessage(control.expect(
+                    "serial control channel should outlive its task"
+                ))
+            }
+
+            res = send_fut => {
+                Event::WroteToBackend(res)
+            }
+
+            ws = ws_fut => {
+                match ws {
+                    None => Event::WebsocketDisconnected,
+                    Some(Ok(msg)) => Event::WebsocketMessage(msg),
+                    Some(Err(err)) => Event::WebsocketError(err),
+                }
+            }
+        };
+
+        match event {
+            Event::Done => {
+                probes::serial_event_done!(|| ());
+                close_reason = Some("VM stopped");
                 break;
             }
+            Event::ConsoleRead(b) => {
+                probes::serial_event_read!(|| (b));
 
-            new_ws = new_ws_recv => {
-                probes::serial_new_ws!(|| {});
-                if let Some(ws) = new_ws {
-                    let (ws_sink, ws_stream) = ws.split();
-                    ws_sinks.insert(next_stream_id, ws_sink);
-                    ws_streams.insert(next_stream_id, ws_stream);
-                    next_stream_id += 1;
-                }
+                // Waiting outside the `select!` is OK here:
+                //
+                // - If the client is a read-write client, it is allowed to
+                //   block the guest to ensure that every byte of guest output
+                //   is transmitted to the client.
+                // - If the client is a read-only client, and it is slow to
+                //   acknowledge this message, its channel to the backend will
+                //   eventually fill up. If this happens and the backend thus
+                //   becomes unable to send new bytes, it will drop the channel
+                //   to allow the guest to make progress.
+                let _ = sink.send(Message::binary(vec![b])).await;
             }
+            Event::ConsoleDisconnected => {
+                probes::serial_event_console_disconnect!(|| ());
+                info!(
+                    log, "console backend dropped its client channel";
+                    "client_id" => client_id.0
+                );
+                break;
+            }
+            Event::ControlMessage(control) => {
+                let _ = sink
+                    .send(Message::Text(
+                        serde_json::to_string(&control).expect(
+                            "control messages can always serialize into JSON",
+                        ),
+                    ))
+                    .await;
+            }
+            Event::WroteToBackend(result) => {
+                let written = match result {
+                    Ok(n) => n,
+                    Err(e) => {
+                        let reason = if e.kind()
+                            == std::io::ErrorKind::ConnectionAborted
+                        {
+                            "read-write console connection overtaken"
+                        } else {
+                            "error writing to console backend"
+                        };
 
-            // Write bytes into the UART from the WS
-            written = uart_write => {
-                probes::serial_uart_write!(|| { written.unwrap_or(0) });
-                match written {
-                    Some(0) | None => {
+                        warn!(
+                            log,
+                            "dropping read-write console client";
+                            "client_id" => client_id.0,
+                            "error" => ?e,
+                            "reason" => reason
+                        );
+
+                        close_reason = Some(reason);
                         break;
                     }
-                    Some(n) => {
-                        let (data, consumed) = cur_input.as_mut().unwrap();
-                        *consumed += n;
-                        if *consumed == data.len() {
-                            cur_input = None;
-                        }
+                };
+
+                drop(remaining_to_send.drain(..written));
+            }
+            Event::WebsocketMessage(msg) => {
+                match (backend_hdl.is_writable(), msg) {
+                    (true, Message::Binary(bytes)) => {
+                        probes::serial_event_ws_recv!(|| (bytes.len()));
+                        remaining_to_send.extend(bytes.as_slice());
                     }
+                    (false, Message::Binary(_)) => {
+                        continue;
+                    }
+                    (_, _) => continue,
                 }
             }
-
-            // Transmit bytes from the UART through the WS
-            _ = ws_send => {
-                probes::serial_uart_out!(|| {});
-                cur_output = None;
+            Event::WebsocketError(e) => {
+                probes::serial_event_ws_error!(|| ());
+                warn!(
+                    log, "serial console websocket error";
+                    "client_id" => client_id.0,
+                    "error" => ?e
+                );
+                break;
             }
-
-            // Read bytes from the UART to be transmitted out the WS
-            nread = uart_read => {
-                // N.B. Putting this probe inside the match arms below causes
-                //      the `break` arm to be taken unexpectedly. See
-                //      propolis#292 for details.
-                probes::serial_uart_read!(|| { nread.unwrap_or(0) });
-                match nread {
-                    Some(0) | None => {
-                        break;
-                    }
-                    Some(n) => {
-                        cur_output = Some(0..n)
-                    }
-                }
-            }
-
-            // Receive bytes from the intermediate channel to be injected into
-            // the UART. This needs to be checked before `ws_recv` so that
-            // "close" messages can be processed and their indicated
-            // sinks/streams removed before they are polled again.
-            pair = input_recv_ch_fut => {
-                probes::serial_inject_uart!(|| {});
-                if let Some((i, msg)) = pair {
-                    match msg {
-                        Some(Ok(Message::Binary(input))) => {
-                            cur_input = Some((input, 0));
-                        }
-                        Some(Ok(Message::Close(..))) | None => {
-                            info!(log, "Removing closed serial connection {}.", i);
-                            let sink = ws_sinks.remove(&i).ok_or(SerialTaskError::MismatchedStreams)?;
-                            let stream = ws_streams.remove(&i).ok_or(SerialTaskError::MismatchedStreams)?;
-                            if let Err(e) = sink.reunite(stream).map_err(|_| SerialTaskError::MismatchedStreams)?.close(None).await {
-                                warn!(log, "Failed while closing stream {}: {}", i, e);
-                            }
-                        },
-                        _ => continue,
-                    }
-                }
-            }
-
-            // Receive bytes from connected WS clients to feed to the
-            // intermediate recv_ch
-            _ = ws_recv => {
-                probes::serial_ws_recv!(|| {});
+            Event::WebsocketDisconnected => {
+                probes::serial_event_ws_disconnect!(|| ());
+                info!(
+                    log, "serial console client disconnected";
+                    "client_id" => client_id.0
+                );
+                break;
             }
         }
     }
-    info!(log, "Returning from serial task");
-    Ok(())
-}
 
-/// Represents a serial connection into the VM.
-pub struct Serial<Device: Sink + Source> {
-    uart: Arc<Device>,
-
-    task_control_ch: Mutex<Option<mpsc::Sender<SerialTaskControlMessage>>>,
-
-    sink_poller: Arc<pollers::SinkBuffer>,
-    source_poller: Arc<pollers::SourceBuffer>,
-    history: AsyncRwLock<HistoryBuffer>,
-}
-
-impl<Device: Sink + Source> Serial<Device> {
-    /// Creates a new buffered serial connection on top of `uart.`
-    ///
-    /// Creation of this object disables "autodiscard", and destruction
-    /// of the object re-enables "autodiscard" mode.
-    ///
-    /// # Arguments
-    ///
-    /// * `uart` - The device which data will be read from / written to.
-    /// * `sink_size` - A lower bound on the size of the writeback buffer.
-    /// * `source_size` - A lower bound on the size of the read buffer.
-    pub fn new(
-        uart: Arc<Device>,
-        sink_size: NonZeroUsize,
-        source_size: NonZeroUsize,
-    ) -> Serial<Device> {
-        let sink_poller = pollers::SinkBuffer::new(sink_size);
-        let source_poller = pollers::SourceBuffer::new(pollers::Params {
-            buf_size: source_size,
-            poll_interval: Duration::from_millis(10),
-            poll_miss_thresh: 5,
-        });
-        let history = Default::default();
-        sink_poller.attach(uart.as_ref());
-        source_poller.attach(uart.as_ref());
-        uart.set_autodiscard(false);
-
-        let task_control_ch = Default::default();
-
-        Serial { uart, task_control_ch, sink_poller, source_poller, history }
+    info!(log, "serial console task exiting"; "client_id" => client_id.0);
+    if let Some(close_reason) = close_reason {
+        close(&log, client_id, sink, stream, close_reason).await;
     }
 
-    pub async fn read_source(&self, buf: &mut [u8]) -> Option<usize> {
-        let uart = self.uart.clone();
-        let bytes_read = self.source_poller.read(buf, uart.as_ref()).await?;
-        self.history.write().await.consume(&buf[..bytes_read]);
-        Some(bytes_read)
-    }
-
-    pub async fn write_sink(&self, buf: &[u8]) -> Option<usize> {
-        let uart = self.uart.clone();
-        self.sink_poller.write(buf, uart.as_ref()).await
-    }
-
-    pub(crate) async fn history_vec(
-        &self,
-        byte_offset: SerialHistoryOffset,
-        max_bytes: Option<usize>,
-    ) -> Result<(Vec<u8>, usize), history_buffer::Error> {
-        self.history.read().await.contents_vec(byte_offset, max_bytes)
-    }
-
-    // provide the channel through which we inform connected websocket clients
-    // that a migration has occurred, and where to reconnect.
-    // (the server's serial-to-websocket task -- and thus the receiving end of
-    // this channel -- are spawned in `instance_ensure_common`, after the
-    // construction of `Serial`)
-    pub(crate) async fn set_task_control_sender(
-        &self,
-        control_ch: mpsc::Sender<SerialTaskControlMessage>,
-    ) {
-        self.task_control_ch.lock().await.replace(control_ch);
-    }
-
-    pub(crate) async fn export_history(
-        &self,
-        destination: SocketAddr,
-    ) -> Result<String, MigrateError> {
-        let read_hist = self.history.read().await;
-        let from_start = read_hist.bytes_from_start() as u64;
-        let encoded = ron::to_string(&*read_hist)
-            .map_err(|e| MigrateError::Codec(e.to_string()))?;
-        drop(read_hist);
-        if let Some(ch) = self.task_control_ch.lock().await.as_ref() {
-            ch.send(SerialTaskControlMessage::Migration {
-                destination,
-                from_start,
-            })
-            .await
-            .map_err(|_| MigrateError::InvalidInstanceState)?;
-        }
-        Ok(encoded)
-    }
-
-    pub(crate) async fn import(
-        &self,
-        serialized_hist: &str,
-    ) -> Result<(), MigrateError> {
-        self.sink_poller.attach(self.uart.as_ref());
-        self.source_poller.attach(self.uart.as_ref());
-        self.uart.set_autodiscard(false);
-        let decoded = ron::from_str(serialized_hist)
-            .map_err(|e| MigrateError::Codec(e.to_string()))?;
-        let mut write_hist = self.history.write().await;
-        *write_hist = decoded;
-        Ok(())
-    }
-}
-
-impl<Device: Sink + Source> Drop for Serial<Device> {
-    fn drop(&mut self) {
-        self.uart.set_autodiscard(true);
-    }
+    client_tasks.lock().unwrap().tasks.remove(&client_id);
 }
