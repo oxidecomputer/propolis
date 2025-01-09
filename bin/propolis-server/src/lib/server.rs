@@ -405,7 +405,6 @@ async fn instance_serial_history_get(
     let max_bytes = query_params.max_bytes.map(|x| x as usize);
     let (data, end) = serial
         .history_vec(byte_offset, max_bytes)
-        .await
         .map_err(|e| HttpError::for_bad_request(None, e.to_string()))?;
 
     Ok(HttpResponseOk(api::InstanceSerialConsoleHistoryResponse {
@@ -444,7 +443,7 @@ async fn instance_serial(
     let byte_offset = SerialHistoryOffset::try_from(&query.into_inner()).ok();
     if let Some(mut byte_offset) = byte_offset {
         loop {
-            let (data, offset) = serial.history_vec(byte_offset, None).await?;
+            let (data, offset) = serial.history_vec(byte_offset, None)?;
             if data.is_empty() {
                 break;
             }
@@ -456,14 +455,13 @@ async fn instance_serial(
     }
 
     // Get serial task's handle and send it the websocket stream
-    let serial_task = vm.services().serial_task.lock().await;
-    serial_task
+    let serial_mgr = vm.services().serial_mgr.lock().await;
+    serial_mgr
         .as_ref()
-        .ok_or("Instance has no serial task")?
-        .websocks_ch
-        .send(ws_stream)
-        .await
-        .map_err(|e| format!("Serial socket hand-off failed: {}", e).into())
+        .ok_or("Instance has no serial console manager")?
+        .connect(ws_stream, crate::serial::ClientKind::ReadWrite);
+
+    Ok(())
 }
 
 #[channel {

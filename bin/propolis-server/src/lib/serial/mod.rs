@@ -6,6 +6,7 @@
 
 use std::{
     collections::{BTreeMap, VecDeque},
+    net::SocketAddr,
     sync::{Arc, Mutex},
 };
 
@@ -30,7 +31,7 @@ use tokio_tungstenite::{
     WebSocketStream,
 };
 
-mod backend;
+pub(crate) mod backend;
 pub(crate) mod history_buffer;
 
 #[usdt::provider(provider = "propolis")]
@@ -186,6 +187,27 @@ impl SerialConsoleManager {
         }
 
         task_start_tx.send(());
+    }
+
+    pub async fn notify_migration(&self, destination: SocketAddr) {
+        let from_start = self.backend.bytes_since_start() as u64;
+        let clients: Vec<_> = {
+            let client_tasks = self.client_tasks.lock().unwrap();
+            client_tasks
+                .tasks
+                .values()
+                .map(|client| client.control_tx.clone())
+                .collect()
+        };
+
+        for client in clients {
+            let _ = client
+                .send(InstanceSerialConsoleControlMessage::Migrating {
+                    destination,
+                    from_start,
+                })
+                .await;
+        }
     }
 }
 

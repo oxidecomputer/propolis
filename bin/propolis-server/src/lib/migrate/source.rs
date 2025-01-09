@@ -32,6 +32,7 @@ use crate::migrate::{
 };
 
 use crate::vm::objects::VmObjects;
+use crate::vm::services::VmServices;
 use crate::vm::state_publisher::{
     ExternalStateUpdate, MigrationStateUpdate, StatePublisher,
 };
@@ -133,6 +134,7 @@ pub(crate) trait SourceProtocol {
     async fn run(
         self,
         vm_objects: &VmObjects,
+        vm_services: &VmServices,
         publisher: &mut StatePublisher,
         persistent_state: &mut PersistentState,
     ) -> Result<(), MigrateError>;
@@ -318,6 +320,7 @@ impl<T: MigrateConn> SourceProtocol for RonV0<T> {
     async fn run(
         self,
         vm_objects: &VmObjects,
+        vm_services: &VmServices,
         publisher: &mut StatePublisher,
         persistent_state: &mut PersistentState,
     ) -> Result<(), MigrateError> {
@@ -327,6 +330,7 @@ impl<T: MigrateConn> SourceProtocol for RonV0<T> {
             conn: self.conn,
             dirt: self.dirt,
             vm: vm_objects,
+            vm_services,
             state_publisher: publisher,
             persistent_state,
             paused: false,
@@ -342,6 +346,7 @@ struct RonV0Runner<'vm, T: MigrateConn> {
     conn: WebSocketStream<T>,
     dirt: Option<HashMap<GuestAddr, PageBitmap>>,
     vm: &'vm VmObjects,
+    vm_services: &'vm VmServices,
     state_publisher: &'vm mut StatePublisher,
     persistent_state: &'vm mut PersistentState,
     paused: bool,

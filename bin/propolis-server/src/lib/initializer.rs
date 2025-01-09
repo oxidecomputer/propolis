@@ -9,7 +9,7 @@ use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::serial::Serial;
+use crate::serial::backend::ConsoleBackend;
 use crate::spec::{self, Spec, StorageBackend, StorageDevice};
 use crate::stats::{
     track_network_interface_kstats, track_vcpu_kstats, VirtualDiskProducer,
@@ -377,7 +377,7 @@ impl MachineInitializer<'_> {
     pub fn initialize_uart(
         &mut self,
         chipset: &RegisteredChipset,
-    ) -> Serial<LpcUart> {
+    ) -> Arc<ConsoleBackend> {
         let mut com1 = None;
         for (name, desc) in self.spec.serial.iter() {
             if desc.device != spec::SerialPortDevice::Uart {
@@ -401,9 +401,8 @@ impl MachineInitializer<'_> {
             }
         }
 
-        let sink_size = NonZeroUsize::new(64).unwrap();
-        let source_size = NonZeroUsize::new(1024).unwrap();
-        Serial::new(com1.unwrap(), sink_size, source_size)
+        const COM1_HISTORY_BYTES: usize = 1024 * 1024;
+        ConsoleBackend::new(com1.unwrap().clone(), COM1_HISTORY_BYTES)
     }
 
     pub fn initialize_ps2(
