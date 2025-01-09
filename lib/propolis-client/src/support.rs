@@ -328,7 +328,7 @@ pub struct InstanceSerialConsoleMessage<'a> {
     message: WSMessage,
 }
 
-impl<'a> InstanceSerialConsoleMessage<'a> {
+impl InstanceSerialConsoleMessage<'_> {
     /// Processes this [WSMessage].
     ///
     /// - [WSMessage::Binary] are character output from the serial console.

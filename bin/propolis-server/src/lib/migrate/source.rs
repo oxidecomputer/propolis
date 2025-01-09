@@ -347,7 +347,7 @@ struct RonV0Runner<'vm, T: MigrateConn> {
     paused: bool,
 }
 
-impl<'vm, T: MigrateConn> RonV0Runner<'vm, T> {
+impl<T: MigrateConn> RonV0Runner<'_, T> {
     fn log(&self) -> &slog::Logger {
         &self.log
     }

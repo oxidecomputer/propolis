@@ -336,7 +336,7 @@ pub(super) struct VmEnsureActiveOutput {
     pub vmm_rt_hdl: tokio::runtime::Handle,
 }
 
-impl<'a> VmEnsureActive<'a> {
+impl VmEnsureActive<'_> {
     pub(crate) fn vm_objects(&self) -> &Arc<VmObjects> {
         &self.vm_objects
     }

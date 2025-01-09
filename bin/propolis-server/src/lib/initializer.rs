@@ -192,7 +192,7 @@ pub struct MachineInitializer<'a> {
     pub(crate) stats_vm: crate::stats::VirtualMachine,
 }
 
-impl<'a> MachineInitializer<'a> {
+impl MachineInitializer<'_> {
     pub fn initialize_rom(
         &mut self,
         path: &std::path::Path,

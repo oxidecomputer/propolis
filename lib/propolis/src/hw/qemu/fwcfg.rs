@@ -853,7 +853,7 @@ mod bits {
     }
     impl FwCfgFile {
         pub fn new(size: u32, select: u16, name: &str) -> Self {
-            let name_len = name.as_bytes().len();
+            let name_len = name.len();
             assert!(name_len < FWCFG_FILENAME_LEN);
 
             let mut this = Self {

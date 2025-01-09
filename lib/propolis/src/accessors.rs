@@ -403,7 +403,7 @@ impl<T> Node<T> {
         let mut tree = self.0.lock().unwrap().tree.clone();
         let guard = loop {
             let new_tree = match self.try_lock_tree(&tree) {
-                Ok(tg) => break (tg),
+                Ok(tg) => break tg,
                 Err(nt) => nt,
             };
             let _ = std::mem::replace(&mut tree, new_tree);

@@ -386,10 +386,10 @@ impl<'dr> VmConfig<'dr> {
     }
 }
 
-async fn make_disk<'req>(
+async fn make_disk(
     device_name: String,
     framework: &Framework,
-    req: &DiskRequest<'req>,
+    req: &DiskRequest<'_>,
 ) -> anyhow::Result<Arc<dyn DiskConfig>> {
     let device_name = DeviceName::new(device_name);
 

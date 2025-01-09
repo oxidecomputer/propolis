@@ -228,10 +228,10 @@ impl DiskFactory {
 
     /// Creates a new disk backed by a file whose initial contents are specified
     /// by `source`.
-    pub(crate) async fn create_file_backed_disk<'d>(
+    pub(crate) async fn create_file_backed_disk(
         &self,
         name: DeviceName,
-        source: &DiskSource<'d>,
+        source: &DiskSource<'_>,
     ) -> Result<Arc<FileBackedDisk>, DiskError> {
         let artifact_name = match source {
             DiskSource::Artifact(name) => name,
@@ -272,10 +272,10 @@ impl DiskFactory {
     /// - min_disk_size_gib: The disk's minimum size in GiB. The disk's actual
     ///   size is the larger of this size and the source's size.
     /// - block_size: The disk's block size.
-    pub(crate) async fn create_crucible_disk<'d>(
+    pub(crate) async fn create_crucible_disk(
         &self,
         name: DeviceName,
-        source: &DiskSource<'d>,
+        source: &DiskSource<'_>,
         mut min_disk_size_gib: u64,
         block_size: BlockSize,
     ) -> Result<Arc<CrucibleDisk>, DiskError> {
@@ -324,10 +324,10 @@ impl DiskFactory {
         .map_err(Into::into)
     }
 
-    pub(crate) async fn create_in_memory_disk<'d>(
+    pub(crate) async fn create_in_memory_disk(
         &self,
         name: DeviceName,
-        source: &DiskSource<'d>,
+        source: &DiskSource<'_>,
         readonly: bool,
     ) -> Result<Arc<InMemoryDisk>, DiskError> {
         let contents = match source {

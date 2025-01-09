@@ -167,9 +167,9 @@ async fn register_oximeter_producer(
 }
 
 /// Launches a serial console handler task.
-async fn start_serial_task<'vm>(
+async fn start_serial_task(
     log: &slog::Logger,
-    vm_objects: &VmObjectsShared<'vm>,
+    vm_objects: &VmObjectsShared<'_>,
 ) -> crate::serial::SerialTask {
     let (websocks_ch, websocks_recv) = tokio::sync::mpsc::channel(1);
     let (control_ch, control_recv) = tokio::sync::mpsc::channel(1);
