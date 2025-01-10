@@ -10,6 +10,7 @@
 //! processing.
 
 use std::convert::TryFrom;
+use std::error::Error;
 use std::net::IpAddr;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
@@ -220,10 +221,15 @@ async fn instance_ensure(
     };
 
     let vm_init = match init {
-        InstanceInitializationMethod::Spec { spec } => spec
-            .try_into()
-            .map(VmInitializationMethod::Spec)
-            .map_err(|e| e.to_string()),
+        InstanceInitializationMethod::Spec { spec } => {
+            spec.try_into().map(VmInitializationMethod::Spec).map_err(|e| {
+                if let Some(s) = e.source() {
+                    format!("{e}: {s}")
+                } else {
+                    e.to_string()
+                }
+            })
+        }
         InstanceInitializationMethod::MigrationTarget {
             migration_id,
             src_addr,
