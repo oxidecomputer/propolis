@@ -349,6 +349,7 @@ impl TestVm {
                     .server_addr(),
             ),
             WSClientOffset::MostRecent(0),
+            false,
             None,
         )
         .await?;
