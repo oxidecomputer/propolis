@@ -825,7 +825,7 @@ checksum = "248e3bacc7dc6baa3b21e405ee045c3047101a49145e7e9eca583ab4c2ca5345"
 [[package]]
 name = "crucible"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=5a41b826171c7d2a8412fa833377ab1df25ee8ec#5a41b826171c7d2a8412fa833377ab1df25ee8ec"
+source = "git+https://github.com/oxidecomputer/crucible?rev=c9d31d2f84ff5b59dfb1cf5358d8af657ab9b5e9#c9d31d2f84ff5b59dfb1cf5358d8af657ab9b5e9"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -852,7 +852,7 @@ dependencies = [
  "omicron-uuid-kinds",
  "oximeter",
  "oximeter-producer",
- "progenitor-client 0.8.0",
+ "progenitor-client 0.9.1",
  "rand",
  "rand_chacha",
  "rayon",
@@ -878,7 +878,7 @@ dependencies = [
 [[package]]
 name = "crucible-client-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=5a41b826171c7d2a8412fa833377ab1df25ee8ec#5a41b826171c7d2a8412fa833377ab1df25ee8ec"
+source = "git+https://github.com/oxidecomputer/crucible?rev=c9d31d2f84ff5b59dfb1cf5358d8af657ab9b5e9#c9d31d2f84ff5b59dfb1cf5358d8af657ab9b5e9"
 dependencies = [
  "base64 0.22.1",
  "crucible-workspace-hack",
@@ -891,7 +891,7 @@ dependencies = [
 [[package]]
 name = "crucible-common"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=5a41b826171c7d2a8412fa833377ab1df25ee8ec#5a41b826171c7d2a8412fa833377ab1df25ee8ec"
+source = "git+https://github.com/oxidecomputer/crucible?rev=c9d31d2f84ff5b59dfb1cf5358d8af657ab9b5e9#c9d31d2f84ff5b59dfb1cf5358d8af657ab9b5e9"
 dependencies = [
  "anyhow",
  "atty",
@@ -921,7 +921,7 @@ dependencies = [
 [[package]]
 name = "crucible-protocol"
 version = "0.0.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=5a41b826171c7d2a8412fa833377ab1df25ee8ec#5a41b826171c7d2a8412fa833377ab1df25ee8ec"
+source = "git+https://github.com/oxidecomputer/crucible?rev=c9d31d2f84ff5b59dfb1cf5358d8af657ab9b5e9#c9d31d2f84ff5b59dfb1cf5358d8af657ab9b5e9"
 dependencies = [
  "anyhow",
  "bincode",
