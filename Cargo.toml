@@ -85,8 +85,8 @@ oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 
 # Crucible
-crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "5a41b826171c7d2a8412fa833377ab1df25ee8ec" }
-crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "5a41b826171c7d2a8412fa833377ab1df25ee8ec" }
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "c9d31d2f84ff5b59dfb1cf5358d8af657ab9b5e9" }
+crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "c9d31d2f84ff5b59dfb1cf5358d8af657ab9b5e9" }
 
 # External dependencies
 anyhow = "1.0"
