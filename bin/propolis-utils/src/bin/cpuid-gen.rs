@@ -266,22 +266,45 @@ fn print_json(results: &BTreeMap<CpuidKey, Cpuid>) {
     use propolis_api_types::instance_spec::components::board::{
         Cpuid, CpuidEntry,
     };
+
+    // Returns `true` if `key` has subleaf data and its leaf index is `leaf`.
+    fn key_matches_leaf_and_has_subleaves(key: &CpuidKey, leaf: u32) -> bool {
+        let CpuidKey::SubLeaf(l, _) = key else {
+            return false;
+        };
+
+        leaf == *l
+    }
+
     let cpuid = Cpuid {
         entries: results
             .iter()
-            .map(|(key, value)| {
+            .filter_map(|(key, value)| {
+                // propolis-server will complain if it receives a CPUID entry
+                // with no subleaf and a CPUID entry with a subleaf for the same
+                // leaf. Avoid emitting these by filtering out subleaf-less
+                // entries for any leaf that has an entry with subleaf data.
                 let (leaf, subleaf) = match key {
-                    CpuidKey::Leaf(leaf) => (*leaf, None),
+                    CpuidKey::Leaf(leaf) => {
+                        if results.keys().any(|k| {
+                            key_matches_leaf_and_has_subleaves(k, *leaf)
+                        }) {
+                            return None;
+                        }
+
+                        (*leaf, None)
+                    }
                     CpuidKey::SubLeaf(leaf, subleaf) => (*leaf, Some(*subleaf)),
                 };
-                CpuidEntry {
+
+                Some(CpuidEntry {
                     leaf,
                     subleaf,
                     eax: value.eax,
                     ebx: value.ebx,
                     ecx: value.ecx,
                     edx: value.edx,
-                }
+                })
             })
             .collect(),
         vendor: propolis_api_types::instance_spec::CpuidVendor::Amd,
@@ -292,9 +315,14 @@ fn print_json(results: &BTreeMap<CpuidKey, Cpuid>) {
 
 #[derive(Default, Clone, Copy, Debug)]
 enum OutputFormat {
+    /// Print a human-readable plain-text representation.
     #[default]
     Text,
+
+    /// Print TOML suitable for use in a propolis-standalone config file.
     Toml,
+
+    /// Print JSON suitable for inclusion in a propolis-server instance spec.
     Json,
 }
 
