@@ -4,6 +4,7 @@
 
 use std::cmp::{Ord, Ordering};
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 use bhyve_api::{VmmCtlFd, VmmFd};
 use clap::Parser;
@@ -261,15 +262,68 @@ fn print_toml(results: &BTreeMap<CpuidKey, Cpuid>) {
     }
 }
 
+fn print_json(results: &BTreeMap<CpuidKey, Cpuid>) {
+    use propolis_api_types::instance_spec::components::board::{
+        Cpuid, CpuidEntry,
+    };
+    let cpuid = Cpuid {
+        entries: results
+            .iter()
+            .map(|(key, value)| {
+                let (leaf, subleaf) = match key {
+                    CpuidKey::Leaf(leaf) => (*leaf, None),
+                    CpuidKey::SubLeaf(leaf, subleaf) => (*leaf, Some(*subleaf)),
+                };
+                CpuidEntry {
+                    leaf,
+                    subleaf,
+                    eax: value.eax,
+                    ebx: value.ebx,
+                    ecx: value.ecx,
+                    edx: value.edx,
+                }
+            })
+            .collect(),
+        vendor: propolis_api_types::instance_spec::CpuidVendor::Amd,
+    };
+
+    println!("{}", serde_json::to_string_pretty(&cpuid).unwrap());
+}
+
+#[derive(Default, Clone, Copy, Debug)]
+enum OutputFormat {
+    #[default]
+    Text,
+    Toml,
+    Json,
+}
+
+impl FromStr for OutputFormat {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "text" => Self::Text,
+            "toml" => Self::Toml,
+            "json" => Self::Json,
+            _ => {
+                return Err(
+                    "invalid output format, must be text, toml, or json",
+                )
+            }
+        })
+    }
+}
+
 #[derive(clap::Parser)]
 struct Opts {
     /// Elide all-zero entries from results
     #[clap(short)]
     zero_elide: bool,
 
-    /// Emit toml instead of text
-    #[clap(short)]
-    toml_output: bool,
+    /// Emit output in the specified format
+    #[clap(short, long, value_parser, default_value = "text")]
+    format: OutputFormat,
 
     /// Query CPU directly, rather that via bhyve masking
     #[clap(short)]
@@ -289,10 +343,10 @@ fn main() -> anyhow::Result<()> {
 
     let results = collect_cpuid(&queryf, opts.zero_elide)?;
 
-    if opts.toml_output {
-        print_toml(&results);
-    } else {
-        print_text(&results);
+    match opts.format {
+        OutputFormat::Text => print_text(&results),
+        OutputFormat::Toml => print_toml(&results),
+        OutputFormat::Json => print_json(&results),
     }
 
     Ok(())

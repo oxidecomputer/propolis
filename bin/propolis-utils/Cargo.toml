@@ -19,6 +19,7 @@ anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 propolis = { workspace = true, default-features = false }
+propolis_api_types.workspace = true
 bhyve_api = { workspace = true }
 libc = { workspace = true }
 serde_json.workspace = true
