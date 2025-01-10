@@ -44,7 +44,7 @@ impl Permissions {
 /// Determines what happens when the backend is unable to send a guest byte back
 /// to a client because the client's channel is full.
 #[derive(Clone, Copy)]
-pub(super) enum ReadWaitDiscipline {
+pub(super) enum FullReadChannelDiscipline {
     /// The backend should block until it can send to this client.
     Block,
 
@@ -60,7 +60,7 @@ struct Client {
 
     /// Determines what happens when the backend wants to send a byte and
     /// [`Self::tx`] is full.
-    read_discipline: ReadWaitDiscipline,
+    read_discipline: FullReadChannelDiscipline,
 }
 
 /// A handle held by a client that represents its connection to the backend.
@@ -185,8 +185,20 @@ impl Inner {
 /// access a single serial device.
 pub struct ConsoleBackend {
     inner: Arc<Mutex<Inner>>,
+
+    /// The character [`Sink`] that should receive writes to this backend.
+    /// Writes should not access the sink directly; instead, they should be
+    /// directed to [`Self::sink_buffer`]. This reference is needed because
+    /// [`SinkBuffer`]'s current API requires a sink to be passed into each
+    /// attempt to write (buffers don't own references to their sinks).
     sink: Arc<dyn Sink>,
+
+    /// The buffer that sits in front of this backend's sink. Writes to the
+    /// backend should be directed at the buffer, not at [`Self::sink`].
     sink_buffer: Arc<SinkBuffer>,
+
+    /// A channel used to tell the backend's reader task that the backend has
+    /// been closed.
     done_tx: oneshot::Sender<()>,
 }
 
@@ -227,20 +239,26 @@ impl ConsoleBackend {
     ///
     /// - `read_tx`: A channel to which the backend should send bytes read from
     ///   its device.
+    /// - `permissions`: The read/write permissions this client should have.
+    /// - `full_read_tx_discipline`: Describes what should happen if the reader
+    ///   task ever finds that `read_tx` is full when dispatching a byte to it.
     pub(super) fn attach_client(
         self: &Arc<Self>,
         read_tx: mpsc::Sender<u8>,
         permissions: Permissions,
-        wait_discipline: ReadWaitDiscipline,
+        full_read_tx_discipline: FullReadChannelDiscipline,
     ) -> ClientHandle {
         let mut inner = self.inner.lock().unwrap();
         let id = inner.next_client_id();
-        let client = Client { tx: read_tx, read_discipline: wait_discipline };
+        let client =
+            Client { tx: read_tx, read_discipline: full_read_tx_discipline };
 
         inner.clients.insert(id, client);
         ClientHandle { id, backend: self.clone(), permissions }
     }
 
+    /// Returns the contents of this backend's history buffer. See
+    /// [`HistoryBuffer::contents_vec`].
     pub fn history_vec(
         &self,
         byte_offset: SerialHistoryOffset,
@@ -250,6 +268,8 @@ impl ConsoleBackend {
         inner.buffer.contents_vec(byte_offset, max_bytes)
     }
 
+    /// Returns the number of bytes that have ever been sent to this backend's
+    /// history buffer.
     pub fn bytes_since_start(&self) -> usize {
         self.inner.lock().unwrap().buffer.bytes_from_start()
     }
@@ -293,6 +313,9 @@ mod migrate {
     }
 }
 
+/// Reads bytes from the supplied `source` and dispatches them to the clients in
+/// `inner`. Each backend is expected to spin up one task that runs this
+/// function.
 async fn read_task(
     inner: Arc<Mutex<Inner>>,
     source: Arc<dyn Source>,
@@ -322,10 +345,15 @@ async fn read_task(
 
         let to_send = &bytes[0..bytes_read];
 
+        // Capture a list of all the clients who should receive this byte with
+        // the lock held, then drop the lock before sending to any of them. Note
+        // that sends to clients may block for an arbitrary length of time: the
+        // receiver may be relaying received bytes to a websocket, and the
+        // remote peer may be slow to accept them.
         struct CapturedClient {
             id: ClientId,
             tx: mpsc::Sender<u8>,
-            discipline: ReadWaitDiscipline,
+            discipline: FullReadChannelDiscipline,
             disconnect: bool,
         }
 
@@ -343,19 +371,23 @@ async fn read_task(
                 .collect::<Vec<CapturedClient>>()
         };
 
+        // Prepare to delete any clients that are no longer active (i.e., who
+        // have dropped the receiver sides of their channels) or who are using
+        // the close-on-full-channel discipline and who have a full channel.
         for byte in to_send {
             for client in clients.iter_mut() {
                 client.disconnect = match client.discipline {
-                    ReadWaitDiscipline::Block => {
+                    FullReadChannelDiscipline::Block => {
                         client.tx.send(*byte).await.is_err()
                     }
-                    ReadWaitDiscipline::Close => {
+                    FullReadChannelDiscipline::Close => {
                         client.tx.try_send(*byte).is_err()
                     }
                 }
             }
         }
 
+        // Clean up any clients who met the disconnection criteria.
         let mut guard = inner.lock().unwrap();
         guard.buffer.consume(to_send);
         for client in clients.iter().filter(|c| c.disconnect) {

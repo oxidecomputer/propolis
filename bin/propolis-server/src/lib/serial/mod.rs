@@ -2,7 +2,25 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Routines to expose a connection to an instance's serial port.
+//! Defines the [`SerialConsoleManager`], which manages client websocket
+//! connections to one of an instance's serial ports.
+//!
+//! Each `SerialConsoleManager` brokers connections to one serial device. Each
+//! websocket connection to the device creates a [`ClientTask`] tracked by the
+//! manager. This task largely plumbs incoming bytes from the websocket into the
+//! backend and vice-versa, but it can also be used to send control messages to
+//! clients, e.g. to notify them that an instance is migrating.
+//!
+//! The connection manager implements the connection policies described in RFD
+//! 491:
+//!
+//! - A single serial device can have only one read-write client at a time (but
+//!   can have multiple read-only clients).
+//! - The connection manager configures its connections to the backend so that
+//!   - The backend will block when sending bytes to read-write clients that
+//!     can't receive them immediately, but
+//!   - The backend will disconnect read-only clients who can't immediately
+//!     receive new bytes.
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -12,10 +30,7 @@ use std::{
 
 use backend::ConsoleBackend;
 use dropshot::WebsocketConnectionRaw;
-use futures::{
-    stream::{SplitSink, SplitStream},
-    SinkExt, StreamExt,
-};
+use futures::{SinkExt, StreamExt};
 use propolis_api_types::InstanceSerialConsoleControlMessage;
 use slog::{info, warn};
 use tokio::{
@@ -48,22 +63,35 @@ mod probes {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ClientId(u64);
 
+/// Specifies whether a client should be a read-write or read-only client.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ClientKind {
     ReadWrite,
     ReadOnly,
 }
 
+/// Tracks an individual client of this console and its associated tokio task.
 struct ClientTask {
+    /// The join handle for this client's task.
     hdl: JoinHandle<()>,
+
+    /// Receives server-level commands and notifications about this connection.
     control_tx: mpsc::Sender<InstanceSerialConsoleControlMessage>,
+
+    /// Triggered when the serial console manager shuts down.
     done_tx: oneshot::Sender<()>,
 }
 
+/// The collection of [`ClientTask`]s belonging to a console manager.
 #[derive(Default)]
 struct ClientTasks {
+    /// A table mapping task IDs to task structs.
     tasks: BTreeMap<ClientId, ClientTask>,
+
+    /// The next task ID to assign.
     next_id: u64,
+
+    /// The ID of the current read-write client, if there is one.
     rw_client_id: Option<ClientId>,
 }
 
@@ -74,6 +102,7 @@ impl ClientTasks {
         ClientId(id)
     }
 
+    /// Removes the task with ID `id` from the task collection.
     fn remove_by_id(&mut self, id: ClientId) {
         self.tasks.remove(&id);
         match self.rw_client_id {
@@ -84,6 +113,8 @@ impl ClientTasks {
         }
     }
 
+    /// If there is a read-write client in the task collection, removes it (from
+    /// both the read-write client position and the task table) and returns it.
     fn remove_rw_client(&mut self) -> Option<ClientTask> {
         if let Some(id) = self.rw_client_id.take() {
             self.tasks.remove(&id)
@@ -93,6 +124,7 @@ impl ClientTasks {
     }
 }
 
+/// Manages individual websocket client connections to a single serial device.
 pub struct SerialConsoleManager {
     log: slog::Logger,
     backend: Arc<ConsoleBackend>,
@@ -108,6 +140,7 @@ impl SerialConsoleManager {
         }
     }
 
+    /// Directs all client tasks to stop and waits for them all to finish.
     pub async fn stop(self) {
         let tasks = {
             let mut guard = self.client_tasks.lock().unwrap();
@@ -124,6 +157,8 @@ impl SerialConsoleManager {
         futures::future::join_all(tasks.into_iter().map(|task| task.hdl)).await;
     }
 
+    /// Creates a new task that connects a websocket stream to this manager's
+    /// serial console.
     pub async fn connect(
         &self,
         ws: WebSocketStream<WebsocketConnectionRaw>,
@@ -137,14 +172,18 @@ impl SerialConsoleManager {
         let (permissions, discipline) = match kind {
             ClientKind::ReadWrite => (
                 backend::Permissions::ReadWrite,
-                backend::ReadWaitDiscipline::Block,
+                backend::FullReadChannelDiscipline::Block,
             ),
             ClientKind::ReadOnly => (
                 backend::Permissions::ReadOnly,
-                backend::ReadWaitDiscipline::Close,
+                backend::FullReadChannelDiscipline::Close,
             ),
         };
 
+        // If this client is to be the read-write client, and there's already
+        // such a client, the old client needs to be evicted and stopped before
+        // the new client can start. Create and install the new task under the
+        // lock, then drop the lock before running down the old task.
         let prev_rw_task;
         {
             let mut client_tasks = self.client_tasks.lock().unwrap();
@@ -188,11 +227,21 @@ impl SerialConsoleManager {
             let _ = task.hdl.await;
         }
 
+        // Don't let the new task start until any old tasks have been run down.
+        // This prevents writes from an old R/W task from being interleaved with
+        // writes from a new one.
         task_start_tx
             .send(())
             .expect("new serial task shouldn't exit before starting");
     }
 
+    /// Notifies all active clients that the instance is migrating to a new
+    /// host.
+    ///
+    /// This function reads state from the console backend and relays it to
+    /// clients. The caller should ensure that the VM is paused before calling
+    /// this function so that backend's state doesn't change after this function
+    /// captures it.
     pub async fn notify_migration(&self, destination: SocketAddr) {
         let from_start = self.backend.bytes_since_start() as u64;
         let clients: Vec<_> = {
@@ -233,9 +282,10 @@ struct SerialTaskContext {
     /// (e.g. impending migrations).
     control_rx: mpsc::Receiver<InstanceSerialConsoleControlMessage>,
 
+    /// Signaled to direct a task to enter its processing loop.
     start_rx: oneshot::Receiver<()>,
 
-    /// Signaled when the task is
+    /// Signaled to tell a task to shut down.
     done_rx: oneshot::Receiver<()>,
 
     /// A reference to the manager's client task map, used to deregister this
@@ -270,30 +320,8 @@ async fn serial_task(
         WebsocketDisconnected,
     }
 
-    async fn close(
-        log: &slog::Logger,
-        client_id: ClientId,
-        sink: SplitSink<WebSocketStream<WebsocketConnectionRaw>, Message>,
-        stream: SplitStream<WebSocketStream<WebsocketConnectionRaw>>,
-        reason: &str,
-    ) {
-        let mut ws =
-            sink.reunite(stream).expect("sink and stream should match");
-        if let Err(e) = ws
-            .close(Some(CloseFrame {
-                code: CloseCode::Away,
-                reason: reason.into(),
-            }))
-            .await
-        {
-            warn!(
-                log, "error sending close frame to client";
-                "client_id" => client_id.0,
-                "error" => ?e,
-            );
-        }
-    }
-
+    // Wait to be told to start the main loop. This allows the task creation
+    // logic to ensure that there's only one active console writer at a time.
     let _ = start_rx.await;
 
     info!(
@@ -379,17 +407,23 @@ async fn serial_task(
             Event::ConsoleRead(b) => {
                 probes::serial_event_read!(|| (b));
 
-                // Waiting outside the `select!` is OK here:
-                //
-                // - If the client is a read-write client, it is allowed to
-                //   block the guest to ensure that every byte of guest output
-                //   is transmitted to the client.
-                // - If the client is a read-only client, and it is slow to
-                //   acknowledge this message, its channel to the backend will
-                //   eventually fill up. If this happens and the backend thus
-                //   becomes unable to send new bytes, it will drop the channel
-                //   to allow the guest to make progress.
-                let _ = sink.send(Message::binary(vec![b])).await;
+                // In general it's OK to wait for this byte to be sent, since
+                // read-write clients are allowed to block the backend and
+                // read-only clients will be disconnected if they don't process
+                // bytes in a timely manner. That said, even read-write clients
+                // need to monitor `done_rx` here; otherwise a badly-behaved
+                // client can prevent a VM from stopping.
+                select! {
+                    biased;
+
+                    _ = &mut done_rx => {
+                        probes::serial_event_done!(|| ());
+                        close_reason = Some("VM stopped");
+                        break;
+                    }
+
+                    _ = sink.send(Message::binary(vec![b])) => {}
+                }
             }
             Event::ConsoleDisconnected => {
                 probes::serial_event_console_disconnect!(|| ());
@@ -400,13 +434,24 @@ async fn serial_task(
                 break;
             }
             Event::ControlMessage(control) => {
-                let _ = sink
-                    .send(Message::Text(
-                        serde_json::to_string(&control).expect(
-                            "control messages can always serialize into JSON",
-                        ),
-                    ))
-                    .await;
+                // As above, don't let a client that's not processing control
+                // messages prevent the VM from stopping.
+                select! {
+                    biased;
+
+                    _ = &mut done_rx => {
+                        probes::serial_event_done!(|| ());
+                        close_reason = Some("VM stopped");
+                        break;
+                    }
+
+                    _ = sink
+                        .send(Message::Text(
+                            serde_json::to_string(&control).expect(
+                                "control messages can always serialize into JSON",
+                            ),
+                    )) => {}
+                }
             }
             Event::WroteToBackend(result) => {
                 let written = match result {
@@ -468,8 +513,21 @@ async fn serial_task(
     }
 
     info!(log, "serial console task exiting"; "client_id" => client_id.0);
-    if let Some(close_reason) = close_reason {
-        close(&log, client_id, sink, stream, close_reason).await;
+    let mut ws = sink.reunite(stream).expect("sink and stream should match");
+    if let Err(e) = ws
+        .close(Some(CloseFrame {
+            code: CloseCode::Away,
+            reason: close_reason
+                .unwrap_or("serial connection task exited")
+                .into(),
+        }))
+        .await
+    {
+        warn!(
+            log, "error sending close frame to client";
+            "client_id" => client_id.0,
+            "error" => ?e,
+        );
     }
 
     client_tasks.lock().unwrap().remove_by_id(client_id);
