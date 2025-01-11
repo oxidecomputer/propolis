@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use bhyve_api::{VmmCtlFd, VmmFd};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
 fn create_vm() -> anyhow::Result<VmmFd> {
     let name = format!("cpuid-gen-{}", std::process::id());
@@ -271,7 +271,7 @@ fn print_json(results: &BTreeMap<CpuidKey, Cpuid>) {
         use propolis_api_types::instance_spec::{CpuidValues, CpuidVendor};
         match results.get(&CpuidKey::Leaf(0)) {
             None => {
-                eprintln!("no result for leaf 0, selecting default vendor");
+                eprintln!("no result for leaf 0, setting vendor to AMD");
                 CpuidVendor::Amd
             }
             Some(values) => {
@@ -285,8 +285,8 @@ fn print_json(results: &BTreeMap<CpuidKey, Cpuid>) {
                 match CpuidVendor::try_from(values) {
                     Err(_) => {
                         eprintln!(
-                            "vendor in leaf 0 values ({values:?}) \
-                        not recognized, selecting default vendor"
+                            "vendor in leaf 0 values ({values:?}) not \
+                            recognized, setting vendor to AMD"
                         );
                         CpuidVendor::Amd
                     }
@@ -326,7 +326,7 @@ fn print_json(results: &BTreeMap<CpuidKey, Cpuid>) {
     println!("{}", serde_json::to_string_pretty(&cpuid).unwrap());
 }
 
-#[derive(Default, Clone, Copy, Debug)]
+#[derive(Default, Clone, Copy, Debug, ValueEnum)]
 enum OutputFormat {
     /// Print a human-readable plain-text representation.
     #[default]
@@ -362,8 +362,8 @@ struct Opts {
     #[clap(short)]
     zero_elide: bool,
 
-    /// Emit output in the specified format ("text", "toml", or "json")
-    #[clap(short, long, value_parser, default_value = "text")]
+    /// Emit output in the specified format
+    #[clap(short, long, value_enum, default_value = "text")]
     format: OutputFormat,
 
     /// Query CPU directly, rather that via bhyve masking
