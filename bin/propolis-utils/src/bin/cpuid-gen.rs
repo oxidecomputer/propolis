@@ -4,9 +4,10 @@
 
 use std::cmp::{Ord, Ordering};
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 use bhyve_api::{VmmCtlFd, VmmFd};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 
 fn create_vm() -> anyhow::Result<VmmFd> {
     let name = format!("cpuid-gen-{}", std::process::id());
@@ -261,15 +262,113 @@ fn print_toml(results: &BTreeMap<CpuidKey, Cpuid>) {
     }
 }
 
+fn print_json(results: &BTreeMap<CpuidKey, Cpuid>) {
+    use propolis_api_types::instance_spec::components::board::{
+        Cpuid, CpuidEntry,
+    };
+
+    let vendor = {
+        use propolis_api_types::instance_spec::{CpuidValues, CpuidVendor};
+        match results.get(&CpuidKey::Leaf(0)) {
+            None => {
+                eprintln!("no result for leaf 0, setting vendor to AMD");
+                CpuidVendor::Amd
+            }
+            Some(values) => {
+                let values = CpuidValues {
+                    eax: values.eax,
+                    ebx: values.ebx,
+                    ecx: values.ecx,
+                    edx: values.edx,
+                };
+
+                match CpuidVendor::try_from(values) {
+                    Err(_) => {
+                        eprintln!(
+                            "vendor in leaf 0 values ({values:?}) not \
+                            recognized, setting vendor to AMD"
+                        );
+                        CpuidVendor::Amd
+                    }
+                    Ok(v) => v,
+                }
+            }
+        }
+    };
+
+    // propolis-server will reject CPUID entry lists that contain a no-subleaf
+    // and a subleaf-bearing entry for the same leaf. Filter these out by
+    // dropping Leaf entries whose immediate successor is a SubLeaf with the
+    // same leaf number.
+    let entries = results
+        .iter()
+        .zip(results.keys().skip(1))
+        .filter_map(|((current_key, value), next_key)| {
+            let (leaf, subleaf) = match (current_key, next_key) {
+                (CpuidKey::Leaf(l1), CpuidKey::SubLeaf(l2, _)) if l1 == l2 => {
+                    return None;
+                }
+                (CpuidKey::Leaf(leaf), _) => (*leaf, None),
+                (CpuidKey::SubLeaf(leaf, subleaf), _) => {
+                    (*leaf, Some(*subleaf))
+                }
+            };
+
+            Some(CpuidEntry {
+                leaf,
+                subleaf,
+                eax: value.eax,
+                ebx: value.ebx,
+                ecx: value.ecx,
+                edx: value.edx,
+            })
+        })
+        .collect();
+
+    let cpuid = Cpuid { entries, vendor };
+
+    println!("{}", serde_json::to_string_pretty(&cpuid).unwrap());
+}
+
+#[derive(Default, Clone, Copy, Debug, ValueEnum)]
+enum OutputFormat {
+    /// Print a human-readable plain-text representation.
+    #[default]
+    Text,
+
+    /// Print TOML suitable for use in a propolis-standalone config file.
+    Toml,
+
+    /// Print JSON suitable for inclusion in a propolis-server instance spec.
+    Json,
+}
+
+impl FromStr for OutputFormat {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "text" => Self::Text,
+            "toml" => Self::Toml,
+            "json" => Self::Json,
+            _ => {
+                return Err(
+                    "invalid output format, must be text, toml, or json",
+                )
+            }
+        })
+    }
+}
+
 #[derive(clap::Parser)]
 struct Opts {
     /// Elide all-zero entries from results
     #[clap(short)]
     zero_elide: bool,
 
-    /// Emit toml instead of text
-    #[clap(short)]
-    toml_output: bool,
+    /// Emit output in the specified format
+    #[clap(short, long, value_enum, default_value = "text")]
+    format: OutputFormat,
 
     /// Query CPU directly, rather that via bhyve masking
     #[clap(short)]
@@ -289,10 +388,10 @@ fn main() -> anyhow::Result<()> {
 
     let results = collect_cpuid(&queryf, opts.zero_elide)?;
 
-    if opts.toml_output {
-        print_toml(&results);
-    } else {
-        print_text(&results);
+    match opts.format {
+        OutputFormat::Text => print_text(&results),
+        OutputFormat::Toml => print_toml(&results),
+        OutputFormat::Json => print_json(&results),
     }
 
     Ok(())

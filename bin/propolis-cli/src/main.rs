@@ -167,19 +167,19 @@ enum Command {
 #[derive(Args, Clone, Debug)]
 struct VmConfig {
     /// A path to a file containing a JSON-formatted instance spec
-    #[clap(short = 's', long, action)]
+    #[clap(short = 's', long, action, group = "spec_group")]
     spec: Option<PathBuf>,
 
     /// Number of vCPUs allocated to instance
-    #[clap(short = 'c', default_value = "4", action, conflicts_with = "spec")]
+    #[clap(short = 'c', default_value = "4", action, requires = "config_toml")]
     vcpus: u8,
 
     /// Memory allocated to instance (MiB)
-    #[clap(short, default_value = "1024", action, conflicts_with = "spec")]
+    #[clap(short, default_value = "1024", action, requires = "config_toml")]
     memory: u64,
 
     /// A path to a file containing a config TOML
-    #[clap(short = 't', long, action, conflicts_with = "spec")]
+    #[clap(short = 't', long, action, group = "config_group", requires_all = ["vcpus", "memory"])]
     config_toml: Option<PathBuf>,
 
     /// File with a JSON array of DiskRequest structs
