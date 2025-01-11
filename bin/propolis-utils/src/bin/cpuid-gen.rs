@@ -296,39 +296,32 @@ fn print_json(results: &BTreeMap<CpuidKey, Cpuid>) {
         }
     };
 
-    let cpuid = Cpuid {
-        entries: results
-            .iter()
-            .filter_map(|(key, value)| {
-                // propolis-server will complain if it receives a CPUID entry
-                // with no subleaf and a CPUID entry with a subleaf for the same
-                // leaf. Avoid emitting these by filtering out subleaf-less
-                // entries for any leaf that has an entry with subleaf data.
-                let (leaf, subleaf) = match key {
-                    CpuidKey::Leaf(leaf) => {
-                        if results.keys().any(|k| {
-                            matches!(k, CpuidKey::SubLeaf(l, _) if *l == *leaf)
-                        }) {
-                            return None;
-                        }
+    let entries = results
+        .iter()
+        .zip(results.keys().skip(1))
+        .filter_map(|((current_key, value), next_key)| {
+            let (leaf, subleaf) = match (current_key, next_key) {
+                (CpuidKey::Leaf(l1), CpuidKey::SubLeaf(l2, _)) if l1 == l2 => {
+                    return None;
+                }
+                (CpuidKey::Leaf(leaf), _) => (*leaf, None),
+                (CpuidKey::SubLeaf(leaf, subleaf), _) => {
+                    (*leaf, Some(*subleaf))
+                }
+            };
 
-                        (*leaf, None)
-                    }
-                    CpuidKey::SubLeaf(leaf, subleaf) => (*leaf, Some(*subleaf)),
-                };
-
-                Some(CpuidEntry {
-                    leaf,
-                    subleaf,
-                    eax: value.eax,
-                    ebx: value.ebx,
-                    ecx: value.ecx,
-                    edx: value.edx,
-                })
+            Some(CpuidEntry {
+                leaf,
+                subleaf,
+                eax: value.eax,
+                ebx: value.ebx,
+                ecx: value.ecx,
+                edx: value.edx,
             })
-            .collect(),
-        vendor,
-    };
+        })
+        .collect();
+
+    let cpuid = Cpuid { entries, vendor };
 
     println!("{}", serde_json::to_string_pretty(&cpuid).unwrap());
 }
