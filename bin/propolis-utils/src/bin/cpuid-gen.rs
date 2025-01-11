@@ -296,15 +296,6 @@ fn print_json(results: &BTreeMap<CpuidKey, Cpuid>) {
         }
     };
 
-    // Returns `true` if `key` has subleaf data and its leaf index is `leaf`.
-    fn key_matches_leaf_and_has_subleaves(key: &CpuidKey, leaf: u32) -> bool {
-        let CpuidKey::SubLeaf(l, _) = key else {
-            return false;
-        };
-
-        leaf == *l
-    }
-
     let cpuid = Cpuid {
         entries: results
             .iter()
@@ -316,7 +307,7 @@ fn print_json(results: &BTreeMap<CpuidKey, Cpuid>) {
                 let (leaf, subleaf) = match key {
                     CpuidKey::Leaf(leaf) => {
                         if results.keys().any(|k| {
-                            key_matches_leaf_and_has_subleaves(k, *leaf)
+                            matches!(k, CpuidKey::SubLeaf(l, _) if *l == *leaf)
                         }) {
                             return None;
                         }
@@ -378,7 +369,7 @@ struct Opts {
     #[clap(short)]
     zero_elide: bool,
 
-    /// Emit output in the specified format
+    /// Emit output in the specified format ("text", "toml", or "json")
     #[clap(short, long, value_parser, default_value = "text")]
     format: OutputFormat,
 
