@@ -267,6 +267,35 @@ fn print_json(results: &BTreeMap<CpuidKey, Cpuid>) {
         Cpuid, CpuidEntry,
     };
 
+    let vendor = {
+        use propolis_api_types::instance_spec::{CpuidValues, CpuidVendor};
+        match results.get(&CpuidKey::Leaf(0)) {
+            None => {
+                eprintln!("no result for leaf 0, selecting default vendor");
+                CpuidVendor::Amd
+            }
+            Some(values) => {
+                let values = CpuidValues {
+                    eax: values.eax,
+                    ebx: values.ebx,
+                    ecx: values.ecx,
+                    edx: values.edx,
+                };
+
+                match CpuidVendor::try_from(values) {
+                    Err(_) => {
+                        eprintln!(
+                            "vendor in leaf 0 values ({values:?}) \
+                        not recognized, selecting default vendor"
+                        );
+                        CpuidVendor::Amd
+                    }
+                    Ok(v) => v,
+                }
+            }
+        }
+    };
+
     // Returns `true` if `key` has subleaf data and its leaf index is `leaf`.
     fn key_matches_leaf_and_has_subleaves(key: &CpuidKey, leaf: u32) -> bool {
         let CpuidKey::SubLeaf(l, _) = key else {
@@ -307,7 +336,7 @@ fn print_json(results: &BTreeMap<CpuidKey, Cpuid>) {
                 })
             })
             .collect(),
-        vendor: propolis_api_types::instance_spec::CpuidVendor::Amd,
+        vendor,
     };
 
     println!("{}", serde_json::to_string_pretty(&cpuid).unwrap());
