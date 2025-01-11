@@ -296,6 +296,10 @@ fn print_json(results: &BTreeMap<CpuidKey, Cpuid>) {
         }
     };
 
+    // propolis-server will reject CPUID entry lists that contain a no-subleaf
+    // and a subleaf-bearing entry for the same leaf. Filter these out by
+    // dropping Leaf entries whose immediate successor is a SubLeaf with the
+    // same leaf number.
     let entries = results
         .iter()
         .zip(results.keys().skip(1))
