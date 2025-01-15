@@ -542,6 +542,9 @@ unsafe fn ioctl(
 #[repr(u32)]
 #[derive(Copy, Clone)]
 pub enum ApiVersion {
+    /// Initial support for CPU perf. counters on AMD
+    V18 = 18,
+
     /// Add support for NPT bitmap operations
     V17 = 17,
 
@@ -588,7 +591,7 @@ pub enum ApiVersion {
 }
 impl ApiVersion {
     pub const fn current() -> Self {
-        Self::V17
+        Self::V18
     }
 }
 
