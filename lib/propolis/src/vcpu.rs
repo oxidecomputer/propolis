@@ -21,7 +21,7 @@ use migrate::VcpuReadWrite;
 use thiserror::Error;
 
 use bhyve_api::ApiVersion;
-use propolis_types::{CpuidIdent, CpuidVendor};
+use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor};
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
@@ -54,6 +54,9 @@ pub struct Vcpu {
     pub id: i32,
     pub bus_mmio: Arc<MmioBus>,
     pub bus_pio: Arc<PioBus>,
+
+    /// Vendor of the underlying CPU hardware
+    hardware_vendor: CpuidVendor,
 }
 
 impl Vcpu {
@@ -64,7 +67,25 @@ impl Vcpu {
         bus_mmio: Arc<MmioBus>,
         bus_pio: Arc<PioBus>,
     ) -> Arc<Self> {
-        Arc::new(Self { hdl, id, bus_mmio, bus_pio })
+        #[cfg(target_arch = "x86_64")]
+        fn query_hardware_vendor() -> CpuidVendor {
+            let res = unsafe { core::arch::x86_64::__cpuid(0) };
+            CpuidValues::from(res).try_into().expect("CPU vendor is recognized")
+        }
+
+        #[cfg(not(target_arch = "x86_64"))]
+        fn query_hardware_vendor() -> CpuidVendor {
+            // Just default to AMD when building for tests/etc on non-x86
+            CpuidVendor::Amd
+        }
+
+        Arc::new(Self {
+            hdl,
+            id,
+            bus_mmio,
+            bus_pio,
+            hardware_vendor: query_hardware_vendor(),
+        })
     }
 
     /// ID of the virtual CPU.
@@ -483,6 +504,13 @@ impl MigrateMulti for Vcpu {
         output.push(migrate::LapicV1::read(self)?.into())?;
         output.push(migrate::CpuidV1::read(self)?.into())?;
 
+        // PMU was introduced in V18
+        if bhyve_api::api_version()? >= ApiVersion::V18
+            && self.hardware_vendor == CpuidVendor::Amd
+        {
+            output.push(migrate::PmuAmdV1::read(self)?.into())?;
+        }
+
         Ok(())
     }
 
@@ -510,6 +538,10 @@ impl MigrateMulti for Vcpu {
         fpu.write(self)?;
         lapic.write(self)?;
         cpuid.write(self)?;
+
+        if let Ok(pmu_amd) = offer.take::<migrate::PmuAmdV1>() {
+            pmu_amd.write(self)?;
+        }
 
         Ok(())
     }
@@ -783,6 +815,17 @@ pub mod migrate {
         }
     }
 
+    #[derive(Clone, Deserialize, Serialize)]
+    pub struct PmuAmdV1 {
+        pub evtsel: [u64; 6],
+        pub counter: [u64; 6],
+    }
+    impl Schema<'_> for PmuAmdV1 {
+        fn id() -> SchemaId {
+            ("bhyve-x86-pmu-amd", 1)
+        }
+    }
+
     impl From<(bhyve_api::seg_desc, u16)> for SegDesc {
         fn from(value: (bhyve_api::seg_desc, u16)) -> Self {
             let (desc, selector) = value;
@@ -889,6 +932,19 @@ pub mod migrate {
                 vlp_lvt_error: value.lvt_error,
                 vlp_icr_timer: value.icr_timer,
                 vlp_dcr_timer: value.dcr_timer,
+            }
+        }
+    }
+    impl From<bhyve_api::vdi_pmu_amd_v1> for PmuAmdV1 {
+        fn from(value: bhyve_api::vdi_pmu_amd_v1) -> Self {
+            PmuAmdV1 { evtsel: value.vpa_evtsel, counter: value.vpa_ctr }
+        }
+    }
+    impl From<PmuAmdV1> for bhyve_api::vdi_pmu_amd_v1 {
+        fn from(value: PmuAmdV1) -> Self {
+            bhyve_api::vdi_pmu_amd_v1 {
+                vpa_evtsel: value.evtsel,
+                vpa_ctr: value.counter,
             }
         }
     }
@@ -1334,6 +1390,26 @@ pub mod migrate {
 
         fn write(self, vcpu: &Vcpu) -> Result<()> {
             vcpu.set_cpuid(self.into())
+        }
+    }
+    impl VcpuReadWrite for PmuAmdV1 {
+        fn read(vcpu: &Vcpu) -> Result<Self> {
+            let vdi = vcpu
+                .hdl
+                .data_op(bhyve_api::VDC_PMU_AMD, 1)
+                .for_vcpu(vcpu.id)
+                .read::<bhyve_api::vdi_pmu_amd_v1>()?;
+
+            Ok(vdi.into())
+        }
+
+        fn write(self, vcpu: &Vcpu) -> Result<()> {
+            vcpu.hdl
+                .data_op(bhyve_api::VDC_PMU_AMD, 1)
+                .for_vcpu(vcpu.id)
+                .write::<bhyve_api::vdi_pmu_amd_v1>(&self.into())?;
+
+            Ok(())
         }
     }
 }
