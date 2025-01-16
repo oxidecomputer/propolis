@@ -56,6 +56,8 @@ jobs:
     - uses: dtolnay/rust-toolchain@439cf607258077187679211f12aa6f19af4a0af7 # master @ 2023-10-08
       with:
         toolchain: stable
+    - name: Install dependencies
+      run: sudo apt-get install libsqlite3-dev
     - name: Build
       run: cargo build --verbose
     - name: Build mock-only server
