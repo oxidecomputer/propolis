@@ -273,7 +273,7 @@ struct SerialTaskContext {
     ws: WebSocketStream<WebsocketConnectionRaw>,
 
     /// A handle representing this task's connection to the console backend.
-    backend_hdl: backend::ClientHandle,
+    backend_hdl: backend::Client,
 
     /// Receives output bytes from the guest.
     console_rx: mpsc::Receiver<u8>,

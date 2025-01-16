@@ -53,7 +53,7 @@ pub(super) enum FullReadChannelDiscipline {
 }
 
 /// An individual client of a character backend.
-struct Client {
+struct ClientState {
     /// Bytes read from the character device should be sent to the client on
     /// this channel.
     tx: mpsc::Sender<u8>,
@@ -64,7 +64,7 @@ struct Client {
 }
 
 /// A handle held by a client that represents its connection to the backend.
-pub(super) struct ClientHandle {
+pub(super) struct Client {
     /// The client's ID.
     id: ClientId,
 
@@ -75,20 +75,20 @@ pub(super) struct ClientHandle {
     permissions: Permissions,
 }
 
-impl ClientHandle {
+impl Client {
     pub(super) fn is_writable(&self) -> bool {
         self.permissions.is_writable()
     }
 }
 
-impl Drop for ClientHandle {
+impl Drop for Client {
     fn drop(&mut self) {
         let mut inner = self.backend.inner.lock().unwrap();
         inner.clients.remove(&self.id);
     }
 }
 
-impl ClientHandle {
+impl Client {
     /// Attempts to write the bytes in `buf` to the backend.
     ///
     /// The backend may buffer some of the written bytes before sending them to
@@ -159,7 +159,7 @@ struct Inner {
     buffer: HistoryBuffer,
 
     /// A table mapping client IDs to clients.
-    clients: BTreeMap<ClientId, Client>,
+    clients: BTreeMap<ClientId, ClientState>,
 
     /// The ID to assign to the next client to attach to this backend.
     next_client_id: u64,
@@ -247,14 +247,16 @@ impl ConsoleBackend {
         read_tx: mpsc::Sender<u8>,
         permissions: Permissions,
         full_read_tx_discipline: FullReadChannelDiscipline,
-    ) -> ClientHandle {
+    ) -> Client {
         let mut inner = self.inner.lock().unwrap();
         let id = inner.next_client_id();
-        let client =
-            Client { tx: read_tx, read_discipline: full_read_tx_discipline };
+        let client = ClientState {
+            tx: read_tx,
+            read_discipline: full_read_tx_discipline,
+        };
 
         inner.clients.insert(id, client);
-        ClientHandle { id, backend: self.clone(), permissions }
+        Client { id, backend: self.clone(), permissions }
     }
 
     /// Returns the contents of this backend's history buffer. See
