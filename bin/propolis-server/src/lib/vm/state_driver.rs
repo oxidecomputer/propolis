@@ -35,6 +35,7 @@ use super::{
     guest_event::{self, GuestEvent},
     objects::VmObjects,
     request_queue::{self, ExternalRequest, InstanceAutoStart},
+    services::VmServices,
     state_publisher::{MigrationStateUpdate, StatePublisher},
     InstanceEnsureResponseTx,
 };
@@ -234,6 +235,9 @@ struct StateDriver {
     /// The VM objects this driver is managing.
     objects: Arc<VmObjects>,
 
+    /// The services associated with this driver's VM.
+    services: Arc<VmServices>,
+
     /// The input queue this driver gets events from.
     input_queue: Arc<InputQueue>,
 
@@ -289,12 +293,17 @@ pub(super) async fn run_state_driver(
         }
     };
 
-    let VmEnsureActiveOutput { vm_objects, input_queue, vmm_rt_hdl } =
-        activated_vm.into_inner();
+    let VmEnsureActiveOutput {
+        vm_objects,
+        vm_services,
+        input_queue,
+        vmm_rt_hdl,
+    } = activated_vm.into_inner();
 
     let state_driver = StateDriver {
         log,
         objects: vm_objects,
+        services: vm_services,
         input_queue,
         external_state: state_publisher,
         paused: false,
@@ -631,6 +640,7 @@ impl StateDriver {
         match migration
             .run(
                 &self.objects,
+                &self.services,
                 &mut self.external_state,
                 &mut self.migration_src_state,
             )

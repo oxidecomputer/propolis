@@ -40,7 +40,7 @@ pub(crate) struct ActiveVm {
 
     /// Services that interact with VM users or the control plane outside the
     /// Propolis API (e.g. the serial console, VNC, and metrics reporting).
-    pub(super) services: VmServices,
+    pub(super) services: Arc<VmServices>,
 
     /// The runtime on which this VM's state driver and any tasks spawned by
     /// the VM's components will run.
