@@ -14,6 +14,7 @@ pub const VDC_MSR: u16 = 3;
 pub const VDC_FPU: u16 = 4;
 pub const VDC_LAPIC: u16 = 5;
 pub const VDC_VMM_ARCH: u16 = 6;
+pub const VDC_PMU_AMD: u16 = 14;
 
 // Classes for system-wide device state
 
@@ -261,3 +262,12 @@ pub const VAI_PEND_EXTINT: u32 = 11;
 pub const VAI_PEND_EXCP: u32 = 12;
 /// exception/interrupt pending injection for vCPU
 pub const VAI_PEND_INTINFO: u32 = 13;
+
+// VDC_PMU_AMD v1 interface
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
+pub struct vdi_pmu_amd_v1 {
+    pub vpa_evtsel: [u64; 6],
+    pub vpa_ctr: [u64; 6],
+}
