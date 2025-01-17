@@ -6,9 +6,10 @@
 //! device and tracks the history of bytes the guest has written to that device.
 
 use std::{
-    collections::BTreeMap,
+    future::Future,
     num::NonZeroUsize,
     sync::{Arc, Mutex},
+    task::{Context, Poll},
 };
 
 use propolis::chardev::{
@@ -16,29 +17,21 @@ use propolis::chardev::{
     Sink, Source,
 };
 use tokio::{
+    io::{AsyncWriteExt, SimplexStream, WriteHalf},
     select,
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
 };
 
 use super::history_buffer::{HistoryBuffer, SerialHistoryOffset};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct ClientId(u64);
-
 /// A client's rights when accessing a character backend.
 #[derive(Clone, Copy)]
-pub(super) enum Permissions {
+enum Permissions {
     /// The client may both read and write to the backend.
     ReadWrite,
 
     /// The client may only read from the backend.
     ReadOnly,
-}
-
-impl Permissions {
-    pub(super) fn is_writable(&self) -> bool {
-        matches!(self, Permissions::ReadWrite)
-    }
 }
 
 /// Determines what happens when the backend is unable to send a guest byte back
@@ -52,96 +45,49 @@ pub(super) enum FullReadChannelDiscipline {
     Close,
 }
 
-/// An individual client of a character backend.
-struct ClientState {
-    /// Bytes read from the character device should be sent to the client on
-    /// this channel.
-    tx: mpsc::Sender<u8>,
+/// An entity that receives bytes written by the guest.
+///
+/// Readers are instantiated in [`ConsoleBackend::attach_client`] and passed via
+/// channel to the backend's [`read_task`].
+struct Reader {
+    /// Bytes received from the guest are sent into this stream.
+    tx: WriteHalf<SimplexStream>,
 
-    /// Determines what happens when the backend wants to send a byte and
-    /// [`Self::tx`] is full.
-    read_discipline: FullReadChannelDiscipline,
+    /// Determines what happens if a read fails to accept all of the bytes the
+    /// task wanted to write.
+    discipline: FullReadChannelDiscipline,
+
+    /// Set to `true` when this reader is dropped.
+    defunct_tx: watch::Sender<bool>,
+
+    /// Set to `true` when this reader's associated [`Client`] is dropped.
+    defunct_rx: watch::Receiver<bool>,
 }
 
-/// A handle held by a client that represents its connection to the backend.
-pub(super) struct Client {
-    /// The client's ID.
-    id: ClientId,
+impl Drop for Reader {
+    fn drop(&mut self) {
+        let _ = self.defunct_tx.send(true);
+    }
+}
 
-    /// A reference to the backend to which the client is connected.
+/// An entity that can attempt to write bytes to the guest.
+struct Writer {
+    /// The backend to which this writer directs its writes.
     backend: Arc<ConsoleBackend>,
 
-    /// The client's backend access rights.
-    permissions: Permissions,
+    /// Set to `true` when this writer's associated [`Reader`] is dropped.
+    defunct_rx: watch::Receiver<bool>,
 }
 
-impl Client {
-    pub(super) fn is_writable(&self) -> bool {
-        self.permissions.is_writable()
-    }
-}
+impl Writer {
+    /// Implements [`Client::write`] for the client that owns this [`Writer`].
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
+        assert!(!buf.is_empty());
 
-impl Drop for Client {
-    fn drop(&mut self) {
-        let mut inner = self.backend.inner.lock().unwrap();
-        inner.clients.remove(&self.id);
-    }
-}
-
-impl Client {
-    /// Attempts to write the bytes in `buf` to the backend.
-    ///
-    /// The backend may buffer some of the written bytes before sending them to
-    /// its device, so when this function returns, it is not guaranteed that all
-    /// of the written bytes have actually reached the guest.
-    ///
-    /// # Return value
-    ///
-    /// - `Ok(bytes)` if the write succeeded; `bytes` is the number of bytes
-    ///   that were written.
-    /// - `Err(ErrorKind::PermissionDenied)` if this handle does not grant write
-    ///   access to the device.
-    /// - `Err(ErrorKind::ConnectionAborted)` if this handle's client was
-    ///   previously disconnected from the backend, e.g. because it had a full
-    ///   read channel and was using the close-on-full-channel read discipline.
-    ///
-    /// # Cancel safety
-    ///
-    /// The future returned by this function is cancel-safe. If it is dropped,
-    /// it is guaranteed that no bytes were written to the backend or its
-    /// device. See [`SinkBuffer::write`].
-    pub(super) async fn write(
-        &mut self,
-        buf: &[u8],
-    ) -> Result<usize, std::io::Error> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-
-        if !matches!(self.permissions, Permissions::ReadWrite) {
+        if *self.defunct_rx.borrow_and_update() {
             return Err(std::io::Error::from(
-                std::io::ErrorKind::PermissionDenied,
+                std::io::ErrorKind::ConnectionAborted,
             ));
-        }
-
-        // The client handle may have been invalidated if it used the "close on
-        // full channel" discipline. If this client is no longer active, return
-        // an error.
-        //
-        // The read dispatcher task doesn't synchronize with writes, so it's
-        // possible for the client to be invalidated after the lock is dropped.
-        // (It can't be held while writing to the backend because
-        // `SinkBuffer::write` is async.) This is OK; since reads and writes
-        // aren't synchronized to begin with, in any situation like this it was
-        // equally possible for the write to finish before the client was
-        // invalidated.
-        {
-            let inner = self.backend.inner.lock().unwrap();
-            if !inner.clients.contains_key(&self.id) {
-                return Err(std::io::Error::from(
-                    std::io::ErrorKind::ConnectionAborted,
-                ));
-            }
         }
 
         Ok(self
@@ -153,31 +99,84 @@ impl Client {
     }
 }
 
+/// A client of this backend.
+pub(super) struct Client {
+    /// The client's associated [`Writer`], if it was instantiated as a
+    /// read-write client.
+    writer: Option<Writer>,
+
+    /// The client writes `true` to this channel when it is dropped.
+    defunct_tx: watch::Sender<bool>,
+
+    /// The read task writes `true` to this channel if this client's associated
+    /// [`Reader`] is closed.
+    defunct_rx: watch::Receiver<bool>,
+}
+
+impl Client {
+    pub(super) fn can_write(&self) -> bool {
+        self.writer.is_some()
+    }
+
+    pub(super) fn get_defunct_rx(&self) -> watch::Receiver<bool> {
+        self.defunct_rx.clone()
+    }
+
+    /// Attempts to write the bytes in `buf` to the backend.
+    ///
+    /// The backend may buffer some of the written bytes before sending them to
+    /// its device, so when this function returns, it is not guaranteed that all
+    /// of the written bytes have actually reached the guest.
+    ///
+    /// # Return value
+    ///
+    /// - `Ok(bytes)` if the write succeeded; `bytes` is the number of bytes
+    ///   that were written.
+    /// - `Err(std::io::Error::PermissionDenied)` if this client does not have
+    ///   write access to the device.
+    /// - `Err(std::io::Error::ConnectionAborted)` if this client lost its
+    ///   ability to write to the device because it stopped servicing reads,
+    ///   i.e., its read channel was full and it uses the close-on-full-channel
+    ///   read discipline.
+    ///
+    /// # Cancel safety
+    ///
+    /// The future returned by this function is cancel-safe. If it is dropped,
+    /// it is guaranteed that no bytes were written to the backend or its
+    /// device.
+    pub(super) async fn write(
+        &mut self,
+        buf: &[u8],
+    ) -> Result<usize, std::io::Error> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let Some(writer) = self.writer.as_mut() else {
+            return Err(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied,
+            ));
+        };
+
+        writer.write(buf).await
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        let _ = self.defunct_tx.send(true);
+    }
+}
+
 /// Character backend state that's protected by a lock.
 struct Inner {
     /// A history of the bytes read from this backend's device.
     buffer: HistoryBuffer,
-
-    /// A table mapping client IDs to clients.
-    clients: BTreeMap<ClientId, ClientState>,
-
-    /// The ID to assign to the next client to attach to this backend.
-    next_client_id: u64,
 }
 
 impl Inner {
     fn new(history_size: usize) -> Self {
-        Self {
-            buffer: HistoryBuffer::new(history_size),
-            clients: BTreeMap::new(),
-            next_client_id: 0,
-        }
-    }
-
-    fn next_client_id(&mut self) -> ClientId {
-        let id = self.next_client_id;
-        self.next_client_id += 1;
-        ClientId(id)
+        Self { buffer: HistoryBuffer::new(history_size) }
     }
 }
 
@@ -197,6 +196,10 @@ pub struct ConsoleBackend {
     /// backend should be directed at the buffer, not at [`Self::sink`].
     sink_buffer: Arc<SinkBuffer>,
 
+    /// Receives the [`Reader`]s generated when new clients connect to this
+    /// backend.
+    reader_tx: mpsc::UnboundedSender<Reader>,
+
     /// A channel used to tell the backend's reader task that the backend has
     /// been closed.
     done_tx: oneshot::Sender<()>,
@@ -215,48 +218,84 @@ impl ConsoleBackend {
 
         let sink = device.clone();
         let source = device.clone();
+
+        let (reader_tx, reader_rx) = mpsc::unbounded_channel();
         let (done_tx, done_rx) = oneshot::channel();
 
         let this = Arc::new(Self {
             inner: Arc::new(Mutex::new(Inner::new(history_bytes))),
             sink,
             sink_buffer,
+            reader_tx,
             done_tx,
         });
 
         let inner = this.inner.clone();
         tokio::spawn(async move {
-            read_task(inner, source, done_rx).await;
+            read_task(inner, source, reader_rx, done_rx).await;
         });
 
         this
     }
 
-    /// Attaches a new client to this backend, yielding a handle that the client
-    /// can use to issue further operations.
+    /// Attaches a new read-only client to this backend. Incoming bytes from the
+    /// guest are sent to `read_tx`. `discipline` specifies what happens if the
+    /// channel is full when new bytes are available to read.
     ///
-    /// # Arguments
-    ///
-    /// - `read_tx`: A channel to which the backend should send bytes read from
-    ///   its device.
-    /// - `permissions`: The read/write permissions this client should have.
-    /// - `full_read_tx_discipline`: Describes what should happen if the reader
-    ///   task ever finds that `read_tx` is full when dispatching a byte to it.
-    pub(super) fn attach_client(
+    /// The caller may disconnect its session by dropping the returned
+    /// [`Client`].
+    pub(super) fn attach_read_only_client(
         self: &Arc<Self>,
-        read_tx: mpsc::Sender<u8>,
-        permissions: Permissions,
-        full_read_tx_discipline: FullReadChannelDiscipline,
+        read_tx: WriteHalf<SimplexStream>,
+        discipline: FullReadChannelDiscipline,
     ) -> Client {
-        let mut inner = self.inner.lock().unwrap();
-        let id = inner.next_client_id();
-        let client = ClientState {
-            tx: read_tx,
-            read_discipline: full_read_tx_discipline,
+        self.attach_client(read_tx, Permissions::ReadOnly, discipline)
+    }
+
+    /// Attaches a new read-write client to this backend. Incoming bytes from
+    /// the guest are sent to `read_tx`. `discipline` specifies what happens if
+    /// the channel is full when new bytes are available to read.
+    ///
+    /// The caller may disconnect its session by dropping the returned
+    /// [`Client`].
+    pub(super) fn attach_read_write_client(
+        self: &Arc<Self>,
+        read_tx: WriteHalf<SimplexStream>,
+        discipline: FullReadChannelDiscipline,
+    ) -> Client {
+        self.attach_client(read_tx, Permissions::ReadWrite, discipline)
+    }
+
+    /// Attaches a new client to this backend, returning a [`Client`] that
+    /// represents the caller's connection to the backend.
+    fn attach_client(
+        self: &Arc<Self>,
+        read_tx: WriteHalf<SimplexStream>,
+        permissions: Permissions,
+        discipline: FullReadChannelDiscipline,
+    ) -> Client {
+        let (defunct_tx, defunct_rx) = watch::channel(false);
+        let writer = match permissions {
+            Permissions::ReadWrite => Some(Writer {
+                backend: self.clone(),
+                defunct_rx: defunct_rx.clone(),
+            }),
+            Permissions::ReadOnly => None,
         };
 
-        inner.clients.insert(id, client);
-        Client { id, backend: self.clone(), permissions }
+        let reader = Reader {
+            tx: read_tx,
+            discipline,
+            defunct_tx: defunct_tx.clone(),
+            defunct_rx: defunct_rx.clone(),
+        };
+
+        // Unwrapping is safe here because `read_task` is only allowed to exit
+        // after the backend signals `done_tx`, which only happens when the
+        // backend is dropped.
+        self.reader_tx.send(reader).unwrap();
+
+        Client { writer, defunct_tx, defunct_rx }
     }
 
     /// Returns the contents of this backend's history buffer. See
@@ -321,79 +360,117 @@ mod migrate {
 async fn read_task(
     inner: Arc<Mutex<Inner>>,
     source: Arc<dyn Source>,
+    mut reader_rx: mpsc::UnboundedReceiver<Reader>,
     mut done_rx: oneshot::Receiver<()>,
 ) {
-    const READ_BUFFER_SIZE_BYTES: usize = 512;
     let buf = SourceBuffer::new(propolis::chardev::pollers::Params {
         poll_interval: std::time::Duration::from_millis(10),
         poll_miss_thresh: 5,
-        buf_size: NonZeroUsize::new(READ_BUFFER_SIZE_BYTES).unwrap(),
+        buf_size: NonZeroUsize::new(super::SERIAL_READ_BUFFER_SIZE).unwrap(),
     });
     buf.attach(source.as_ref());
 
-    let mut bytes = vec![0; READ_BUFFER_SIZE_BYTES];
+    enum Event {
+        NewReader(Reader),
+        BytesRead(usize),
+    }
+
+    let mut readers = vec![];
+    let mut bytes = vec![0; super::SERIAL_READ_BUFFER_SIZE];
     loop {
-        let bytes_read = select! {
+        let event = select! {
             biased;
 
             _ = &mut done_rx => {
                 return;
             }
 
-            res = buf.read(bytes.as_mut_slice(), source.as_ref()) => {
-                res.unwrap()
+            new_reader = reader_rx.recv() => {
+                let Some(reader) = new_reader else {
+                    return;
+                };
+
+                Event::NewReader(reader)
+            }
+
+            bytes_read = buf.read(bytes.as_mut_slice(), source.as_ref()) => {
+                Event::BytesRead(bytes_read.unwrap())
             }
         };
 
-        let to_send = &bytes[0..bytes_read];
+        // Returns `true` if it was possible to send the entirety of `to_send`
+        // to `reader` without violating the reader's full-channel discipline.
+        async fn send_ok(reader: &mut Reader, to_send: &[u8]) -> bool {
+            match reader.discipline {
+                // Reads and writes to simplex streams (unlike channels) do not
+                // resolve to errors if the other half of the stream is dropped
+                // while the read or write is outstanding; instead, the future
+                // stays pending forever.
+                //
+                // To handle cases where the reader's client handle was dropped
+                // mid-read, select over the attempt to write and the "defunct"
+                // watcher and retire the client if the watcher fires first.
+                FullReadChannelDiscipline::Block => {
+                    select! {
+                        res = reader.tx.write_all(to_send) => {
+                            res.is_ok()
+                        }
 
-        // Capture a list of all the clients who should receive this byte with
-        // the lock held, then drop the lock before sending to any of them. Note
-        // that sends to clients may block for an arbitrary length of time: the
-        // receiver may be relaying received bytes to a websocket, and the
-        // remote peer may be slow to accept them.
-        struct CapturedClient {
-            id: ClientId,
-            tx: mpsc::Sender<u8>,
-            discipline: FullReadChannelDiscipline,
-            disconnect: bool,
-        }
-
-        let mut clients = {
-            let guard = inner.lock().unwrap();
-            guard
-                .clients
-                .iter()
-                .map(|(id, client)| CapturedClient {
-                    id: *id,
-                    tx: client.tx.clone(),
-                    discipline: client.read_discipline,
-                    disconnect: false,
-                })
-                .collect::<Vec<CapturedClient>>()
-        };
-
-        // Prepare to delete any clients that are no longer active (i.e., who
-        // have dropped the receiver sides of their channels) or who are using
-        // the close-on-full-channel discipline and who have a full channel.
-        for byte in to_send {
-            for client in clients.iter_mut() {
-                client.disconnect = match client.discipline {
-                    FullReadChannelDiscipline::Block => {
-                        client.tx.send(*byte).await.is_err()
+                        _ = reader.defunct_rx.changed() => {
+                            false
+                        }
                     }
-                    FullReadChannelDiscipline::Close => {
-                        client.tx.try_send(*byte).is_err()
-                    }
+                }
+                // In the close-on-full-channel case it suffices to poll the
+                // future exactly once and see if this manages to write all of
+                // the data. No selection is needed here: if `write` returns
+                // `Poll::Pending`, `poll_once` will return an error,
+                // irrespective of the reason the write didn't complete.
+                FullReadChannelDiscipline::Close => {
+                    matches!(
+                        poll_once(reader.tx.write(to_send)),
+                        Some(Ok(len)) if len == to_send.len()
+                    )
                 }
             }
         }
 
-        // Clean up any clients who met the disconnection criteria.
-        let mut guard = inner.lock().unwrap();
-        guard.buffer.consume(to_send);
-        for client in clients.iter().filter(|c| c.disconnect) {
-            guard.clients.remove(&client.id);
+        match event {
+            Event::NewReader(r) => readers.push(r),
+            Event::BytesRead(bytes_read) => {
+                let to_send = &bytes[0..bytes_read];
+
+                // Send the bytes to each reader, dropping readers who fail to
+                // accept all the bytes on offer.
+                //
+                // It would be nice to use `Vec::retain_mut` here, but async
+                // closures aren't quite stable yet, so hand-roll a while loop
+                // instead.
+                let mut idx = 0;
+                while idx < readers.len() {
+                    let ok = send_ok(&mut readers[idx], to_send).await;
+                    if ok {
+                        idx += 1;
+                    } else {
+                        readers.swap_remove(idx);
+                    }
+                }
+
+                inner.lock().unwrap().buffer.consume(to_send);
+            }
         }
+    }
+}
+
+/// A helper function to poll a future `f` exactly once, returning its output
+/// `Some(R)` if it is immediately ready and `None` otherwise.
+fn poll_once<R>(f: impl Future<Output = R>) -> Option<R> {
+    tokio::pin!(f);
+
+    let waker = futures::task::noop_waker();
+    let mut cx = Context::from_waker(&waker);
+    match f.as_mut().poll(&mut cx) {
+        Poll::Ready(result) => Some(result),
+        Poll::Pending => None,
     }
 }
