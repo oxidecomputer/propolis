@@ -310,7 +310,7 @@ struct SerialTaskContext {
     /// Receives output bytes from the guest.
     console_rx: ReadHalf<SimplexStream>,
 
-    /// TODO(gjc)
+    /// Receives commands and notifications from the console manager.
     control_rx: mpsc::UnboundedReceiver<ControlEvent>,
 
     /// Signaled to tell a task to shut down.

@@ -4,6 +4,33 @@
 
 //! A backend that provides external clients with access to a Propolis character
 //! device and tracks the history of bytes the guest has written to that device.
+//!
+//! The [`ConsoleBackend`] type provides an interface to read and write a
+//! character device. The backend itself holds a reference to the device and
+//! manages a task that reads bytes from the device and issues them to any
+//! registered readers.
+//!
+//! Users of the backend call [`ConsoleBackend::attach_read_only_client`] or
+//! [`ConsoleBackend::attach_read_write_client`] to obtain a [`Client`]
+//! representing the new connection. Each client has a corresponding [`Reader`]
+//! owned by the backend's [`read_task`]; each `Reader` contains a tokio
+//! [`SimplexStream`] to which the read task sends bytes written by the guest.
+//! Read-write clients own a reference to a [`Writer`] that can write bytes to a
+//! sink associated with the backend's character device.
+//!
+//! Clients may be disconnected in one of two ways:
+//!
+//! - A client's owner can just drop its `Client` struct.
+//! - If the client was configured to use the "close on full channel" read
+//!   discipline, and the read task is unable to send some bytes to a reader's
+//!   stream because the channel is full, the client is invalidated.
+//!
+//! To avoid circular references, clients and their readers don't refer to each
+//! other directly. Instead, they share both sides of a `tokio::watch` to which
+//! they publish `true` when a connection has been invalidated, regardless of
+//! who invalidated it. The receiver end of this channel is available to users
+//! through [`Client::get_defunct_rx`] to allow clients' users to learn when
+//! their clients have been closed.
 
 use std::{
     future::Future,
@@ -74,21 +101,13 @@ impl Drop for Reader {
 struct Writer {
     /// The backend to which this writer directs its writes.
     backend: Arc<ConsoleBackend>,
-
-    /// Set to `true` when this writer's associated [`Reader`] is dropped.
-    defunct_rx: watch::Receiver<bool>,
 }
 
 impl Writer {
-    /// Implements [`Client::write`] for the client that owns this [`Writer`].
+    /// Sends the bytes in `buf` to the sink associated with this writer's
+    /// backend.
     async fn write(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
         assert!(!buf.is_empty());
-
-        if *self.defunct_rx.borrow_and_update() {
-            return Err(std::io::Error::from(
-                std::io::ErrorKind::ConnectionAborted,
-            ));
-        }
 
         Ok(self
             .backend
@@ -157,6 +176,12 @@ impl Client {
                 std::io::ErrorKind::PermissionDenied,
             ));
         };
+
+        if *self.defunct_rx.borrow_and_update() {
+            return Err(std::io::Error::from(
+                std::io::ErrorKind::ConnectionAborted,
+            ));
+        }
 
         writer.write(buf).await
     }
@@ -276,10 +301,7 @@ impl ConsoleBackend {
     ) -> Client {
         let (defunct_tx, defunct_rx) = watch::channel(false);
         let writer = match permissions {
-            Permissions::ReadWrite => Some(Writer {
-                backend: self.clone(),
-                defunct_rx: defunct_rx.clone(),
-            }),
+            Permissions::ReadWrite => Some(Writer { backend: self.clone() }),
             Permissions::ReadOnly => None,
         };
 
