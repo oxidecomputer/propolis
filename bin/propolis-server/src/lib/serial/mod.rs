@@ -130,6 +130,11 @@ impl ClientTasks {
 
     /// Ensures the task with ID `id` is removed from this task set.
     fn ensure_removed_by_id(&mut self, id: ClientId) {
+        // `slab` will panic if asked to remove an ID that isn't present in the
+        // collection. This can happen if a read-write task is evicted by a new
+        // read-write task, and then the old task exits. Handling this case here
+        // allows new client connections to take ownership of a retired
+        // read-write task and await its completion while holding no locks.
         if self.tasks.contains(id.0) {
             self.tasks.remove(id.0);
             match self.rw_client_id {
