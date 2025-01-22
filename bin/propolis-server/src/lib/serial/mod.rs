@@ -566,7 +566,15 @@ async fn serial_task(
                 );
                 if let Message::Binary(bytes) = msg {
                     probes::serial_task_ws_recv!(|| (bytes.len()));
-                    remaining_to_send.extend(bytes.as_slice());
+
+                    // Throw away the incoming bytes if they can't be written to
+                    // the backend. This allows the next loop iteration to read
+                    // from the socket agian, which gives it a convenient way of
+                    // noticing that a client has disconnected even if nothing
+                    // is currently being echoed to it.
+                    if backend_hdl.can_write() {
+                        remaining_to_send.extend(bytes.as_slice());
+                    }
                 }
             }
             Event::WebsocketError(e) => {
