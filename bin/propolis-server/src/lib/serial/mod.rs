@@ -107,7 +107,7 @@ struct ClientTask {
     hdl: JoinHandle<()>,
 
     /// Receives server-level commands and notifications about this connection.
-    control_tx: mpsc::UnboundedSender<ControlEvent>,
+    control_tx: mpsc::Sender<ControlEvent>,
 
     /// Triggered when the serial console manager shuts down.
     done_tx: oneshot::Sender<()>,
@@ -196,7 +196,7 @@ impl SerialConsoleManager {
     ) {
         let (console_rx, console_tx) =
             tokio::io::simplex(SERIAL_READ_BUFFER_SIZE);
-        let (control_tx, control_rx) = mpsc::unbounded_channel();
+        let (control_tx, control_rx) = mpsc::channel(1);
         let (task_done_tx, task_done_rx) = oneshot::channel();
         let discipline = match kind {
             ClientKind::ReadWrite => backend::FullReadChannelDiscipline::Block,
@@ -267,7 +267,7 @@ impl SerialConsoleManager {
             let _ = task.hdl.await;
         }
 
-        let _ = control_tx.send(ControlEvent::Start(new_id, backend_hdl));
+        let _ = control_tx.send(ControlEvent::Start(new_id, backend_hdl)).await;
     }
 
     /// Notifies all active clients that the instance is migrating to a new
@@ -289,12 +289,14 @@ impl SerialConsoleManager {
         };
 
         for client in clients {
-            let _ = client.send(ControlEvent::Message(
-                InstanceSerialConsoleControlMessage::Migrating {
-                    destination,
-                    from_start,
-                },
-            ));
+            let _ = client
+                .send(ControlEvent::Message(
+                    InstanceSerialConsoleControlMessage::Migrating {
+                        destination,
+                        from_start,
+                    },
+                ))
+                .await;
         }
     }
 }
@@ -311,7 +313,7 @@ struct SerialTaskContext {
     console_rx: ReadHalf<SimplexStream>,
 
     /// Receives commands and notifications from the console manager.
-    control_rx: mpsc::UnboundedReceiver<ControlEvent>,
+    control_rx: mpsc::Receiver<ControlEvent>,
 
     /// Signaled to tell a task to shut down.
     done_rx: oneshot::Receiver<()>,
