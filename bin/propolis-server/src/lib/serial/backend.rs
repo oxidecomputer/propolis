@@ -256,9 +256,7 @@ impl ConsoleBackend {
         });
 
         let inner = this.inner.clone();
-        tokio::spawn(async move {
-            read_task(inner, source, reader_rx, done_rx).await;
-        });
+        tokio::spawn(read_task(inner, source, reader_rx, done_rx));
 
         this
     }
@@ -416,7 +414,9 @@ async fn read_task(
             }
 
             bytes_read = buf.read(bytes.as_mut_slice(), source.as_ref()) => {
-                Event::BytesRead(bytes_read.unwrap())
+                Event::BytesRead(
+                    bytes_read.expect("SourceBuffer reads are infallible")
+                )
             }
         };
 
