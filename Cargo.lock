@@ -825,7 +825,7 @@ checksum = "248e3bacc7dc6baa3b21e405ee045c3047101a49145e7e9eca583ab4c2ca5345"
 [[package]]
 name = "crucible"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=c9d31d2f84ff5b59dfb1cf5358d8af657ab9b5e9#c9d31d2f84ff5b59dfb1cf5358d8af657ab9b5e9"
+source = "git+https://github.com/oxidecomputer/crucible?rev=c46163c7734ad7cd4d4ed852d0e394487fc6f50b#c46163c7734ad7cd4d4ed852d0e394487fc6f50b"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -843,7 +843,6 @@ dependencies = [
  "dropshot",
  "futures",
  "futures-core",
- "http 0.2.12",
  "internal-dns",
  "itertools 0.13.0",
  "libc",
@@ -852,7 +851,6 @@ dependencies = [
  "omicron-uuid-kinds",
  "oximeter",
  "oximeter-producer",
- "progenitor-client 0.9.1",
  "rand",
  "rand_chacha",
  "rayon",
@@ -878,7 +876,7 @@ dependencies = [
 [[package]]
 name = "crucible-client-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=c9d31d2f84ff5b59dfb1cf5358d8af657ab9b5e9#c9d31d2f84ff5b59dfb1cf5358d8af657ab9b5e9"
+source = "git+https://github.com/oxidecomputer/crucible?rev=c46163c7734ad7cd4d4ed852d0e394487fc6f50b#c46163c7734ad7cd4d4ed852d0e394487fc6f50b"
 dependencies = [
  "base64 0.22.1",
  "crucible-workspace-hack",
@@ -891,7 +889,7 @@ dependencies = [
 [[package]]
 name = "crucible-common"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=c9d31d2f84ff5b59dfb1cf5358d8af657ab9b5e9#c9d31d2f84ff5b59dfb1cf5358d8af657ab9b5e9"
+source = "git+https://github.com/oxidecomputer/crucible?rev=c46163c7734ad7cd4d4ed852d0e394487fc6f50b#c46163c7734ad7cd4d4ed852d0e394487fc6f50b"
 dependencies = [
  "anyhow",
  "atty",
@@ -921,7 +919,7 @@ dependencies = [
 [[package]]
 name = "crucible-protocol"
 version = "0.0.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=c9d31d2f84ff5b59dfb1cf5358d8af657ab9b5e9#c9d31d2f84ff5b59dfb1cf5358d8af657ab9b5e9"
+source = "git+https://github.com/oxidecomputer/crucible?rev=c46163c7734ad7cd4d4ed852d0e394487fc6f50b#c46163c7734ad7cd4d4ed852d0e394487fc6f50b"
 dependencies = [
  "anyhow",
  "bincode",
@@ -6557,13 +6555,11 @@ dependencies = [
 
 [[package]]
 name = "twox-hash"
-version = "1.6.3"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97fee6b57c6a41524a810daee9286c02d7752c4253064d0b05472833a438f675"
+checksum = "e7b17f197b3050ba473acf9181f7b1d3b66d1cf7356c6cc57886662276e65908"
 dependencies = [
- "cfg-if",
  "rand",
- "static_assertions",
 ]
 
 [[package]]
