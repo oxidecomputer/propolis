@@ -867,10 +867,10 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
         ..Default::default()
     };
 
-    let cpuid_vendor = cpuid_utils::host_query(CpuidIdent::leaf(0));
+    let cpuid_vendor = cpuid_utils::host::query(CpuidIdent::leaf(0));
     let cpuid_ident = params
         .cpuid_ident
-        .unwrap_or_else(|| cpuid_utils::host_query(CpuidIdent::leaf(1)));
+        .unwrap_or_else(|| cpuid_utils::host::query(CpuidIdent::leaf(1)));
     let family = match cpuid_ident.eax & 0xf00 {
         // If family ID is 0xf, extended family is added to it
         0xf00 => (cpuid_ident.eax >> 20 & 0xff) + 0xf,
@@ -894,13 +894,13 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
     };
     let proc_id = u64::from(cpuid_ident.eax) | u64::from(cpuid_ident.edx) << 32;
     let procname_entries = params.cpuid_procname.or_else(|| {
-        if cpuid_utils::host_query(CpuidIdent::leaf(0x8000_0000)).eax
+        if cpuid_utils::host::query(CpuidIdent::leaf(0x8000_0000)).eax
             >= 0x8000_0004
         {
             Some([
-                cpuid_utils::host_query(CpuidIdent::leaf(0x8000_0002)),
-                cpuid_utils::host_query(CpuidIdent::leaf(0x8000_0003)),
-                cpuid_utils::host_query(CpuidIdent::leaf(0x8000_0004)),
+                cpuid_utils::host::query(CpuidIdent::leaf(0x8000_0002)),
+                cpuid_utils::host::query(CpuidIdent::leaf(0x8000_0003)),
+                cpuid_utils::host::query(CpuidIdent::leaf(0x8000_0004)),
             ])
         } else {
             None

@@ -17,6 +17,7 @@ doctest = false
 [dependencies]
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
+cpuid_utils = { workspace = true, features = ["instance-spec"] }
 serde = { workspace = true, features = ["derive"] }
 propolis = { workspace = true, default-features = false }
 propolis_api_types.workspace = true
