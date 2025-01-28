@@ -9,6 +9,52 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::vmm::SubMapping;
 
+/// A vCPU number.
+#[derive(Clone, Copy, Debug)]
+pub struct VcpuId(u32);
+
+impl From<u32> for VcpuId {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<i32> for VcpuId {
+    /// Converts a signed 32-bit value into a CPU identifier.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `value` cannot be converted into a `u32`. This should
+    /// generally not be possible because bhyve uses non-negative (though
+    /// signed) CPU identifiers.
+    fn from(value: i32) -> Self {
+        Self(
+            u32::try_from(value)
+                .expect("vCPU number {value} should fit in a u32"),
+        )
+    }
+}
+
+impl Into<u32> for VcpuId {
+    fn into(self) -> u32 {
+        self.0
+    }
+}
+
+impl Into<i32> for VcpuId {
+    /// Converts a CPU identifier into a signed 32-bit value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the inner value cannot be converted to an `i32`. This should
+    /// generally not be possible because Propolis limits the maximum number of
+    /// CPUs a VM can have to a number well below `i32::MAX`.
+    fn into(self) -> i32 {
+        i32::try_from(self.0)
+            .expect("vCPU number {self.0} should fit in an i32")
+    }
+}
+
 /// Controls whether items wrapped in a [`GuestData`] are displayed or redacted
 /// when the wrappers are printed via their `Display` or `Debug` impls.
 //
