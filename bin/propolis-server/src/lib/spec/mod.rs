@@ -23,7 +23,7 @@ use propolis_api_types::instance_spec::{
             BlobStorageBackend, CrucibleStorageBackend, FileStorageBackend,
             VirtioNetworkBackend,
         },
-        board::{Chipset, I440Fx},
+        board::{Chipset, GuestHypervisorInterface, I440Fx},
         devices::{
             NvmeDisk, PciPciBridge, QemuPvpanic as QemuPvpanicDesc,
             SerialPortNumber, VirtioDisk, VirtioNic,
@@ -87,11 +87,12 @@ pub(crate) struct Spec {
 /// before being included in an internal spec.
 ///
 /// [instance spec `Board`]: propolis_api_types::instance_spec::components::board::Board
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Board {
     pub cpus: u8,
     pub memory_mb: u64,
     pub chipset: Chipset,
+    pub guest_hv_interface: GuestHypervisorInterface,
 }
 
 impl Default for Board {
@@ -100,6 +101,7 @@ impl Default for Board {
             cpus: 0,
             memory_mb: 0,
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
+            guest_hv_interface: GuestHypervisorInterface::Bhyve,
         }
     }
 }

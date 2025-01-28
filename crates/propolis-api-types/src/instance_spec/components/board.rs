@@ -92,6 +92,47 @@ pub struct CpuidEntry {
     pub edx: u32,
 }
 
+/// A Hyper-V emulation feature (and the settings needed to configure that
+/// feature, if any).
+#[derive(Clone, Copy, Deserialize, Serialize, Debug, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub enum HyperVFeature {
+    /// Enables the reference time counter MSR and the reference TSC page.
+    ReferenceTsc,
+}
+
+/// Configuration used to make Propolis expose a Hyper-V-compatible
+/// enlightenment interface to its guests.
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HyperV {
+    /// A set of Hyper-V features to enable.
+    ///
+    /// If this field is empty, Propolis will still represent itself as a
+    /// Hyper-V compatible hypervisor and enable the minimum features required
+    /// of all Hyper-V hypervisors.
+    features: Vec<HyperVFeature>,
+}
+
+/// A hypervisor interface to expose to the guest.
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, Default)]
+#[serde(deny_unknown_fields, tag = "type", content = "value")]
+pub enum GuestHypervisorInterface {
+    /// Expose a bhyve-like interface ("bhyve bhyve " as the hypervisor ID in
+    /// leaf 0x4000_0000 and no additional leaves or features).
+    #[default]
+    Bhyve,
+
+    /// Expose a Hyper-V compatible interface with the supplied configuration.
+    HyperV(HyperV),
+}
+
+impl GuestHypervisorInterface {
+    fn is_default(&self) -> bool {
+        matches!(self, Self::Bhyve)
+    }
+}
+
 /// A VM's mainboard.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -104,6 +145,17 @@ pub struct Board {
 
     /// The chipset to expose to guest software.
     pub chipset: Chipset,
+
+    /// The hypervisor platform to expose to the guest. The default is a
+    /// bhyve-compatible interface with no additional features.
+    ///
+    /// For compatibility with older versions of Propolis, this field is only
+    /// serialized if it specifies a non-default interface.
+    #[serde(
+        default,
+        skip_serializing_if = "GuestHypervisorInterface::is_default"
+    )]
+    pub guest_hv_interface: GuestHypervisorInterface,
 
     /// The CPUID values to expose to the guest. If `None`, bhyve will derive
     /// default values from the host's CPUID values.
