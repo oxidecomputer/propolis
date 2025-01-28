@@ -65,7 +65,7 @@ pub mod host;
 mod instance_spec;
 
 type CpuidSubleafMap = BTreeMap<u32, CpuidValues>;
-type CpuidMapInsertResult = Result<Option<CpuidValues>, SubleafInsertConflict>;
+type CpuidMapInsertResult = Result<Option<CpuidValues>, CpuidMapInsertError>;
 
 /// Denotes the presence or absence of subleaves for a given CPUID leaf.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,7 +82,7 @@ enum Subleaves {
 /// new value would produce a leaf that has both per-subleaf values and a
 /// no-subleaf value.
 #[derive(Debug, Error)]
-pub enum SubleafInsertConflict {
+pub enum CpuidMapInsertError {
     #[error("leaf {0:x} has entries with subleaves")]
     SubleavesAlreadyPresent(u32),
 
@@ -161,7 +161,7 @@ impl CpuidMap {
             }
             Entry::Occupied(mut e) => match e.get_mut() {
                 Subleaves::Present(_) => {
-                    Err(SubleafInsertConflict::SubleavesAlreadyPresent(leaf))
+                    Err(CpuidMapInsertError::SubleavesAlreadyPresent(leaf))
                 }
                 Subleaves::Absent(v) => Ok(Some(std::mem::replace(v, values))),
             },
@@ -183,7 +183,7 @@ impl CpuidMap {
             }
             Entry::Occupied(mut e) => match e.get_mut() {
                 Subleaves::Absent(_) => {
-                    Err(SubleafInsertConflict::SubleavesAlreadyAbsent(leaf))
+                    Err(CpuidMapInsertError::SubleavesAlreadyAbsent(leaf))
                 }
                 Subleaves::Present(sl_map) => {
                     Ok(sl_map.insert(subleaf, values))
@@ -410,11 +410,8 @@ impl CpuidSet {
 
     /// Creates a new `CpuidSet` with the supplied initial leaf/value `map` and
     /// `vendor`.
-    pub fn from_map(
-        map: CpuidMap,
-        vendor: CpuidVendor,
-    ) -> Result<Self, SubleafInsertConflict> {
-        Ok(Self { map, vendor })
+    pub fn from_map(map: CpuidMap, vendor: CpuidVendor) -> Self {
+        Self { map, vendor }
     }
 
     /// Yields this set's vendor.
@@ -556,7 +553,7 @@ pub enum CpuidMapConversionError {
     LeafOutOfRange(u32),
 
     #[error(transparent)]
-    SubleafConflict(#[from] SubleafInsertConflict),
+    SubleafConflict(#[from] CpuidMapInsertError),
 }
 
 /// The range of standard, architecturally-defined CPUID leaves.

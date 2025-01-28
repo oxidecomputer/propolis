@@ -19,6 +19,7 @@ use crate::vm::{
     BlockBackendMap, CrucibleBackendMap, DeviceMap, NetworkInterfaceIds,
 };
 use anyhow::Context;
+use cpuid_utils::bits::{HYPERVISOR_BASE_LEAF, HYPERVISOR_BHYVE_VALUES};
 use cpuid_utils::CpuidValues;
 use crucible_client_types::VolumeConstructionRequest;
 pub use nexus_client::Client as NexusClient;
@@ -988,33 +989,19 @@ impl MachineInitializer<'_> {
             ..Default::default()
         };
 
-        fn get_spec_or_host_cpuid(
-            spec: &Spec,
-            leaf: u32,
-        ) -> Option<CpuidValues> {
-            let leaf = CpuidIdent::leaf(leaf);
-            let Some(cpuid) = &spec.cpuid else {
-                return Some(cpuid_utils::host::query(leaf));
-            };
-
-            cpuid.get(leaf).copied()
-        }
-
         // The processor vendor, family/model/stepping, and brand string should
-        // correspond to the values the guest will see if it queries CPUID. If
-        // the instance spec contains CPUID values, derive this information from
-        // those. Otherwise, derive them from the values on the host.
+        // correspond to the values the guest will see if it queries CPUID.
         //
         // Note that all these values are `Option`s, because the spec may
         // contain CPUID values that don't contain all of the input leaves.
-        let cpuid_vendor = get_spec_or_host_cpuid(self.spec, 0);
-        let cpuid_ident = get_spec_or_host_cpuid(self.spec, 1);
+        let cpuid_vendor = self.spec.cpuid.get(CpuidIdent::leaf(0)).copied();
+        let cpuid_ident = self.spec.cpuid.get(CpuidIdent::leaf(1)).copied();
 
         // Coerce the array-of-Options into an Option containing the array.
         let cpuid_procname: Option<[CpuidValues; 3]> = [
-            get_spec_or_host_cpuid(self.spec, 0x8000_0002),
-            get_spec_or_host_cpuid(self.spec, 0x8000_0003),
-            get_spec_or_host_cpuid(self.spec, 0x8000_0004),
+            self.spec.cpuid.get(CpuidIdent::leaf(0x8000_0002)).copied(),
+            self.spec.cpuid.get(CpuidIdent::leaf(0x8000_0003)).copied(),
+            self.spec.cpuid.get(CpuidIdent::leaf(0x8000_0004)).copied(),
         ]
         .into_iter()
         // This returns None if any of the input options were None (i.e. if any
@@ -1245,28 +1232,42 @@ impl MachineInitializer<'_> {
     /// tracking their kstats.
     pub async fn initialize_cpus(&mut self) -> Result<(), MachineInitError> {
         for vcpu in self.machine.vcpus.iter() {
-            if let Some(set) = &self.spec.cpuid {
-                let specialized = propolis::cpuid::Specializer::new()
-                    .with_vcpu_count(
-                        NonZeroU8::new(self.spec.board.cpus).unwrap(),
-                        true,
-                    )
-                    .with_vcpuid(vcpu.id)
-                    .with_cache_topo()
-                    .clear_cpu_topo(propolis::cpuid::TopoKind::iter())
-                    .execute(set.clone())
-                    .map_err(|e| {
-                        MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
-                    })?;
+            // Report that the guest is running on bhyve.
+            //
+            // The CPUID set in the spec is not allowed to contain any leaves in
+            // the hypervisor leaf region (enforced at spec generation time).
+            let mut set = self.spec.cpuid.clone();
+            assert!(
+                set.insert(
+                    CpuidIdent::leaf(HYPERVISOR_BASE_LEAF),
+                    HYPERVISOR_BHYVE_VALUES
+                )
+                .expect("no hypervisor subleaves")
+                .is_none(),
+                "CPUID set should have no hypervisor leaves"
+            );
 
-                info!(self.log, "setting CPUID for vCPU";
-                      "vcpu" => vcpu.id,
-                      "cpuid" => ?specialized);
-
-                vcpu.set_cpuid(specialized).with_context(|| {
-                    format!("setting CPUID for vcpu {}", vcpu.id)
+            let specialized = propolis::cpuid::Specializer::new()
+                .with_vcpu_count(
+                    NonZeroU8::new(self.spec.board.cpus).unwrap(),
+                    true,
+                )
+                .with_vcpuid(vcpu.id)
+                .with_cache_topo()
+                .clear_cpu_topo(propolis::cpuid::TopoKind::iter())
+                .execute(set)
+                .map_err(|e| {
+                    MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
                 })?;
-            }
+
+            info!(self.log, "setting CPUID for vCPU";
+                    "vcpu" => vcpu.id,
+                    "cpuid" => ?specialized);
+
+            vcpu.set_cpuid(specialized).with_context(|| {
+                format!("setting CPUID for vcpu {}", vcpu.id)
+            })?;
+
             vcpu.set_default_capabs()
                 .context("failed to set vcpu capabilities")?;
 

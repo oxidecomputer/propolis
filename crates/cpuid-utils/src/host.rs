@@ -11,13 +11,13 @@ use crate::{
         AmdExtLeaf1DCacheType, AmdExtLeaf1DEax, Leaf1Ecx, EXTENDED_BASE_LEAF,
         STANDARD_BASE_LEAF,
     },
-    CpuidSet, SubleafInsertConflict,
+    CpuidMapInsertError, CpuidSet,
 };
 
 #[derive(Debug, Error)]
 pub enum GetHostCpuidError {
     #[error("failed to insert into the CPUID map")]
-    CpuidInsertFailed(#[from] SubleafInsertConflict),
+    CpuidInsertFailed(#[from] CpuidMapInsertError),
 
     #[error("CPUID vendor not recognized: {0}")]
     VendorNotRecognized(&'static str),

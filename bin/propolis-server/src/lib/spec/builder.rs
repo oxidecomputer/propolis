@@ -6,7 +6,6 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use cpuid_utils::CpuidMapConversionError;
 use propolis_api_types::instance_spec::{
     components::{
         board::Board as InstanceSpecBoard,
@@ -63,6 +62,9 @@ pub(crate) enum SpecBuilderError {
 
     #[error("instance spec's CPUID entries are invalid")]
     CpuidEntriesInvalid(#[from] cpuid_utils::CpuidMapConversionError),
+
+    #[error("failed to read default CPUID settings from the host")]
+    DefaultCpuidReadFailed(#[from] cpuid_utils::host::GetHostCpuidError),
 }
 
 #[derive(Debug, Default)]
@@ -77,6 +79,16 @@ impl SpecBuilder {
     pub(super) fn with_instance_spec_board(
         board: InstanceSpecBoard,
     ) -> Result<Self, SpecBuilderError> {
+        let cpuid = match board.cpuid {
+            Some(cpuid) => cpuid_utils::CpuidSet::from_map(
+                cpuid.entries.try_into()?,
+                cpuid.vendor,
+            ),
+            None => cpuid_utils::host::query_complete(
+                cpuid_utils::host::CpuidSource::BhyveDefault,
+            )?,
+        };
+
         Ok(Self {
             spec: super::Spec {
                 board: Board {
@@ -84,17 +96,7 @@ impl SpecBuilder {
                     memory_mb: board.memory_mb,
                     chipset: board.chipset,
                 },
-                cpuid: board
-                    .cpuid
-                    .map(|cpuid| -> Result<_, CpuidMapConversionError> {
-                        {
-                            Ok(cpuid_utils::CpuidSet::from_map(
-                                cpuid.entries.try_into()?,
-                                cpuid.vendor,
-                            )?)
-                        }
-                    })
-                    .transpose()?,
+                cpuid,
                 ..Default::default()
             },
             ..Default::default()
