@@ -77,17 +77,22 @@ async fn cpuid_boot_test(ctx: &Framework) {
     }
 
     // This test works by injecting a fake brand string into extended leaves
-    // 0x8000_0002-0x8000_0004 and seeing if the guest observes that string. For
-    // this to work those leaves need to be present in the host's extended CPUID
-    // leaves.
-    let Some(ext_leaf_0) = host_cpuid.get(CpuidIdent::leaf(EXTENDED_BASE_LEAF))
-    else {
-        phd_skip!("cpuid_boot_test requires extended CPUID leaves");
-    };
+    // 0x8000_0002-0x8000_0004 and seeing if the guest observes that string.
+    //
+    // The brand string leaves have been defined for long enough that they
+    // should be present on virtually any host that's modern enough to run
+    // Propolis and PHD. Fail the test (instead of skipping) if they're missing,
+    // since that may indicate a latent bug in the `cpuid_utils` crate.
+    let ext_leaf_0 = host_cpuid
+        .get(CpuidIdent::leaf(EXTENDED_BASE_LEAF))
+        .expect("PHD-capable processors should have some extended leaves");
 
-    if ext_leaf_0.eax < 0x8000_0004 {
-        phd_skip!("cpuid_boot_test requires at least leaf 0x8000_0004");
-    }
+    assert!(
+        ext_leaf_0.eax >= 0x8000_0004,
+        "PHD-capable processors should support at least leaf 0x8000_0004 \
+        (reported {})",
+        ext_leaf_0.eax
+    );
 
     // Reprogram the brand string leaves and see if the new string shows up in
     // the guest.
