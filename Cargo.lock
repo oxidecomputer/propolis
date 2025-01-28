@@ -4535,6 +4535,7 @@ dependencies = [
  "anyhow",
  "bhyve_api 0.0.0",
  "clap",
+ "cpuid_utils",
  "libc",
  "propolis",
  "propolis_api_types",

@@ -289,6 +289,11 @@ impl CpuidValues {
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut u32> {
         [&mut self.eax, &mut self.ebx, &mut self.ecx, &mut self.edx].into_iter()
     }
+
+    /// Returns `true` if eax, ebx, ecx, and edx are all zero.
+    pub fn all_zero(&self) -> bool {
+        self.eax == 0 && self.ebx == 0 && self.ecx == 0 && self.edx == 0
+    }
 }
 
 #[cfg(target_arch = "x86_64")]

@@ -268,7 +268,7 @@ impl<'dr> VmConfig<'dr> {
             );
         }
 
-        let host_leaf_0 = cpuid_utils::host_query(CpuidIdent::leaf(0));
+        let host_leaf_0 = cpuid_utils::host::query(CpuidIdent::leaf(0));
         let host_vendor = cpuid_utils::CpuidVendor::try_from(host_leaf_0)
             .map_err(|_| {
                 anyhow::anyhow!(

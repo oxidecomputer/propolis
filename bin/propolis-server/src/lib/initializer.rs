@@ -994,7 +994,7 @@ impl MachineInitializer<'_> {
         ) -> Option<CpuidValues> {
             let leaf = CpuidIdent::leaf(leaf);
             let Some(cpuid) = &spec.cpuid else {
-                return Some(cpuid_utils::host_query(leaf));
+                return Some(cpuid_utils::host::query(leaf));
             };
 
             cpuid.get(leaf).copied()

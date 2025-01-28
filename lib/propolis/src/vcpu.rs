@@ -252,7 +252,7 @@ impl Vcpu {
             // (by nature of doing the cpuid queries against the host CPU) it
             // ignores the INTEL_FALLBACK flag.  We must determine the vendor
             // kind by querying it.
-            let vendor = CpuidVendor::try_from(cpuid_utils::host_query(
+            let vendor = CpuidVendor::try_from(cpuid_utils::host::query(
                 CpuidIdent::leaf(0),
             ))
             .map_err(GetCpuidError::UnsupportedVendor)?;
