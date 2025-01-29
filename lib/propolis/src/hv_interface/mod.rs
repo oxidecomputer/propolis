@@ -60,8 +60,6 @@
 //! contain implementations of this trait. See the trait documentation and the
 //! submodule documentation for more details.
 
-use std::ops::Range;
-
 use cpuid_utils::CpuidSet;
 
 use crate::{
@@ -93,13 +91,4 @@ pub trait HypervisorInterface: Lifecycle {
     /// Asks this hypervisor interface to attempt to handle a WRMSR instruction
     /// on the supplied `vcpu` that will write `value` to the supplied `msr`.
     fn wrmsr(&self, msr: MsrId, vcpu: VcpuId, value: u64) -> WrmsrOutcome;
-
-    /// Yields the range of MSR numbers that this hypervisor interface is
-    /// possibly able to service. This is meant to allow the caller to avoid
-    /// calling into the hypervisor interface to service RDMSR/WRMSR
-    /// instructions that the interface will never handle.
-    ///
-    /// The output range may be empty, signifying that this interface will never
-    /// service any MSR operations.
-    fn msr_range(&self) -> Range<u32>;
 }

@@ -4,8 +4,6 @@
 
 //! Provides a bhyve-compatible guest-hypervisor interface.
 
-use std::ops::Range;
-
 use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
 
 use crate::{
@@ -51,9 +49,5 @@ impl HypervisorInterface for BhyveGuestInterface {
 
     fn wrmsr(&self, _msr: MsrId, _vcpu: VcpuId, _value: u64) -> WrmsrOutcome {
         WrmsrOutcome::NotHandled
-    }
-
-    fn msr_range(&self) -> Range<u32> {
-        0..0
     }
 }

@@ -19,7 +19,6 @@ use crate::vm::{
     BlockBackendMap, CrucibleBackendMap, DeviceMap, NetworkInterfaceIds,
 };
 use anyhow::Context;
-use cpuid_utils::bits::{HYPERVISOR_BASE_LEAF, HYPERVISOR_BHYVE_VALUES};
 use cpuid_utils::CpuidValues;
 use crucible_client_types::VolumeConstructionRequest;
 pub use nexus_client::Client as NexusClient;
@@ -29,6 +28,7 @@ use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::{Lifecycle, GB, MB, PAGE_SIZE};
 use propolis::firmware::smbios;
+use propolis::hv_interface::bhyve::BhyveGuestInterface;
 use propolis::hw::bhyve::BhyveHpet;
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ibmpc;
@@ -45,6 +45,7 @@ use propolis::hw::uart::LpcUart;
 use propolis::hw::{nvme, virtio};
 use propolis::intr_pins;
 use propolis::vmm::{self, Builder, Machine};
+use propolis_api_types::instance_spec::components::board::GuestHypervisorInterface;
 use propolis_api_types::instance_spec::components::devices::SerialPortNumber;
 use propolis_api_types::instance_spec::{self, SpecKey};
 use propolis_api_types::InstanceProperties;
@@ -98,6 +99,9 @@ pub enum MachineInitError {
     #[error("failed to specialize CPUID for vcpu {0}")]
     CpuidSpecializationFailed(i32, #[source] propolis::cpuid::SpecializeError),
 
+    #[error("guest-hypervisor interface not supported")]
+    GuestHvInterfaceNotSupported,
+
     #[cfg(feature = "falcon")]
     #[error("softnpu p9 device missing")]
     SoftNpuP9Missing,
@@ -125,10 +129,19 @@ pub fn build_instance(
         use_reservoir,
         track_dirty: true,
     };
+
+    let guest_hv = match &spec.board.guest_hv_interface {
+        GuestHypervisorInterface::Bhyve => Arc::new(BhyveGuestInterface),
+        GuestHypervisorInterface::HyperV(_) => {
+            return Err(MachineInitError::GuestHvInterfaceNotSupported);
+        }
+    };
+
     let mut builder = Builder::new(name, create_opts)
         .context("failed to create kernel vmm builder")?
         .max_cpus(spec.board.cpus)
         .context("failed to set max cpus")?
+        .guest_hypervisor_interface(guest_hv)
         .add_mem_region(0, lowmem, "lowmem")
         .context("failed to add low memory region")?
         .add_rom_region(0x1_0000_0000 - MAX_ROM_SIZE, MAX_ROM_SIZE, "bootrom")
@@ -1231,21 +1244,16 @@ impl MachineInitializer<'_> {
     /// them into the device map, and then, if a kstat sampler is provided,
     /// tracking their kstats.
     pub async fn initialize_cpus(&mut self) -> Result<(), MachineInitError> {
+        let hv_interface = self.machine.guest_hv_interface.as_ref();
         for vcpu in self.machine.vcpus.iter() {
             // Report that the guest is running on bhyve.
             //
             // The CPUID set in the spec is not allowed to contain any leaves in
             // the hypervisor leaf region (enforced at spec generation time).
             let mut set = self.spec.cpuid.clone();
-            assert!(
-                set.insert(
-                    CpuidIdent::leaf(HYPERVISOR_BASE_LEAF),
-                    HYPERVISOR_BHYVE_VALUES
-                )
-                .expect("no hypervisor subleaves")
-                .is_none(),
-                "CPUID set should have no hypervisor leaves"
-            );
+            hv_interface
+                .add_cpuid(&mut set)
+                .expect("CPUID in spec should have no hypervisor leaves");
 
             let specialized = propolis::cpuid::Specializer::new()
                 .with_vcpu_count(

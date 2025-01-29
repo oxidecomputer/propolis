@@ -8,20 +8,9 @@
 //! Definitions here are taken from the AMD Architecture Programmer's Manual,
 //! volume 3, appendix E (Publication 24594, revision 3.36, March 2024).
 
-use propolis_types::CpuidValues;
-
 pub const STANDARD_BASE_LEAF: u32 = 0;
 pub const HYPERVISOR_BASE_LEAF: u32 = 0x4000_0000;
 pub const EXTENDED_BASE_LEAF: u32 = 0x8000_0000;
-
-/// The bhyve default hypervisor identifier ("bhyve bhyve " in ebx/ecx/edx with
-/// no additional hypervisor CPUID leaves reported in eax).
-pub const HYPERVISOR_BHYVE_VALUES: CpuidValues = CpuidValues {
-    eax: HYPERVISOR_BASE_LEAF,
-    ebx: 0x76796862,
-    ecx: 0x68622065,
-    edx: 0x20657679,
-};
 
 bitflags::bitflags! {
     /// Leaf 1 ecx: instruction feature identifiers.
