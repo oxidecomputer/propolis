@@ -2,6 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+//! Types used to assist with handling reads and writes to model-specific
+//! registers (MSRs).
+
 /// A model-specific register (MSR) number.
 #[derive(Clone, Copy, Debug)]
 pub struct MsrId(pub u32);

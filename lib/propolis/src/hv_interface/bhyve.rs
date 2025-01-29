@@ -4,7 +4,9 @@
 
 //! Provides a bhyve-compatible guest-hypervisor interface.
 
-use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
+use cpuid_utils::{
+    bits::HYPERVISOR_BASE_LEAF, CpuidIdent, CpuidSet, CpuidValues,
+};
 
 use crate::{
     common::{Lifecycle, VcpuId},
@@ -24,9 +26,9 @@ impl HypervisorInterface for BhyveGuestInterface {
     fn add_cpuid(&self, cpuid: &mut CpuidSet) -> anyhow::Result<()> {
         let old = cpuid
             .insert(
-                CpuidIdent::leaf(0x4000_0000),
+                CpuidIdent::leaf(HYPERVISOR_BASE_LEAF),
                 CpuidValues {
-                    eax: 0x4000_0000,
+                    eax: HYPERVISOR_BASE_LEAF,
                     ebx: 0x76796862,
                     ecx: 0x68622065,
                     edx: 0x20657679,
