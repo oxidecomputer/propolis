@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::accessors::*;
 use crate::hv_interface::bhyve::BhyveGuestInterface;
-use crate::hv_interface::HypervisorInterface;
+use crate::hv_interface::EnlightenmentDevice;
 use crate::mmio::MmioBus;
 use crate::pio::PioBus;
 use crate::vcpu::{Vcpu, MAXCPU};
@@ -33,7 +33,7 @@ pub struct Machine {
     pub map_physmem: PhysMap,
     pub bus_mmio: Arc<MmioBus>,
     pub bus_pio: Arc<PioBus>,
-    pub guest_hv_interface: Arc<dyn HypervisorInterface>,
+    pub guest_hv_interface: Arc<dyn EnlightenmentDevice>,
 
     pub acc_mem: MemAccessor,
     pub acc_msi: MsiAccessor,
@@ -175,7 +175,7 @@ pub struct Builder {
     inner_hdl: Option<Arc<VmmHdl>>,
     physmap: Option<PhysMap>,
     max_cpu: u8,
-    guest_hv_interface: Option<Arc<dyn HypervisorInterface>>,
+    guest_hv_interface: Option<Arc<dyn EnlightenmentDevice>>,
 }
 impl Builder {
     /// Constructs a new builder object which may be used
@@ -249,7 +249,7 @@ impl Builder {
     /// Sets the guest hypervisor interface for the machine.
     pub fn guest_hypervisor_interface(
         mut self,
-        guest_hv: Arc<dyn HypervisorInterface>,
+        guest_hv: Arc<dyn EnlightenmentDevice>,
     ) -> Self {
         self.guest_hv_interface = Some(guest_hv);
         self
@@ -278,7 +278,7 @@ impl Builder {
                     i32::from(id),
                     bus_mmio.clone(),
                     bus_pio.clone(),
-                    guest_hv_interface.clone(),
+                    guest_hv_interface.clone().as_enlightenment(),
                 )
             })
             .collect();

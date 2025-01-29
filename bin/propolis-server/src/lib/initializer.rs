@@ -28,7 +28,6 @@ use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::{Lifecycle, GB, MB, PAGE_SIZE};
 use propolis::firmware::smbios;
-use propolis::hv_interface::bhyve::BhyveGuestInterface;
 use propolis::hw::bhyve::BhyveHpet;
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ibmpc;
@@ -127,15 +126,17 @@ pub fn build_instance(
         track_dirty: true,
     };
 
-    let guest_hv = match &spec.board.guest_hv_interface {
-        GuestHypervisorInterface::Bhyve => Arc::new(BhyveGuestInterface),
-    };
+    let guest_hv_interface = Arc::new(match spec.board.guest_hv_interface {
+        GuestHypervisorInterface::Bhyve => {
+            propolis::hv_interface::bhyve::BhyveGuestInterface
+        }
+    });
 
     let mut builder = Builder::new(name, create_opts)
         .context("failed to create kernel vmm builder")?
         .max_cpus(spec.board.cpus)
         .context("failed to set max cpus")?
-        .guest_hypervisor_interface(guest_hv)
+        .guest_hypervisor_interface(guest_hv_interface)
         .add_mem_region(0, lowmem, "lowmem")
         .context("failed to add low memory region")?
         .add_rom_region(0x1_0000_0000 - MAX_ROM_SIZE, MAX_ROM_SIZE, "bootrom")
@@ -1283,5 +1284,12 @@ impl MachineInitializer<'_> {
             track_vcpu_kstats(&self.log, sampler, &self.stats_vm).await;
         }
         Ok(())
+    }
+
+    pub fn register_guest_hv_interface(&mut self) {
+        self.devices.insert(
+            SpecKey::Name("guest-hv-interface".to_string()),
+            self.machine.guest_hv_interface.clone().as_lifecycle(),
+        );
     }
 }

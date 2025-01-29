@@ -10,7 +10,7 @@ use cpuid_utils::{
 
 use crate::{
     common::{Lifecycle, VcpuId},
-    hv_interface::HypervisorInterface,
+    hv_interface::Enlightenment,
     msr::{MsrId, RdmsrOutcome, WrmsrOutcome},
 };
 
@@ -22,7 +22,7 @@ impl Lifecycle for BhyveGuestInterface {
     }
 }
 
-impl HypervisorInterface for BhyveGuestInterface {
+impl Enlightenment for BhyveGuestInterface {
     fn add_cpuid(&self, cpuid: &mut CpuidSet) -> anyhow::Result<()> {
         let old = cpuid
             .insert(

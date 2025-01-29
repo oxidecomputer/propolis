@@ -60,6 +60,8 @@
 //! contain implementations of this trait. See the trait documentation and the
 //! submodule documentation for more details.
 
+use std::sync::Arc;
+
 use cpuid_utils::CpuidSet;
 
 use crate::{
@@ -69,14 +71,22 @@ use crate::{
 
 pub mod bhyve;
 
-/// The main trait a component must implement to serve a hypervisor interface to
-/// a guest.
-///
-/// Enlightenment handlers may contain state that needs to be transferred over a
-/// live migration (e.g., the values of synthetic hypervisor MSRs). Implementors
-/// of this trait must therefore implement [`Lifecycle`] so that Propolis users
-/// can issue callouts to them during VM state changes and live migrations.
-pub trait HypervisorInterface: Lifecycle {
+pub trait EnlightenmentDevice: Enlightenment + Lifecycle {
+    fn as_enlightenment(self: Arc<Self>) -> Arc<dyn Enlightenment>;
+    fn as_lifecycle(self: Arc<Self>) -> Arc<dyn Lifecycle>;
+}
+
+impl<T: Enlightenment + Lifecycle> EnlightenmentDevice for T {
+    fn as_enlightenment(self: Arc<Self>) -> Arc<dyn Enlightenment> {
+        self
+    }
+
+    fn as_lifecycle(self: Arc<Self>) -> Arc<dyn Lifecycle> {
+        self
+    }
+}
+
+pub trait Enlightenment: Send + Sync {
     /// Adds this hypervisor interface's CPUID entries to `cpuid`.
     ///
     /// CPUID leaves from 0x4000_0000 to 0x4000_00FF are reserved for the

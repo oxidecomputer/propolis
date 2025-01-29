@@ -12,7 +12,7 @@ use crate::common::Lifecycle;
 use crate::common::VcpuId;
 use crate::cpuid;
 use crate::exits::*;
-use crate::hv_interface::HypervisorInterface;
+use crate::hv_interface::Enlightenment;
 use crate::migrate::*;
 use crate::mmio::MmioBus;
 use crate::msr::MsrId;
@@ -59,7 +59,7 @@ pub struct Vcpu {
     pub id: i32,
     pub bus_mmio: Arc<MmioBus>,
     pub bus_pio: Arc<PioBus>,
-    pub guest_hv: Arc<dyn HypervisorInterface>,
+    pub guest_hv: Arc<dyn Enlightenment>,
 
     /// Vendor of the underlying CPU hardware
     hardware_vendor: CpuidVendor,
@@ -72,7 +72,7 @@ impl Vcpu {
         id: i32,
         bus_mmio: Arc<MmioBus>,
         bus_pio: Arc<PioBus>,
-        guest_hv: Arc<dyn HypervisorInterface>,
+        guest_hv: Arc<dyn Enlightenment>,
     ) -> Arc<Self> {
         #[cfg(target_arch = "x86_64")]
         fn query_hardware_vendor() -> CpuidVendor {

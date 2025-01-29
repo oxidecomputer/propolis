@@ -451,6 +451,7 @@ async fn initialize_vm_objects(
     let ramfb =
         init.initialize_fwcfg(spec.board.cpus, &options.bootrom_version)?;
 
+    init.register_guest_hv_interface();
     init.initialize_cpus().await?;
     let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
         &machine,
