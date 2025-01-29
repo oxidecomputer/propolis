@@ -1051,55 +1051,6 @@
               "type"
             ],
             "additionalProperties": false
-          },
-          {
-            "description": "Expose a Hyper-V compatible interface with the supplied configuration.",
-            "type": "object",
-            "properties": {
-              "type": {
-                "type": "string",
-                "enum": [
-                  "HyperV"
-                ]
-              },
-              "value": {
-                "$ref": "#/components/schemas/HyperV"
-              }
-            },
-            "required": [
-              "type",
-              "value"
-            ],
-            "additionalProperties": false
-          }
-        ]
-      },
-      "HyperV": {
-        "description": "Configuration used to make Propolis expose a Hyper-V-compatible enlightenment interface to its guests.",
-        "type": "object",
-        "properties": {
-          "features": {
-            "description": "A set of Hyper-V features to enable.\n\nIf this field is empty, Propolis will still represent itself as a Hyper-V compatible hypervisor and enable the minimum features required of all Hyper-V hypervisors.",
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/HyperVFeature"
-            }
-          }
-        },
-        "required": [
-          "features"
-        ],
-        "additionalProperties": false
-      },
-      "HyperVFeature": {
-        "description": "A Hyper-V emulation feature (and the settings needed to configure that feature, if any).",
-        "oneOf": [
-          {
-            "description": "Enables the reference time counter MSR and the reference TSC page.",
-            "type": "string",
-            "enum": [
-              "ReferenceTsc"
-            ]
           }
         ]
       },

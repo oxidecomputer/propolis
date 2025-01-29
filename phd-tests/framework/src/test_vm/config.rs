@@ -10,9 +10,9 @@ use propolis_client::{
     support::nvme_serial_from_str,
     types::{
         Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
-        CpuidEntry, CpuidVendor, GuestHypervisorInterface, InstanceMetadata,
-        InstanceSpecV0, MigrationFailureInjector, NvmeDisk, SerialPort,
-        SerialPortNumber, VirtioDisk,
+        CpuidEntry, CpuidVendor, InstanceMetadata, InstanceSpecV0,
+        MigrationFailureInjector, NvmeDisk, SerialPort, SerialPortNumber,
+        VirtioDisk,
     },
     PciPath, SpecKey,
 };

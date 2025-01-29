@@ -99,9 +99,6 @@ pub enum MachineInitError {
     #[error("failed to specialize CPUID for vcpu {0}")]
     CpuidSpecializationFailed(i32, #[source] propolis::cpuid::SpecializeError),
 
-    #[error("guest-hypervisor interface not supported")]
-    GuestHvInterfaceNotSupported,
-
     #[cfg(feature = "falcon")]
     #[error("softnpu p9 device missing")]
     SoftNpuP9Missing,
@@ -132,9 +129,6 @@ pub fn build_instance(
 
     let guest_hv = match &spec.board.guest_hv_interface {
         GuestHypervisorInterface::Bhyve => Arc::new(BhyveGuestInterface),
-        GuestHypervisorInterface::HyperV(_) => {
-            return Err(MachineInitError::GuestHvInterfaceNotSupported);
-        }
     };
 
     let mut builder = Builder::new(name, create_opts)

@@ -92,28 +92,6 @@ pub struct CpuidEntry {
     pub edx: u32,
 }
 
-/// A Hyper-V emulation feature (and the settings needed to configure that
-/// feature, if any).
-#[derive(Clone, Copy, Deserialize, Serialize, Debug, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub enum HyperVFeature {
-    /// Enables the reference time counter MSR and the reference TSC page.
-    ReferenceTsc,
-}
-
-/// Configuration used to make Propolis expose a Hyper-V-compatible
-/// enlightenment interface to its guests.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct HyperV {
-    /// A set of Hyper-V features to enable.
-    ///
-    /// If this field is empty, Propolis will still represent itself as a
-    /// Hyper-V compatible hypervisor and enable the minimum features required
-    /// of all Hyper-V hypervisors.
-    features: Vec<HyperVFeature>,
-}
-
 /// A hypervisor interface to expose to the guest.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, Default)]
 #[serde(deny_unknown_fields, tag = "type", content = "value")]
@@ -122,9 +100,6 @@ pub enum GuestHypervisorInterface {
     /// leaf 0x4000_0000 and no additional leaves or features).
     #[default]
     Bhyve,
-
-    /// Expose a Hyper-V compatible interface with the supplied configuration.
-    HyperV(HyperV),
 }
 
 impl GuestHypervisorInterface {
