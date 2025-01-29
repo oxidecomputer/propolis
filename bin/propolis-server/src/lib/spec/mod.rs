@@ -63,7 +63,7 @@ pub struct ComponentTypeMismatch;
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Spec {
     pub board: Board,
-    pub cpuid: Option<CpuidSet>,
+    pub cpuid: CpuidSet,
     pub disks: BTreeMap<SpecKey, Disk>,
     pub nics: BTreeMap<SpecKey, Nic>,
     pub boot_settings: Option<BootSettings>,
