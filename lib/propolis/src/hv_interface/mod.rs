@@ -69,6 +69,8 @@ use crate::{
     msr::{MsrId, RdmsrOutcome, WrmsrOutcome},
 };
 
+pub mod bhyve;
+
 /// The main trait a component must implement to serve a hypervisor interface to
 /// a guest.
 ///
