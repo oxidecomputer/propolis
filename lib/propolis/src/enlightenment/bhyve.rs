@@ -3,6 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! Provides a bhyve-compatible guest-hypervisor interface.
+//!
+//! This interface supplies no special enlightenments; it merely identifies
+//! itself as a bhyve hypervisor in CPUID leaf 0x4000_0000.
 
 use cpuid_utils::{
     bits::HYPERVISOR_BASE_LEAF, CpuidIdent, CpuidSet, CpuidValues,
@@ -10,7 +13,7 @@ use cpuid_utils::{
 
 use crate::{
     common::{Lifecycle, VcpuId},
-    hv_interface::Enlightenment,
+    enlightenment::Enlightenment,
     msr::{MsrId, RdmsrOutcome, WrmsrOutcome},
 };
 

@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::accessors::*;
-use crate::hv_interface::bhyve::BhyveGuestInterface;
-use crate::hv_interface::EnlightenmentDevice;
+use crate::enlightenment::bhyve::BhyveGuestInterface;
+use crate::enlightenment::EnlightenmentDevice;
 use crate::mmio::MmioBus;
 use crate::pio::PioBus;
 use crate::vcpu::{Vcpu, MAXCPU};

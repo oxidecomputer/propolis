@@ -128,7 +128,7 @@ pub fn build_instance(
 
     let guest_hv_interface = Arc::new(match spec.board.guest_hv_interface {
         GuestHypervisorInterface::Bhyve => {
-            propolis::hv_interface::bhyve::BhyveGuestInterface
+            propolis::enlightenment::bhyve::BhyveGuestInterface
         }
     });
 
