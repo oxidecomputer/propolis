@@ -10,9 +10,9 @@ use propolis_client::{
     support::nvme_serial_from_str,
     types::{
         Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
-        CpuidEntry, CpuidVendor, InstanceMetadata, InstanceSpecV0,
-        MigrationFailureInjector, NvmeDisk, SerialPort, SerialPortNumber,
-        VirtioDisk,
+        CpuidEntry, CpuidVendor, GuestHypervisorInterface, InstanceMetadata,
+        InstanceSpecV0, MigrationFailureInjector, NvmeDisk, SerialPort,
+        SerialPortNumber, VirtioDisk,
     },
     PciPath, SpecKey,
 };
@@ -288,6 +288,7 @@ impl<'dr> VmConfig<'dr> {
                         cpuid_utils::CpuidVendor::Intel => CpuidVendor::Intel,
                     },
                 }),
+                guest_hv_interface: None,
             },
             components: Default::default(),
         };

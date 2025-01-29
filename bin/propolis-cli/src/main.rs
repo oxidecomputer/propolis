@@ -19,10 +19,10 @@ use newtype_uuid::{GenericUuid, TypedUuid, TypedUuidKind, TypedUuidTag};
 use propolis_client::support::nvme_serial_from_str;
 use propolis_client::types::{
     BlobStorageBackend, Board, Chipset, ComponentV0, CrucibleStorageBackend,
-    I440Fx, InstanceEnsureRequest, InstanceInitializationMethod,
-    InstanceMetadata, InstanceSpecGetResponse, InstanceSpecV0, NvmeDisk,
-    QemuPvpanic, ReplacementComponent, SerialPort, SerialPortNumber,
-    VirtioDisk,
+    GuestHypervisorInterface, I440Fx, InstanceEnsureRequest,
+    InstanceInitializationMethod, InstanceMetadata, InstanceSpecGetResponse,
+    InstanceSpecV0, NvmeDisk, QemuPvpanic, ReplacementComponent, SerialPort,
+    SerialPortNumber, VirtioDisk,
 };
 use propolis_client::{PciPath, SpecKey};
 use propolis_config_toml::spec::SpecConfig;
@@ -293,6 +293,7 @@ impl VmConfig {
                 cpuid: None,
                 cpus: self.vcpus,
                 memory_mb: self.memory,
+                guest_hv_interface: Some(GuestHypervisorInterface::Bhyve),
             },
             components: Default::default(),
         };
