@@ -27,6 +27,7 @@ use oximeter_instruments::kstat::KstatSampler;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::{Lifecycle, GB, MB, PAGE_SIZE};
+use propolis::enlightenment::EnlightenmentDevice;
 use propolis::firmware::smbios;
 use propolis::hw::bhyve::BhyveHpet;
 use propolis::hw::chipset::{i440fx, Chipset};
@@ -126,10 +127,16 @@ pub fn build_instance(
         track_dirty: true,
     };
 
-    let guest_hv_interface = Arc::new(match spec.board.guest_hv_interface {
-        GuestHypervisorInterface::Bhyve => {
-            propolis::enlightenment::bhyve::BhyveGuestInterface
-        }
+    let interface_spec = spec.board.guest_hv_interface.clone();
+    let guest_hv_interface = Box::new(move |_mem_acc| {
+        let interface: Arc<dyn EnlightenmentDevice> =
+            Arc::new(match interface_spec {
+                GuestHypervisorInterface::Bhyve => {
+                    propolis::enlightenment::bhyve::BhyveGuestInterface
+                }
+            });
+
+        Ok(interface)
     });
 
     let mut builder = Builder::new(name, create_opts)

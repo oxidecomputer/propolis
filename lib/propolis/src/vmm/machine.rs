@@ -152,6 +152,10 @@ impl Machine {
     }
 }
 
+/// A boxed closure that instantiates an [`EnlightenmentDevice`].
+pub type EnlightenmentConstructor =
+    Box<dyn FnOnce(MemAccessor) -> Result<Arc<dyn EnlightenmentDevice>>>;
+
 /// Builder object used to initialize a [`Machine`].
 ///
 /// # Example
@@ -175,7 +179,7 @@ pub struct Builder {
     inner_hdl: Option<Arc<VmmHdl>>,
     physmap: Option<PhysMap>,
     max_cpu: u8,
-    guest_hv_interface: Option<Arc<dyn EnlightenmentDevice>>,
+    guest_hv_interface: Option<EnlightenmentConstructor>,
 }
 impl Builder {
     /// Constructs a new builder object which may be used
@@ -246,12 +250,13 @@ impl Builder {
         }
     }
 
-    /// Sets the guest hypervisor interface for the machine.
+    /// Sets the constructor to use to instantiate the guest-hypervisor
+    /// interface for this machine.
     pub fn guest_hypervisor_interface(
         mut self,
-        guest_hv: Arc<dyn EnlightenmentDevice>,
+        constructor: EnlightenmentConstructor,
     ) -> Self {
-        self.guest_hv_interface = Some(guest_hv);
+        self.guest_hv_interface = Some(constructor);
         self
     }
 
@@ -263,13 +268,15 @@ impl Builder {
 
         let bus_mmio = Arc::new(MmioBus::new(MAX_PHYSMEM));
         let bus_pio = Arc::new(PioBus::new());
-        let guest_hv_interface = self
-            .guest_hv_interface
-            .take()
-            .unwrap_or(Arc::new(BhyveGuestInterface));
-
         let acc_mem = MemAccessor::new(map.memctx());
         let acc_msi = MsiAccessor::new(hdl.clone());
+
+        let guest_hv_interface = match self.guest_hv_interface.take() {
+            Some(func) => {
+                func(acc_mem.child(Some("guest_hv_interface".to_string())))?
+            }
+            None => Arc::new(BhyveGuestInterface),
+        };
 
         let vcpus = (0..self.max_cpu)
             .map(|id| {
@@ -301,6 +308,7 @@ impl Builder {
         Ok(machine)
     }
 }
+
 impl Drop for Builder {
     fn drop(&mut self) {
         if let Some(hdl) = &self.inner_hdl {
