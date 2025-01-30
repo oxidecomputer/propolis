@@ -92,6 +92,10 @@ pub struct CpuidEntry {
     pub edx: u32,
 }
 
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[serde(deny_unknown_fields, tag = "type", content = "value")]
+pub enum HyperVFeature {}
+
 /// A hypervisor interface to expose to the guest.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, Default)]
 #[serde(deny_unknown_fields, tag = "type", content = "value")]
@@ -100,6 +104,10 @@ pub enum GuestHypervisorInterface {
     /// leaf 0x4000_0000 and no additional leaves or features).
     #[default]
     Bhyve,
+
+    /// Expose a Hyper-V-compatible hypervisor interface with the supplied
+    /// features enabled.
+    HyperV { features: Vec<HyperVFeature> },
 }
 
 impl GuestHypervisorInterface {

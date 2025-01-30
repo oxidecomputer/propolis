@@ -14,7 +14,7 @@
 //! that intends to implement a Hyper-V-compatible interface:
 //! https://github.com/MicrosoftDocs/Virtualization-Documentation/blob/main/tlfs/Requirements%20for%20Implementing%20the%20Microsoft%20Hypervisor%20Interface.pdf
 
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use bits::*;
 use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
@@ -69,9 +69,9 @@ pub struct HyperV {
 }
 
 impl HyperV {
-    pub fn new(log: slog::Logger) -> Arc<Self> {
+    pub fn new(log: slog::Logger) -> Self {
         let acc_mem = MemAccessor::new_orphan();
-        Arc::new(Self { log, inner: Mutex::new(Inner::default()), acc_mem })
+        Self { log, inner: Mutex::new(Inner::default()), acc_mem }
     }
 
     fn handle_wrmsr_guest_os_id(&self, value: u64) -> WrmsrOutcome {
