@@ -67,6 +67,7 @@ use crate::{
 };
 
 pub mod bhyve;
+pub mod hyperv;
 
 /// Functionality provided by all enlightenment interfaces.
 pub trait Enlightenment: Lifecycle + Send + Sync {

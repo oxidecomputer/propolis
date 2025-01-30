@@ -625,7 +625,7 @@ impl SubMapping<'_> {
     /// If `buf` is larger than the SubMapping, the write will be truncated to
     /// length of the SubMapping.
     ///
-    /// Returns the number of bytes read.
+    /// Returns the number of bytes written.
     pub fn write_bytes(&self, buf: &[u8]) -> Result<usize> {
         let write_len = usize::min(buf.len(), self.len);
         self.write_many(&buf[..write_len])?;
@@ -909,6 +909,12 @@ impl MemCtx {
     pub fn readable_region(&self, region: &GuestRegion) -> Option<SubMapping> {
         let mapping = self.region_covered(region.0, region.1, Prot::READ)?;
         Some(mapping)
+    }
+    pub fn read_write_region(
+        &self,
+        region: &GuestRegion,
+    ) -> Option<SubMapping> {
+        self.region_covered(region.0, region.1, Prot::RW)
     }
 
     /// Like `direct_writable_region`, but looks up the region by name.
