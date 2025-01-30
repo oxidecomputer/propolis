@@ -1051,8 +1051,43 @@
               "type"
             ],
             "additionalProperties": false
+          },
+          {
+            "description": "Expose a Hyper-V-compatible hypervisor interface with the supplied features enabled.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "HyperV"
+                ]
+              },
+              "value": {
+                "type": "object",
+                "properties": {
+                  "features": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/HyperVFeature"
+                    }
+                  }
+                },
+                "required": [
+                  "features"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "type",
+              "value"
+            ],
+            "additionalProperties": false
           }
         ]
+      },
+      "HyperVFeature": {
+        "oneOf": []
       },
       "I440Fx": {
         "description": "An Intel 440FX-compatible chipset.",
