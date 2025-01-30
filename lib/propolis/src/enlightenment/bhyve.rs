@@ -12,6 +12,7 @@ use cpuid_utils::{
 };
 
 use crate::{
+    accessors::MemAccessor,
     common::{Lifecycle, VcpuId},
     enlightenment::Enlightenment,
     msr::{MsrId, RdmsrOutcome, WrmsrOutcome},
@@ -55,4 +56,6 @@ impl Enlightenment for BhyveGuestInterface {
     fn wrmsr(&self, _msr: MsrId, _vcpu: VcpuId, _value: u64) -> WrmsrOutcome {
         WrmsrOutcome::NotHandled
     }
+
+    fn set_parent_mem_accessor(&self, _parent: &MemAccessor) {}
 }

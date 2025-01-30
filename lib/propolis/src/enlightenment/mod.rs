@@ -48,36 +48,34 @@ use std::sync::Arc;
 use cpuid_utils::CpuidSet;
 
 use crate::{
+    accessors::MemAccessor,
     common::{Lifecycle, VcpuId},
     msr::{MsrId, RdmsrOutcome, WrmsrOutcome},
 };
 
 pub mod bhyve;
 
-/// A supertrait describing an enlightenment stack that can also receive
-/// instance lifecycle notifications. Automatically implemented for any
-/// component that implements both [`Enlightenment`] and [`Lifecycle`], which
-/// includes all the enlightenment stacks in this module's submodules.
-pub trait EnlightenmentDevice: Enlightenment + Lifecycle {
-    /// Upcasts this object into an [`Enlightenment`].
-    fn as_enlightenment(self: Arc<Self>) -> Arc<dyn Enlightenment>;
-
-    /// Upcasts this object into a [`Lifecycle`] notification registrant.
-    fn as_lifecycle(self: Arc<Self>) -> Arc<dyn Lifecycle>;
-}
-
-impl<T: Enlightenment + Lifecycle> EnlightenmentDevice for T {
-    fn as_enlightenment(self: Arc<Self>) -> Arc<dyn Enlightenment> {
-        self
-    }
-
-    fn as_lifecycle(self: Arc<Self>) -> Arc<dyn Lifecycle> {
-        self
-    }
-}
-
 /// Functionality provided by all enlightenment interfaces.
-pub trait Enlightenment: Send + Sync {
+pub trait Enlightenment: Lifecycle + Send + Sync {
+    fn as_lifecycle(self: Arc<Self>) -> Arc<dyn Lifecycle>
+    where
+        Self: Sized,
+    {
+        self
+    }
+
+    /// Notifies this enlightenment stack that it has been adopted into a VM
+    /// with the supplied [`MemAccessor`] at the root of its memory accessor
+    /// hierarchy.
+    ///
+    /// Enlightenment stacks that want to access guest memory should call
+    /// [`MemAccessor::new_orphan`] when they are created, and then should call
+    /// [`MemAccessor::adopt`] from this function.
+    ///
+    /// Users of an enlightenment stack must guarantee that this function is
+    /// called only once per instance of that stack.
+    fn set_parent_mem_accessor(&self, parent: &MemAccessor);
+
     /// Adds this hypervisor interface's CPUID entries to `cpuid`.
     ///
     /// CPUID leaves from 0x4000_0000 to 0x4000_00FF are reserved for the

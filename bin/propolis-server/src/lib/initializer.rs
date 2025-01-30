@@ -27,7 +27,7 @@ use oximeter_instruments::kstat::KstatSampler;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::{Lifecycle, GB, MB, PAGE_SIZE};
-use propolis::enlightenment::EnlightenmentDevice;
+use propolis::enlightenment::Enlightenment;
 use propolis::firmware::smbios;
 use propolis::hw::bhyve::BhyveHpet;
 use propolis::hw::chipset::{i440fx, Chipset};
@@ -45,7 +45,6 @@ use propolis::hw::uart::LpcUart;
 use propolis::hw::{nvme, virtio};
 use propolis::intr_pins;
 use propolis::vmm::{self, Builder, Machine};
-use propolis_api_types::instance_spec::components::board::GuestHypervisorInterface;
 use propolis_api_types::instance_spec::components::devices::SerialPortNumber;
 use propolis_api_types::instance_spec::{self, SpecKey};
 use propolis_api_types::InstanceProperties;
@@ -118,6 +117,7 @@ pub fn build_instance(
     name: &str,
     spec: &Spec,
     use_reservoir: bool,
+    guest_hv_interface: Arc<dyn Enlightenment>,
     _log: slog::Logger,
 ) -> Result<Machine, MachineInitError> {
     let (lowmem, highmem) = get_spec_guest_ram_limits(spec);
@@ -126,18 +126,6 @@ pub fn build_instance(
         use_reservoir,
         track_dirty: true,
     };
-
-    let interface_spec = spec.board.guest_hv_interface.clone();
-    let guest_hv_interface = Box::new(move |_mem_acc| {
-        let interface: Arc<dyn EnlightenmentDevice> =
-            Arc::new(match interface_spec {
-                GuestHypervisorInterface::Bhyve => {
-                    propolis::enlightenment::bhyve::BhyveGuestInterface
-                }
-            });
-
-        Ok(interface)
-    });
 
     let mut builder = Builder::new(name, create_opts)
         .context("failed to create kernel vmm builder")?
@@ -1293,10 +1281,13 @@ impl MachineInitializer<'_> {
         Ok(())
     }
 
-    pub fn register_guest_hv_interface(&mut self) {
+    pub fn register_guest_hv_interface(
+        &mut self,
+        guest_hv_interface: Arc<dyn Lifecycle>,
+    ) {
         self.devices.insert(
             SpecKey::Name("guest-hv-interface".to_string()),
-            self.machine.guest_hv_interface.clone().as_lifecycle(),
+            guest_hv_interface,
         );
     }
 }

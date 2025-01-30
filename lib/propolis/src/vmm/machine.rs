@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::accessors::*;
 use crate::enlightenment::bhyve::BhyveGuestInterface;
-use crate::enlightenment::EnlightenmentDevice;
+use crate::enlightenment::Enlightenment;
 use crate::mmio::MmioBus;
 use crate::pio::PioBus;
 use crate::vcpu::{Vcpu, MAXCPU};
@@ -33,7 +33,7 @@ pub struct Machine {
     pub map_physmem: PhysMap,
     pub bus_mmio: Arc<MmioBus>,
     pub bus_pio: Arc<PioBus>,
-    pub guest_hv_interface: Arc<dyn EnlightenmentDevice>,
+    pub guest_hv_interface: Arc<dyn Enlightenment>,
 
     pub acc_mem: MemAccessor,
     pub acc_msi: MsiAccessor,
@@ -152,10 +152,6 @@ impl Machine {
     }
 }
 
-/// A boxed closure that instantiates an [`EnlightenmentDevice`].
-pub type EnlightenmentConstructor =
-    Box<dyn FnOnce(MemAccessor) -> Result<Arc<dyn EnlightenmentDevice>>>;
-
 /// Builder object used to initialize a [`Machine`].
 ///
 /// # Example
@@ -179,7 +175,7 @@ pub struct Builder {
     inner_hdl: Option<Arc<VmmHdl>>,
     physmap: Option<PhysMap>,
     max_cpu: u8,
-    guest_hv_interface: Option<EnlightenmentConstructor>,
+    guest_hv_interface: Option<Arc<dyn Enlightenment>>,
 }
 impl Builder {
     /// Constructs a new builder object which may be used
@@ -250,13 +246,12 @@ impl Builder {
         }
     }
 
-    /// Sets the constructor to use to instantiate the guest-hypervisor
-    /// interface for this machine.
+    /// Sets the guest-hypervisor interface to supply to this machine's vCPUs.
     pub fn guest_hypervisor_interface(
         mut self,
-        constructor: EnlightenmentConstructor,
+        interface: Arc<dyn Enlightenment>,
     ) -> Self {
-        self.guest_hv_interface = Some(constructor);
+        self.guest_hv_interface = Some(interface);
         self
     }
 
@@ -271,13 +266,12 @@ impl Builder {
         let acc_mem = MemAccessor::new(map.memctx());
         let acc_msi = MsiAccessor::new(hdl.clone());
 
-        let guest_hv_interface = match self.guest_hv_interface.take() {
-            Some(func) => {
-                func(acc_mem.child(Some("guest_hv_interface".to_string())))?
-            }
-            None => Arc::new(BhyveGuestInterface),
-        };
+        let guest_hv_interface = self
+            .guest_hv_interface
+            .take()
+            .unwrap_or(Arc::new(BhyveGuestInterface));
 
+        guest_hv_interface.set_parent_mem_accessor(&acc_mem);
         let vcpus = (0..self.max_cpu)
             .map(|id| {
                 Vcpu::new(
@@ -285,7 +279,7 @@ impl Builder {
                     i32::from(id),
                     bus_mmio.clone(),
                     bus_pio.clone(),
-                    guest_hv_interface.clone().as_enlightenment(),
+                    guest_hv_interface.clone(),
                 )
             })
             .collect();

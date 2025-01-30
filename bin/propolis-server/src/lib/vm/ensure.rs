@@ -29,7 +29,9 @@ use std::sync::Arc;
 
 use oximeter::types::ProducerRegistry;
 use oximeter_instruments::kstat::KstatSampler;
+use propolis::enlightenment::{bhyve::BhyveGuestInterface, Enlightenment};
 use propolis_api_types::{
+    instance_spec::components::board::GuestHypervisorInterface,
     InstanceEnsureResponse, InstanceMigrateInitiateResponse,
     InstanceProperties, InstanceState,
 };
@@ -389,12 +391,17 @@ async fn initialize_vm_objects(
 
     let vmm_log = log.new(slog::o!("component" => "vmm"));
 
+    let guest_hv_interface = match spec.board.guest_hv_interface {
+        GuestHypervisorInterface::Bhyve => Arc::new(BhyveGuestInterface),
+    };
+
     // Set up the 'shell' instance into which the rest of this routine will
     // add components.
     let machine = build_instance(
         &properties.vm_name(),
         &spec,
         options.use_reservoir,
+        guest_hv_interface.clone(),
         vmm_log,
     )?;
 
@@ -451,7 +458,7 @@ async fn initialize_vm_objects(
     let ramfb =
         init.initialize_fwcfg(spec.board.cpus, &options.bootrom_version)?;
 
-    init.register_guest_hv_interface();
+    init.register_guest_hv_interface(guest_hv_interface.as_lifecycle());
     init.initialize_cpus().await?;
     let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
         &machine,
