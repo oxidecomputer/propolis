@@ -212,6 +212,16 @@ impl Lifecycle for HyperV {
         *inner = Inner::default();
     }
 
+    fn halt(&self) {
+        let mut inner = self.inner.lock().unwrap();
+
+        // The overlay page module assumes that it always has access to guest
+        // memory, which is not the case if overlays are being dropped because
+        // the VM has completely shut down. Manually remove any overlays before
+        // that happens.
+        inner.hypercall_overlay.take();
+    }
+
     // TODO: Migration support.
     fn migrate(&'_ self) -> Migrator<'_> {
         Migrator::NonMigratable
