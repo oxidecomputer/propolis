@@ -10,6 +10,7 @@ mod crucible;
 mod disk;
 mod framework;
 mod hw;
+mod hyperv;
 mod migrate;
 mod server_state_machine;
 mod smoke;
