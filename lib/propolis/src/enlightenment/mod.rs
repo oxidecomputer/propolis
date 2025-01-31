@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Components that implement enlightenments: mechanisms that allow guest
+//! Components that implement _enlightenments_: mechanisms that allow guest
 //! software to cooperate directly with its host hypervisor.
 //!
 //! Although the high-level point of a virtual machine is to allow guest
@@ -12,7 +12,7 @@
 //! of chipset functionality (like a hardware timer) might be relatively
 //! inexpensive on real hardware, but in a virtual machine it requires an
 //! expensive VM exit. Similarly, guest OSes may generally assume that hardware
-//! timer interrupts will be delivered and serviced very promptly--promptly
+//! timer interrupts will be delivered and serviced very promptly---promptly
 //! enough that they can be used as watchdogs to guarantee forward progress; not
 //! so in a virtual machine, where the host may elect not to immediately run a
 //! vCPU with a pending timer interrupt.
