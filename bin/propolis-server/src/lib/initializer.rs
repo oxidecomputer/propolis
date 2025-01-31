@@ -1241,9 +1241,10 @@ impl MachineInitializer<'_> {
             // The CPUID set in the spec is not allowed to contain any leaves in
             // the hypervisor leaf region (enforced at spec generation time).
             let mut set = self.spec.cpuid.clone();
-            hv_interface
-                .add_cpuid(&mut set)
-                .expect("CPUID in spec should have no hypervisor leaves");
+            hv_interface.add_cpuid(&mut set).expect(
+                "propolis_server::spec construction should deny direct \
+                    requests to set hypervisor leaves",
+            );
 
             let specialized = propolis::cpuid::Specializer::new()
                 .with_vcpu_count(
