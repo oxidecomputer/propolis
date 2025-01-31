@@ -40,6 +40,11 @@ impl MsrHypercallValue {
     pub fn enabled(&self) -> bool {
         (self.0 & 1) != 0
     }
+
+    /// Clears this value's enabled bit.
+    pub fn clear_enabled(&mut self) {
+        self.0 &= !1;
+    }
 }
 
 /// The sequence of instructions to write to the hypercall page. This sequence

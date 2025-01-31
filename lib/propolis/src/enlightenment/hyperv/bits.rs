@@ -104,7 +104,7 @@ pub(super) const HYPERV_LEAF_A_VALUES: CpuidValues =
 /// this MSR before they try to enable the hypercall code page.
 ///
 /// Read-write; requires the [`HyperVLeaf3Eax::HYPERCALL`] privilege.
-pub(super) const MSR_GUEST_OS_ID: u32 = 0x4000_0000;
+pub(super) const HV_X64_MSR_GUEST_OS_ID: u32 = 0x4000_0000;
 
 /// Specifies the guest physical address at which the guest would like to place
 /// the hypercall page. See TLFS section 3.13 and the [`MsrHypercalLValue`]
@@ -113,10 +113,10 @@ pub(super) const MSR_GUEST_OS_ID: u32 = 0x4000_0000;
 /// Read-write; requires the [`HyperVLeaf3Eax::HYPERCALL`] privilege.
 ///
 /// [`MsrHypercallValue`]: super::hypercall::MsrHypercallValue
-pub(super) const MSR_HYPERCALL: u32 = 0x4000_0001;
+pub(super) const HV_X64_MSR_HYPERCALL: u32 = 0x4000_0001;
 
 /// Guests may read this register to obtain the index of the vCPU that read the
 /// register.
 ///
 /// Read-only; requires the [`HyperVLeaf3Eax::VP_INDEX`] privilege.
-pub(super) const MSR_VP_INDEX: u32 = 0x4000_0002;
+pub(super) const HV_X64_MSR_VP_INDEX: u32 = 0x4000_0002;

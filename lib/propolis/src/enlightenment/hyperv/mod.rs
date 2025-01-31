@@ -19,47 +19,29 @@ use std::sync::Mutex;
 use bits::*;
 use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
 use hypercall::{hypercall_page_contents, MsrHypercallValue};
-use overlay::OverlayPage;
-use slog::{info, warn};
+use slog::info;
 
 use crate::{
     accessors::MemAccessor,
-    common::{Lifecycle, VcpuId},
+    common::{GuestRegion, Lifecycle, VcpuId, PAGE_SIZE},
     enlightenment::AddCpuidError,
     migrate::Migrator,
     msr::{MsrId, RdmsrOutcome, WrmsrOutcome},
+    vmm::SubMapping,
 };
 
 mod bits;
 mod hypercall;
-mod overlay;
 
 const TYPE_NAME: &str = "guest-hyperv-interface";
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct Inner {
     /// The last value stored in the [`bits::MSR_GUEST_OS_ID`] MSR.
     msr_guest_os_id_value: u64,
 
     /// The last value stored in the [`bits::MSR_HYPERCALL`] MSR.
     msr_hypercall_value: MsrHypercallValue,
-
-    /// The previous contents of the guest physical page that has been overlaid
-    /// with the hypercall page.
-    hypercall_overlay: Option<OverlayPage>,
-}
-
-impl std::fmt::Debug for Inner {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Inner")
-            .field("msr_guest_os_id_value", &self.msr_guest_os_id_value)
-            .field("msr_hypercall_value", &self.msr_hypercall_value)
-            .field(
-                "old_hypercall_page_contents.is_some()",
-                &self.hypercall_overlay.is_some(),
-            )
-            .finish()
-    }
 }
 
 pub struct HyperV {
@@ -77,64 +59,76 @@ impl HyperV {
     fn handle_wrmsr_guest_os_id(&self, value: u64) -> WrmsrOutcome {
         let mut inner = self.inner.lock().unwrap();
 
-        // TODO(gjc): TLFS section 3.13 says that if a guest clears the guest OS ID
-        // register, the hypercall page "become[s] disabled." It's unclear
-        // whether this means just that the Enabled bit in the relevant register
-        // is cleared or whether it also means that the hypercall page overlay
-        // is removed.
+        // TLFS section 3.13 specifies that if the guest OS ID register is
+        // cleared, then the hypercall page immediately "becomes disabled." The
+        // exact semantics of "becoming disabled" are unclear, but in context it
+        // seems most reasonable to read this as "the Enabled bit is cleared and
+        // the hypercall overlay is removed."
         if value == 0 {
-            warn!(&self.log, "guest cleared HV_X64_MSR_GUEST_OS_ID");
+            info!(&self.log, "guest cleared HV_X64_MSR_GUEST_OS_ID");
+            inner.msr_hypercall_value.clear_enabled();
         }
 
         inner.msr_guest_os_id_value = value;
         WrmsrOutcome::Handled
     }
 
+    /// Handles a write to the HV_X64_MSR_HYPERCALL register. See TLFS section
+    /// 3.13.
     fn handle_wrmsr_hypercall(&self, value: u64) -> WrmsrOutcome {
         let mut inner = self.inner.lock().unwrap();
-
-        // If the previous value of the hypercall register has the lock bit set,
-        // ignore future modifications.
         let old = inner.msr_hypercall_value;
+
+        // TLFS section 3.13 says that this MSR is "immutable" once the locked
+        // bit is set.
         if old.locked() {
             return WrmsrOutcome::Handled;
         }
 
-        let new = MsrHypercallValue(value);
-        if new.enabled() {
-            match inner.hypercall_overlay.as_mut() {
-                Some(overlay) => {
-                    if overlay.move_to(new.gpa()) {
-                        info!(&self.log, "moved hypercall page";
-                              "guest_pfn" => new.gpfn());
+        // If this MSR is written when no guest OS ID is set, the Enabled bit is
+        // cleared and the write succeeds.
+        let mut new = MsrHypercallValue(value);
+        if inner.msr_guest_os_id_value == 0 {
+            new.clear_enabled();
+        }
 
-                        WrmsrOutcome::Handled
-                    } else {
-                        WrmsrOutcome::GpException
-                    }
-                }
-                None => {
-                    let overlay = OverlayPage::create(
-                        self.acc_mem.child(None),
-                        new.gpa(),
-                        &hypercall_page_contents(),
-                    );
+        // If the Enabled bit is set, expose the hypercall instruction sequence
+        // at the requested GPA. The TLFS specifies that this raises #GP if the
+        // selected physical address is outside the bounds of the guest's
+        // physical address space.
+        //
+        // The TLFS describes this page as an "overlay" that "covers whatever
+        // else is mapped to the GPA range." The spec is ambiguous as to whether
+        // this means that the page's previous contents must be restored if the
+        // page is disabled or its address later changes. Empirically, most
+        // common guest OSes don't appear to move the page after creating it,
+        // and at least some other hypervisors don't bother with saving and
+        // restoring the old page's contents. So, for simplicity, simply write
+        // the hypercall instruction sequence to the requested page and call it
+        // a day.
+        let outcome = if new.enabled() {
+            let memctx = self
+                .acc_mem
+                .access()
+                .expect("guest memory is always accessible during wrmsr");
 
-                    if overlay.is_some() {
-                        info!(&self.log, "enabled hypercall page";
-                              "guest_pfn" => new.gpfn());
-
-                        inner.hypercall_overlay = overlay;
-                        WrmsrOutcome::Handled
-                    } else {
-                        WrmsrOutcome::GpException
-                    }
-                }
+            let region = GuestRegion(new.gpa(), PAGE_SIZE);
+            if let Some(mapping) = memctx.writable_region(&region) {
+                write_overlay_page(&mapping, &hypercall_page_contents());
+                WrmsrOutcome::Handled
+            } else {
+                WrmsrOutcome::GpException
             }
         } else {
-            inner.hypercall_overlay.take();
             WrmsrOutcome::Handled
+        };
+
+        // Commit the new MSR value if the write was handled.
+        if outcome == WrmsrOutcome::Handled {
+            inner.msr_hypercall_value = new;
         }
+
+        outcome
     }
 }
 
@@ -171,13 +165,13 @@ impl super::Enlightenment for HyperV {
 
     fn rdmsr(&self, vcpu: VcpuId, msr: MsrId) -> RdmsrOutcome {
         match msr.0 {
-            MSR_GUEST_OS_ID => RdmsrOutcome::Handled(
+            HV_X64_MSR_GUEST_OS_ID => RdmsrOutcome::Handled(
                 self.inner.lock().unwrap().msr_guest_os_id_value,
             ),
-            MSR_HYPERCALL => RdmsrOutcome::Handled(
+            HV_X64_MSR_HYPERCALL => RdmsrOutcome::Handled(
                 self.inner.lock().unwrap().msr_hypercall_value.0,
             ),
-            MSR_VP_INDEX => {
+            HV_X64_MSR_VP_INDEX => {
                 let id: u32 = vcpu.into();
                 RdmsrOutcome::Handled(id as u64)
             }
@@ -187,9 +181,9 @@ impl super::Enlightenment for HyperV {
 
     fn wrmsr(&self, _vcpu: VcpuId, msr: MsrId, value: u64) -> WrmsrOutcome {
         match msr.0 {
-            MSR_GUEST_OS_ID => self.handle_wrmsr_guest_os_id(value),
-            MSR_HYPERCALL => self.handle_wrmsr_hypercall(value),
-            MSR_VP_INDEX => WrmsrOutcome::GpException,
+            HV_X64_MSR_GUEST_OS_ID => self.handle_wrmsr_guest_os_id(value),
+            HV_X64_MSR_HYPERCALL => self.handle_wrmsr_hypercall(value),
+            HV_X64_MSR_VP_INDEX => WrmsrOutcome::GpException,
             _ => WrmsrOutcome::NotHandled,
         }
     }
@@ -197,6 +191,14 @@ impl super::Enlightenment for HyperV {
     fn attach(&self, mem_acc: &MemAccessor) {
         mem_acc.adopt(&self.acc_mem, Some(TYPE_NAME.to_owned()));
     }
+}
+
+fn write_overlay_page(mapping: &SubMapping<'_>, contents: &[u8; PAGE_SIZE]) {
+    let written = mapping
+        .write_bytes(contents)
+        .expect("overlay pages are always writable");
+
+    assert_eq!(written, PAGE_SIZE, "overlay pages can be written completely");
 }
 
 impl Lifecycle for HyperV {
@@ -210,16 +212,6 @@ impl Lifecycle for HyperV {
         // The contents of guest memory are going to be completely reinitialized
         // anyway, so there's no need to manually remove any overlay pages.
         *inner = Inner::default();
-    }
-
-    fn halt(&self) {
-        let mut inner = self.inner.lock().unwrap();
-
-        // The overlay page module assumes that it always has access to guest
-        // memory, which is not the case if overlays are being dropped because
-        // the VM has completely shut down. Manually remove any overlays before
-        // that happens.
-        inner.hypercall_overlay.take();
     }
 
     // TODO: Migration support.
