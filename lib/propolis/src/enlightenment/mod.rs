@@ -5,6 +5,8 @@
 //! Components that implement _enlightenments_: mechanisms that allow guest
 //! software to cooperate directly with its host hypervisor.
 //!
+//! # Background
+//!
 //! Although the high-level point of a virtual machine is to allow guest
 //! software to behave as though it was running on its own physical hardware,
 //! there are (as with any abstraction) places where a virtual machine is bound
@@ -19,24 +21,34 @@
 //!
 //! To help smooth some of these problems over, many hypervisors implement a set
 //! of "enlightenments" that allow the guest and the hypervisor to cooperate
-//! directly with one another. The two sides can communicate in several ways:
+//! directly with one another. This module distinguishes enlightenments from
+//! other kinds of virtual devices by the interfaces the guest uses to
+//! communicate with the host. For hypervisor enlightenments these include the
+//! following:
 //!
-//! 1. The host can virtualize the CPUID instruction to allow the guest to
-//!    identify the host's hypervisor type and its capabilities.
-//! 2. The host can trap the RDMSR and WRMSR instructions to allow the guest
-//!    to communicate via synthetic model-specific registers.
-//! 3. The host and guest can agree to use pages of guest physical memory to
-//!    share data.
-//! 4. The guest can execute special instructions (VMCALL or VMMCALL) that exit
-//!    to the host with a special exit type that indicates that the guest
-//!    executed a "call hypervisor" instruction. Since the guest CPU's registers
-//!    are saved on exit, the host can read them and interpret them as
-//!    parameters to a virtual function call.
+//! 1. CPUID: The enlightenment stack injects synthetic CPUID values in a
+//!    well-known range of leaves (beginning with leaf 0x4000_0000) to advertise
+//!    its capabilities to guests.
+//! 2. Synthetic MSRs: The enlightenment stack intercepts RDMSR and WRMSR
+//!    instructions targeting MSRs in a well-known range (beginning with MSR ID
+//!    and interprets them according to its interface's definitions.
+//! 3. Direct sharing of guest physical memory: The guest can use MSRs to offer
+//!    to share its physical pages with the host, either to communicate directly
+//!    or for the host to overlay with larger blocks of information the guest
+//!    may wish to read.
+//! 4. Special VM exits: Both Intel's VMX and AMD's SVM provide special opcodes
+//!    (VMCALL and VMMCALL, respectively) that trigger a VM exit with a unique
+//!    exit code. The hypervisor can detect exits with this code, read the
+//!    guest's registers, and interpret them as parameters to a virtual function
+//!    call.
 //!
-//! Almost all hypervisors will at least identify themselves through CPUID (by
-//! returning vendor information in leaf 0x4000_0000 ebx/ecx/edx); the use of
-//! other CPUID leaves and other communication techniques is otherwise entirely
-//! hypervisor vendor-dependent.
+//! Enlightenment stacks generally do not use port I/O or memory-mapped I/O
+//! to receive data from guests. This distinguishes them from other purely
+//! virtual devices (like virtio devices or the pvpanic device) that do not
+//! emulate any particular kind of physical hardware but nevertheless manifest
+//! themselves to the guest as attachments to a virtual bus.
+//!
+//! # This module
 //!
 //! This module defines traits that allow other Propolis components (notably
 //! vCPUs) to interact with an enlightenment stack. This module's submodules
