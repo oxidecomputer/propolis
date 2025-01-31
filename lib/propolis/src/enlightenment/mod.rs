@@ -76,17 +76,18 @@ pub trait Enlightenment: Lifecycle + Send + Sync {
         self
     }
 
-    /// Notifies this enlightenment stack that it has been adopted into a VM
-    /// with the supplied [`MemAccessor`] at the root of its memory accessor
-    /// hierarchy.
-    ///
-    /// Enlightenment stacks that want to access guest memory should call
-    /// [`MemAccessor::new_orphan`] when they are created, and then should call
-    /// [`MemAccessor::adopt`] from this function.
+    /// Attaches this enlightenment stack to a VM.
     ///
     /// Users of an enlightenment stack must guarantee that this function is
-    /// called only once per instance of that stack.
-    fn set_parent_mem_accessor(&self, parent: &MemAccessor);
+    /// called exactly once per instance of that stack.
+    ///
+    /// # Arguments
+    ///
+    /// - `mem_acc`: Supplies the root memory accessor for this stack's VM.
+    ///   Stacks that wish to access guest memory should call
+    ///   [`MemAccessor::new_orphan`] when they're created and then should call
+    ///   [`MemAccessor::adopt`] from this function.
+    fn attach(&self, mem_acc: &MemAccessor);
 
     /// Adds this hypervisor interface's CPUID entries to `cpuid`.
     ///
@@ -97,9 +98,9 @@ pub trait Enlightenment: Lifecycle + Send + Sync {
 
     /// Asks this enlightenment stack to attempt to handle an RDMSR instruction
     /// on the supplied `vcpu` targeting the supplied `msr`.
-    fn rdmsr(&self, msr: MsrId, vcpu: VcpuId) -> RdmsrOutcome;
+    fn rdmsr(&self, vcpu: VcpuId, msr: MsrId) -> RdmsrOutcome;
 
     /// Asks this enlightenment stack to attempt to handle a WRMSR instruction
     /// on the supplied `vcpu` that will write `value` to the supplied `msr`.
-    fn wrmsr(&self, msr: MsrId, vcpu: VcpuId, value: u64) -> WrmsrOutcome;
+    fn wrmsr(&self, vcpu: VcpuId, msr: MsrId, value: u64) -> WrmsrOutcome;
 }

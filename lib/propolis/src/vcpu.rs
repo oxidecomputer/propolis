@@ -474,7 +474,7 @@ impl Vcpu {
                     .ok(),
             },
             VmExitKind::Rdmsr(msr) => {
-                match self.guest_hv.rdmsr(MsrId(msr), VcpuId::from(self.id)) {
+                match self.guest_hv.rdmsr(VcpuId::from(self.id), MsrId(msr)) {
                     RdmsrOutcome::NotHandled => None,
                     RdmsrOutcome::Handled(val) => {
                         let eax = val & 0xFFFF_FFFF;
@@ -500,8 +500,8 @@ impl Vcpu {
             }
             VmExitKind::Wrmsr(msr, val) => {
                 match self.guest_hv.wrmsr(
-                    MsrId(msr),
                     VcpuId::from(self.id),
+                    MsrId(msr),
                     val,
                 ) {
                     WrmsrOutcome::NotHandled => None,

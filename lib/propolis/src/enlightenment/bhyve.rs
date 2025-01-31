@@ -18,6 +18,11 @@ use crate::{
     msr::{MsrId, RdmsrOutcome, WrmsrOutcome},
 };
 
+/// An implementation of the bhyve guest-hypervisor interface. This interface
+/// exposes no special enlightenments; its only purpose is to inject the
+/// appropriate hypervisor ID into CPUID leaf 0x4000_0000, since this leaf will
+/// not otherwise appear in a propolis-server instance specification's CPUID
+/// settings.
 pub struct BhyveGuestInterface;
 
 impl Lifecycle for BhyveGuestInterface {
@@ -30,6 +35,8 @@ impl Enlightenment for BhyveGuestInterface {
     fn add_cpuid(&self, cpuid: &mut CpuidSet) -> anyhow::Result<()> {
         match cpuid.insert(
             CpuidIdent::leaf(HYPERVISOR_BASE_LEAF),
+            // Leaf 0x4000_0000 is the maximum hypervisor leaf. "bhyve bhyve "
+            // is the vendor ID, split across ebx/ecx/edx.
             CpuidValues {
                 eax: HYPERVISOR_BASE_LEAF,
                 ebx: 0x76796862,
@@ -48,13 +55,13 @@ impl Enlightenment for BhyveGuestInterface {
         }
     }
 
-    fn rdmsr(&self, _msr: MsrId, _vcpu: VcpuId) -> RdmsrOutcome {
+    fn rdmsr(&self, _vcpu: VcpuId, _msr: MsrId) -> RdmsrOutcome {
         RdmsrOutcome::NotHandled
     }
 
-    fn wrmsr(&self, _msr: MsrId, _vcpu: VcpuId, _value: u64) -> WrmsrOutcome {
+    fn wrmsr(&self, _vcpu: VcpuId, _msr: MsrId, _value: u64) -> WrmsrOutcome {
         WrmsrOutcome::NotHandled
     }
 
-    fn set_parent_mem_accessor(&self, _parent: &MemAccessor) {}
+    fn attach(&self, _parent: &MemAccessor) {}
 }
