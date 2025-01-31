@@ -57,7 +57,8 @@
 
 use std::sync::Arc;
 
-use cpuid_utils::CpuidSet;
+use cpuid_utils::{CpuidIdent, CpuidSet};
+use thiserror::Error;
 
 use crate::{
     accessors::MemAccessor,
@@ -94,7 +95,7 @@ pub trait Enlightenment: Lifecycle + Send + Sync {
     /// CPUID leaves from 0x4000_0000 to 0x4000_00FF are reserved for the
     /// hypervisor's use. On entry, the caller must ensure that `cpuid` does not
     /// contain any leaf entries in this range.
-    fn add_cpuid(&self, cpuid: &mut CpuidSet) -> anyhow::Result<()>;
+    fn add_cpuid(&self, cpuid: &mut CpuidSet) -> Result<(), AddCpuidError>;
 
     /// Asks this enlightenment stack to attempt to handle an RDMSR instruction
     /// on the supplied `vcpu` targeting the supplied `msr`.
@@ -103,4 +104,63 @@ pub trait Enlightenment: Lifecycle + Send + Sync {
     /// Asks this enlightenment stack to attempt to handle a WRMSR instruction
     /// on the supplied `vcpu` that will write `value` to the supplied `msr`.
     fn wrmsr(&self, vcpu: VcpuId, msr: MsrId, value: u64) -> WrmsrOutcome;
+}
+
+/// An error that can arise while inserting hypervisor CPUID leaves into a CPUID
+/// set via [`Enlightenment::add_cpuid`].
+///
+/// These errors indicate caller bugs: `Enlightenment::add_cpuid` requires that
+/// the input CPUID set contain no leaves in the hypervisor CPUID region.
+#[derive(Debug, Error)]
+pub enum AddCpuidError {
+    /// The enlightenment tried to insert a leaf that was already present in the
+    /// input CPUID set.
+    #[error("input CPUID set already contains key {0:?}")]
+    LeafAlreadyPresent(CpuidIdent),
+
+    /// The enlightenment tried to insert a leaf or subleaf entry that
+    /// conflicted with an existing entry in the input CPUID set.
+    #[error("input CPUID set has subleaf presence conflict at key {0:?}")]
+    SubleafConflict(CpuidIdent),
+}
+
+/// Adds the CPUID entries in `to_add` to `to_modify`.
+///
+/// Implementations of [`Enlightenment`] can construct a [`CpuidSet`] that
+/// contains the hypervisor CPUID entries they want to add and pass it to this
+/// function to add them en masse while returning the correct error variant if
+/// the original map contained conflicting leaves.
+///
+/// # Panics
+///
+/// Panics if `to_add` contains a leaf outside of the hypervisor range
+/// (0x4000_0000 to 0x4000_00FF).
+fn add_cpuid(
+    to_modify: &mut CpuidSet,
+    to_add: CpuidSet,
+) -> Result<(), AddCpuidError> {
+    for (ident, values) in to_add.iter() {
+        assert!((0x4000_0000..0x4000_0100).contains(&ident.leaf));
+
+        // `CpuidSet` maintains the invariant that a single leaf value can
+        // appear either with or without subleaf entries (but not both). Its
+        // `insert` method returns `Err` if an insertion would violate this
+        // invariant and `Ok(Some)` if the insertion replaced an existing entry.
+        // If either of these cases arises, the input map contained a
+        // conflicting hypervisor entry, which is a caller error.
+        //
+        // Note that because `to_add` is itself a `CpuidSet`, it cannot contain
+        // a leaf/subleaf conflict or a duplicate leaf entry. Therefore, any
+        // conflicts of this kind must originate with the contents of
+        // `to_modify`.
+        match to_modify.insert(ident, values) {
+            Ok(None) => {}
+            Ok(Some(_)) => {
+                return Err(AddCpuidError::LeafAlreadyPresent(ident))
+            }
+            Err(_) => return Err(AddCpuidError::SubleafConflict(ident)),
+        }
+    }
+
+    Ok(())
 }

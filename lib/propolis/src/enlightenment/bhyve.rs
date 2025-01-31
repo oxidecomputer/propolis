@@ -14,7 +14,7 @@ use cpuid_utils::{
 use crate::{
     accessors::MemAccessor,
     common::{Lifecycle, VcpuId},
-    enlightenment::Enlightenment,
+    enlightenment::{AddCpuidError, Enlightenment},
     msr::{MsrId, RdmsrOutcome, WrmsrOutcome},
 };
 
@@ -32,27 +32,23 @@ impl Lifecycle for BhyveGuestInterface {
 }
 
 impl Enlightenment for BhyveGuestInterface {
-    fn add_cpuid(&self, cpuid: &mut CpuidSet) -> anyhow::Result<()> {
-        match cpuid.insert(
-            CpuidIdent::leaf(HYPERVISOR_BASE_LEAF),
-            // Leaf 0x4000_0000 is the maximum hypervisor leaf. "bhyve bhyve "
-            // is the vendor ID, split across ebx/ecx/edx.
-            CpuidValues {
-                eax: HYPERVISOR_BASE_LEAF,
-                ebx: 0x76796862,
-                ecx: 0x68622065,
-                edx: 0x20657679,
-            },
-        ) {
-            Ok(None) => Ok(()),
+    fn add_cpuid(&self, cpuid: &mut CpuidSet) -> Result<(), AddCpuidError> {
+        let mut to_add = CpuidSet::new(cpuid.vendor());
+        to_add
+            .insert(
+                CpuidIdent::leaf(HYPERVISOR_BASE_LEAF),
+                // Leaf 0x4000_0000 is the maximum hypervisor leaf. "bhyve bhyve "
+                // is the vendor ID, split across ebx/ecx/edx.
+                CpuidValues {
+                    eax: HYPERVISOR_BASE_LEAF,
+                    ebx: 0x76796862,
+                    ecx: 0x68622065,
+                    edx: 0x20657679,
+                },
+            )
+            .expect("the map was previously empty");
 
-            // Return an error if the key was previously present in the map,
-            // regardless of whether the `CpuidSet` was willing to replace its
-            // value.
-            Ok(Some(_)) | Err(_) => {
-                Err(anyhow::anyhow!("reserved leaf 0x4000_0000 already in map"))
-            }
-        }
+        super::add_cpuid(cpuid, to_add)
     }
 
     fn rdmsr(&self, _vcpu: VcpuId, _msr: MsrId) -> RdmsrOutcome {
