@@ -28,25 +28,24 @@ impl Lifecycle for BhyveGuestInterface {
 
 impl Enlightenment for BhyveGuestInterface {
     fn add_cpuid(&self, cpuid: &mut CpuidSet) -> anyhow::Result<()> {
-        let old = cpuid
-            .insert(
-                CpuidIdent::leaf(HYPERVISOR_BASE_LEAF),
-                CpuidValues {
-                    eax: HYPERVISOR_BASE_LEAF,
-                    ebx: 0x76796862,
-                    ecx: 0x68622065,
-                    edx: 0x20657679,
-                },
-            )
-            .map_err(|_| {
-                anyhow::anyhow!("reserved leaf 0x4000_0000 already in map")
-            })?;
+        match cpuid.insert(
+            CpuidIdent::leaf(HYPERVISOR_BASE_LEAF),
+            CpuidValues {
+                eax: HYPERVISOR_BASE_LEAF,
+                ebx: 0x76796862,
+                ecx: 0x68622065,
+                edx: 0x20657679,
+            },
+        ) {
+            Ok(None) => Ok(()),
 
-        if old.is_some() {
-            anyhow::bail!("reserved leaf 0x4000_0000 already in map");
+            // Return an error if the key was previously present in the map,
+            // regardless of whether the `CpuidSet` was willing to replace its
+            // value.
+            Ok(Some(_)) | Err(_) => {
+                Err(anyhow::anyhow!("reserved leaf 0x4000_0000 already in map"))
+            }
         }
-
-        Ok(())
     }
 
     fn rdmsr(&self, _msr: MsrId, _vcpu: VcpuId) -> RdmsrOutcome {
