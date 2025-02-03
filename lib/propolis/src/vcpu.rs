@@ -9,10 +9,15 @@ use std::sync::Arc;
 
 use crate::common::GuestData;
 use crate::common::Lifecycle;
+use crate::common::VcpuId;
 use crate::cpuid;
+use crate::enlightenment::Enlightenment;
 use crate::exits::*;
 use crate::migrate::*;
 use crate::mmio::MmioBus;
+use crate::msr::MsrId;
+use crate::msr::RdmsrOutcome;
+use crate::msr::WrmsrOutcome;
 use crate::pio::PioBus;
 use crate::tasks;
 use crate::vmm::VmmHdl;
@@ -54,6 +59,7 @@ pub struct Vcpu {
     pub id: i32,
     pub bus_mmio: Arc<MmioBus>,
     pub bus_pio: Arc<PioBus>,
+    pub guest_hv: Arc<dyn Enlightenment>,
 
     /// Vendor of the underlying CPU hardware
     hardware_vendor: CpuidVendor,
@@ -66,6 +72,7 @@ impl Vcpu {
         id: i32,
         bus_mmio: Arc<MmioBus>,
         bus_pio: Arc<PioBus>,
+        guest_hv: Arc<dyn Enlightenment>,
     ) -> Arc<Self> {
         #[cfg(target_arch = "x86_64")]
         fn query_hardware_vendor() -> CpuidVendor {
@@ -84,6 +91,7 @@ impl Vcpu {
             id,
             bus_mmio,
             bus_pio,
+            guest_hv,
             hardware_vendor: query_hardware_vendor(),
         })
     }
@@ -414,6 +422,17 @@ impl Vcpu {
         unsafe { self.hdl.ioctl(bhyve_api::VM_INJECT_NMI, &mut vm_nmi) }
     }
 
+    pub fn inject_gp(&self) -> Result<()> {
+        let mut vm_excp = bhyve_api::vm_exception {
+            cpuid: self.cpuid(),
+            vector: i32::from(bits::IDT_GP),
+            error_code: 0,
+            error_code_valid: 0,
+            restart_instruction: 1,
+        };
+        unsafe { self.hdl.ioctl(bhyve_api::VM_INJECT_EXCEPTION, &mut vm_excp) }
+    }
+
     /// Process [`VmExit`] in the context of this vCPU, emitting a [`VmEntry`]
     /// if the parameters of the exit were such that they could be handled.
     pub fn process_vmexit(&self, exit: &VmExit) -> Option<VmEntry> {
@@ -454,9 +473,45 @@ impl Vcpu {
                     })
                     .ok(),
             },
-            VmExitKind::Rdmsr(_) | VmExitKind::Wrmsr(_, _) => {
-                // Leave it to the caller to emulate MSRs unhandled by the kernel
-                None
+            VmExitKind::Rdmsr(msr) => {
+                match self.guest_hv.rdmsr(VcpuId::from(self.id), MsrId(msr)) {
+                    RdmsrOutcome::NotHandled => None,
+                    RdmsrOutcome::Handled(val) => {
+                        let eax = val & 0xFFFF_FFFF;
+                        let edx = val >> 32;
+                        self.set_reg(
+                            bhyve_api::vm_reg_name::VM_REG_GUEST_RAX,
+                            eax,
+                        )
+                        .expect("setting eax should always succeed");
+                        self.set_reg(
+                            bhyve_api::vm_reg_name::VM_REG_GUEST_RDX,
+                            edx,
+                        )
+                        .expect("setting edx should always succeed");
+                        Some(VmEntry::Run)
+                    }
+                    RdmsrOutcome::GpException => {
+                        self.inject_gp()
+                            .expect("injecting #GP should always succeed");
+                        Some(VmEntry::Run)
+                    }
+                }
+            }
+            VmExitKind::Wrmsr(msr, val) => {
+                match self.guest_hv.wrmsr(
+                    VcpuId::from(self.id),
+                    MsrId(msr),
+                    val,
+                ) {
+                    WrmsrOutcome::NotHandled => None,
+                    WrmsrOutcome::Handled => Some(VmEntry::Run),
+                    WrmsrOutcome::GpException => {
+                        self.inject_gp()
+                            .expect("injecting #GP should always succeed");
+                        Some(VmEntry::Run)
+                    }
+                }
             }
             VmExitKind::Debug => {
                 // Until there is an interface to delay until a vCPU is no
@@ -1417,6 +1472,8 @@ pub mod migrate {
 mod bits {
     pub const MSR_DEBUGCTL: u32 = 0x1d9;
     pub const MSR_EFER: u32 = 0xc0000080;
+
+    pub const IDT_GP: u8 = 0xd;
 }
 
 /// Pretty-printable diagnostic information about the state of a vCPU.

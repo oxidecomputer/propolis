@@ -19,7 +19,6 @@ use crate::vm::{
     BlockBackendMap, CrucibleBackendMap, DeviceMap, NetworkInterfaceIds,
 };
 use anyhow::Context;
-use cpuid_utils::bits::{HYPERVISOR_BASE_LEAF, HYPERVISOR_BHYVE_VALUES};
 use cpuid_utils::CpuidValues;
 use crucible_client_types::VolumeConstructionRequest;
 pub use nexus_client::Client as NexusClient;
@@ -28,6 +27,7 @@ use oximeter_instruments::kstat::KstatSampler;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::{Lifecycle, GB, MB, PAGE_SIZE};
+use propolis::enlightenment::Enlightenment;
 use propolis::firmware::smbios;
 use propolis::hw::bhyve::BhyveHpet;
 use propolis::hw::chipset::{i440fx, Chipset};
@@ -117,6 +117,7 @@ pub fn build_instance(
     name: &str,
     spec: &Spec,
     use_reservoir: bool,
+    guest_hv_interface: Arc<dyn Enlightenment>,
     _log: slog::Logger,
 ) -> Result<Machine, MachineInitError> {
     let (lowmem, highmem) = get_spec_guest_ram_limits(spec);
@@ -125,10 +126,12 @@ pub fn build_instance(
         use_reservoir,
         track_dirty: true,
     };
+
     let mut builder = Builder::new(name, create_opts)
         .context("failed to create kernel vmm builder")?
         .max_cpus(spec.board.cpus)
         .context("failed to set max cpus")?
+        .guest_hypervisor_interface(guest_hv_interface)
         .add_mem_region(0, lowmem, "lowmem")
         .context("failed to add low memory region")?
         .add_rom_region(0x1_0000_0000 - MAX_ROM_SIZE, MAX_ROM_SIZE, "bootrom")
@@ -1231,20 +1234,16 @@ impl MachineInitializer<'_> {
     /// them into the device map, and then, if a kstat sampler is provided,
     /// tracking their kstats.
     pub async fn initialize_cpus(&mut self) -> Result<(), MachineInitError> {
+        let hv_interface = self.machine.guest_hv_interface.as_ref();
         for vcpu in self.machine.vcpus.iter() {
             // Report that the guest is running on bhyve.
             //
             // The CPUID set in the spec is not allowed to contain any leaves in
             // the hypervisor leaf region (enforced at spec generation time).
             let mut set = self.spec.cpuid.clone();
-            assert!(
-                set.insert(
-                    CpuidIdent::leaf(HYPERVISOR_BASE_LEAF),
-                    HYPERVISOR_BHYVE_VALUES
-                )
-                .expect("no hypervisor subleaves")
-                .is_none(),
-                "CPUID set should have no hypervisor leaves"
+            hv_interface.add_cpuid(&mut set).expect(
+                "propolis_server::spec construction should deny direct \
+                    requests to set hypervisor leaves",
             );
 
             let specialized = propolis::cpuid::Specializer::new()
@@ -1281,5 +1280,15 @@ impl MachineInitializer<'_> {
             track_vcpu_kstats(&self.log, sampler, &self.stats_vm).await;
         }
         Ok(())
+    }
+
+    pub fn register_guest_hv_interface(
+        &mut self,
+        guest_hv_interface: Arc<dyn Lifecycle>,
+    ) {
+        self.devices.insert(
+            SpecKey::Name("guest-hv-interface".to_string()),
+            guest_hv_interface,
+        );
     }
 }

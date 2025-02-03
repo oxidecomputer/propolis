@@ -288,6 +288,7 @@ impl<'dr> VmConfig<'dr> {
                         cpuid_utils::CpuidVendor::Intel => CpuidVendor::Intel,
                     },
                 }),
+                guest_hv_interface: None,
             },
             components: Default::default(),
         };

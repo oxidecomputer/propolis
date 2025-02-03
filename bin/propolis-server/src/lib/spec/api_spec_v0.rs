@@ -95,6 +95,7 @@ impl From<Spec> for InstanceSpecV0 {
             cpus: board.cpus,
             memory_mb: board.memory_mb,
             chipset: board.chipset,
+            guest_hv_interface: board.guest_hv_interface,
             cpuid: Some(cpuid.into_instance_spec_cpuid()),
         };
         let mut spec = InstanceSpecV0 { board, components: Default::default() };

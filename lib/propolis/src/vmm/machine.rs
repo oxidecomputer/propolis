@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::accessors::*;
+use crate::enlightenment::bhyve::BhyveGuestInterface;
+use crate::enlightenment::Enlightenment;
 use crate::mmio::MmioBus;
 use crate::pio::PioBus;
 use crate::vcpu::{Vcpu, MAXCPU};
@@ -31,6 +33,7 @@ pub struct Machine {
     pub map_physmem: PhysMap,
     pub bus_mmio: Arc<MmioBus>,
     pub bus_pio: Arc<PioBus>,
+    pub guest_hv_interface: Arc<dyn Enlightenment>,
 
     pub acc_mem: MemAccessor,
     pub acc_msi: MsiAccessor,
@@ -118,9 +121,15 @@ impl Machine {
 
         let bus_mmio = Arc::new(MmioBus::new(MAX_PHYSMEM));
         let bus_pio = Arc::new(PioBus::new());
+        let guest_hv_interface = Arc::new(BhyveGuestInterface);
 
-        let vcpus =
-            vec![Vcpu::new(hdl.clone(), 0, bus_mmio.clone(), bus_pio.clone())];
+        let vcpus = vec![Vcpu::new(
+            hdl.clone(),
+            0,
+            bus_mmio.clone(),
+            bus_pio.clone(),
+            guest_hv_interface.clone(),
+        )];
 
         let acc_mem = MemAccessor::new(map.memctx());
         let acc_msi = MsiAccessor::new(hdl.clone());
@@ -136,6 +145,7 @@ impl Machine {
 
             bus_mmio,
             bus_pio,
+            guest_hv_interface,
 
             destroyed: AtomicBool::new(false),
         })
@@ -165,6 +175,7 @@ pub struct Builder {
     inner_hdl: Option<Arc<VmmHdl>>,
     physmap: Option<PhysMap>,
     max_cpu: u8,
+    guest_hv_interface: Option<Arc<dyn Enlightenment>>,
 }
 impl Builder {
     /// Constructs a new builder object which may be used
@@ -180,7 +191,12 @@ impl Builder {
     pub fn new(name: &str, opts: CreateOpts) -> Result<Self> {
         let hdl = Arc::new(create_vm(name, opts)?);
         let physmap = Some(PhysMap::new(MAX_PHYSMEM, hdl.clone()));
-        Ok(Self { inner_hdl: Some(hdl), max_cpu: 1, physmap })
+        Ok(Self {
+            inner_hdl: Some(hdl),
+            max_cpu: 1,
+            guest_hv_interface: None,
+            physmap,
+        })
     }
 
     /// Creates and maps a memory segment in the guest's address space,
@@ -230,6 +246,15 @@ impl Builder {
         }
     }
 
+    /// Sets the guest-hypervisor interface to supply to this machine's vCPUs.
+    pub fn guest_hypervisor_interface(
+        mut self,
+        interface: Arc<dyn Enlightenment>,
+    ) -> Self {
+        self.guest_hv_interface = Some(interface);
+        self
+    }
+
     /// Consumes `self` and creates a new [`Machine`] based
     /// on the provided memory regions.
     pub fn finalize(mut self) -> Result<Machine> {
@@ -238,10 +263,15 @@ impl Builder {
 
         let bus_mmio = Arc::new(MmioBus::new(MAX_PHYSMEM));
         let bus_pio = Arc::new(PioBus::new());
-
         let acc_mem = MemAccessor::new(map.memctx());
         let acc_msi = MsiAccessor::new(hdl.clone());
 
+        let guest_hv_interface = self
+            .guest_hv_interface
+            .take()
+            .unwrap_or(Arc::new(BhyveGuestInterface));
+
+        guest_hv_interface.attach(&acc_mem);
         let vcpus = (0..self.max_cpu)
             .map(|id| {
                 Vcpu::new(
@@ -249,6 +279,7 @@ impl Builder {
                     i32::from(id),
                     bus_mmio.clone(),
                     bus_pio.clone(),
+                    guest_hv_interface.clone(),
                 )
             })
             .collect();
@@ -264,12 +295,14 @@ impl Builder {
 
             bus_mmio,
             bus_pio,
+            guest_hv_interface,
 
             destroyed: AtomicBool::new(false),
         };
         Ok(machine)
     }
 }
+
 impl Drop for Builder {
     fn drop(&mut self) {
         if let Some(hdl) = &self.inner_hdl {

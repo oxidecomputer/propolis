@@ -293,6 +293,7 @@ impl VmConfig {
                 cpuid: None,
                 cpus: self.vcpus,
                 memory_mb: self.memory,
+                guest_hv_interface: None,
             },
             components: Default::default(),
         };
