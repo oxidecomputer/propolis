@@ -3,11 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use cpuid_utils::{CpuidIdent, CpuidValues, CpuidVendor};
+use phd_framework::test_vm::MigrationTimeout;
 use phd_testcase::*;
 use propolis_client::types::{
     CpuidEntry, InstanceSpecStatus, VersionedInstanceSpec,
 };
 use tracing::info;
+use uuid::Uuid;
 
 fn cpuid_entry(
     leaf: u32,
@@ -48,21 +50,11 @@ async fn cpuid_instance_spec_round_trip_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
-async fn cpuid_boot_test(ctx: &Framework) {
+async fn cpuid_boot_and_migrate_test(ctx: &Framework) {
     use cpuid_utils::bits::*;
 
-    // This test verifies that plumbing a reasonably sensible-looking set of
-    // CPUID values into the guest produces a bootable guest.
-    //
-    // The definition of "reasonably sensible" is derived from the suggested
-    // virtual-Milan CPUID definitions in RFD 314. Those are in turn derived
-    // from reading AMD's manuals and bhyve's source code to figure out what
-    // host CPU features to hide from guests.
-    //
-    // To try to make this test at least somewhat host-agnostic, read all of the
-    // host's CPUID leaves, then filter to just a handful of leaves that
-    // advertise features to the guest (and that Linux guests will check for
-    // during boot).
+    // Use the current host's CPUID values to try to make this test
+    // host-agnostic.
     let mut host_cpuid = cpuid_utils::host::query_complete(
         cpuid_utils::host::CpuidSource::BhyveDefault,
     )?;
@@ -137,6 +129,24 @@ async fn cpuid_boot_test(ctx: &Framework) {
     vm.wait_to_boot().await?;
 
     let cpuinfo = vm.run_shell_command("cat /proc/cpuinfo").await?;
+    info!(cpuinfo, "/proc/cpuinfo output");
+    assert!(cpuinfo.contains(
+        std::str::from_utf8(BRAND_STRING).unwrap().trim_matches('\0')
+    ));
+
+    // Migrate the VM and make sure the brand string setting persists.
+    let mut target = ctx
+        .spawn_successor_vm("cpuid_boot_test_migration_target", &vm, None)
+        .await?;
+
+    target
+        .migrate_from(&vm, Uuid::new_v4(), MigrationTimeout::default())
+        .await?;
+
+    // Reset the target to force it to reread its CPU information.
+    target.reset().await?;
+    target.wait_to_boot().await?;
+    let cpuinfo = target.run_shell_command("cat /proc/cpuinfo").await?;
     info!(cpuinfo, "/proc/cpuinfo output");
     assert!(cpuinfo.contains(
         std::str::from_utf8(BRAND_STRING).unwrap().trim_matches('\0')
