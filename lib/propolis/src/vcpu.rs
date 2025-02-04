@@ -557,7 +557,6 @@ impl MigrateMulti for Vcpu {
         output.push(migrate::VcpuMsrsV1::read(self)?.into())?;
         output.push(migrate::FpuStateV1::read(self)?.into())?;
         output.push(migrate::LapicV1::read(self)?.into())?;
-        output.push(migrate::CpuidV1::read(self)?.into())?;
 
         // PMU was introduced in V18
         if bhyve_api::api_version()? >= ApiVersion::V18
@@ -582,7 +581,6 @@ impl MigrateMulti for Vcpu {
         let ms_regs: migrate::VcpuMsrsV1 = offer.take()?;
         let fpu: migrate::FpuStateV1 = offer.take()?;
         let lapic: migrate::LapicV1 = offer.take()?;
-        let cpuid: migrate::CpuidV1 = offer.take()?;
 
         run_state.write(self)?;
         gp_regs.write(self)?;
@@ -592,7 +590,6 @@ impl MigrateMulti for Vcpu {
         ms_regs.write(self)?;
         fpu.write(self)?;
         lapic.write(self)?;
-        cpuid.write(self)?;
 
         if let Ok(pmu_amd) = offer.take::<migrate::PmuAmdV1>() {
             pmu_amd.write(self)?;
@@ -610,8 +607,6 @@ pub mod migrate {
     use crate::migrate::*;
 
     use bhyve_api::{vdi_field_entry_v1, vm_reg_name, ApiVersion};
-    use cpuid_utils::CpuidSet;
-    use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor};
     use serde::{Deserialize, Serialize};
 
     pub(super) trait VcpuReadWrite: Sized {
@@ -788,86 +783,6 @@ pub mod migrate {
         pub lvt_error: u32,
         pub icr_timer: u32,
         pub dcr_timer: u32,
-    }
-
-    #[derive(Copy, Clone, Default, Deserialize, Serialize)]
-    pub struct CpuidEntV1 {
-        pub func: u32,
-        pub idx: Option<u32>,
-        pub data: [u32; 4],
-    }
-    impl From<CpuidEntV1> for (CpuidIdent, CpuidValues) {
-        fn from(value: CpuidEntV1) -> Self {
-            (
-                CpuidIdent { leaf: value.func, subleaf: value.idx },
-                CpuidValues {
-                    eax: value.data[0],
-                    ebx: value.data[1],
-                    ecx: value.data[2],
-                    edx: value.data[3],
-                },
-            )
-        }
-    }
-
-    #[derive(Copy, Clone, Deserialize, Serialize)]
-    #[serde(rename_all = "lowercase")]
-    pub enum CpuidVendorV1 {
-        Amd,
-        Intel,
-    }
-    impl From<CpuidVendor> for CpuidVendorV1 {
-        fn from(value: CpuidVendor) -> Self {
-            match value {
-                CpuidVendor::Amd => Self::Amd,
-                CpuidVendor::Intel => Self::Intel,
-            }
-        }
-    }
-    impl From<CpuidVendorV1> for CpuidVendor {
-        fn from(value: CpuidVendorV1) -> Self {
-            match value {
-                CpuidVendorV1::Amd => Self::Amd,
-                CpuidVendorV1::Intel => Self::Intel,
-            }
-        }
-    }
-
-    #[derive(Clone, Deserialize, Serialize)]
-    pub struct CpuidV1 {
-        pub vendor: CpuidVendorV1,
-        pub entries: Vec<CpuidEntV1>,
-    }
-    impl Schema<'_> for CpuidV1 {
-        fn id() -> SchemaId {
-            ("bhyve-x86-cpuid", 1)
-        }
-    }
-    impl From<CpuidSet> for CpuidV1 {
-        fn from(value: CpuidSet) -> Self {
-            let vendor = value.vendor().into();
-            let entries: Vec<_> = value
-                .iter()
-                .map(|(k, v)| CpuidEntV1 {
-                    func: k.leaf,
-                    idx: k.subleaf,
-                    data: [v.eax, v.ebx, v.ecx, v.edx],
-                })
-                .collect();
-            CpuidV1 { vendor, entries }
-        }
-    }
-    impl From<CpuidV1> for CpuidSet {
-        fn from(value: CpuidV1) -> Self {
-            let mut set = CpuidSet::new(value.vendor.into());
-            for item in value.entries {
-                let (ident, value) = item.into();
-                set.insert(ident, value).expect(
-                    "well-formed CpuidV1 entries have no subleaf conflicts",
-                );
-            }
-            set
-        }
     }
 
     #[derive(Clone, Deserialize, Serialize)]
@@ -1425,26 +1340,6 @@ pub mod migrate {
                 .write::<bhyve_api::vdi_lapic_v1>(&self.into())?;
 
             Ok(())
-        }
-    }
-    impl VcpuReadWrite for CpuidV1 {
-        fn read(vcpu: &Vcpu) -> Result<Self> {
-            Ok(vcpu
-                .get_cpuid()
-                .map_err(|e| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!(
-                            "error reading CPUID for vCPU {}: {}",
-                            vcpu.id, e
-                        ),
-                    )
-                })?
-                .into())
-        }
-
-        fn write(self, vcpu: &Vcpu) -> Result<()> {
-            vcpu.set_cpuid(self.into())
         }
     }
     impl VcpuReadWrite for PmuAmdV1 {
