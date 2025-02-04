@@ -401,9 +401,7 @@ async fn initialize_vm_objects(
                 (bhyve as Arc<dyn Enlightenment>, lifecycle.as_lifecycle())
             }
             GuestHypervisorInterface::HyperV { .. } => {
-                let hyperv = Arc::new(HyperV::new(
-                    vmm_log.new(slog::o!("component" => "guest-hv-interface")),
-                ));
+                let hyperv = Arc::new(HyperV::new(&vmm_log));
                 let lifecycle = hyperv.clone();
                 (hyperv as Arc<dyn Enlightenment>, lifecycle.as_lifecycle())
             }

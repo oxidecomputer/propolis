@@ -9,9 +9,11 @@
 use cpuid_utils::CpuidValues;
 
 /// The maximum hypervisor CPUID leaf supported by the Hyper-V emulation stack.
-/// This must be at least 0x4000_0005 to comply with the Hyper-V spec, but to
-/// minimize future complexity, Propolis advertises up to the maximum specified
-/// leaf of 0x4000_000A.
+/// This must be at least 0x4000_0005 to comply with the Hyper-V spec. To avoid
+/// having to reason about what this value should be if Propolis ever exposes
+/// features from a leaf greater than this, always expose the maximum leaf
+/// defined in the TLFS, even if the entries for those leaves advertise no
+/// features.
 const HYPERV_MAX_CPUID_LEAF: u32 = 0x4000000A;
 
 /// CPUID leaf 0x4000_0000 contains hypervisor identifying information. eax
@@ -20,9 +22,9 @@ const HYPERV_MAX_CPUID_LEAF: u32 = 0x4000000A;
 ///
 /// In order to get both Linux and Windows guests to accept these
 /// enlightenments, the ebx/ecx/edx ID here is set to "Microsoft Hv". Windows
-/// guests will accept other vendor IDs (they look at leaf 1 eax to identify the
-/// hypervisor interface instead of reading the vendor ID in leaf 0), but Linux
-/// guests only consider the vendor ID.
+/// guests will accept other vendor IDs (they look at leaf 0x4000_0001 eax to
+/// identify the hypervisor interface instead of reading the vendor ID in leaf
+/// 0), but Linux guests only consider the vendor ID.
 pub(super) const HYPERV_LEAF_0_VALUES: CpuidValues = CpuidValues {
     eax: HYPERV_MAX_CPUID_LEAF,
     ebx: 0x7263694D,
@@ -44,8 +46,8 @@ pub(super) const HYPERV_LEAF_2_VALUES: CpuidValues =
 
 bitflags::bitflags! {
     /// Hyper-V leaf 0x4000_0003 eax returns synthetic MSR access rights.
-    /// Only the bits actually enabled by this enlightenment stack are
-    /// enumerated here.
+    /// Only the bits actually used by this enlightenment stack are enumerated
+    /// here.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct HyperVLeaf3Eax: u32 {
         const PARTITION_REFERENCE_COUNTER = 1 << 1;
@@ -54,6 +56,14 @@ bitflags::bitflags! {
         const PARTITION_REFERENCE_TSC = 1 << 9;
 
         // Bits 14-31 of this register are reserved.
+    }
+}
+
+impl Default for HyperVLeaf3Eax {
+    /// Grants access to the VP index and hypercall MSRs. This is the minimum
+    /// set of access rights that all Hyper-V-compatible hypervisors must grant.
+    fn default() -> Self {
+        HyperVLeaf3Eax::VP_INDEX | HyperVLeaf3Eax::HYPERCALL
     }
 }
 

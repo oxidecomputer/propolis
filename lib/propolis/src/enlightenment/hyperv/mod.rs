@@ -40,10 +40,10 @@ const TYPE_NAME: &str = "guest-hyperv-interface";
 
 #[derive(Debug, Default)]
 struct Inner {
-    /// The last value stored in the [`bits::MSR_GUEST_OS_ID`] MSR.
+    /// The last value stored in the [`bits::HV_X64_MSR_GUEST_OS_ID`] MSR.
     msr_guest_os_id_value: u64,
 
-    /// The last value stored in the [`bits::MSR_HYPERCALL`] MSR.
+    /// The last value stored in the [`bits::HV_X64_MSR_HYPERCALL`] MSR.
     msr_hypercall_value: MsrHypercallValue,
 }
 
@@ -54,11 +54,14 @@ pub struct HyperV {
 }
 
 impl HyperV {
-    pub fn new(log: slog::Logger) -> Self {
+    /// Creates a new Hyper-V enlightenment stack.
+    pub fn new(log: &slog::Logger) -> Self {
         let acc_mem = MemAccessor::new_orphan();
+        let log = log.new(slog::o!("component" => "hyperv"));
         Self { log, inner: Mutex::new(Inner::default()), acc_mem }
     }
 
+    /// Handles a write to the HV_X64_MSR_GUEST_OS_ID register.
     fn handle_wrmsr_guest_os_id(&self, value: u64) -> WrmsrOutcome {
         let mut inner = self.inner.lock().unwrap();
 
@@ -72,6 +75,12 @@ impl HyperV {
         if value == 0 {
             info!(&self.log, "guest cleared HV_X64_MSR_GUEST_OS_ID");
             inner.msr_hypercall_value.clear_enabled();
+        } else {
+            info!(
+                &self.log,
+                "guest set HV_X64_MSR_GUEST_OS_ID";
+                "value" => value
+            );
         }
 
         inner.msr_guest_os_id_value = value;
@@ -84,8 +93,7 @@ impl HyperV {
         let mut inner = self.inner.lock().unwrap();
         let old = inner.msr_hypercall_value;
 
-        // TLFS section 3.13 says that this MSR is immutable once the locked
-        // bit is set.
+        // Per the spec, this MSR is immutable once the Locked bit is set.
         if old.locked() {
             return WrmsrOutcome::Handled;
         }
@@ -106,7 +114,7 @@ impl HyperV {
         // else is mapped to the GPA range." The spec is ambiguous as to whether
         // this means that the page's previous contents must be restored if the
         // page is disabled or its address later changes. Empirically, most
-        // common guest OSes don't appear to move the page after creating it,
+        // guest OSes don't appear to move the page after creating it,
         // and at least some other hypervisors don't bother with saving and
         // restoring the old page's contents. So, for simplicity, simply write
         // the hypercall instruction sequence to the requested page and call it
@@ -120,8 +128,19 @@ impl HyperV {
             let region = GuestRegion(new.gpa(), PAGE_SIZE);
             if let Some(mapping) = memctx.writable_region(&region) {
                 write_overlay_page(&mapping, &hypercall_page_contents());
+                info!(
+                    &self.log,
+                    "established hypercall page at GPA {:#x}",
+                    new.gpa().0
+                );
+
                 WrmsrOutcome::Handled
             } else {
+                info!(
+                    &self.log,
+                    "guest requested illegal hypercall GPA {:#x}",
+                    new.gpa().0
+                );
                 WrmsrOutcome::GpException
             }
         } else {
@@ -158,11 +177,12 @@ impl super::Enlightenment for HyperV {
         add_to_set(CpuidIdent::leaf(0x4000_0009), HYPERV_LEAF_9_VALUES);
         add_to_set(CpuidIdent::leaf(0x4000_000A), HYPERV_LEAF_A_VALUES);
 
-        let leaf_3_eax = HyperVLeaf3Eax::HYPERCALL | HyperVLeaf3Eax::VP_INDEX;
-
         add_to_set(
             CpuidIdent::leaf(0x4000_0003),
-            CpuidValues { eax: leaf_3_eax.bits(), ..Default::default() },
+            CpuidValues {
+                eax: HyperVLeaf3Eax::default().bits(),
+                ..Default::default()
+            },
         );
 
         super::add_cpuid(cpuid, to_add)
@@ -213,9 +233,6 @@ impl Lifecycle for HyperV {
 
     fn reset(&self) {
         let mut inner = self.inner.lock().unwrap();
-
-        // The contents of guest memory are going to be completely reinitialized
-        // anyway, so there's no need to manually remove any overlay pages.
         *inner = Inner::default();
     }
 
@@ -244,6 +261,11 @@ impl MigrateSingle for HyperV {
     ) -> Result<(), MigrateStateError> {
         let data: migrate::HyperVEnlightenmentV1 = offer.parse()?;
 
+        // A well-behaved source should ensure that the hypercall MSR value is
+        // within the guest's PA range and that its Enabled bit agrees with the
+        // value of the guest OS ID MSR. But this data was received over the
+        // wire, so for safety's sake, verify it all and return a migration
+        // error if anything is inconsistent.
         let hypercall_msr = MsrHypercallValue(data.msr_hypercall);
         if hypercall_msr.enabled() {
             if data.msr_guest_os_id == 0 {
