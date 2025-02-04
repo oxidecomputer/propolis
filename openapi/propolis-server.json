@@ -265,6 +265,14 @@
               "format": "uint64",
               "minimum": 0
             }
+          },
+          {
+            "in": "query",
+            "name": "writable",
+            "description": "True if the connection should allow writing. If this option is set, any existing writer to the serial console will be disconnected when this client connects.",
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
