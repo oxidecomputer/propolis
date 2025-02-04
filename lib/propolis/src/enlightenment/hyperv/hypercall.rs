@@ -6,14 +6,14 @@
 
 use crate::common::{GuestAddr, PAGE_SHIFT, PAGE_SIZE};
 
-/// Represents a value written to the [`MSR_HYPERCALL`] register.
+/// Represents a value written to the [`HV_X64_MSR_HYPERCALL`] register.
 ///
 /// Writing to this register enables the hypercall page. The hypervisor overlays
 /// this page with an instruction sequence that the guest should execute in
 /// order to issue a call to the hypervisor. See
 /// [`HYPERCALL_INSTRUCTION_SEQUENCE`].
 ///
-/// [`MSR_HYPERCALL`]: super::bits::MSR_HYPERCALL
+/// [`HV_X64_MSR_HYPERCALL`]: super::bits::HV_X64_MSR_HYPERCALL
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct MsrHypercallValue(pub(super) u64);
 

@@ -2,25 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use phd_framework::{artifacts, lifecycle::Action, TestVm};
 use phd_testcase::*;
 use tracing::warn;
 
-#[phd_testcase]
-async fn hyperv_smoke_test(ctx: &Framework) {
-    let mut cfg = ctx.vm_config_builder("hyperv_smoke_test");
-    cfg.guest_hv_interface(
-        propolis_client::types::GuestHypervisorInterface::HyperV {
-            features: vec![],
-        },
-    );
-    let mut vm = ctx.spawn_vm(&cfg, None).await?;
-    vm.launch().await?;
-    vm.wait_to_boot().await?;
-
-    // Make a best-effort attempt to detect that Hyper-V is actually present in
-    // the guest. It's valuable to run this test to completion regardless since
-    // it exercises Propolis shutdown while the Hyper-V enlightenment stack is
-    // active.
+/// Attempts to see if the guest has detected Hyper-V support. This is
+/// best-effort, since not all PHD guest images contain in-box tools that
+/// display the current hypervisor vendor.
+async fn guest_detect_hyperv(vm: &TestVm) -> anyhow::Result<()> {
     if vm.guest_os_kind().is_linux() {
         // Many Linux distros come with systemd installed out of the box. On
         // these distros, it's easiest to use `systemd-detect-virt` to determine
@@ -44,4 +33,45 @@ async fn hyperv_smoke_test(ctx: &Framework) {
         // these don't identify the detected hypervisor type.)
         warn!("running on Windows, can't verify it detected Hyper-V support");
     }
+
+    Ok(())
+}
+
+#[phd_testcase]
+async fn hyperv_smoke_test(ctx: &Framework) {
+    let mut cfg = ctx.vm_config_builder("hyperv_smoke_test");
+    cfg.guest_hv_interface(
+        propolis_client::types::GuestHypervisorInterface::HyperV {
+            features: vec![],
+        },
+    );
+    let mut vm = ctx.spawn_vm(&cfg, None).await?;
+    vm.launch().await?;
+    vm.wait_to_boot().await?;
+
+    guest_detect_hyperv(&vm).await?;
+}
+
+#[phd_testcase]
+async fn hyperv_migration_smoke_test(ctx: &Framework) {
+    let mut cfg = ctx.vm_config_builder("hyperv_migration_smoke_test");
+    cfg.guest_hv_interface(
+        propolis_client::types::GuestHypervisorInterface::HyperV {
+            features: vec![],
+        },
+    );
+    let mut vm = ctx.spawn_vm(&cfg, None).await?;
+    vm.launch().await?;
+    vm.wait_to_boot().await?;
+
+    ctx.lifecycle_test(
+        vm,
+        &[Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT)],
+        |target: &TestVm| {
+            Box::pin(async {
+                guest_detect_hyperv(target).await.unwrap();
+            })
+        },
+    )
+    .await?;
 }

@@ -25,7 +25,10 @@ use crate::{
     accessors::MemAccessor,
     common::{GuestRegion, Lifecycle, VcpuId, PAGE_SIZE},
     enlightenment::AddCpuidError,
-    migrate::Migrator,
+    migrate::{
+        MigrateCtx, MigrateSingle, MigrateStateError, Migrator, PayloadOffer,
+        PayloadOutput,
+    },
     msr::{MsrId, RdmsrOutcome, WrmsrOutcome},
     vmm::SubMapping,
 };
@@ -59,11 +62,13 @@ impl HyperV {
     fn handle_wrmsr_guest_os_id(&self, value: u64) -> WrmsrOutcome {
         let mut inner = self.inner.lock().unwrap();
 
-        // TLFS section 3.13 specifies that if the guest OS ID register is
-        // cleared, then the hypercall page immediately "becomes disabled." The
-        // exact semantics of "becoming disabled" are unclear, but in context it
-        // seems most reasonable to read this as "the Enabled bit is cleared and
-        // the hypercall overlay is removed."
+        // TLFS section 3.13 says that the hypercall page "becomes disabled" if
+        // the guest OS ID register is cleared after the hypercall register is
+        // set. It also specifies that attempts to set the Enabled bit in that
+        // register will be ignored if the guest OS ID is zeroed, so handle this
+        // case by clearing the hypercall MSR's Enabled bit but otherwise
+        // leaving the hypercall page untouched (as would happen if the guest
+        // manually cleared this bit).
         if value == 0 {
             info!(&self.log, "guest cleared HV_X64_MSR_GUEST_OS_ID");
             inner.msr_hypercall_value.clear_enabled();
@@ -79,7 +84,7 @@ impl HyperV {
         let mut inner = self.inner.lock().unwrap();
         let old = inner.msr_hypercall_value;
 
-        // TLFS section 3.13 says that this MSR is "immutable" once the locked
+        // TLFS section 3.13 says that this MSR is immutable once the locked
         // bit is set.
         if old.locked() {
             return WrmsrOutcome::Handled;
@@ -214,8 +219,73 @@ impl Lifecycle for HyperV {
         *inner = Inner::default();
     }
 
-    // TODO: Migration support.
     fn migrate(&'_ self) -> Migrator<'_> {
-        Migrator::NonMigratable
+        Migrator::Single(self)
+    }
+}
+
+impl MigrateSingle for HyperV {
+    fn export(
+        &self,
+        _ctx: &MigrateCtx,
+    ) -> Result<PayloadOutput, MigrateStateError> {
+        let inner = self.inner.lock().unwrap();
+        Ok(migrate::HyperVEnlightenmentV1 {
+            msr_guest_os_id: inner.msr_guest_os_id_value,
+            msr_hypercall: inner.msr_hypercall_value.0,
+        }
+        .into())
+    }
+
+    fn import(
+        &self,
+        mut offer: PayloadOffer,
+        ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
+        let data: migrate::HyperVEnlightenmentV1 = offer.parse()?;
+
+        let hypercall_msr = MsrHypercallValue(data.msr_hypercall);
+        if hypercall_msr.enabled() {
+            if data.msr_guest_os_id == 0 {
+                return Err(MigrateStateError::ImportFailed(
+                    "hypercall MSR enabled but guest OS ID MSR is 0"
+                        .to_string(),
+                ));
+            }
+
+            let Some(mapping) = ctx
+                .mem
+                .writable_region(&GuestRegion(hypercall_msr.gpa(), PAGE_SIZE))
+            else {
+                return Err(MigrateStateError::ImportFailed(
+                    "couldn't map GPA in hypercall MSR".to_string(),
+                ));
+            };
+
+            write_overlay_page(&mapping, &hypercall_page_contents());
+        }
+
+        let mut inner = self.inner.lock().unwrap();
+        inner.msr_guest_os_id_value = data.msr_guest_os_id;
+        inner.msr_hypercall_value = hypercall_msr;
+        Ok(())
+    }
+}
+
+mod migrate {
+    use serde::{Deserialize, Serialize};
+
+    use crate::migrate::{Schema, SchemaId};
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct HyperVEnlightenmentV1 {
+        pub(super) msr_guest_os_id: u64,
+        pub(super) msr_hypercall: u64,
+    }
+
+    impl Schema<'_> for HyperVEnlightenmentV1 {
+        fn id() -> SchemaId {
+            (super::TYPE_NAME, 1)
+        }
     }
 }
