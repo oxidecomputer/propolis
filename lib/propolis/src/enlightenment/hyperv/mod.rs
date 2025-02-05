@@ -16,15 +16,19 @@
 
 use std::sync::Mutex;
 
-use bits::*;
 use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
-use hypercall::{hypercall_page_contents, MsrHypercallValue};
 use slog::info;
 
 use crate::{
     accessors::MemAccessor,
     common::{GuestRegion, Lifecycle, VcpuId, PAGE_SIZE},
-    enlightenment::AddCpuidError,
+    enlightenment::{
+        hyperv::{
+            bits::*,
+            hypercall::{hypercall_page_contents, MsrHypercallValue},
+        },
+        AddCpuidError,
+    },
     migrate::{
         MigrateCtx, MigrateSingle, MigrateStateError, Migrator, PayloadOffer,
         PayloadOutput,
