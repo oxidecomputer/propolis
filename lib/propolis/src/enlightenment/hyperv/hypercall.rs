@@ -6,6 +6,12 @@
 
 use crate::common::{GuestAddr, PAGE_SHIFT, PAGE_SIZE};
 
+const LOCKED_BIT: u64 = 1;
+const LOCKED_MASK: u64 = 1 << LOCKED_BIT;
+const ENABLED_BIT: u64 = 0;
+const ENABLED_MASK: u64 = 1 << ENABLED_BIT;
+const GPA_MASK: u64 = !((1 << PAGE_SHIFT) - 1);
+
 /// Represents a value written to the [`HV_X64_MSR_HYPERCALL`] register.
 ///
 /// Writing to this register enables the hypercall page. The hypervisor overlays
@@ -14,36 +20,42 @@ use crate::common::{GuestAddr, PAGE_SHIFT, PAGE_SIZE};
 /// [`HYPERCALL_INSTRUCTION_SEQUENCE`].
 ///
 /// [`HV_X64_MSR_HYPERCALL`]: super::bits::HV_X64_MSR_HYPERCALL
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct MsrHypercallValue(pub(super) u64);
 
-impl MsrHypercallValue {
-    /// Returns the guest physical page number at which the guest would like the
-    /// hypercall page to be placed.
-    pub fn gpfn(&self) -> u64 {
-        self.0 >> 12
+impl std::fmt::Debug for MsrHypercallValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MsrHypercallValue")
+            .field("raw", &format!("{:#x}", self.0))
+            .field("gpa", &format!("{:#x}", self.gpa().0))
+            .field("locked", &self.locked())
+            .field("enabled", &self.enabled())
+            .finish()
     }
+}
 
+impl MsrHypercallValue {
     /// Returns the guest physical address at which the guest would like the
     /// hypercall page to be placed.
     pub fn gpa(&self) -> GuestAddr {
-        GuestAddr(self.gpfn() << PAGE_SHIFT)
+        GuestAddr(self.0 & GPA_MASK)
     }
 
     /// Returns whether the hypercall page location is locked. Once locked, the
-    /// value in `MSR_HYPERCALL` cannot change until the system is reset.
+    /// value in `MSR_HYPERCALL` cannot change until the hypervisor resets the
+    /// guest.
     pub fn locked(&self) -> bool {
-        (self.0 & 2) != 0
+        (self.0 & LOCKED_MASK) != 0
     }
 
     /// Indicates whether the hypercall page is enabled.
     pub fn enabled(&self) -> bool {
-        (self.0 & 1) != 0
+        (self.0 & ENABLED_MASK) != 0
     }
 
     /// Clears this value's enabled bit.
     pub fn clear_enabled(&mut self) {
-        self.0 &= !1;
+        self.0 &= !ENABLED_MASK;
     }
 }
 

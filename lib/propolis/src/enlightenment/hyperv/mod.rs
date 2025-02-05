@@ -79,7 +79,7 @@ impl HyperV {
             info!(
                 &self.log,
                 "guest set HV_X64_MSR_GUEST_OS_ID";
-                "value" => value
+                "value" => ?value
             );
         }
 
