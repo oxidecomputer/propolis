@@ -9,6 +9,11 @@ use tracing::warn;
 /// Attempts to see if the guest has detected Hyper-V support. This is
 /// best-effort, since not all PHD guest images contain in-box tools that
 /// display the current hypervisor vendor.
+///
+/// NOTE: If the guest lacks a facility to check the hypervisor vendor, this
+/// routine logs a warning but does not return a "Skipped" result. This allows
+/// the smoke tests to return a Pass result to show that they exercised VM
+/// startup and shutdown with Hyper-V emulation enabled.
 async fn guest_detect_hyperv(vm: &TestVm) -> anyhow::Result<()> {
     if vm.guest_os_kind().is_linux() {
         // Many Linux distros come with systemd installed out of the box. On
