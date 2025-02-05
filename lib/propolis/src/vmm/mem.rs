@@ -910,6 +910,10 @@ impl MemCtx {
         let mapping = self.region_covered(region.0, region.1, Prot::READ)?;
         Some(mapping)
     }
+    pub fn readwrite_region(&self, region: &GuestRegion) -> Option<SubMapping> {
+        let mapping = self.region_covered(region.0, region.1, Prot::RW)?;
+        Some(mapping)
+    }
 
     /// Like `direct_writable_region`, but looks up the region by name.
     pub fn direct_writable_region_by_name(

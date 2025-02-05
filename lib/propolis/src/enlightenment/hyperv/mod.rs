@@ -14,13 +14,16 @@
 //! that intends to implement a Hyper-V-compatible interface:
 //! https://github.com/MicrosoftDocs/Virtualization-Documentation/blob/main/tlfs/Requirements%20for%20Implementing%20the%20Microsoft%20Hypervisor%20Interface.pdf
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
+use overlay::{
+    OverlayContents, OverlayError, OverlayKind, OverlayManager, OverlayPage,
+};
 
 use crate::{
     accessors::MemAccessor,
-    common::{GuestRegion, Lifecycle, VcpuId, PAGE_SIZE},
+    common::{Lifecycle, VcpuId},
     enlightenment::{
         hyperv::{
             bits::*,
@@ -33,11 +36,11 @@ use crate::{
         PayloadOutput,
     },
     msr::{MsrId, RdmsrOutcome, WrmsrOutcome},
-    vmm::SubMapping,
 };
 
 mod bits;
 mod hypercall;
+mod overlay;
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
@@ -49,13 +52,28 @@ mod probes {
 
 const TYPE_NAME: &str = "guest-hyperv-interface";
 
-#[derive(Debug, Default)]
 struct Inner {
+    /// This enlightenment's overlay manager.
+    overlay_manager: Arc<OverlayManager>,
+
     /// The last value stored in the [`bits::HV_X64_MSR_GUEST_OS_ID`] MSR.
     msr_guest_os_id_value: u64,
 
     /// The last value stored in the [`bits::HV_X64_MSR_HYPERCALL`] MSR.
     msr_hypercall_value: MsrHypercallValue,
+
+    hypercall_overlay: Option<OverlayPage>,
+}
+
+impl Default for Inner {
+    fn default() -> Self {
+        Self {
+            overlay_manager: OverlayManager::new(),
+            msr_guest_os_id_value: Default::default(),
+            msr_hypercall_value: Default::default(),
+            hypercall_overlay: None,
+        }
+    }
 }
 
 pub struct HyperV {
@@ -87,6 +105,7 @@ impl HyperV {
         // manually cleared this bit).
         if value == 0 {
             inner.msr_hypercall_value.clear_enabled();
+            inner.hypercall_overlay.take();
         }
 
         inner.msr_guest_os_id_value = value;
@@ -122,36 +141,43 @@ impl HyperV {
         // the guest.
         if !new.enabled() {
             inner.msr_hypercall_value = new;
+            inner.hypercall_overlay.take();
             return WrmsrOutcome::Handled;
         }
 
-        let memctx = self
-            .acc_mem
-            .access()
-            .expect("guest memory is always accessible during wrmsr");
-
-        let region = GuestRegion(new.gpa(), PAGE_SIZE);
-
-        // Mapping will fail if the requested GPA is out of the guest's physical
-        // address range. The TLFS specifies that this should raise #GP.
-        let Some(mapping) = memctx.writable_region(&region) else {
-            probes::hyperv_wrmsr_hypercall_bad_gpa!(|| new.gpa().0);
-            return WrmsrOutcome::GpException;
+        // Ensure the overlay is in the correct position.
+        let res = if let Some(overlay) = inner.hypercall_overlay.as_mut() {
+            overlay.move_to(new.gpfn())
+        } else {
+            match inner.overlay_manager.add_overlay(
+                new.gpfn(),
+                OverlayKind::Hypercall,
+                OverlayContents(Box::new(hypercall_page_contents())),
+            ) {
+                Ok(overlay) => {
+                    inner.hypercall_overlay = Some(overlay);
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
         };
 
-        // Write the hypercall instruction sequence to the requested GPA.
-        //
-        // TODO: TLFS section 5.2.1 specifies that when an overlay is removed,
-        // "the underlying GPA page is 'uncovered', and an existing mapping
-        // becomes accessible to the guest." Empirically, at least some other
-        // Hv#1 implementations don't appear to follow this rule, and most
-        // common guest OSes don't rely on being able to disable or remove the
-        // hypercall page. Nevertheless, Propolis should eventually follow this
-        // rule.
-        write_overlay_page(&mapping, &hypercall_page_contents());
-
-        inner.msr_hypercall_value = new;
-        WrmsrOutcome::Handled
+        match res {
+            Ok(()) => {
+                inner.msr_hypercall_value = new;
+                WrmsrOutcome::Handled
+            }
+            Err(OverlayError::AddressInaccessible(_)) => {
+                WrmsrOutcome::GpException
+            }
+            // There should only ever be one hypercall overlay at a time, and
+            // guest memory should be accessible in the context of a VM exit, so
+            // (barring some other invariant being violated) adding an overlay
+            // should always succeed if the target PFN is valid.
+            Err(e) => {
+                panic!("unexpected error establishing hypercall overlay: {e}")
+            }
+        }
     }
 }
 
@@ -225,15 +251,9 @@ impl super::Enlightenment for HyperV {
 
     fn attach(&self, mem_acc: &MemAccessor) {
         mem_acc.adopt(&self.acc_mem, Some(TYPE_NAME.to_owned()));
+        let inner = self.inner.lock().unwrap();
+        inner.overlay_manager.attach(&self.acc_mem);
     }
-}
-
-fn write_overlay_page(mapping: &SubMapping<'_>, contents: &[u8; PAGE_SIZE]) {
-    let written = mapping
-        .write_bytes(contents)
-        .expect("overlay pages are always writable");
-
-    assert_eq!(written, PAGE_SIZE, "overlay pages can be written completely");
 }
 
 impl Lifecycle for HyperV {
@@ -244,6 +264,20 @@ impl Lifecycle for HyperV {
     fn reset(&self) {
         let mut inner = self.inner.lock().unwrap();
         *inner = Inner::default();
+    }
+
+    fn halt(&self) {
+        let mut inner = self.inner.lock().unwrap();
+
+        // Create a new overlay manager and drop the reference to the old one.
+        // This should be the only active reference to this manager, since all
+        // overlay page operations happen during VM exits, and the vCPUs have
+        // all quiesced by this point.
+        //
+        // This ensures that when this object is dropped, any overlay pages it
+        // owns can be dropped safely.
+        assert_eq!(Arc::strong_count(&inner.overlay_manager), 1);
+        inner.overlay_manager = OverlayManager::new();
     }
 
     fn migrate(&'_ self) -> Migrator<'_> {
@@ -267,9 +301,10 @@ impl MigrateSingle for HyperV {
     fn import(
         &self,
         mut offer: PayloadOffer,
-        ctx: &MigrateCtx,
+        _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         let data: migrate::HyperVEnlightenmentV1 = offer.parse()?;
+        let mut inner = self.inner.lock().unwrap();
 
         // A well-behaved source should ensure that the hypercall MSR value is
         // within the guest's PA range and that its Enabled bit agrees with the
@@ -285,20 +320,39 @@ impl MigrateSingle for HyperV {
                 ));
             }
 
-            let Some(mapping) = ctx
-                .mem
-                .writable_region(&GuestRegion(hypercall_msr.gpa(), PAGE_SIZE))
-            else {
-                return Err(MigrateStateError::ImportFailed(format!(
-                    "couldn't map hypercall page for MSR value \
-                    {hypercall_msr:?}"
-                )));
-            };
-
-            write_overlay_page(&mapping, &hypercall_page_contents());
+            // TODO(#850): Registering a new overlay with the overlay manager is
+            // the only way to get an `OverlayPage` for this overlay. However,
+            // the page's contents were already migrated in the RAM transfer
+            // phase, so it's not actually necessary to create a *new* overlay
+            // here; in fact, it would be incorrect to do so if the hypercall
+            // target PFN had multiple overlays and a different one was active!
+            // Fortunately, there's only one overlay type right now, so there's
+            // no way for a page to have multiple overlays.
+            //
+            // (It would also be incorrect to rewrite this page if the guest
+            // wrote data to it expecting to retrieve it later, but per the
+            // TLFS, writes to the hypercall page should #GP anyway, so guests
+            // ought not to expect too much here.)
+            //
+            // A better approach is to have the overlay manager export and
+            // import its contents and, on import, return the set of overlay
+            // page registrations that it imported. This layer can then check
+            // that these registrations are consistent with its MSR values
+            // before proceeding.
+            match inner.overlay_manager.add_overlay(
+                hypercall_msr.gpfn(),
+                OverlayKind::Hypercall,
+                OverlayContents(Box::new(hypercall_page_contents())),
+            ) {
+                Ok(overlay) => inner.hypercall_overlay = Some(overlay),
+                Err(e) => {
+                    return Err(MigrateStateError::ImportFailed(format!(
+                        "failed to re-establish hypercall overlay: {e}"
+                    )))
+                }
+            }
         }
 
-        let mut inner = self.inner.lock().unwrap();
         inner.msr_guest_os_id_value = data.msr_guest_os_id;
         inner.msr_hypercall_value = hypercall_msr;
         Ok(())

@@ -38,6 +38,12 @@ impl std::fmt::Debug for MsrHypercallValue {
 }
 
 impl MsrHypercallValue {
+    /// Yields the guest page number (the PFN) at which the guest would like the
+    /// hypercall page to be placed.
+    pub fn gpfn(&self) -> u64 {
+        self.0 >> PAGE_SHIFT
+    }
+
     /// Returns the guest physical address at which the guest would like the
     /// hypercall page to be placed.
     pub fn gpa(&self) -> GuestAddr {
