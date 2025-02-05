@@ -141,20 +141,13 @@ impl HyperV {
 
         // Write the hypercall instruction sequence to the requested GPA.
         //
-        // Note that the previous contents of this page are not saved. The
-        // TLFS is somewhat ambiguous as to whether this is required: it
-        // describes the hypercall page as an "overlay" that "covers whatever
-        // else is mapped to the GPA range", but does not explicitly state that
-        // the page's previous contents should be restored if the hypercall page
-        // is moved or disabled.
-        //
-        // Experiments show that at least some other hypervisors that implement
-        // the Hyper-V interface don't save and restore the hypercall page's
-        // contents. Doing likewise simplifies this code and, perhaps more
-        // valuably, saves the enlightenment stack from having to save and
-        // restore saved overlay pages during live migration. This can, however,
-        // be changed in the future if a guest turns out to require the "restore
-        // the old value" semantics.
+        // TODO: TLFS section 5.2.1 specifies that when an overlay is removed,
+        // "the underlying GPA page is 'uncovered', and an existing mapping
+        // becomes accessible to the guest." Empirically, at least some other
+        // Hv#1 implementations don't appear to follow this rule, and most
+        // common guest OSes don't rely on being able to disable or remove the
+        // hypercall page. Nevertheless, Propolis should eventually follow this
+        // rule.
         write_overlay_page(&mapping, &hypercall_page_contents());
 
         inner.msr_hypercall_value = new;
