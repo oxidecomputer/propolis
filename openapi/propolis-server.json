@@ -1068,8 +1068,9 @@
                   "features": {
                     "type": "array",
                     "items": {
-                      "$ref": "#/components/schemas/HyperVFeature"
-                    }
+                      "$ref": "#/components/schemas/HyperVFeatureFlag"
+                    },
+                    "uniqueItems": true
                   }
                 },
                 "required": [
@@ -1086,8 +1087,9 @@
           }
         ]
       },
-      "HyperVFeature": {
-        "oneOf": []
+      "HyperVFeatureFlag": {
+        "description": "Flags that enable \"simple\" Hyper-V enlightenments that require no feature-specific configuration.",
+        "type": "string"
       },
       "I440Fx": {
         "description": "An Intel 440FX-compatible chipset.",
