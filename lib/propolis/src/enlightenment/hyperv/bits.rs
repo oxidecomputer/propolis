@@ -8,13 +8,9 @@
 
 use cpuid_utils::CpuidValues;
 
-/// The maximum hypervisor CPUID leaf supported by the Hyper-V emulation stack.
-/// This must be at least 0x4000_0005 to comply with the Hyper-V spec. To avoid
-/// having to reason about what this value should be if Propolis ever exposes
-/// features from a leaf greater than this, always expose the maximum leaf
-/// defined in the TLFS, even if the entries for those leaves advertise no
-/// features.
-const HYPERV_MAX_CPUID_LEAF: u32 = 0x4000000A;
+/// Hyper-V-compatible hypervisors are required to support hypervisor CPUID
+/// leaves up to 0x4000_0005.
+pub(super) const HYPERV_MIN_REQUIRED_CPUID_LEAF: u32 = 0x40000005;
 
 /// CPUID leaf 0x4000_0000 contains hypervisor identifying information. eax
 /// receives the highest valid CPUID leaf in the hypervisor range. ebx, ecx, and
@@ -25,12 +21,31 @@ const HYPERV_MAX_CPUID_LEAF: u32 = 0x4000000A;
 /// guests will accept other vendor IDs (they look at leaf 0x4000_0001 eax to
 /// identify the hypervisor interface instead of reading the vendor ID in leaf
 /// 0), but Linux guests only consider the vendor ID.
-pub(super) const HYPERV_LEAF_0_VALUES: CpuidValues = CpuidValues {
-    eax: HYPERV_MAX_CPUID_LEAF,
+const HYPERV_LEAF_0_VALUES: CpuidValues = CpuidValues {
+    eax: HYPERV_MIN_REQUIRED_CPUID_LEAF,
     ebx: 0x7263694D,
     ecx: 0x666F736F,
     edx: 0x76482074,
 };
+
+/// Generates values for CPUID leaf 0x4000_0000, which contains hypervisor
+/// identifying information. eax receives the value of `max_leaf`, the maximum
+/// valid CPUID leaf in the hypervisor range; ebx, ecx, and edx contain an
+/// appropriate vendor ID.
+///
+/// `max_leaf` supplies the maximum valid CPUID leaf in the hypervisor range.
+///
+/// # Panics
+///
+/// Panics if `max_leaf` is less than [`HYPERV_MIN_REQUIRED_CPUID_LEAF`].
+pub(super) fn hyperv_leaf_0_values(max_leaf: u32) -> CpuidValues {
+    assert!(
+        max_leaf >= HYPERV_MIN_REQUIRED_CPUID_LEAF,
+        "requested max leaf {max_leaf:#x} less than minimum required"
+    );
+
+    CpuidValues { eax: max_leaf, ..HYPERV_LEAF_0_VALUES }
+}
 
 /// Hyper-V leaf 0x4000_0001 contains an (ostensibly vendor-neutral) interface
 /// identifier. eax receives "Hv#1"; the other three outputs are reserved.
@@ -78,33 +93,6 @@ pub(super) const HYPERV_LEAF_4_VALUES: CpuidValues =
 /// remapping limits. Hypervisors are allowed not to expose these limits by
 /// publishing 0s to this leaf.
 pub(super) const HYPERV_LEAF_5_VALUES: CpuidValues =
-    CpuidValues { eax: 0, ebx: 0, ecx: 0, edx: 0 };
-
-/// Hyper-V leaf 0x4000_0006 advertises that the host OS is aware of and may be
-/// making use of assorted hardware features.
-pub(super) const HYPERV_LEAF_6_VALUES: CpuidValues =
-    CpuidValues { eax: 0, ebx: 0, ecx: 0, edx: 0 };
-
-/// Hyper-V leaf 0x4000_0007 advertises CPU management features that are
-/// available to a Hyper-V root partition. Since Propolis guests are by
-/// definition never running as a Hyper-V root partition, these values are 0.
-pub(super) const HYPERV_LEAF_7_VALUES: CpuidValues =
-    CpuidValues { eax: 0, ebx: 0, ecx: 0, edx: 0 };
-
-/// Hyper-V leaf 0x4000_0008 describes the hypervisor's support for emulation of
-/// shared virtual memory.
-pub(super) const HYPERV_LEAF_8_VALUES: CpuidValues =
-    CpuidValues { eax: 0, ebx: 0, ecx: 0, edx: 0 };
-
-/// Hyper-V leaf 0x4000_0009 appears to describe the access rights afforded to
-/// an L1 hypervisor running on top of an L0 Hyper-V instance.
-pub(super) const HYPERV_LEAF_9_VALUES: CpuidValues =
-    CpuidValues { eax: 0, ebx: 0, ecx: 0, edx: 0 };
-
-/// Hyper-V leaf 0x4000_000A appears to describe the virtualization
-/// optimizations available to an L1 hypervisor running on top of an L0 Hyper-V
-/// instance.
-pub(super) const HYPERV_LEAF_A_VALUES: CpuidValues =
     CpuidValues { eax: 0, ebx: 0, ecx: 0, edx: 0 };
 
 /// Allows the guest to report its type and version information. See TLFS
