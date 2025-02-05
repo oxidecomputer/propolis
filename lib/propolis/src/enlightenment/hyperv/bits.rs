@@ -5,6 +5,9 @@
 //! Constant definitions and flags for Hyper-V emulations. These are drawn from
 //! the Hyper-V TLFS version 6.0b (referred to as "TLFS" below). See the parent
 //! module documentation for more details.
+//!
+//! Where possible, constants in this module (such as MSR identifiers) are given
+//! names that match those used in the TLFS.
 
 use cpuid_utils::CpuidValues;
 
