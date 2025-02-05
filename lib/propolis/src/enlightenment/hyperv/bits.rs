@@ -98,8 +98,8 @@ pub(super) const HYPERV_LEAF_5_VALUES: CpuidValues =
 /// Allows the guest to report its type and version information. See TLFS
 /// section 2.6 for details about this MSR's format.
 ///
-/// Guest OSes are (theoretically) required to identify themselves by writing to
-/// this MSR before they try to enable the hypercall code page.
+/// Guest OSes are required to identify themselves via this MSR before they can
+/// set the enabled bit in [`HV_X64_MSR_HYPERCALL`] or make any hypercalls.
 ///
 /// Read-write; requires the [`HyperVLeaf3Eax::HYPERCALL`] privilege.
 pub(super) const HV_X64_MSR_GUEST_OS_ID: u32 = 0x4000_0000;
