@@ -14,10 +14,14 @@ const GPA_MASK: u64 = !((1 << PAGE_SHIFT) - 1);
 
 /// Represents a value written to the [`HV_X64_MSR_HYPERCALL`] register.
 ///
-/// Writing to this register enables the hypercall page. The hypervisor overlays
-/// this page with an instruction sequence that the guest should execute in
-/// order to issue a call to the hypervisor. See
+/// Writing to this register enables the hypercall page. The hypervisor
+/// overwrites this page with an instruction sequence that the guest should
+/// execute in order to issue a call to the hypervisor. See
 /// [`HYPERCALL_INSTRUCTION_SEQUENCE`].
+///
+/// Bits 11:2 of this register are reserved. The TLFS specifies that the guest
+/// "should ignore [them] on reads and preserve [them] on writes," but imposes
+/// no particular penalties on guests that modify these bits.
 ///
 /// [`HV_X64_MSR_HYPERCALL`]: super::bits::HV_X64_MSR_HYPERCALL
 #[derive(Clone, Copy, Default)]

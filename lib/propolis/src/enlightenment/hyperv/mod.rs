@@ -17,7 +17,6 @@
 use std::sync::Mutex;
 
 use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
-use slog::info;
 
 use crate::{
     accessors::MemAccessor,
@@ -40,6 +39,14 @@ use crate::{
 mod bits;
 mod hypercall;
 
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn hyperv_wrmsr_guest_os_id(val: u64) {}
+    fn hyperv_wrmsr_hypercall(val: u64, gpa: u64, locked: bool, enabled: bool) {
+    }
+    fn hyperv_wrmsr_hypercall_bad_gpa(gpa: u64) {}
+}
+
 const TYPE_NAME: &str = "guest-hyperv-interface";
 
 #[derive(Debug, Default)]
@@ -52,6 +59,7 @@ struct Inner {
 }
 
 pub struct HyperV {
+    #[allow(dead_code)]
     log: slog::Logger,
     inner: Mutex<Inner>,
     acc_mem: MemAccessor,
@@ -67,6 +75,7 @@ impl HyperV {
 
     /// Handles a write to the HV_X64_MSR_GUEST_OS_ID register.
     fn handle_wrmsr_guest_os_id(&self, value: u64) -> WrmsrOutcome {
+        probes::hyperv_wrmsr_guest_os_id!(|| value);
         let mut inner = self.inner.lock().unwrap();
 
         // TLFS section 3.13 says that the hypercall page "becomes disabled" if
@@ -77,14 +86,7 @@ impl HyperV {
         // leaving the hypercall page untouched (as would happen if the guest
         // manually cleared this bit).
         if value == 0 {
-            info!(&self.log, "guest cleared HV_X64_MSR_GUEST_OS_ID");
             inner.msr_hypercall_value.clear_enabled();
-        } else {
-            info!(
-                &self.log,
-                "guest set HV_X64_MSR_GUEST_OS_ID";
-                "value" => ?value
-            );
         }
 
         inner.msr_guest_os_id_value = value;
@@ -92,71 +94,71 @@ impl HyperV {
     }
 
     /// Handles a write to the HV_X64_MSR_HYPERCALL register. See TLFS section
-    /// 3.13.
+    /// 3.13 and [`MsrHypercallValue`].
     fn handle_wrmsr_hypercall(&self, value: u64) -> WrmsrOutcome {
+        let mut new = MsrHypercallValue(value);
+        probes::hyperv_wrmsr_hypercall!(|| (
+            value,
+            new.gpa().0,
+            new.locked(),
+            new.enabled()
+        ));
+
         let mut inner = self.inner.lock().unwrap();
         let old = inner.msr_hypercall_value;
 
-        // Per the spec, this MSR is immutable once the Locked bit is set.
+        // This MSR is immutable once the Locked bit is set.
         if old.locked() {
             return WrmsrOutcome::Handled;
         }
 
         // If this MSR is written when no guest OS ID is set, the Enabled bit is
         // cleared and the write succeeds.
-        let mut new = MsrHypercallValue(value);
         if inner.msr_guest_os_id_value == 0 {
             new.clear_enabled();
         }
 
-        // If the Enabled bit is set, expose the hypercall instruction sequence
-        // at the requested GPA. The TLFS specifies that this raises #GP if the
-        // selected physical address is outside the bounds of the guest's
-        // physical address space.
-        //
-        // The TLFS describes this page as an "overlay" that "covers whatever
-        // else is mapped to the GPA range." The spec is ambiguous as to whether
-        // this means that the page's previous contents must be restored if the
-        // page is disabled or its address later changes. Empirically, most
-        // guest OSes don't appear to move the page after creating it,
-        // and at least some other hypervisors don't bother with saving and
-        // restoring the old page's contents. So, for simplicity, simply write
-        // the hypercall instruction sequence to the requested page and call it
-        // a day.
-        let outcome = if new.enabled() {
-            let memctx = self
-                .acc_mem
-                .access()
-                .expect("guest memory is always accessible during wrmsr");
-
-            let region = GuestRegion(new.gpa(), PAGE_SIZE);
-            if let Some(mapping) = memctx.writable_region(&region) {
-                write_overlay_page(&mapping, &hypercall_page_contents());
-                info!(
-                    &self.log,
-                    "established hypercall page at GPA {:#x}",
-                    new.gpa().0
-                );
-
-                WrmsrOutcome::Handled
-            } else {
-                info!(
-                    &self.log,
-                    "guest requested illegal hypercall GPA {:#x}",
-                    new.gpa().0
-                );
-                WrmsrOutcome::GpException
-            }
-        } else {
-            WrmsrOutcome::Handled
-        };
-
-        // Commit the new MSR value if the write was handled.
-        if outcome == WrmsrOutcome::Handled {
+        // If the Enabled bit is not set, there's nothing to try to expose to
+        // the guest.
+        if !new.enabled() {
             inner.msr_hypercall_value = new;
+            return WrmsrOutcome::Handled;
         }
 
-        outcome
+        let memctx = self
+            .acc_mem
+            .access()
+            .expect("guest memory is always accessible during wrmsr");
+
+        let region = GuestRegion(new.gpa(), PAGE_SIZE);
+
+        // Mapping will fail if the requested GPA is out of the guest's physical
+        // address range. The TLFS specifies that this should raise #GP.
+        let Some(mapping) = memctx.writable_region(&region) else {
+            probes::hyperv_wrmsr_hypercall_bad_gpa!(|| new.gpa().0);
+            return WrmsrOutcome::GpException;
+        };
+
+        // Write the hypercall instruction sequence to the requested GPA.
+        //
+        // Note that the previous contents of this page are not saved. The
+        // TLFS is somewhat ambiguous as to whether this is required: it
+        // describes the hypercall page as an "overlay" that "covers whatever
+        // else is mapped to the GPA range", but does not explicitly state that
+        // the page's previous contents should be restored if the hypercall page
+        // is moved or disabled.
+        //
+        // Experiments show that at least some other hypervisors that implement
+        // the Hyper-V interface don't save and restore the hypercall page's
+        // contents. Doing likewise simplifies this code and, perhaps more
+        // valuably, saves the enlightenment stack from having to save and
+        // restore saved overlay pages during live migration. This can, however,
+        // be changed in the future if a guest turns out to require the "restore
+        // the old value" semantics.
+        write_overlay_page(&mapping, &hypercall_page_contents());
+
+        inner.msr_hypercall_value = new;
+        WrmsrOutcome::Handled
     }
 }
 
@@ -294,9 +296,10 @@ impl MigrateSingle for HyperV {
                 .mem
                 .writable_region(&GuestRegion(hypercall_msr.gpa(), PAGE_SIZE))
             else {
-                return Err(MigrateStateError::ImportFailed(
-                    "couldn't map GPA in hypercall MSR".to_string(),
-                ));
+                return Err(MigrateStateError::ImportFailed(format!(
+                    "couldn't map hypercall page for MSR value \
+                    {hypercall_msr:?}"
+                )));
             };
 
             write_overlay_page(&mapping, &hypercall_page_contents());
