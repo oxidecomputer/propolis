@@ -1082,6 +1082,12 @@ impl std::fmt::Display for Pfn {
     }
 }
 
+impl std::fmt::LowerHex for Pfn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        core::fmt::LowerHex::fmt(&self.0, f)
+    }
+}
+
 impl From<Pfn> for u64 {
     fn from(value: Pfn) -> Self {
         value.0

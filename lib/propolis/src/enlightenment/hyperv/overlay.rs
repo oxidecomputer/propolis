@@ -97,7 +97,10 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{accessors::MemAccessor, common::PAGE_SIZE, vmm::Pfn};
+use crate::{
+    accessors::MemAccessor, common::PAGE_SIZE, migrate::MigrateStateError,
+    vmm::Pfn,
+};
 
 use self::pfn::MappedPfn;
 
@@ -130,6 +133,27 @@ pub enum OverlayError {
     /// caller.
     #[error("PFN {0:#x} has no overlay of kind {1:?}")]
     NoOverlayOfKind(u64, OverlayKind),
+
+    #[error("imported PFN {0:#x} is too large to be a 4K page number")]
+    ImportedPfnTooLarge(u64),
+
+    /// An overlay manager import payload contained overlay page contents
+    /// that are not page-sized.
+    #[error("imported contents for pfn {pfn:#x} have invalid length {len}")]
+    ImportedContentsNotPageSized { pfn: u64, len: usize },
+
+    /// An overlay manager import payload contained an overlay set where a
+    /// single kind of overlay was both active and pending.
+    #[error("imported overlay set for pfn {0:#x} has duplicate kind {1:?}")]
+    ImportedSetDuplicateKind(u64, OverlayKind),
+}
+
+impl From<OverlayError> for MigrateStateError {
+    fn from(value: OverlayError) -> Self {
+        MigrateStateError::ImportFailed(format!(
+            "error importing overlay state: {value}"
+        ))
+    }
 }
 
 /// The contents of a 4 KiB page. These are boxed so that this type can be
@@ -143,6 +167,15 @@ impl Default for OverlayContents {
     }
 }
 
+impl TryFrom<Vec<u8>> for OverlayContents {
+    type Error = usize;
+
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        let len = value.len();
+        Ok(Self(Box::new(value.try_into().map_err(|_| len)?)))
+    }
+}
+
 impl std::fmt::Debug for OverlayContents {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("OverlayContents").field(&"<page redacted>").finish()
@@ -151,7 +184,7 @@ impl std::fmt::Debug for OverlayContents {
 
 /// A kind of overlay page.
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq)]
-pub(super) enum OverlayKind {
+pub enum OverlayKind {
     Hypercall,
 
     #[cfg(test)]
@@ -160,7 +193,6 @@ pub(super) enum OverlayKind {
 
 /// A registered overlay page, held by a user of this module. The overlay is
 /// removed when this page is dropped.
-#[derive(Debug)]
 pub(super) struct OverlayPage {
     /// A back reference to this page's manager. This is `Weak` so that pages
     /// can detect when the manager's Hyper-V stack has halted and can thereby
@@ -175,7 +207,24 @@ pub(super) struct OverlayPage {
     pfn: Pfn,
 }
 
+impl std::fmt::Debug for OverlayPage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OverlayPage")
+            .field("kind", &self.kind)
+            .field("pfn", &self.pfn)
+            .finish()
+    }
+}
+
 impl OverlayPage {
+    pub(super) fn kind(&self) -> OverlayKind {
+        self.kind
+    }
+
+    pub(super) fn pfn(&self) -> Pfn {
+        self.pfn
+    }
+
     /// Moves this overlay to a new PFN.
     ///
     /// # Panics
@@ -427,6 +476,126 @@ impl ManagerInner {
 
         Ok(())
     }
+
+    fn export(&self) -> migrate::HyperVOverlaysV1 {
+        let map = self
+            .overlays
+            .iter()
+            .map(|(pfn, set)| {
+                let set = migrate::OverlaySetV1 {
+                    original_contents: set.original_contents.0.to_vec(),
+                    active: set.active.into(),
+                    pending: set
+                        .pending
+                        .iter()
+                        .map(|(kind, contents)| {
+                            (
+                                migrate::MigratedOverlayKind::from(*kind),
+                                contents.0.to_vec(),
+                            )
+                        })
+                        .collect(),
+                };
+
+                (u64::from(*pfn), set)
+            })
+            .collect();
+
+        migrate::HyperVOverlaysV1 { overlays: map }
+    }
+
+    fn import(
+        &mut self,
+        manager: &Arc<OverlayManager>,
+        payload: migrate::HyperVOverlaysV1,
+    ) -> Result<Vec<OverlayPage>, OverlayError> {
+        // Take each serialized (PFN, overlay set) tuple and convert it back
+        // into an `OverlaySet` that can be inserted into the map. Because the
+        // input payload came over the wire, it is not strictly guaranteed that
+        // it came from a Propolis that upheld all of the overlay set
+        // invariants, so these need to be rechecked and an error returned if
+        // one is violated. These include:
+        //
+        // - All overlay page contents must in fact be 4K in size.
+        // - All PFNs must be valid 52-bit page numbers for 4K pages.
+        // - Each overlay kind must appear at most once in each overlay set.
+        self.overlays = payload
+            .overlays
+            .into_iter()
+            .map(|(pfn, set)| -> Result<(Pfn, OverlaySet), OverlayError> {
+                let original_contents = OverlayContents::try_from(
+                    set.original_contents,
+                )
+                .map_err(|len| {
+                    OverlayError::ImportedContentsNotPageSized { pfn, len }
+                })?;
+
+                let pfn = Pfn::new(pfn)
+                    .ok_or(OverlayError::ImportedPfnTooLarge(pfn))?;
+
+                let pending = set
+                    .pending
+                    .into_iter()
+                    .map(|(kind, contents)| -> Result<_, OverlayError> {
+                        if kind == set.active {
+                            return Err(OverlayError::KindInUse(
+                                pfn.into(),
+                                kind.into(),
+                            ));
+                        }
+
+                        let contents = OverlayContents::try_from(contents)
+                            .map_err(|len| {
+                                OverlayError::ImportedContentsNotPageSized {
+                                    pfn: pfn.into(),
+                                    len,
+                                }
+                            })?;
+
+                        Ok((OverlayKind::from(kind), contents))
+                    })
+                    .collect::<Result<BTreeMap<_, _>, OverlayError>>()?;
+
+                Ok((
+                    pfn,
+                    OverlaySet {
+                        original_contents,
+                        active: set.active.into(),
+                        pending,
+                    },
+                ))
+            })
+            .collect::<Result<BTreeMap<Pfn, OverlaySet>, OverlayError>>()?;
+
+        // Now that the tracking tables have been reconstructed, create a set of
+        // overlay page descriptors to return to the caller. The caller will
+        // audit these to make sure they align with other enlightenment state.
+        let pages: Vec<OverlayPage> = self
+            .overlays
+            .iter()
+            .map(|(pfn, set)| {
+                let mut entries = vec![OverlayPage {
+                    manager: Arc::downgrade(manager),
+                    kind: set.active,
+                    pfn: *pfn,
+                }];
+
+                entries.extend(set.pending.keys().map(|kind| OverlayPage {
+                    manager: Arc::downgrade(manager),
+                    kind: *kind,
+                    pfn: *pfn,
+                }));
+
+                entries
+            })
+            .reduce(|mut acc, mut e| {
+                acc.append(&mut e);
+                acc
+            })
+            .unwrap_or_default();
+
+        Ok(pages)
+    }
 }
 
 /// An overlay tracker that adds, removes, and moves overlays.
@@ -507,6 +676,93 @@ impl OverlayManager {
             kind,
             &self.acc_mem,
         )
+    }
+
+    pub(super) fn export(&self) -> migrate::HyperVOverlaysV1 {
+        self.inner.lock().unwrap().export()
+    }
+
+    pub(super) fn import(
+        self: &Arc<Self>,
+        payload: migrate::HyperVOverlaysV1,
+    ) -> Result<Vec<OverlayPage>, MigrateStateError> {
+        self.inner.lock().unwrap().import(self, payload).map_err(Into::into)
+    }
+}
+
+pub mod migrate {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Serialize};
+
+    use crate::migrate::{Schema, SchemaId};
+
+    use super::OverlayKind;
+
+    /// A kind of overlay that can appear in a saved overlay manager payload.
+    ///
+    /// NOTE: It is not safe to remove variants from this enum, because older
+    /// Propolis versions may specify them during a migration. Uplevel versions
+    /// that don't support an older overlay kind must decide what to do with
+    /// overlays of that kind (ignore them, translate them, fail migration,
+    /// etc.).
+    #[derive(Debug, Serialize, Deserialize, Ord, PartialOrd, Eq, PartialEq)]
+    #[serde(tag = "kind", content = "value")]
+    pub enum MigratedOverlayKind {
+        Hypercall,
+
+        #[cfg(test)]
+        Test(u8),
+    }
+
+    impl From<OverlayKind> for MigratedOverlayKind {
+        fn from(value: OverlayKind) -> Self {
+            match value {
+                OverlayKind::Hypercall => Self::Hypercall,
+
+                #[cfg(test)]
+                OverlayKind::Test(n) => Self::Test(n),
+            }
+        }
+    }
+
+    impl From<MigratedOverlayKind> for OverlayKind {
+        fn from(value: MigratedOverlayKind) -> Self {
+            match value {
+                MigratedOverlayKind::Hypercall => Self::Hypercall,
+
+                #[cfg(test)]
+                MigratedOverlayKind::Test(n) => Self::Test(n),
+            }
+        }
+    }
+
+    #[derive(Serialize, Deserialize)]
+    pub struct OverlaySetV1 {
+        pub(super) original_contents: Vec<u8>,
+        pub(super) active: MigratedOverlayKind,
+        pub(super) pending: BTreeMap<MigratedOverlayKind, Vec<u8>>,
+    }
+
+    impl std::fmt::Debug for OverlaySetV1 {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("OverlaySetV1")
+                .field("original_contents", &"<page redacted>")
+                .field("active", &self.active)
+                .field("pending", &self.pending.keys().collect::<Vec<_>>())
+                .finish()
+        }
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct HyperVOverlaysV1 {
+        pub(super) overlays: BTreeMap<u64, OverlaySetV1>,
+    }
+
+    impl Schema<'_> for HyperVOverlaysV1 {
+        fn id() -> SchemaId {
+            ("hyperv-overlays", 1)
+        }
     }
 }
 
