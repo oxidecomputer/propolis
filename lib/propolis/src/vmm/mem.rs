@@ -14,7 +14,9 @@ use std::sync::{Arc, Mutex};
 
 use libc::iovec;
 
-use crate::common::{GuestAddr, GuestData, GuestRegion, PAGE_SIZE};
+use crate::common::{
+    GuestAddr, GuestData, GuestRegion, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE,
+};
 use crate::util::aspace::ASpace;
 use crate::vmm::VmmHdl;
 
@@ -1060,6 +1062,61 @@ impl<T: Copy + FromBytes> Iterator for GuestData<MemMany<'_, T>> {
         let res = self.get(self.pos);
         self.pos += 1;
         res.map(GuestData::from)
+    }
+}
+
+/// A 52-bit physical page number, i.e., the ordinal index of a 4 KiB page of
+/// guest memory.
+#[derive(Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
+pub(crate) struct Pfn(u64);
+
+impl std::fmt::Debug for Pfn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Pfn({:x})", self.0)
+    }
+}
+
+impl std::fmt::Display for Pfn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        core::fmt::LowerHex::fmt(&self.0, f)
+    }
+}
+
+impl From<Pfn> for u64 {
+    fn from(value: Pfn) -> Self {
+        value.0
+    }
+}
+
+impl Pfn {
+    /// Creates a new PFN wrapper for the supplied physical page number. Returns
+    /// `None` if the page number cannot correctly be shifted to form the
+    /// corresponding 64-bit address.
+    pub(crate) fn new(pfn: u64) -> Option<Self> {
+        if pfn > (PAGE_MASK as u64 >> PAGE_SHIFT) {
+            None
+        } else {
+            Some(Self(pfn))
+        }
+    }
+
+    /// Creates a new PFN wrapper without checking that the supplied PFN can
+    /// be shifted to produce a corresponding 64-bit address.
+    ///
+    /// # Safety
+    ///
+    /// The supplied PFN must fit in 52 bits; otherwise [`Self::addr`] will
+    /// return incorrect addresses for this PFN.
+    //
+    // This is currently only used by test code.
+    #[cfg(test)]
+    pub(crate) fn new_unchecked(pfn: u64) -> Self {
+        Self(pfn)
+    }
+
+    /// Yields the 64-bit address corresponding to this PFN.
+    pub(crate) fn addr(&self) -> GuestAddr {
+        GuestAddr(self.0 << PAGE_SHIFT)
     }
 }
 

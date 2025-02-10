@@ -97,9 +97,9 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{accessors::MemAccessor, common::PAGE_SIZE};
+use crate::{accessors::MemAccessor, common::PAGE_SIZE, vmm::Pfn};
 
-use self::pfn::{MappedPfn, Pfn};
+use self::pfn::MappedPfn;
 
 /// An error that can be returned from an overlay page operation.
 #[derive(Debug, Error)]
@@ -193,7 +193,9 @@ impl OverlayPage {
             .upgrade()
             .expect("can only move overlay pages with an active manager");
 
-        let new_pfn = Pfn::new(new_pfn)?;
+        let new_pfn =
+            Pfn::new(new_pfn).ok_or(OverlayError::PfnTooLarge(new_pfn))?;
+
         manager.move_overlay(self.pfn, new_pfn, self.kind)?;
         self.pfn = new_pfn;
         Ok(())
@@ -273,7 +275,7 @@ impl ManagerInner {
         let memctx =
             acc_mem.access().ok_or(OverlayError::GuestMemoryInaccessible)?;
 
-        let mut mapped = pfn.map(&memctx)?;
+        let mut mapped = MappedPfn::new(pfn, &memctx)?;
         self.add_overlay_using_mapping(&mut mapped, kind, contents)
     }
 
@@ -331,8 +333,8 @@ impl ManagerInner {
                 .access()
                 .ok_or(OverlayError::GuestMemoryInaccessible)?;
 
-            let mut mapped =
-                pfn.map(&memctx).expect("active overlay PFNs can be mapped");
+            let mut mapped = MappedPfn::new(pfn, &memctx)
+                .expect("active overlay PFNs can be mapped");
 
             old_contents = if return_contents == RemoveReturnContents::Yes {
                 let mut contents = OverlayContents::default();
@@ -410,7 +412,7 @@ impl ManagerInner {
         // than removing the old overlay, failing to add the new one, and then
         // having to remember how to add the old overlay back in its previous
         // position.
-        let mut to_mapping = to_pfn.map(&memctx)?;
+        let mut to_mapping = MappedPfn::new(to_pfn, &memctx)?;
         if let Some(to_set) = self.overlays.get(&to_pfn) {
             if to_set.contains_kind(kind) {
                 return Err(OverlayError::KindInUse(to_pfn.into(), kind));
@@ -480,7 +482,7 @@ impl OverlayManager {
         kind: OverlayKind,
         contents: OverlayContents,
     ) -> Result<OverlayPage, OverlayError> {
-        let pfn = Pfn::new(pfn)?;
+        let pfn = Pfn::new(pfn).ok_or(OverlayError::PfnTooLarge(pfn))?;
         let mut inner = self.inner.lock().unwrap();
         inner.add_overlay(pfn, kind, contents, &self.acc_mem)?;
         Ok(OverlayPage { manager: Arc::downgrade(self), kind, pfn })
@@ -520,72 +522,12 @@ impl OverlayManager {
 /// PFNs). These help to avoid page alignment checks that would otherwise be
 /// necessary when dealing with full physical addresses.
 mod pfn {
-    use core::fmt;
-
     use crate::{
-        common::{GuestAddr, GuestRegion, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE},
-        vmm::SubMapping,
+        common::{GuestRegion, PAGE_SIZE},
+        vmm::{MemCtx, Pfn, SubMapping},
     };
 
     use super::{OverlayContents, OverlayError};
-
-    /// A 52-bit physical page number.
-    #[derive(Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
-    pub(super) struct Pfn(u64);
-
-    impl std::fmt::Debug for Pfn {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "Pfn({:x})", self.0)
-        }
-    }
-
-    impl std::fmt::Display for Pfn {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            fmt::LowerHex::fmt(&self.0, f)
-        }
-    }
-
-    impl Pfn {
-        /// Creates a new PFN wrapper from a physical page number, returning an
-        /// error if the proposed page number cannot be shifted to produce a
-        /// 64-bit physical address.
-        pub(super) fn new(pfn: u64) -> Result<Self, OverlayError> {
-            if pfn > (PAGE_MASK as u64 >> PAGE_SHIFT) {
-                Err(OverlayError::PfnTooLarge(pfn))
-            } else {
-                Ok(Self(pfn))
-            }
-        }
-
-        #[cfg(test)]
-        pub(super) fn new_unchecked(pfn: u64) -> Self {
-            Self::new(pfn).unwrap()
-        }
-
-        /// Yields the 64-bit guest physical address corresponding to this PFN.
-        pub(super) fn gpa(&self) -> GuestAddr {
-            GuestAddr(self.0 << PAGE_SHIFT)
-        }
-
-        /// Creates a read-write guest memory mapping for this PFN.
-        pub(super) fn map<'a>(
-            &self,
-            memctx: &'a crate::accessors::Guard<'a, crate::vmm::MemCtx>,
-        ) -> Result<MappedPfn<'a>, OverlayError> {
-            let gpa = self.gpa();
-            let mapping = memctx
-                .readwrite_region(&GuestRegion(gpa, PAGE_SIZE))
-                .ok_or(OverlayError::AddressInaccessible(gpa.0))?;
-
-            Ok(MappedPfn { pfn: *self, mapping })
-        }
-    }
-
-    impl From<Pfn> for u64 {
-        fn from(value: Pfn) -> Self {
-            value.0
-        }
-    }
 
     /// A mapping of a page of guest memory with a particular PFN.
     pub(super) struct MappedPfn<'a> {
@@ -593,7 +535,20 @@ mod pfn {
         mapping: SubMapping<'a>,
     }
 
-    impl MappedPfn<'_> {
+    impl<'a> MappedPfn<'a> {
+        /// Creates a new page-sized mapping of the supplied PFN.
+        pub(super) fn new(
+            pfn: Pfn,
+            memctx: &'a crate::accessors::Guard<'a, MemCtx>,
+        ) -> Result<Self, OverlayError> {
+            let gpa = pfn.addr();
+            let mapping = memctx
+                .readwrite_region(&GuestRegion(gpa, PAGE_SIZE))
+                .ok_or(OverlayError::AddressInaccessible(gpa.0))?;
+
+            Ok(Self { pfn, mapping })
+        }
+
         /// Yields this mapping's PFN.
         pub(super) fn pfn(&self) -> Pfn {
             self.pfn
@@ -671,7 +626,7 @@ mod test {
         fn write_page(&self, pfn: u64, contents: &OverlayContents) {
             let pfn = Pfn::new_unchecked(pfn);
             let memctx = self.acc_mem.access().unwrap();
-            let mut mapping = pfn.map(&memctx).unwrap();
+            let mut mapping = MappedPfn::new(pfn, &memctx).unwrap();
             mapping.write_page(&contents);
         }
 
@@ -680,7 +635,7 @@ mod test {
         fn assert_pfn_has_fill(&self, pfn: u64, fill: u8) {
             let pfn = Pfn::new_unchecked(pfn);
             let memctx = self.acc_mem.access().unwrap();
-            let mut mapping = pfn.map(&memctx).unwrap();
+            let mut mapping = MappedPfn::new(pfn, &memctx).unwrap();
             let mut contents = OverlayContents::default();
             mapping.read_page(&mut contents);
             assert_eq!(
@@ -696,7 +651,7 @@ mod test {
         fn assert_pfn_fill_is_one_of(&self, pfn: u64, fills: &[u8]) {
             let pfn = Pfn::new_unchecked(pfn);
             let memctx = self.acc_mem.access().unwrap();
-            let mut mapping = pfn.map(&memctx).unwrap();
+            let mut mapping = MappedPfn::new(pfn, &memctx).unwrap();
             let mut contents = OverlayContents::default();
             mapping.read_page(&mut contents);
 
