@@ -89,7 +89,6 @@ pub enum OverlayError {
 /// The contents of a 4 KiB page. These are boxed so that this type can be
 /// embedded in a struct that's put into a contiguous collection without putting
 /// entire pages between collection members.
-#[derive(Clone)]
 pub(super) struct OverlayContents(pub(super) Box<[u8; PAGE_SIZE]>);
 
 impl Default for OverlayContents {
@@ -183,6 +182,18 @@ impl OverlaySet {
     }
 }
 
+/// Specifies whether a call to remove an overlay should return the overlay's
+/// contents to the caller.
+///
+/// Callers who don't intend to use the contents of a removed overlay should use
+/// `RemoveReturnContents::No` to avoid allocating and copying if they end up
+/// removing an active overlay.
+#[derive(PartialEq, Eq)]
+enum RemoveReturnContents {
+    Yes,
+    No,
+}
+
 /// Synchronized overlay manager state.
 #[derive(Default)]
 struct ManagerInner {
@@ -239,16 +250,22 @@ impl ManagerInner {
     }
 
     /// Removes an existing overlay of the supplied kind from the supplied PFN.
+    ///
+    /// If `return_contents` is [`RemoveReturnContents::Yes`], then on success,
+    /// this function returns an `Ok(Some)` containing the removed overlay's
+    /// previous contents; otherwise, it returns `Ok(None)` on success.
     fn remove_overlay(
         &mut self,
         pfn: Pfn,
         kind: OverlayKind,
         acc_mem: &MemAccessor,
-    ) -> Result<(), OverlayError> {
+        return_contents: RemoveReturnContents,
+    ) -> Result<Option<OverlayContents>, OverlayError> {
         let Entry::Occupied(mut set) = self.overlays.entry(pfn) else {
             return Err(OverlayError::NoOverlaysActive(pfn.into()));
         };
 
+        let old_contents;
         if set.get().active == kind {
             let memctx = acc_mem
                 .access()
@@ -256,6 +273,14 @@ impl ManagerInner {
 
             let mut mapped =
                 pfn.map(&memctx).expect("active overlay PFNs can be mapped");
+
+            old_contents = if return_contents == RemoveReturnContents::Yes {
+                let mut contents = OverlayContents::default();
+                mapped.read_page(&mut contents);
+                Some(contents)
+            } else {
+                None
+            };
 
             // If there are no pending overlays left for this PFN, restore the
             // original contents of guest memory. After this the entire overlay
@@ -277,20 +302,26 @@ impl ManagerInner {
                 mapped.write_page(&contents);
                 set.active = kind;
             }
-
-            Ok(())
         } else {
             // This overlay kind isn't active for this page. If it's pending,
             // it's sufficient just to remove its entry from the pending map,
             // since it has had no effect on guest memory.
             //
             // If there's no pending overlay of this kind, the caller goofed.
-            set.get_mut()
+            let removed = set
+                .get_mut()
                 .pending
                 .remove(&kind)
-                .ok_or(OverlayError::NoOverlayOfKind(pfn.into(), kind))
-                .map(|_| ())
+                .ok_or(OverlayError::NoOverlayOfKind(pfn.into(), kind))?;
+
+            old_contents = if return_contents == RemoveReturnContents::Yes {
+                Some(removed)
+            } else {
+                None
+            };
         }
+
+        Ok(old_contents)
     }
 
     /// Moves the overlay of the supplied `kind` from `from_pfn` to `to_pfn`.
@@ -308,48 +339,36 @@ impl ManagerInner {
         let memctx =
             acc_mem.access().ok_or(OverlayError::GuestMemoryInaccessible)?;
 
-        // Move the overlay by removing it from its old location and applying it
-        // to its new one. This will only work if an overlay of the requested
-        // kind does in fact exist at the source location, which means that it
-        // must have an active overlay set.
-        let Some(from_set) = self.overlays.get_mut(&from_pfn) else {
-            return Err(OverlayError::NoOverlaysActive(from_pfn.into()));
-        };
-
-        // The overlay contents may be stored in the table itself (for pending
-        // overlays) or in guest memory (for active overlays). Before bothering
-        // to obtain them, create a mapping for the target page to verify that
-        // the target PFN is valid. This mapping will be used later if this is
-        // the first overlay for the target PFN.
-        let mut to_mapping = to_pfn.map(&memctx)?;
-
-        // Get the page contents to transfer, but don't actually change the
-        // tables yet, since applying the new overlay might still fail if there
-        // is an existing overlay of this kind at the target PFN.
+        // Moving an overlay consists of applying it to its new location and
+        // then removing it from its old one. This is only legal if the target
+        // PFN is valid and there is no other overlay of this kind associated
+        // with that PFN.
         //
-        // It's possible to do this check now, modify the tables in-place, and
-        // then assert that adding the new overlay succeeded, but this sequence
-        // allows this function to reuse the existing overlay removal code. This
-        // is unlikely to be a bottleneck in practice because guests change
-        // their overlay locations so infrequently (and any guest that spends
-        // all its time moving overlays around has, in some ways, asked for
-        // it...).
-        let contents = if from_set.active == kind {
-            let mut from_mapping = from_pfn
-                .map(&memctx)
-                .expect("active overlay PFNs can be mapped");
-            let mut contents = OverlayContents::default();
-            from_mapping.read_page(&mut contents);
-            contents
-        } else if let Some(pending_contents) = from_set.pending.get(&kind) {
-            pending_contents.clone()
-        } else {
-            return Err(OverlayError::NoOverlayOfKind(from_pfn.into(), kind));
-        };
+        // Checking these conditions up front allows this function to attempt to
+        // remove the existing overlay (checking for errors) and then assert
+        // that the overlay can be applied in its new position. This is simpler
+        // than removing the old overlay, failing to add the new one, and then
+        // having to remember how to add the old overlay back in its previous
+        // position.
+        let mut to_mapping = to_pfn.map(&memctx)?;
+        if let Some(to_set) = self.overlays.get(&to_pfn) {
+            if to_set.contains_kind(kind) {
+                return Err(OverlayError::KindInUse(to_pfn.into(), kind));
+            }
+        }
 
-        self.add_overlay_using_mapping(&mut to_mapping, kind, contents)?;
-        self.remove_overlay(from_pfn, kind, acc_mem)
-            .expect("already found and read existing overlay");
+        // Removing the old overlay might fail if it doesn't exist in
+        // `from_pfn`, but if it succeeds it will always produce the previous
+        // page contents.
+        let contents = self
+            .remove_overlay(from_pfn, kind, acc_mem, RemoveReturnContents::Yes)?
+            .expect("asked for old contents");
+
+        // Adding a new overlay with a valid mapping can only fail if the PFN
+        // already has an overlay of the selected kind, and that was checked
+        // above.
+        self.add_overlay_using_mapping(&mut to_mapping, kind, contents)
+            .expect("already checked new PFN for an overlay of this kind");
 
         Ok(())
     }
@@ -413,7 +432,11 @@ impl OverlayManager {
         pfn: Pfn,
         kind: OverlayKind,
     ) -> Result<(), OverlayError> {
-        self.inner.lock().unwrap().remove_overlay(pfn, kind, &self.acc_mem)
+        self.inner
+            .lock()
+            .unwrap()
+            .remove_overlay(pfn, kind, &self.acc_mem, RemoveReturnContents::No)
+            .map(|_| ())
     }
 
     /// Moves an overlay of the supplied `kind` from `from_pfn` to `to_pfn`.
@@ -750,5 +773,28 @@ mod test {
                 ctx.assert_pfn_has_fill(pfn, 0);
             }
         }
+    }
+
+    /// Tests that removing a nonexistent overlay from a PFN fails without
+    /// disrupting any existing overlays at that PFN.
+    #[test]
+    fn remove_nonexistent_overlay() {
+        let ctx = TestCtx::new();
+        let pfn = 0x30;
+
+        let _page = ctx
+            .manager
+            .add_overlay(
+                pfn,
+                OverlayKind::Test(0),
+                OverlayContents::filled(0x70),
+            )
+            .unwrap();
+
+        ctx.manager
+            .remove_overlay(Pfn::new_unchecked(pfn), OverlayKind::Test(1))
+            .unwrap_err();
+
+        ctx.assert_pfn_has_fill(pfn, 0x70);
     }
 }
