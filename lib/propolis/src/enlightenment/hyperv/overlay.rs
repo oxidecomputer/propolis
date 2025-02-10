@@ -4,6 +4,8 @@
 
 //! Support for hypervisor overlay pages.
 //!
+//! # Overview
+//!
 //! An _overlay page_ is a page of guest memory that "covers" a physical page in
 //! the guest's normal physical address space. The physical analogue might be a
 //! computer with a special one-page memory in addition to its regular RAM whose
@@ -39,6 +41,54 @@
 //! The TLFS doesn't explicitly specify the sizes of its overlay pages, but all
 //! the overlays this module cares about are 4 KiB, because the guest specifies
 //! their locations using 52-bit PFNs.
+//!
+//! # This module
+//!
+//! ## Public interface
+//!
+//! This module's public interface is built around two main types:
+//!
+//! - The [`OverlayManager`] tracks the set of active overlays in the system and
+//!   allows users to create new overlays.
+//! - An [`OverlayPage`] represents a single overlay and provides interfaces
+//!   to move it or remove it (the latter by dropping the page). Pages hold a
+//!   reference (in fact a weak reference; see below) to their managers so that
+//!   they can unregister themselves when they are dropped.
+//!
+//! Each [`super::HyperV`] instance holds a strong reference to an
+//! `OverlayManager` and creates new overlays in response to guest activity
+//! (e.g., a vCPU writing a requested overlay GPA to a Hyper-V MSR). The
+//! `HyperV` instance owns all of the `OverlayPage`s it creates this way and
+//! drops them or calls [`OverlayPage::move_to`] on them in response to further
+//! guest activity.
+//!
+//! ## Dealing with VM shutdown
+//!
+//! When a VM is active, dropping an active `OverlayPage` should always remove
+//! its contents from guest memory and replace them either with another overlay
+//! page's contents or the original guest memory contents. Failing to do this
+//! means that guest memory has been corrupted, so it's desirable to panic if
+//! dropping an overlay page ever fails to remove it from the manager.
+//!
+//! The catch is that once a VM has halted, its overlay manager is no longer
+//! guaranteed to be able to access guest memory (since its [`MemAccessor`] may
+//! have been disconnected). To handle this while still being able to panic on
+//! failure:
+//!
+//! - `OverlayPage`s hold [`Weak`] references to their `OverlayManager`s.
+//! - [`OverlayPage::drop`] only tries to remove an overlay if it can upgrade
+//!   its manager reference.
+//! - When a manager's owner receives a [`Lifecycle::halt`] callout, it releases
+//!   all its strong references to its `OverlayManager`. (This is generally
+//!   possible because a halting VM's vCPUs are permanently quiesced and so
+//!   can't write any more data that would create or move another overlay.)
+//!
+//! This pattern allows a `HyperV` instance to "run down" its manager by
+//! simply dropping all references to it. After that, it can drop its
+//! `OverlayPage`s at any time without fear of them trying and failing to access
+//! guest memory.
+//!
+//! [`Lifecycle::halt`]: crate::lifecycle::Lifecycle::halt
 
 use std::{
     collections::{btree_map::Entry, BTreeMap},
@@ -116,7 +166,10 @@ pub(super) enum OverlayKind {
 /// removed when this page is dropped.
 #[derive(Debug)]
 pub(super) struct OverlayPage {
-    /// A back reference to the page's overlay manager.
+    /// A back reference to this page's manager. This is `Weak` so that pages
+    /// can detect when the manager's Hyper-V stack has halted and can thereby
+    /// avoid assuming that page removals should always succeed. See the module
+    /// docs for details.
     manager: Weak<OverlayManager>,
 
     /// The kind of overlay this is.
@@ -127,6 +180,13 @@ pub(super) struct OverlayPage {
 }
 
 impl OverlayPage {
+    /// Moves this overlay to a new PFN.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called when there are no more strong references to the page's
+    /// manager (which implies that the VM has shut down and that guest memory
+    /// may not be accessible).
     pub(super) fn move_to(&mut self, new_pfn: u64) -> Result<(), OverlayError> {
         let manager = self
             .manager
@@ -147,7 +207,7 @@ impl Drop for OverlayPage {
         // guest memory entirely. The parent enlightenment stack prevents this
         // by holding a strong reference to the manager until the VM is halted.
         //
-        // Once the VM *is* halted, no one will access guest memory again,
+        // Once the VM *is* halted, no one will access guest memory again, so
         // it's OK to return without attempting to restore the page's previous
         // contents.
         let Some(manager) = self.manager.upgrade() else {
@@ -378,21 +438,16 @@ impl ManagerInner {
 ///
 /// # Usage requirements
 ///
-/// After calling [`OverlayManager::new`], the caller must call
-/// [`OverlayManager::attach`] to attach the manager's memory accessor to a VM's
-/// memory hierarchy before it can add any overlays.
+/// `HyperV` instances that own an overlay manager are expected to do the
+/// following:
 ///
-/// The [`OverlayPage`] structs returned from [`OverlayManager::add_overlay`]
-/// will attempt to remove themselves when they are dropped and assert that they
-/// can do so successfully. This will trigger a panic during VM shutdown if an
-/// overlay page with an active manager is dropped after the VM's memory context
-/// has been released. To avoid this, a Hyper-V stack that owns an overlay
-/// manager can drop its reference to the manager in its [`Lifecycle::halt`]
-/// callout; at that point no vCPUs are active or will become active, so this
-/// should remove the last strong reference to the manager, after which it is
-/// safe to drop the pages it produced.
+/// - After calling [`OverlayManager::new`], the manager's owner must call
+///   [`OverlayManager::attach`] to attach the manager's memory accessor to a
+///   VM's memory hierarchy before it can add any overlays.
+/// - When the manager's owner halts, it must drop all strong references to its
+///   overlay manager before dropping any remaining [`OverlayPage`]s.
 ///
-/// [`Lifecycle::halt`]: crate::lifecycle::Lifecycle::halt
+/// See the module docs for more information.
 pub(super) struct OverlayManager {
     inner: Mutex<ManagerInner>,
     acc_mem: MemAccessor,
