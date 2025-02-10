@@ -139,17 +139,16 @@ impl HyperV {
         let res = if let Some(overlay) = inner.hypercall_overlay.as_mut() {
             overlay.move_to(new.gpfn())
         } else {
-            match inner.overlay_manager.add_overlay(
-                new.gpfn(),
-                OverlayKind::Hypercall,
-                OverlayContents(Box::new(hypercall_page_contents())),
-            ) {
-                Ok(overlay) => {
+            inner
+                .overlay_manager
+                .add_overlay(
+                    new.gpfn(),
+                    OverlayKind::Hypercall,
+                    OverlayContents(Box::new(hypercall_page_contents())),
+                )
+                .map(|overlay| {
                     inner.hypercall_overlay = Some(overlay);
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
+                })
         };
 
         match res {
