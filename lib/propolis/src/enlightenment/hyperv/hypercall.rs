@@ -4,13 +4,12 @@
 
 //! Support for hypercalls and their related MSRs.
 
-use crate::common::{GuestAddr, PAGE_SHIFT, PAGE_SIZE};
+use crate::common::{GuestAddr, PAGE_MASK, PAGE_SIZE};
 
 const LOCKED_BIT: u64 = 1;
 const LOCKED_MASK: u64 = 1 << LOCKED_BIT;
 const ENABLED_BIT: u64 = 0;
 const ENABLED_MASK: u64 = 1 << ENABLED_BIT;
-const GPA_MASK: u64 = !((1 << PAGE_SHIFT) - 1);
 
 /// Represents a value written to the [`HV_X64_MSR_HYPERCALL`] register.
 ///
@@ -42,7 +41,7 @@ impl MsrHypercallValue {
     /// Returns the guest physical address at which the guest would like the
     /// hypercall page to be placed.
     pub fn gpa(&self) -> GuestAddr {
-        GuestAddr(self.0 & GPA_MASK)
+        GuestAddr(self.0 & PAGE_MASK as u64)
     }
 
     /// Returns whether the hypercall page location is locked. Once locked, the
