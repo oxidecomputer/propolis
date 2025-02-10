@@ -90,7 +90,6 @@ pub enum OverlayError {
 /// The contents of a 4 KiB page. These are boxed so that this type can be
 /// embedded in a struct that's put into a contiguous collection without putting
 /// entire pages between collection members.
-#[derive(Clone)]
 pub(super) struct OverlayContents(pub(super) Box<[u8; PAGE_SIZE]>);
 
 impl Default for OverlayContents {
@@ -181,6 +180,9 @@ struct OverlaySet {
     /// first became active here.
     original_contents: OverlayContents,
 
+    /// The table of overlays at this PFN. [`ManagerInner`]'s implementation
+    /// guarantees that there will always be exactly one active overlay in this
+    /// map.
     overlays: BTreeMap<OverlayKind, OverlayStatus>,
 }
 
