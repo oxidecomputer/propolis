@@ -520,6 +520,8 @@ impl OverlayManager {
 /// PFNs). These help to avoid page alignment checks that would otherwise be
 /// necessary when dealing with full physical addresses.
 mod pfn {
+    use core::fmt;
+
     use crate::{
         common::{GuestAddr, GuestRegion, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE},
         vmm::SubMapping,
@@ -539,7 +541,7 @@ mod pfn {
 
     impl std::fmt::Display for Pfn {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{:x}", self.0)
+            fmt::LowerHex::fmt(&self.0, f)
         }
     }
 
