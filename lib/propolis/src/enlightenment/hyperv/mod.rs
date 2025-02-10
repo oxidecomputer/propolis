@@ -52,6 +52,7 @@ mod probes {
 
 const TYPE_NAME: &str = "guest-hyperv-interface";
 
+#[derive(Default)]
 struct Inner {
     /// This enlightenment's overlay manager.
     overlay_manager: Arc<OverlayManager>,
@@ -63,17 +64,6 @@ struct Inner {
     msr_hypercall_value: MsrHypercallValue,
 
     hypercall_overlay: Option<OverlayPage>,
-}
-
-impl Default for Inner {
-    fn default() -> Self {
-        Self {
-            overlay_manager: OverlayManager::new(),
-            msr_guest_os_id_value: Default::default(),
-            msr_hypercall_value: Default::default(),
-            hypercall_overlay: None,
-        }
-    }
 }
 
 pub struct HyperV {

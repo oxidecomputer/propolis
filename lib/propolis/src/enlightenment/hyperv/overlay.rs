@@ -398,11 +398,17 @@ pub(super) struct OverlayManager {
     acc_mem: MemAccessor,
 }
 
+impl Default for OverlayManager {
+    fn default() -> Self {
+        let acc_mem = MemAccessor::new_orphan();
+        Self { inner: Mutex::new(ManagerInner::default()), acc_mem }
+    }
+}
+
 impl OverlayManager {
     /// Creates a new overlay manager.
     pub(super) fn new() -> Arc<Self> {
-        let acc_mem = MemAccessor::new_orphan();
-        Arc::new(Self { inner: Mutex::new(ManagerInner::default()), acc_mem })
+        Arc::new(Self::default())
     }
 
     /// Attaches this overlay manager to the supplied memory accessor hierarchy.
