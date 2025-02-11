@@ -108,7 +108,7 @@ pub(super) const HYPERV_LEAF_5_VALUES: CpuidValues =
 pub(super) const HV_X64_MSR_GUEST_OS_ID: u32 = 0x4000_0000;
 
 /// Specifies the guest physical address at which the guest would like to place
-/// the hypercall page. See TLFS section 3.13 and the [`MsrHypercalLValue`]
+/// the hypercall page. See TLFS section 3.13 and the [`MsrHypercallValue`]
 /// struct.
 ///
 /// Read-write; requires the [`HyperVLeaf3Eax::HYPERCALL`] privilege.
@@ -121,3 +121,20 @@ pub(super) const HV_X64_MSR_HYPERCALL: u32 = 0x4000_0001;
 ///
 /// Read-only; requires the [`HyperVLeaf3Eax::VP_INDEX`] privilege.
 pub(super) const HV_X64_MSR_VP_INDEX: u32 = 0x4000_0002;
+
+/// Guests may read this register to obtain the time since this VM was created,
+/// in 100-nanosecond units.
+///
+/// Read-only; requires the [`HyperVLeaf3Eax::PARTITION_REFERENCE_COUNTER`]
+/// privilege.
+pub(super) const HV_X64_MSR_TIME_REF_COUNT: u32 = 0x4000_0020;
+
+/// Specifies the guest physical address at which the guest would like to place
+/// the reference TSC page. See TLFS section 12.7 and the
+/// [`MsrReferenceTscValue`] struct.
+///
+/// Read-write; requires the [`HyperVLeaf3Eax::PARTITION_REFERENCE_TSC`]
+/// privilege.
+///
+/// [`MsrReferenceTscValue`]: super::tsc::MsrReferenceTscValue
+pub(super) const HV_X64_MSR_REFERENCE_TSC: u32 = 0x4000_0021;
