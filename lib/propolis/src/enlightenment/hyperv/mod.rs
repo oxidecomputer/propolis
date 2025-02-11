@@ -252,7 +252,24 @@ impl Lifecycle for HyperV {
 
     fn reset(&self) {
         let mut inner = self.inner.lock().unwrap();
-        *inner = Inner::default();
+
+        // Create a new overlay manager that tracks no pages. The old overlay
+        // manager needs to be dropped before any of the overlay pages that
+        // referenced it, so explicitly replace the existing manager with a new
+        // one (and drop the old one) before default-initializing the rest of
+        // the enlightenment's state.
+        let new_overlay_manager = Arc::new(OverlayManager::default());
+        let _ = std::mem::replace(
+            &mut inner.overlay_manager,
+            new_overlay_manager.clone(),
+        );
+
+        *inner = Inner {
+            overlay_manager: new_overlay_manager,
+            ..Default::default()
+        };
+
+        inner.overlay_manager.attach(&self.acc_mem);
     }
 
     fn halt(&self) {
