@@ -5,6 +5,8 @@
 //! VM mainboard components. Every VM has a board, even if it has no other
 //! peripherals.
 
+use std::collections::BTreeSet;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -92,6 +94,29 @@ pub struct CpuidEntry {
     pub edx: u32,
 }
 
+/// Flags that enable "simple" Hyper-V enlightenments that require no
+/// feature-specific configuration.
+//
+// NOTE: This enum's variants should never have any associated data (note that
+// the type doesn't use serde's `tag` and `content` attributes). If a future
+// enlightenment requires associated data, it should be put into a
+// `HyperVExtendedFeatures` struct (or similar), and the `HyperV` variant of
+// `GuestHypervisorInterface` should be extended to `Option`ally include that
+// struct.
+#[derive(
+    Clone,
+    Deserialize,
+    Serialize,
+    Debug,
+    JsonSchema,
+    Ord,
+    PartialOrd,
+    Eq,
+    PartialEq,
+)]
+#[serde(deny_unknown_fields)]
+pub enum HyperVFeatureFlag {}
+
 /// A hypervisor interface to expose to the guest.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, Default)]
 #[serde(deny_unknown_fields, tag = "type", content = "value")]
@@ -100,6 +125,10 @@ pub enum GuestHypervisorInterface {
     /// leaf 0x4000_0000 and no additional leaves or features).
     #[default]
     Bhyve,
+
+    /// Expose a Hyper-V-compatible hypervisor interface with the supplied
+    /// features enabled.
+    HyperV { features: BTreeSet<HyperVFeatureFlag> },
 }
 
 impl GuestHypervisorInterface {

@@ -625,7 +625,7 @@ impl SubMapping<'_> {
     /// If `buf` is larger than the SubMapping, the write will be truncated to
     /// length of the SubMapping.
     ///
-    /// Returns the number of bytes read.
+    /// Returns the number of bytes written.
     pub fn write_bytes(&self, buf: &[u8]) -> Result<usize> {
         let write_len = usize::min(buf.len(), self.len);
         self.write_many(&buf[..write_len])?;

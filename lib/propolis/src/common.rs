@@ -467,7 +467,7 @@ impl RWOp<'_, '_> {
 }
 
 /// An address within a guest VM.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct GuestAddr(pub u64);
 
 impl GuestAddr {
