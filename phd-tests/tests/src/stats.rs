@@ -32,8 +32,7 @@ use slog::Logger;
 fn test_logger() -> Logger {
     let dec = slog_term::PlainSyncDecorator::new(slog_term::TestStdoutWriter);
     let drain = slog_term::FullFormat::new(dec).build().fuse();
-    let log = Logger::root(drain, slog::o!("component" => "fake-cleanup-task"));
-    log
+    Logger::root(drain, slog::o!("component" => "fake-cleanup-task"))
 }
 
 // Re-registration interval for tests. A long value here helps avoid log spew
@@ -274,7 +273,7 @@ impl FakeNexusContext {
             }
         }
 
-        if metrics.vcpus.len() == 0 {
+        if metrics.vcpus.is_empty() {
             trace!("no vcpu metrics yet?");
             return None;
         }
