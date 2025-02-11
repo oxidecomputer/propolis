@@ -271,7 +271,7 @@ impl Builder {
             .take()
             .unwrap_or(Arc::new(BhyveGuestInterface));
 
-        guest_hv_interface.attach(&acc_mem);
+        guest_hv_interface.attach(&acc_mem, hdl.clone());
         let vcpus = (0..self.max_cpu)
             .map(|id| {
                 Vcpu::new(
