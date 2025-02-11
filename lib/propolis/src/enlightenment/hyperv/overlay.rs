@@ -111,10 +111,6 @@ pub enum OverlayError {
     #[error("guest memory is currently inaccessible")]
     GuestMemoryInaccessible,
 
-    /// The supplied PFN is too large to be the page number for a 4-KiB page.
-    #[error("overlay target PFN {0:#x} is too large for a 4K page")]
-    PfnTooLarge(u64),
-
     /// The supplied physical address is either out of the guest's physical
     /// address range or is in a region to which the guest lacks read/write
     /// access.
@@ -187,14 +183,11 @@ impl OverlayPage {
     /// Panics if called when there are no more strong references to the page's
     /// manager (which implies that the VM has shut down and that guest memory
     /// may not be accessible).
-    pub(super) fn move_to(&mut self, new_pfn: u64) -> Result<(), OverlayError> {
+    pub(super) fn move_to(&mut self, new_pfn: Pfn) -> Result<(), OverlayError> {
         let manager = self
             .manager
             .upgrade()
             .expect("can only move overlay pages with an active manager");
-
-        let new_pfn =
-            Pfn::new(new_pfn).ok_or(OverlayError::PfnTooLarge(new_pfn))?;
 
         manager.move_overlay(self.pfn, new_pfn, self.kind)?;
         self.pfn = new_pfn;
@@ -478,11 +471,10 @@ impl OverlayManager {
     /// the supplied `pfn`.
     pub(super) fn add_overlay(
         self: &Arc<Self>,
-        pfn: u64,
+        pfn: Pfn,
         kind: OverlayKind,
         contents: OverlayContents,
     ) -> Result<OverlayPage, OverlayError> {
-        let pfn = Pfn::new(pfn).ok_or(OverlayError::PfnTooLarge(pfn))?;
         let mut inner = self.inner.lock().unwrap();
         inner.add_overlay(pfn, kind, contents, &self.acc_mem)?;
         Ok(OverlayPage { manager: Arc::downgrade(self), kind, pfn })
@@ -623,8 +615,7 @@ mod test {
 
         /// Writes the supplied `contents` to the supplied `pfn` in the
         /// context's guest memory.
-        fn write_page(&self, pfn: u64, contents: &OverlayContents) {
-            let pfn = Pfn::new_unchecked(pfn);
+        fn write_page(&self, pfn: Pfn, contents: &OverlayContents) {
             let memctx = self.acc_mem.access().unwrap();
             let mut mapping = MappedPfn::new(pfn, &memctx).unwrap();
             mapping.write_page(&contents);
@@ -632,8 +623,7 @@ mod test {
 
         /// Asserts that page `pfn` of the context's memory is filled with
         /// the supplied `fill` bytes.
-        fn assert_pfn_has_fill(&self, pfn: u64, fill: u8) {
-            let pfn = Pfn::new_unchecked(pfn);
+        fn assert_pfn_has_fill(&self, pfn: Pfn, fill: u8) {
             let memctx = self.acc_mem.access().unwrap();
             let mut mapping = MappedPfn::new(pfn, &memctx).unwrap();
             let mut contents = OverlayContents::default();
@@ -648,8 +638,7 @@ mod test {
 
         /// Asserts that page `pfn` of the context's memory is filled with
         /// one of the supplied `fill` bytes.
-        fn assert_pfn_fill_is_one_of(&self, pfn: u64, fills: &[u8]) {
-            let pfn = Pfn::new_unchecked(pfn);
+        fn assert_pfn_fill_is_one_of(&self, pfn: Pfn, fills: &[u8]) {
             let memctx = self.acc_mem.access().unwrap();
             let mut mapping = MappedPfn::new(pfn, &memctx).unwrap();
             let mut contents = OverlayContents::default();
@@ -668,7 +657,7 @@ mod test {
     #[test]
     fn basic_add() {
         let ctx = TestCtx::new();
-        let pfn = 0x10;
+        let pfn = Pfn::new_unchecked(0x10);
         let contents = OverlayContents::filled(0xAB);
 
         let _page = ctx
@@ -685,8 +674,8 @@ mod test {
     #[test]
     fn basic_move() {
         let ctx = TestCtx::new();
-        let pfn1 = 0x10;
-        let pfn2 = 0x20;
+        let pfn1 = Pfn::new_unchecked(0x10);
+        let pfn2 = Pfn::new_unchecked(0x20);
         let contents = OverlayContents::filled(0xCD);
 
         let mut page = ctx
@@ -708,7 +697,7 @@ mod test {
     #[test]
     fn underlay_restored_after_drop() {
         let ctx = TestCtx::new();
-        let pfn = 0x10;
+        let pfn = Pfn::new_unchecked(0x10);
         let original = OverlayContents::filled(0x11);
         let overlaid = OverlayContents::filled(0x99);
         ctx.write_page(pfn, &original);
@@ -730,7 +719,7 @@ mod test {
         let ctx = TestCtx::new();
         ctx.manager
             .add_overlay(
-                0xFFFFF,
+                Pfn::new_unchecked(0xFFFFF),
                 OverlayKind::Test(0),
                 OverlayContents::filled(0xFF),
             )
@@ -743,7 +732,7 @@ mod test {
     #[test]
     fn duplicate_kind_at_pfn() {
         let ctx = TestCtx::new();
-        let pfn = 0x20;
+        let pfn = Pfn::new_unchecked(0x20);
         let kind = OverlayKind::Test(0);
 
         let page = ctx
@@ -767,7 +756,7 @@ mod test {
     #[test]
     fn multiple_overlays() {
         let ctx = TestCtx::new();
-        let pfn = 0x40;
+        let pfn = Pfn::new_unchecked(0x40);
         let fills = [1, 2, 3, 4];
         let mut pages: Vec<_> = fills
             .iter()
@@ -798,7 +787,7 @@ mod test {
     #[test]
     fn remove_nonexistent_overlay() {
         let ctx = TestCtx::new();
-        let pfn = 0x30;
+        let pfn = Pfn::new_unchecked(0x30);
 
         let _page = ctx
             .manager
@@ -809,9 +798,7 @@ mod test {
             )
             .unwrap();
 
-        ctx.manager
-            .remove_overlay(Pfn::new_unchecked(pfn), OverlayKind::Test(1))
-            .unwrap_err();
+        ctx.manager.remove_overlay(pfn, OverlayKind::Test(1)).unwrap_err();
 
         ctx.assert_pfn_has_fill(pfn, 0x70);
     }
