@@ -1072,7 +1072,7 @@ pub(crate) struct Pfn(u64);
 
 impl std::fmt::Debug for Pfn {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Pfn({:x})", self.0)
+        write!(f, "Pfn({:#x})", self.0)
     }
 }
 
