@@ -452,19 +452,26 @@ async fn instance_vcpu_stats(ctx: &Framework) {
         min_guest_idle_delta as f64 / NANOS_PER_SEC
     );
 
+    // The delta in vCPU `run` time should be negligible. We've run one shell
+    // command which in turn just idled.
     let run_delta = (now_metrics.vcpu_state_total(&VcpuState::Run)
+        - idle_start_metrics.vcpu_state_total(&VcpuState::Run))
+        as u128;
+    assert!(run_delta < Duration::from_millis(100).as_nanos());
+
+    let full_run_delta = (now_metrics.vcpu_state_total(&VcpuState::Run)
         - start_metrics.vcpu_state_total(&VcpuState::Run))
         as u128;
 
-    let idle_delta = (now_metrics.vcpu_state_total(&VcpuState::Idle)
+    let full_idle_delta = (now_metrics.vcpu_state_total(&VcpuState::Idle)
         - start_metrics.vcpu_state_total(&VcpuState::Idle))
         as u128;
 
-    let waiting_delta = (now_metrics.vcpu_state_total(&VcpuState::Waiting)
+    let full_waiting_delta = (now_metrics.vcpu_state_total(&VcpuState::Waiting)
         - start_metrics.vcpu_state_total(&VcpuState::Waiting))
         as u128;
 
-    let emul_delta = (now_metrics.vcpu_state_total(&VcpuState::Emulation)
+    let full_emul_delta = (now_metrics.vcpu_state_total(&VcpuState::Emulation)
         - start_metrics.vcpu_state_total(&VcpuState::Emulation))
         as u128;
 
@@ -472,17 +479,17 @@ async fn instance_vcpu_stats(ctx: &Framework) {
     // been spent emulating instructions on the guest's behalf. Anecdotally the
     // this is on the order of 8ms between the two samples. This should be very
     // low; the workload is almost entirely guest user mode execution.
-    assert!(emul_delta < Duration::from_millis(100).as_nanos());
+    assert!(full_emul_delta < Duration::from_millis(100).as_nanos());
 
     // Waiting is a similar but more constrained situation as `emul`: time when
     // the vCPU was runnable but not *actually* running. This should be a very
     // short duration, and on my workstation this is around 400 microseconds.
     // Again, test against a significantly larger threshold in case CI is
     // extremely slow.
-    assert!(waiting_delta < Duration::from_millis(20).as_nanos());
+    assert!(full_waiting_delta < Duration::from_millis(20).as_nanos());
 
-    trace!("run: {}", run_delta);
-    trace!("idle: {}", idle_delta);
-    trace!("waiting: {}", waiting_delta);
-    trace!("emul: {}", emul_delta);
+    trace!("run: {}", full_run_delta);
+    trace!("idle: {}", full_idle_delta);
+    trace!("waiting: {}", full_waiting_delta);
+    trace!("emul: {}", full_emul_delta);
 }
