@@ -3,13 +3,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::collections::HashMap;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
-
-use phd_testcase::*;
-use tracing::trace;
-use uuid::Uuid;
 
 use chrono::{DateTime, Utc};
 use dropshot::endpoint;
@@ -26,8 +23,11 @@ use omicron_common::api::internal::nexus::ProducerKind;
 use omicron_common::api::internal::nexus::ProducerRegistrationResponse;
 use oximeter::types::{ProducerResults, ProducerResultsItem, Sample};
 use oximeter::{Datum, FieldValue};
+use phd_testcase::*;
 use slog::Drain;
 use slog::Logger;
+use tracing::trace;
+use uuid::Uuid;
 
 fn test_logger() -> Logger {
     let dec = slog_term::PlainSyncDecorator::new(slog_term::TestStdoutWriter);
@@ -52,26 +52,13 @@ struct FakeNexusContext {
     sampler: Arc<Mutex<Option<PropolisOximeterSampler>>>,
 }
 
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, strum::EnumString)]
+#[strum(serialize_all = "snake_case")]
 enum VcpuState {
     Emulation,
     Run,
     Idle,
     Waiting,
-}
-
-impl VcpuState {
-    fn from_oximeter_state_name(name: &str) -> Self {
-        match name {
-            "emulation" => VcpuState::Emulation,
-            "run" => VcpuState::Run,
-            "idle" => VcpuState::Idle,
-            "waiting" => VcpuState::Waiting,
-            other => {
-                panic!("unknown Oximeter vpcu state name: {}", other);
-            }
-        }
-    }
 }
 
 #[derive(Default)]
@@ -139,7 +126,7 @@ impl VirtualMachineMetrics {
                 let amount = if let Datum::CumulativeU64(amount) = datum {
                     amount.value()
                 } else {
-                    panic!("unexpected reset value type");
+                    panic!("unexpected reset datum type: {:?}", datum);
                 };
                 self.reset = Some(amount);
                 self.update_metric_times(last_sample.measurement.timestamp());
@@ -151,12 +138,15 @@ impl VirtualMachineMetrics {
                     panic!("unexpected vcpu_usage datum type: {:?}", datum);
                 };
                 let field = &fields["state"];
-                let state: VcpuState =
-                    if let FieldValue::String(state) = &field.value {
-                        VcpuState::from_oximeter_state_name(state.as_ref())
-                    } else {
-                        panic!("unknown vcpu state datum type: {:?}", field);
-                    };
+                let state: VcpuState = if let FieldValue::String(state) =
+                    &field.value
+                {
+                    VcpuState::from_str(state.as_ref()).unwrap_or_else(|_| {
+                        panic!("unknown Oximeter vpcu state name: {}", state);
+                    })
+                } else {
+                    panic!("unknown vcpu state datum type: {:?}", field);
+                };
                 let field = &fields["vcpu_id"];
                 let vcpu_id = if let FieldValue::U32(vcpu_id) = field.value {
                     vcpu_id
@@ -203,33 +193,40 @@ impl FakeNexusContext {
                     return;
                 }
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
     /// Sample Propolis' Oximeter metrics, waiting up to a few seconds so that
     /// all measurements are from the time this function was called or later.
     async fn wait_for_propolis_stats(&self) -> VirtualMachineMetrics {
-        let retry_delay = Duration::from_millis(1000);
-        let max_wait = Duration::from_millis(10000);
-        let wait_start = std::time::SystemTime::now();
-
         let min_metric_time = Utc::now();
 
-        while wait_start.elapsed().expect("time goes forward") < max_wait {
-            if let Some(metrics) = self.sample_propolis_stats().await {
-                if metrics.oldest_time >= min_metric_time {
-                    return metrics;
+        let result = backoff::future::retry(
+            backoff::ExponentialBackoff {
+                max_interval: Duration::from_secs(1),
+                max_elapsed_time: Some(Duration::from_secs(10)),
+                ..Default::default()
+            },
+            || async {
+                if let Some(metrics) = self.sample_propolis_stats().await {
+                    if metrics.oldest_time >= min_metric_time {
+                        Ok(metrics)
+                    } else {
+                        Err(backoff::Error::transient(anyhow::anyhow!(
+                            "sampled metrics are not recent enough"
+                        )))
+                    }
+                } else {
+                    Err(backoff::Error::transient(anyhow::anyhow!(
+                        "full metrics sample not available (yet?)"
+                    )))
                 }
-            }
+            },
+        )
+        .await;
 
-            tokio::time::sleep(retry_delay).await;
-        }
-
-        panic!(
-            "propolis-server Oximeter stats unavailable? waited {:?}",
-            max_wait
-        );
+        result.expect("propolis-server Oximeter stats should become available")
     }
 
     /// Sample Propolis' Oximeter metrics, including the timestamp of the oldest
@@ -415,6 +412,15 @@ async fn instance_vcpu_stats(ctx: &Framework) {
     // The guesswork to validate that doesn't seem great in the face of
     // variable-time CI. We'll validate idle time measurements separately,
     // below.
+
+    // Idle time boundaries are a little differnt than running time boundaries
+    // because it's more difficult to stop counting to idle vCPU time than it is
+    // to stop counting running vCPU time. Instead, the maximum amount of idling
+    // time we might measure is however long it takes to get the initial kstat
+    // readings, plus how long the idle time takes, plus however long it takes
+    // to get final kstat readings. The miminum amount of idling time is
+    // the time elapsed since just after the initial kstat readings.
+    let max_idle_start = std::time::SystemTime::now();
     let idle_start_metrics =
         fake_nexus.app_private().wait_for_propolis_stats().await;
     let idle_start = std::time::SystemTime::now();
@@ -427,6 +433,7 @@ async fn instance_vcpu_stats(ctx: &Framework) {
     // could introduce as much as a full Oximeter sample interval of additional
     // idle vCPU, and is we why wait to measure idle time until *after* getting
     // new Oximeter metrics.
+    let max_idle_time = max_idle_start.elapsed().expect("time goes forwards");
     let idle_time = idle_start.elapsed().expect("time goes forwards");
     trace!("measured idle time {:?}", idle_time);
 
@@ -437,13 +444,13 @@ async fn instance_vcpu_stats(ctx: &Framework) {
     // We've idled for at least 20 seconds. The guest may not be fully idle (its
     // OS is still running on its sole CPU, for example), so we test that the
     // guest was just mostly idle for the time period.
-    let min_guest_idle_delta = (idle_time.as_nanos() as f64 * 0.9) as u128;
     assert!(
-        idle_delta < idle_time.as_nanos(),
+        idle_delta < max_idle_time.as_nanos(),
         "{} < {}",
         idle_delta as f64 / NANOS_PER_SEC,
         idle_time.as_nanos() as f64 / NANOS_PER_SEC
     );
+    let min_guest_idle_delta = (idle_time.as_nanos() as f64 * 0.9) as u128;
     assert!(
         idle_delta > min_guest_idle_delta,
         "{} > {}",

@@ -3902,6 +3902,7 @@ name = "phd-tests"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "backoff",
  "byteorder",
  "chrono",
  "cpuid_utils",
@@ -3917,6 +3918,7 @@ dependencies = [
  "reqwest 0.12.7",
  "slog",
  "slog-term",
+ "strum",
  "tokio",
  "tracing",
  "uuid",

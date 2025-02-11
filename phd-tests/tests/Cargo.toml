@@ -9,6 +9,7 @@ doctest = false
 
 [dependencies]
 anyhow.workspace = true
+backoff.workspace = true
 byteorder.workspace = true
 chrono.workspace = true
 cpuid_utils.workspace = true
@@ -24,6 +25,7 @@ propolis-client.workspace = true
 reqwest.workspace = true
 slog-term.workspace = true
 slog.workspace = true
+strum.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
