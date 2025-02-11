@@ -84,7 +84,6 @@ impl<'a> Environment<'a> {
                     .port_allocator
                     .next()
                     .context("getting Propolis server port")?;
-                let metrics_addr = builder.metrics_addr.clone();
                 let vnc_port = framework
                     .port_allocator
                     .next()
@@ -96,7 +95,7 @@ impl<'a> Environment<'a> {
                         Ipv4Addr::new(127, 0, 0, 1),
                         server_port,
                     ),
-                    metrics_addr,
+                    metrics_addr: builder.metrics_addr,
                     vnc_addr: SocketAddrV4::new(
                         Ipv4Addr::new(127, 0, 0, 1),
                         vnc_port,
