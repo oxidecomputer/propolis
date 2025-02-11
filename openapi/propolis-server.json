@@ -1089,7 +1089,10 @@
       },
       "HyperVFeatureFlag": {
         "description": "Flags that enable \"simple\" Hyper-V enlightenments that require no feature-specific configuration.",
-        "type": "string"
+        "type": "string",
+        "enum": [
+          "ReferenceTsc"
+        ]
       },
       "I440Fx": {
         "description": "An Intel 440FX-compatible chipset.",
