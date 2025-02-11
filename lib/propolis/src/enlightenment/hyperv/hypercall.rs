@@ -4,7 +4,7 @@
 
 //! Support for hypercalls and their related MSRs.
 
-use crate::common::{GuestAddr, PAGE_MASK, PAGE_SIZE};
+use crate::common::{GuestAddr, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 
 const LOCKED_BIT: u64 = 1;
 const LOCKED_MASK: u64 = 1 << LOCKED_BIT;
