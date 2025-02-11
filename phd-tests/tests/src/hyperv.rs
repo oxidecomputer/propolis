@@ -4,6 +4,7 @@
 
 use phd_framework::{artifacts, lifecycle::Action, TestVm};
 use phd_testcase::*;
+use propolis_client::types::HyperVFeatureFlag;
 use tracing::warn;
 
 /// Attempts to see if the guest has detected Hyper-V support. This is
@@ -78,6 +79,69 @@ async fn hyperv_lifecycle_test(ctx: &Framework) {
         |target: &TestVm| {
             Box::pin(async {
                 guest_detect_hyperv(target).await.unwrap();
+            })
+        },
+    )
+    .await?;
+}
+
+#[phd_testcase]
+async fn hyperv_reference_tsc_test(ctx: &Framework) {
+    let mut cfg = ctx.vm_config_builder("hyperv_reference_tsc_test");
+    cfg.guest_hv_interface(
+        propolis_client::types::GuestHypervisorInterface::HyperV {
+            features: vec![HyperVFeatureFlag::ReferenceTsc],
+        },
+    );
+    let mut vm = ctx.spawn_vm(&cfg, None).await?;
+    vm.launch().await?;
+    vm.wait_to_boot().await?;
+
+    let clocksource = vm
+        .run_shell_command(
+            "cat /sys/devices/system/clocksource/clocksource0\
+                /current_clocksource",
+        )
+        .await?;
+
+    let check_clocksource = !clocksource.ends_with("No such file or directory");
+    if check_clocksource {
+        assert_eq!(clocksource, "hyperv_clocksource_tsc_page");
+    } else {
+        warn!("guest doesn't support querying clocksource through sysfs");
+    }
+
+    // Migrate to a new VM and make sure the clocksource is kept intact. If
+    // clocksource queries aren't supported for this guest, poke the serial
+    // console anyway just to make sure the guest remains operable.
+    ctx.lifecycle_test(
+        vm,
+        &[
+            Action::Reset,
+            Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT),
+        ],
+        |target: &TestVm| {
+            Box::pin(async move {
+                if !check_clocksource {
+                    let echo = target
+                        .run_shell_command(
+                            "echo clocksource queries not supported",
+                        )
+                        .await
+                        .unwrap();
+
+                    assert_eq!(echo, "clocksource queries not supported");
+                } else {
+                    let clocksource = target
+                        .run_shell_command(
+                            "cat /sys/devices/system/clocksource/clocksource0\
+                        /current_clocksource",
+                        )
+                        .await
+                        .unwrap();
+
+                    assert_eq!(clocksource, "hyperv_clocksource_tsc_page");
+                }
             })
         },
     )
