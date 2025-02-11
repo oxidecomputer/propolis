@@ -15,8 +15,6 @@ pub enum Action<'a> {
     /// does not involve the guest OS. It can be used to verify that components'
     /// reset implementations don't change properties that shouldn't change
     /// without fully stopping and restarting a VM.
-    //
-    // N.B. This isn't used in any lifecycle tests yet.
     Reset,
 
     /// Stop the VM and restart it in a successor Propolis using the same
@@ -53,6 +51,7 @@ impl Framework {
                         "rebooting VM for lifecycle test"
                     );
                     vm.reset().await?;
+                    vm.wait_to_boot().await?;
                 }
                 Action::StopAndStart => {
                     info!(
