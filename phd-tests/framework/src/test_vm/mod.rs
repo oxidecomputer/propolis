@@ -270,6 +270,15 @@ impl TestVm {
         self.environment_spec.clone()
     }
 
+    pub fn instance_properties(&self) -> InstanceProperties {
+        InstanceProperties {
+            id: self.id,
+            name: format!("phd-vm-{}", self.id),
+            metadata: self.spec.metadata.clone(),
+            description: "Pheidippides-managed VM".to_string(),
+        }
+    }
+
     /// Sends an instance ensure request to this VM's server, allowing it to
     /// transition into the running state.
     #[instrument(skip_all, fields(vm = self.spec.vm_name, vm_id = %self.id))]
@@ -282,13 +291,6 @@ impl TestVm {
             return Err(VmStateError::InstanceAlreadyEnsured.into());
         }
 
-        let properties = InstanceProperties {
-            id: self.id,
-            name: format!("phd-vm-{}", self.id),
-            metadata: self.spec.metadata.clone(),
-            description: "Pheidippides-managed VM".to_string(),
-        };
-
         let init = match migrate {
             None => InstanceInitializationMethod::Spec {
                 spec: self.spec.instance_spec.clone(),
@@ -299,8 +301,10 @@ impl TestVm {
                 src_addr: info.src_addr.to_string(),
             },
         };
-        let ensure_req =
-            InstanceEnsureRequest { properties: properties.clone(), init };
+        let ensure_req = InstanceEnsureRequest {
+            properties: self.instance_properties(),
+            init,
+        };
 
         // There is a brief period where the Propolis server process has begun
         // to run but hasn't started its Dropshot server yet. Ensure requests
