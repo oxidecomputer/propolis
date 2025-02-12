@@ -181,11 +181,22 @@ async fn hyperv_reference_tsc_elapsed_time_test(ctx: &Framework) {
                 "cat /proc/timer_list | grep \"now at\" | awk '{ print $3 }'";
             let guest_ns = vm.run_shell_command(cmd).await?.parse::<u64>()?;
 
-            // It's important to minimize the time between the host and guest
-            // readings to avoid introducing skew when comparing sets of
-            // readings. Capturing the host timestamp after the guest time
-            // excludes the time needed to send bytes to the guest serial potr
-            // and wait for them to be echoed from this delta.
+            // Ideally, the guest and host readings would be taken
+            // simultaneously, but in practice getting a guest timestamp itself
+            // requires some work that itself takes time:
+            //
+            // 1. The framework needs to type the command into the guest
+            // 2. The guest itself needs to run the command and print the
+            //    result
+            // 3. The framework needs to recognize a new command prompt, split
+            //    off the result, and return it to the test case
+            //
+            // Snapshotting the host time here makes a bet that (3) is less
+            // expensive than (1) and (2). This seems reasonable given that
+            // executing a shell command involves both sending bytes to the
+            // guest and waiting for them to be echoed, while waiting for the
+            // result of an already-executed command just involves waiting for
+            // the guest to print another prompt.
             let taken_at = Instant::now();
             Ok(Self { taken_at, guest_ns })
         }
@@ -219,40 +230,51 @@ async fn hyperv_reference_tsc_elapsed_time_test(ctx: &Framework) {
         }
     }
 
-    // The logic below takes pairs of time readings on the host and guest and
-    // compares them to check that the amount of elapsed time perceived by the
-    // guest is roughly equivalent to the "real" elapsed time on the host. The
-    // host and guest measurements can't be taken atomically, so some difference
-    // between these readings is expected (especially because the guest shell
-    // command needs to print its result to the serial port, and the harness has
-    // to read it).
+    // If the reference TSC is working properly, the guest should perceive that
+    // time advances at roughly the same rate as on the host. To measure this,
+    // take high-resolution time snapshots on both the host and guest at two
+    // different times, then compare the host time and guest time differences to
+    // see if they're approximately the same.
     //
-    // Accept a measurement error of up to 1% of the elapsed time between host
-    // readings. This is an extremely generous tolerance. It is chosen primarily
-    // to avoid flakiness while still checking for gross errors in the
-    // construction of the TSC page (e.g. mis-shifting the TSC scaling factor
-    // so that it's off by a factor of 2).
-    const TOLERANCE: f64 = 0.01;
+    // The differences are approximate because there's no way to take a host and
+    // guest time snapshot at exactly the same instant. The snapshotting logic
+    // above tries to minimize this delta, but some error is still expected.
+    // This test assumes that a measurement is "good" if the difference between
+    // the host and guest readings, expressed as a percentage of the host time
+    // delta, is less than this tolerance value.
+    //
+    // To further insulate itself from flakiness, this test takes multiple
+    // readings and fails only if there are more "bad" (out-of-tolerance)
+    // readings than "good" (in-tolerance) ones. This aims to ensure that one or
+    // two bits of host machine weather don't cause the test to fail while still
+    // detecting cases where the host and guest consistently disagree.
+    const TOLERANCE: f64 = 0.005;
 
+    // Take five readings here to produce four comparison pairs. This combines
+    // with an extra cross-migration reading below to produce five "votes" for
+    // whether the enlightenment is working as expected.
     let mut readings = vec![];
     for _ in 0..5 {
         readings.push(Reading::take_from(&vm).await?);
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
+    let mut good_diffs = 0;
+    let mut bad_diffs = 0;
     for window in readings.as_slice().windows(2) {
         let first = &window[0];
         let second = &window[1];
         let diff_pct = second.compare_with_earlier(first);
-        assert!(
-            diff_pct < TOLERANCE,
-            "time readings {first:?} and {second:?} differ by more than a
-            factor of {TOLERANCE}"
-        );
+        if diff_pct < TOLERANCE {
+            good_diffs += 1;
+        } else {
+            bad_diffs += 1;
+        }
     }
 
-    // For good measure, also take readings over a live migration; this also
-    // helps to verify the time-adjustment portions of the migration protocol.
+    // Take an extra pair of readings over a live migration. This also exercises
+    // the time-data portion of the live migration protocol (albeit without
+    // moving the VM to a different host machine).
     let mut target = ctx
         .spawn_successor_vm("hyperv_reference_tsc_elapsed_target", &vm, None)
         .await?;
@@ -264,11 +286,19 @@ async fn hyperv_reference_tsc_elapsed_time_test(ctx: &Framework) {
 
     let after_migration = Reading::take_from(&target).await?;
     let diff_pct = after_migration.compare_with_earlier(&before_migration);
+    if diff_pct < TOLERANCE {
+        good_diffs += 1;
+    } else {
+        bad_diffs += 1;
+    }
+
+    info!(in_tolerance_diffs = good_diffs, out_of_tolerance_diffs = bad_diffs);
+
     assert!(
-        diff_pct < TOLERANCE,
-        "time readings {:?} and {:?} differ by more than a
-        factor of {TOLERANCE}",
-        before_migration,
-        after_migration
+        bad_diffs < good_diffs,
+        "more out-of-tolerance time diffs ({}) than in-tolerance diffs ({}); \
+        see test log for details",
+        bad_diffs,
+        good_diffs,
     );
 }
