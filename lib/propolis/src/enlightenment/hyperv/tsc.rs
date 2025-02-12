@@ -151,7 +151,6 @@ pub(super) struct MsrReferenceTscValue(pub(super) u64);
 impl std::fmt::Debug for MsrReferenceTscValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MsrReferenceTscValue")
-            .field("raw", &self.0)
             .field("raw", &format!("{:#x}", self.0))
             .field("gpa", &format!("{:#x}", self.gpa().0))
             .field("enabled", &self.enabled())
