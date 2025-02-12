@@ -26,36 +26,37 @@
 //! guaranteed, and system software is expected to check CPUID to see if the CPU
 //! advertises such an "invariant" TSC before doing this kind of calculation.)
 //!
-//! KVM and Linux use nanoseconds as the reference time unit and so have a
-//! reference frequency of 1e9 ticks/sec. Windows and Hyper-V use 100ns units
-//! and a frequency of 1e7 ticks/sec. Because these frequencies are expressed in
+//! KVM and Linux use nanoseconds as the reference time unit, so their reference
+//! frequency is 1e9 ticks/sec. Windows and Hyper-V use 100ns units and a
+//! frequency of 1e7 ticks/sec. Because these frequencies are expressed in
 //! cycles per second, using simple integer divisions to convert ticks to
 //! seconds or to scale frequencies will lose all sub-second precision, which
-//! precision is of course the point of having a high-resolution timekeeping
-//! facility. To avoid this problem without having to use floating-point
-//! arithmetic, timekeeping enlightenments usually turn to fixed-point scaling
-//! fractions.
+//! defeats the purpose of having a high-resolution timekeeping facility. To
+//! avoid this problem without having to use floating-point arithmetic,
+//! timekeeping enlightenments usually turn to fixed-point scaling fractions.
 //!
-//! The general idea is to take an N-bit frequency value and represent it as a
-//! 2N-bit value with an implicit radix point between bits N and N-1, such that
-//! the high N bits of the value are its integer part and the low N bits are its
-//! fractional part. That is, the idea is to re-express the frequency multiplier
-//! term in the conversion above as follows:
+//! The idea (at least in this enlightenment) is to take a 64-bit frequency
+//! value and represent it as a 128-bit integer with an implicit radix point
+//! between bits 63 and 64. The upper 64 bits of the value are its integer part,
+//! and the lower 64 bits are its fractional part. Doing this to the integer
+//! reference frequency in the conversion above amounts to writing the
+//! following:
 //!
 //! ```text
 //! frequency multiplier
 //!     = reference frequency / TSC frequency
-//!     = ((reference frequency) * 2^N) / TSC frequency) * (1 / 2^N)
+//!     = ((reference frequency as u128) * 2^64) / TSC frequency) * (1 / 2^64)
 //! ```
 //!
-//! In the present case, N = 64, and the `reference frequency * 2^N` term is a
-//! fixed-point number with 64 integer bits and 64 fractional bits. Notice that
-//! now, dividing by the TSC frequency will not truncate to 0; instead, the
-//! 64 highest-order bits of the fractional portion of the quotient will be
-//! preserved in the low 64 bits of the result of this 128-bit integer division.
+//! The first term of this multiplication is a 128-bit scaling factor. Notice
+//! that, because the TSC frequency is a 64-bit integer and therefore guaranteed
+//! to be less than 2^64, the division in the first term won't truncate to 0;
+//! instead, if the quotient has a fractional part, the high 64 bits of that
+//! fractional part will be preserved in the low 64 bits of the integer
+//! division quotient.
 //!
-//! Since this scaling factor is represented as an integer, a TSC reader can
-//! simply multiply and shift to get an elapsed tick count:
+//! The scaling factor is still an integer, so a TSC reader that wants to apply
+//! it can do so with an integer multiplication followed by a shift:
 //!
 //! ```text
 //! elapsed reference units
@@ -64,14 +65,27 @@
 //!     = (TSC ticks * scaling factor) >> 64
 //! ```
 //!
-//! There is one small catch: the scaling factor is nominally a 128-bit integer,
-//! but the x86-64 `IMUL` instruction's maximum operand size is 64 bits. There
-//! are several ways around this; Hyper-V's is to observe that if the host TSC
-//! frequency is greater than or equal to 10 MHz, then scaling factor will be
-//! less than 1, which means its integer portion is 0, which means that the `TSC
-//! ticks * scaling factor` factor can be trivially rewritten as the 128-bit
-//! product of a 64-bit TSC value and the low 64 bits (the fractional bits) of
-//! the scaling factor.
+//! There is one small catch: the scaling factor was computed as a 128-bit
+//! value, but the x86-64 `IMUL` instruction's maximum operand size is 64 bits.
+//! This enlightenment avoids this problem by observing that if the host TSC
+//! frequency is greater than 10 MHz (highly likely on a platform with an
+//! invariant TSC), then the scaling factor is less than 1, which means its
+//! upper 64 bits are 0, which means that the scaled TSC value can be trivially
+//! rewritten as the product of a 64-bit TSC value and the lower 64 bits of the
+//! scaling factor. This 128-bit product can then be shifted right by 64 bits to
+//! produce an elapsed time.
+//!
+//! If the host TSC frequency is too low for the scaling factor to fit in 64
+//! bits, Hyper-V simply disables the enlightenment by writing a special value
+//! to the reference page. Other hypervisors like KVM may handle the situation
+//! differently, e.g. by having the guest shift its TSC readings before
+//! multiplying by the scaling factor to guarantee that the product won't
+//! overflow.
+//!
+//! Although this discussion focused on 64.64 fixed-point fractions, the same
+//! principles can be applied for values of different widths and different radix
+//! points. For example, Intel processors that support TSC scaling use a 64-bit
+//! scaling value with 16 integer bits and 48 fractional bits.
 //!
 //! # Practice
 //!

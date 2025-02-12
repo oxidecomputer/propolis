@@ -222,10 +222,9 @@ impl HyperV {
         // which the VM was started, so it suffices to subtract the latter from
         // the former and divide by 100 to get 100-nanosecond units.
         //
-        // If this VM is migrated or otherwise saved/restored, the migration
-        // protocol is expected to set `boot_hrtime` for the restored VM to
-        // account for any hrtime differences between hosts and any time where
-        // the VM was paused.
+        // This module assumes that if its user migrates this VM, the migration
+        // procedure will adjust `boot_hrtime` on the target to account for any
+        // hrtime differences between the source and target VM hosts.
         let ns_since_boot: u64 = time_data
             .hrtime
             .checked_sub(time_data.boot_hrtime)
@@ -498,8 +497,8 @@ impl MigrateMulti for HyperV {
         // This enlightenment assumes that if a VM is exported and imported, the
         // caller asking to import will configure the bhyve VM so that it has
         // the same apparent guest frequency and offset the VM had when it was
-        // exported. Thus it's not necessary to change the reference TSC page's
-        // contents here. See the TSC module documentation for more details.
+        // exported. Thus, it's not necessary to change the reference TSC page's
+        // contents here. See the module comment in tsc.rs for more details.
         let msr_reference_tsc = MsrReferenceTscValue(data.msr_reference_tsc);
         let tsc_overlay = overlays
             .iter()
