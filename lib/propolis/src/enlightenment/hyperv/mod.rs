@@ -228,10 +228,9 @@ impl HyperV {
         // which the VM was started, so it suffices to subtract the latter from
         // the former and divide by 100 to get 100-nanosecond units.
         //
-        // If this VM is migrated or otherwise saved/restored, the migration
-        // protocol is expected to set `boot_hrtime` for the restored VM to
-        // account for any hrtime differences between hosts and any time where
-        // the VM was paused.
+        // This module assumes that if its user migrates this VM, the migration
+        // procedure will adjust `boot_hrtime` on the target to account for any
+        // hrtime differences between the source and target VM hosts.
         let ns_since_boot: u64 = time_data
             .hrtime
             .checked_sub(time_data.boot_hrtime)
