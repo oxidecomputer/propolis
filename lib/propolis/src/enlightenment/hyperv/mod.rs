@@ -256,24 +256,32 @@ impl HyperV {
         // The reference TSC MSR can always be written even if the guest OS ID
         // MSR is 0. TLFS section 12.7.1 specifies that if the selected GPA is
         // invalid, "the reference TSC page will not be accessible to the
-        // guest," but the MSR write itself does not #GP.
+        // guest," but the MSR write itself does not #GP. This means that if the
+        // overlay is enabled, it suffices to try to create an overlay (or move
+        // the existing one) to the requested location and, if this succeeds,
+        // store the resulting overlay page.
         let mut inner = self.inner.lock().unwrap();
-        if !new.enabled() {
-            inner.overlays.tsc.take();
-        } else if let Some(mut overlay) = inner.overlays.tsc.take() {
-            if overlay.move_to(new.gpfn()).is_ok() {
-                inner.overlays.tsc = Some(overlay);
+        let old_overlay = inner.overlays.tsc.take();
+        inner.overlays.tsc = if new.enabled() {
+            if let Some(mut overlay) = old_overlay {
+                overlay.move_to(new.gpfn()).ok().map(|_| overlay)
+            } else {
+                let time_data = vmm::time::export_time_data(self.vmm_hdl())
+                    .expect("time data can be exported from a VMM handle");
+
+                let page = ReferenceTscPage::new(time_data.guest_freq);
+                inner
+                    .overlay_manager
+                    .add_overlay(
+                        new.gpfn(),
+                        OverlayKind::ReferenceTsc,
+                        OverlayContents(page.into()),
+                    )
+                    .ok()
             }
         } else {
-            let time_data = vmm::time::export_time_data(self.vmm_hdl())
-                .expect("time data can be exported from a VMM handle");
-
-            let page = ReferenceTscPage::new(time_data.guest_freq);
-            inner.overlays.tsc = inner
-                .overlay_manager
-                .add_overlay(new.gpfn(), OverlayKind::ReferenceTsc(page))
-                .ok();
-        }
+            None
+        };
 
         inner.msr_reference_tsc_value = new;
         WrmsrOutcome::Handled
