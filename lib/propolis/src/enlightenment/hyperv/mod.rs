@@ -506,20 +506,35 @@ impl MigrateMulti for HyperV {
             .map(|pos| overlays.swap_remove(pos));
 
         if msr_reference_tsc.enabled() {
-            let Some(overlay) = &tsc_overlay else {
-                return Err(MigrateStateError::ImportFailed(
-                    "reference TSC page enabled but no overlay was imported"
-                        .to_string(),
-                ));
-            };
+            let pfn_is_valid = inner
+                .overlay_manager
+                .pfn_is_valid(msr_reference_tsc.gpfn())
+                .expect("guest memory is accessible during import");
 
-            if overlay.pfn() != msr_reference_tsc.gpfn() {
-                return Err(MigrateStateError::ImportFailed(format!(
-                    "reference TSC MSR has PFN {:x} but overlay has {:x}",
-                    msr_hypercall.gpfn(),
-                    overlay.pfn()
-                )));
-            };
+            if pfn_is_valid {
+                let Some(overlay) = &tsc_overlay else {
+                    return Err(MigrateStateError::ImportFailed(
+                        "reference TSC page enabled but no overlay was imported"
+                            .to_string(),
+                    ));
+                };
+
+                if overlay.pfn() != msr_reference_tsc.gpfn() {
+                    return Err(MigrateStateError::ImportFailed(format!(
+                        "reference TSC MSR has PFN {:x} but overlay has {:x}",
+                        msr_reference_tsc.gpfn(),
+                        overlay.pfn()
+                    )));
+                };
+            } else {
+                if tsc_overlay.is_some() {
+                    return Err(MigrateStateError::ImportFailed(format!(
+                        "TSC overlay exists at pfn {:x}, which is not a valid \
+                        overlay PFN",
+                        msr_reference_tsc.gpfn()
+                    )));
+                }
+            }
         } else {
             if tsc_overlay.is_some() {
                 return Err(MigrateStateError::ImportFailed(

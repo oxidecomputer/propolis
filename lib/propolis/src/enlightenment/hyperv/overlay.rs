@@ -679,6 +679,17 @@ impl OverlayManager {
         )
     }
 
+    /// Returns `Ok(true)` if the supplied PFN can be used as the target of an
+    /// overlay page, `Ok(false)` if it can't, and `Err` if the guest memory
+    /// context is inaccessible such that it's not possible to tell.
+    pub(super) fn pfn_is_valid(&self, pfn: Pfn) -> Result<bool, OverlayError> {
+        let memctx = self
+            .acc_mem
+            .access()
+            .ok_or(OverlayError::GuestMemoryInaccessible)?;
+        Ok(MappedPfn::new(pfn, &memctx).is_ok())
+    }
+
     pub(super) fn export(&self) -> migrate::HyperVOverlaysV1 {
         self.inner.lock().unwrap().export()
     }
