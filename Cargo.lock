@@ -3910,6 +3910,7 @@ dependencies = [
  "phd-testcase",
  "propolis-client",
  "reqwest 0.12.7",
+ "tokio",
  "tracing",
  "uuid",
 ]
