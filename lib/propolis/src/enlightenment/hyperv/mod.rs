@@ -256,10 +256,10 @@ impl HyperV {
         // The reference TSC MSR can always be written even if the guest OS ID
         // MSR is 0. TLFS section 12.7.1 specifies that if the selected GPA is
         // invalid, "the reference TSC page will not be accessible to the
-        // guest," but the MSR write itself does not #GP. This means that if the
-        // overlay is enabled, it suffices to try to create an overlay (or move
-        // the existing one) to the requested location and, if this succeeds,
-        // store the resulting overlay page.
+        // guest," but the MSR write itself does not #GP. It therefore suffices
+        // here just to check if the guest requested an overlay and, if it did,
+        // attempt to establish one there, either by moving the previous overlay
+        // (if there is one) or by creating a new one.
         let mut inner = self.inner.lock().unwrap();
         let old_overlay = inner.overlays.tsc.take();
         inner.overlays.tsc = if new.enabled() {
