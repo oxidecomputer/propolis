@@ -570,8 +570,10 @@ impl ManagerInner {
             .collect::<Result<BTreeMap<Pfn, OverlaySet>, OverlayError>>()?;
 
         // Now that the tracking tables have been reconstructed, create a set of
-        // overlay page descriptors to return to the caller. The caller will
-        // audit these to make sure they align with other enlightenment state.
+        // overlay page descriptors to return to the caller.
+        //
+        // The caller can check the kinds and PFNs of these pages to make sure
+        // that they line up with the enlightenment's imported MSR values.
         let pages: Vec<OverlayPage> = self
             .overlays
             .iter()
