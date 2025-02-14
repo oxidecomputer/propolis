@@ -32,8 +32,8 @@ use crate::{
         AddCpuidError,
     },
     migrate::{
-        MigrateCtx, MigrateSingle, MigrateStateError, Migrator, PayloadOffer,
-        PayloadOutput,
+        MigrateCtx, MigrateMulti, MigrateStateError, Migrator, PayloadOffers,
+        PayloadOutputs,
     },
     msr::{MsrId, RdmsrOutcome, WrmsrOutcome},
 };
@@ -287,80 +287,87 @@ impl Lifecycle for HyperV {
     }
 
     fn migrate(&'_ self) -> Migrator<'_> {
-        Migrator::Single(self)
+        Migrator::Multi(self)
     }
 }
 
-impl MigrateSingle for HyperV {
+impl MigrateMulti for HyperV {
     fn export(
         &self,
+        output: &mut PayloadOutputs,
         _ctx: &MigrateCtx,
-    ) -> Result<PayloadOutput, MigrateStateError> {
+    ) -> Result<(), MigrateStateError> {
         let inner = self.inner.lock().unwrap();
-        Ok(migrate::HyperVEnlightenmentV1 {
-            msr_guest_os_id: inner.msr_guest_os_id_value,
-            msr_hypercall: inner.msr_hypercall_value.0,
-        }
-        .into())
+        output.push(
+            migrate::HyperVEnlightenmentV1 {
+                msr_guest_os_id: inner.msr_guest_os_id_value,
+                msr_hypercall: inner.msr_hypercall_value.0,
+            }
+            .into(),
+        )?;
+
+        output.push(inner.overlay_manager.export().into())?;
+        Ok(())
     }
 
     fn import(
         &self,
-        mut offer: PayloadOffer,
+        offer: &mut PayloadOffers,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let data: migrate::HyperVEnlightenmentV1 = offer.parse()?;
-        let mut inner = self.inner.lock().unwrap();
+        let data: migrate::HyperVEnlightenmentV1 = offer.take()?;
+        let overlays: overlay::migrate::HyperVOverlaysV1 = offer.take()?;
 
-        // A well-behaved source should ensure that the hypercall MSR value is
-        // within the guest's PA range and that its Enabled bit agrees with the
-        // value of the guest OS ID MSR. But this data was received over the
-        // wire, so for safety's sake, verify it all and return a migration
-        // error if anything is inconsistent.
-        let hypercall_msr = MsrHypercallValue(data.msr_hypercall);
-        if hypercall_msr.enabled() {
+        let mut inner = self.inner.lock().unwrap();
+        let mut overlays = inner.overlay_manager.import(overlays)?;
+
+        let msr_hypercall = MsrHypercallValue(data.msr_hypercall);
+        let hypercall_overlay = overlays
+            .iter()
+            .position(|page| page.kind() == OverlayKind::Hypercall)
+            .map(|pos| overlays.swap_remove(pos));
+
+        if msr_hypercall.enabled() {
             if data.msr_guest_os_id == 0 {
                 return Err(MigrateStateError::ImportFailed(
-                    "hypercall MSR enabled but guest OS ID MSR is 0"
+                    "hypercall page enabled but guest OS ID MSR is 0"
                         .to_string(),
                 ));
             }
 
-            // TODO(#850): Registering a new overlay with the overlay manager is
-            // the only way to get an `OverlayPage` for this overlay. However,
-            // the page's contents were already migrated in the RAM transfer
-            // phase, so it's not actually necessary to create a *new* overlay
-            // here; in fact, it would be incorrect to do so if the hypercall
-            // target PFN had multiple overlays and a different one was active!
-            // Fortunately, there's only one overlay type right now, so there's
-            // no way for a page to have multiple overlays.
-            //
-            // (It would also be incorrect to rewrite this page if the guest
-            // wrote data to it expecting to retrieve it later, but per the
-            // TLFS, writes to the hypercall page should #GP anyway, so guests
-            // ought not to expect too much here.)
-            //
-            // A better approach is to have the overlay manager export and
-            // import its contents and, on import, return the set of overlay
-            // page registrations that it imported. This layer can then check
-            // that these registrations are consistent with its MSR values
-            // before proceeding.
-            match inner.overlay_manager.add_overlay(
-                hypercall_msr.gpfn(),
-                OverlayKind::Hypercall,
-                OverlayContents(Box::new(hypercall_page_contents())),
-            ) {
-                Ok(overlay) => inner.hypercall_overlay = Some(overlay),
-                Err(e) => {
-                    return Err(MigrateStateError::ImportFailed(format!(
-                        "failed to re-establish hypercall overlay: {e}"
-                    )))
-                }
+            let Some(overlay) = &hypercall_overlay else {
+                return Err(MigrateStateError::ImportFailed(
+                    "hypercall page enabled but no overlay was imported"
+                        .to_string(),
+                ));
+            };
+
+            if overlay.pfn() != msr_hypercall.gpfn() {
+                return Err(MigrateStateError::ImportFailed(format!(
+                    "hypercall MSR has PFN {:x} but overlay has {:x}",
+                    msr_hypercall.gpfn(),
+                    overlay.pfn()
+                )));
+            }
+        } else {
+            if hypercall_overlay.is_some() {
+                return Err(MigrateStateError::ImportFailed(
+                    "hypercall overlay present but page is disabled"
+                        .to_string(),
+                ));
             }
         }
 
+        if !overlays.is_empty() {
+            return Err(MigrateStateError::ImportFailed(format!(
+                "unexpected overlay pages: {:?}",
+                overlays
+            )));
+        }
+
         inner.msr_guest_os_id_value = data.msr_guest_os_id;
-        inner.msr_hypercall_value = hypercall_msr;
+        inner.msr_hypercall_value = msr_hypercall;
+        inner.hypercall_overlay = hypercall_overlay;
         Ok(())
     }
 }
