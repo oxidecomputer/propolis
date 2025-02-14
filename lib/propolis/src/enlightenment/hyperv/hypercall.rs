@@ -4,7 +4,10 @@
 
 //! Support for hypercalls and their related MSRs.
 
-use crate::common::{GuestAddr, PAGE_MASK, PAGE_SIZE};
+use crate::{
+    common::{GuestAddr, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE},
+    vmm::Pfn,
+};
 
 const LOCKED_BIT: u64 = 1;
 const LOCKED_MASK: u64 = 1 << LOCKED_BIT;
@@ -38,6 +41,12 @@ impl std::fmt::Debug for MsrHypercallValue {
 }
 
 impl MsrHypercallValue {
+    /// Yields the guest page number (the PFN) at which the guest would like the
+    /// hypercall page to be placed.
+    pub fn gpfn(&self) -> Pfn {
+        Pfn::new(self.0 >> PAGE_SHIFT).unwrap()
+    }
+
     /// Returns the guest physical address at which the guest would like the
     /// hypercall page to be placed.
     pub fn gpa(&self) -> GuestAddr {

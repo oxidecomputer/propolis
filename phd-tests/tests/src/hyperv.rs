@@ -58,8 +58,8 @@ async fn hyperv_smoke_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
-async fn hyperv_migration_smoke_test(ctx: &Framework) {
-    let mut cfg = ctx.vm_config_builder("hyperv_migration_smoke_test");
+async fn hyperv_lifecycle_test(ctx: &Framework) {
+    let mut cfg = ctx.vm_config_builder("hyperv_lifecycle_test");
     cfg.guest_hv_interface(
         propolis_client::types::GuestHypervisorInterface::HyperV {
             features: vec![],
@@ -71,7 +71,10 @@ async fn hyperv_migration_smoke_test(ctx: &Framework) {
 
     ctx.lifecycle_test(
         vm,
-        &[Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT)],
+        &[
+            Action::Reset,
+            Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT),
+        ],
         |target: &TestVm| {
             Box::pin(async {
                 guest_detect_hyperv(target).await.unwrap();
