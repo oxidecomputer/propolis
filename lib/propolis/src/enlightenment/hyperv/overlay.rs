@@ -577,26 +577,21 @@ impl ManagerInner {
         let pages: Vec<OverlayPage> = self
             .overlays
             .iter()
-            .map(|(pfn, set)| {
-                let mut entries = vec![OverlayPage {
+            .flat_map(|(pfn, set)| {
+                std::iter::once(OverlayPage {
                     manager: Arc::downgrade(manager),
                     kind: set.active,
                     pfn: *pfn,
-                }];
-
-                entries.extend(set.pending.keys().map(|kind| OverlayPage {
-                    manager: Arc::downgrade(manager),
-                    kind: *kind,
-                    pfn: *pfn,
-                }));
-
-                entries
+                })
+                .chain(set.pending.keys().map(|kind| {
+                    OverlayPage {
+                        manager: Arc::downgrade(manager),
+                        kind: *kind,
+                        pfn: *pfn,
+                    }
+                }))
             })
-            .reduce(|mut acc, mut e| {
-                acc.append(&mut e);
-                acc
-            })
-            .unwrap_or_default();
+            .collect();
 
         Ok(pages)
     }
@@ -874,6 +869,11 @@ mod test {
             TestCtx { manager: mgr, _vmm_hdl: hdl, _physmem: map, acc_mem }
         }
 
+        fn replace_manager(&mut self) {
+            self.manager = OverlayManager::new();
+            self.manager.attach(&self.acc_mem);
+        }
+
         /// Writes the supplied `contents` to the supplied `pfn` in the
         /// context's guest memory.
         fn write_page(&self, pfn: Pfn, contents: &OverlayContents) {
@@ -1062,5 +1062,47 @@ mod test {
         ctx.manager.remove_overlay(pfn, OverlayKind::Test(1)).unwrap_err();
 
         ctx.assert_pfn_has_fill(pfn, 0x70);
+    }
+
+    #[test]
+    fn export_import_round_trip() {
+        struct Page {
+            pfn: Pfn,
+            kind: OverlayKind,
+            fill: u8,
+        }
+
+        impl Page {
+            fn new(pfn: u64, kind: OverlayKind, fill: u8) -> Self {
+                Self { pfn: Pfn::new_unchecked(pfn), kind, fill }
+            }
+        }
+
+        let expected_pages: [Page; 5] = [
+            Page::new(0x10, OverlayKind::Test(0), 0x1A),
+            Page::new(0x10, OverlayKind::Test(1), 0x1B),
+            Page::new(0x20, OverlayKind::Test(2), 0x2A),
+            Page::new(0x30, OverlayKind::Test(3), 0x3A),
+            Page::new(0x30, OverlayKind::Test(0), 0x39),
+        ];
+
+        let mut ctx = TestCtx::new();
+        let _overlays: Vec<OverlayPage> = expected_pages
+            .iter()
+            .map(|p| {
+                ctx.manager
+                    .add_overlay(p.pfn, p.kind, OverlayContents::filled(p.fill))
+                    .unwrap()
+            })
+            .collect();
+
+        let exported = ctx.manager.export();
+        ctx.replace_manager();
+        let imported_pages = ctx.manager.import(exported).unwrap();
+        assert!(imported_pages.iter().all(|imported| {
+            expected_pages.iter().any(|expected| {
+                expected.pfn == imported.pfn && expected.kind == imported.kind
+            })
+        }));
     }
 }
