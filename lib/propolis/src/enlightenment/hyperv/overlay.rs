@@ -207,11 +207,13 @@ pub(super) struct OverlayPage {
     pfn: Pfn,
 }
 
+// Manually implemented to avoid including the `Weak<OverlayManager>`.
 impl std::fmt::Debug for OverlayPage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { kind, pfn, manager: _ } = self;
         f.debug_struct("OverlayPage")
-            .field("kind", &self.kind)
-            .field("pfn", &self.pfn)
+            .field("kind", &kind)
+            .field("pfn", &pfn)
             .finish()
     }
 }
@@ -746,10 +748,11 @@ pub mod migrate {
 
     impl std::fmt::Debug for OverlaySetV1 {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let Self { active, pending, original_contents: _ } = self;
             f.debug_struct("OverlaySetV1")
                 .field("original_contents", &"<page redacted>")
-                .field("active", &self.active)
-                .field("pending", &self.pending.keys().collect::<Vec<_>>())
+                .field("active", &active)
+                .field("pending", &pending.keys())
                 .finish()
         }
     }
