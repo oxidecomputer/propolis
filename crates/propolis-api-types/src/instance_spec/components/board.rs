@@ -115,7 +115,9 @@ pub struct CpuidEntry {
     PartialEq,
 )]
 #[serde(deny_unknown_fields)]
-pub enum HyperVFeatureFlag {}
+pub enum HyperVFeatureFlag {
+    ReferenceTsc,
+}
 
 /// A hypervisor interface to expose to the guest.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, Default)]
