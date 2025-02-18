@@ -365,7 +365,9 @@ struct OverlaySet {
     ///
     /// TLFS section 5.2.1 specifies that when there are multiple overlays for a
     /// given page, the order in which they are applied is
-    /// implementation-defined. For simplicity
+    /// implementation-defined. Here, the overlay with the lowest priority (as
+    /// given by [`OverlayKind::priority`]) is active, and the others are
+    /// pending.
     overlays: BTreeSet<OverlayKind>,
 }
 
@@ -525,7 +527,7 @@ impl ManagerInner {
 
     /// Visits each of the overlaid pages known to this manager and overwrites
     /// their original contents with the data in the supplied `contents` map.
-    fn restore_original_contents(
+    fn import_original_page_contents(
         &mut self,
         contents: BTreeMap<u64, MigratedOverlaidGuestPage>,
     ) -> Result<(), OverlayError> {
@@ -632,9 +634,9 @@ impl OverlayManager {
     }
 
     /// Saves the original page contents of each overlaid PFN registered with
-    /// this manager, returning a mapping from raw PFN values to Vecs containing
-    /// the relevant pages' contents.
-    pub(super) fn save_original_contents(
+    /// this manager, returning a mapping from raw PFN values to `Vec`s
+    /// containing the relevant pages' contents.
+    pub(super) fn export_original_page_contents(
         &self,
     ) -> BTreeMap<u64, MigratedOverlaidGuestPage> {
         self.inner
@@ -651,12 +653,23 @@ impl OverlayManager {
             .collect()
     }
 
-    /// Attempts
-    pub(super) fn restore_original_contents(
+    /// Sets this table's record of the original contents of each guest
+    /// physical page that is currently covered by an overlay.
+    ///
+    /// # Arguments
+    ///
+    /// - `contents`: A mapping from PFNs to the guest physical page contents
+    ///   that should be set for those PFNs.
+    ///
+    /// # Return value
+    ///
+    /// `Ok(())` if all the records in `contents` were successfully applied,
+    /// `Err` otherwise.
+    pub(super) fn import_original_page_contents(
         &self,
         contents: BTreeMap<u64, MigratedOverlaidGuestPage>,
     ) -> Result<(), OverlayError> {
-        self.inner.lock().unwrap().restore_original_contents(contents)
+        self.inner.lock().unwrap().import_original_page_contents(contents)
     }
 }
 
@@ -951,7 +964,7 @@ mod test {
             MigratedOverlaidGuestPage::Page(vec![0x44; PAGE_SIZE]),
         )]);
 
-        ctx.manager.restore_original_contents(contents).unwrap();
+        ctx.manager.import_original_page_contents(contents).unwrap();
         drop(page);
         ctx.assert_pfn_has_fill(pfn, 0x44);
     }
