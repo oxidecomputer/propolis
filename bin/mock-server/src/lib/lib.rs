@@ -29,6 +29,11 @@ pub enum Error {
     TransitionSendFail,
     #[error("Cannot request any new mock instance state once it is stopped/destroyed/failed")]
     TerminalState,
+    #[error("Cannot transition to {requested:?} from {current:?}")]
+    InvalidTransition {
+        current: api::InstanceState,
+        requested: api::InstanceStateRequested,
+    },
 }
 
 /// simulated instance properties
@@ -105,7 +110,10 @@ impl InstanceContext {
             (api::InstanceState::Running, api::InstanceStateRequested::Run) => {
                 Ok(())
             }
-            (_, api::InstanceStateRequested::Reboot) => {
+            (
+                api::InstanceState::Running,
+                api::InstanceStateRequested::Reboot,
+            ) => {
                 self.queue_states(
                     log,
                     &[
@@ -115,6 +123,12 @@ impl InstanceContext {
                 )
                 .await;
                 Ok(())
+            }
+            (current, api::InstanceStateRequested::Reboot) => {
+                Err(Error::InvalidTransition {
+                    current,
+                    requested: api::InstanceStateRequested::Reboot,
+                })
             }
             (_, api::InstanceStateRequested::Run) => {
                 self.queue_states(log, &[api::InstanceState::Running]).await;
