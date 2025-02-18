@@ -196,22 +196,7 @@ impl TryFrom<Vec<u8>> for OverlayContents {
 
 /// A kind of overlay page, annotated with any other information that may be
 /// needed to generate the page's contents.
-///
-/// WARNING: The relative ordering of variants in this enum must remain stable!
-/// This enum's `PartialOrd` impl determines the overlay the manager applies if
-/// a guest requests multiple overlays at the same PFN. While TLFS section 5.2.1
-/// allows the hypervisor to choose any ordering, it implies that once chosen
-/// for a particular set of overlays, the "top-most" overlay will not change
-/// unless an overlay is enabled, disabled, or moved.
-///
-/// The Hyper-V stack does not migrate overlay registrations directly; instead,
-/// targets assume they can reconstruct the source's overlay state solely from
-/// the transmitted values of the stack's MSRs. For this to work, the relative
-/// priority of overlay kinds--i.e., their variant ordering in this enum--must
-/// be the same on both the source and the target. If the priority changes, the
-/// "top-most" overlay for a PFN may change across a migration, even though the
-/// guest did not write any MSRs or change any overlay requests.
-#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum OverlayKind {
     /// A hypercall page whose instruction sequence immediately returns a "not
     /// supported" error status to its caller.
@@ -230,6 +215,31 @@ pub(super) enum OverlayKind {
 }
 
 impl OverlayKind {
+    /// Returns the "priority" of this page relative to overlay pages of other
+    /// kinds. For each PFN the page with the lowest priority value is active.
+    ///
+    /// WARNING: The priorities of existing overlay kinds should not be changed,
+    /// since this can cause a PFN's active overlay to change if a VM is
+    /// migrated from a Propolis using one ordering to a Propolis using a
+    /// different ordering.
+    fn priority(&self) -> u32 {
+        let high: u16 = match self {
+            Self::HypercallReturnNotSupported => 0,
+
+            #[cfg(test)]
+            Self::Test { .. } => u16::MAX,
+        };
+
+        let low: u16 = match self {
+            #[cfg(test)]
+            Self::Test { index, .. } => *index as u16,
+            _ => 0,
+        };
+
+        ((high as u32) << 16) | (low as u32)
+    }
+
+    /// Obtains the contents this overlay should display when it is active.
     fn get_contents(&self) -> OverlayContents {
         match self {
             Self::HypercallReturnNotSupported => OverlayContents(Box::new(
@@ -240,6 +250,18 @@ impl OverlayKind {
                 OverlayContents(Box::new([*fill; PAGE_SIZE]))
             }
         }
+    }
+}
+
+impl Ord for OverlayKind {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.priority().cmp(&other.priority())
+    }
+}
+
+impl PartialOrd for OverlayKind {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
