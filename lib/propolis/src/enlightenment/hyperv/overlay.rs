@@ -98,8 +98,9 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    accessors::MemAccessor, common::PAGE_SIZE, migrate::MigrateStateError,
-    vmm::Pfn,
+    accessors::MemAccessor, common::PAGE_SIZE,
+    enlightenment::hyperv::migrate::OverlaidGuestPage as MigratedOverlaidGuestPage,
+    migrate::MigrateStateError, vmm::Pfn,
 };
 
 use self::pfn::MappedPfn;
@@ -134,20 +135,25 @@ pub(super) enum OverlayError {
     #[error("PFN {0:#x} has no overlay of kind {1:?}")]
     NoOverlayOfKind(u64, OverlayKind),
 
+    /// A caller asked to restore the original page contents for a set of
+    /// overlays, but supplied a different number of PFNs to restore than the
+    /// overlay manager is currently tracking.
     #[error(
         "imported overlay contents have length {actual_len}, \
         expected {expected_len}"
     )]
     OriginalContentsCountMismatch { actual_len: usize, expected_len: usize },
 
+    /// A caller asked to restore the guest page underlying an invalid PFN.
     #[error("saved overlay contents PFN {0:#x} is not a valid 52-bit PFN")]
     InvalidImportPfn(u64),
 
+    /// A caller supplied guest data to use as the original contents of an
+    /// overlaid page, but that data was not page-sized.
     #[error(
-        "saved overlay contents for PFN {0:#x} are {1} bytes, \
-        expected PAGE_SIZE"
+        "saved overlaid guest page contents are {0} bytes, expected PAGE_SIZE"
     )]
-    InvalidSavedContentsLength(u64, usize),
+    InvalidOverlaidGuestPageLength(usize),
 }
 
 impl From<OverlayError> for MigrateStateError {
@@ -160,6 +166,12 @@ impl From<OverlayError> for MigrateStateError {
 /// embedded in a struct that's put into a contiguous collection without putting
 /// entire pages between collection members.
 pub(super) struct OverlayContents(pub(super) Box<[u8; PAGE_SIZE]>);
+
+impl OverlayContents {
+    fn is_zero_page(&self) -> bool {
+        self.0.iter().all(|b| *b == 0)
+    }
+}
 
 impl Default for OverlayContents {
     fn default() -> Self {
@@ -288,13 +300,54 @@ impl Drop for OverlayPage {
     }
 }
 
+enum OverlaidGuestPage {
+    ZeroPage,
+    Page(OverlayContents),
+}
+
+impl std::fmt::Debug for OverlaidGuestPage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ZeroPage => write!(f, "ZeroPage"),
+            Self::Page(_) => {
+                f.debug_tuple("Page").field(&"<page redacted>").finish()
+            }
+        }
+    }
+}
+
+impl TryFrom<MigratedOverlaidGuestPage> for OverlaidGuestPage {
+    type Error = OverlayError;
+
+    fn try_from(value: MigratedOverlaidGuestPage) -> Result<Self, Self::Error> {
+        match value {
+            MigratedOverlaidGuestPage::Zero => Ok(Self::ZeroPage),
+            MigratedOverlaidGuestPage::Page(vec) => Ok(Self::Page(
+                OverlayContents::try_from(vec)
+                    .map_err(OverlayError::InvalidOverlaidGuestPageLength)?,
+            )),
+        }
+    }
+}
+
+impl From<&OverlaidGuestPage> for MigratedOverlaidGuestPage {
+    fn from(value: &OverlaidGuestPage) -> Self {
+        match value {
+            OverlaidGuestPage::ZeroPage => Self::Zero,
+            OverlaidGuestPage::Page(overlay_contents) => {
+                Self::Page(overlay_contents.0.to_vec())
+            }
+        }
+    }
+}
+
 /// A set of overlays that apply to a particular PFN. Only one overlay of a
 /// given type may be applied to a particular PFN at a particular time.
 #[derive(Debug)]
 struct OverlaySet {
     /// The contents of guest memory at this set's PFN at the time an overlay
     /// first became active here.
-    original_contents: OverlayContents,
+    original_contents: OverlaidGuestPage,
 
     /// The set of overlays that have been requested at this PFN.
     ///
@@ -344,6 +397,12 @@ impl ManagerInner {
                 let mut original_contents = OverlayContents::default();
                 mapped_pfn.read_page(&mut original_contents);
                 mapped_pfn.write_page(&kind.get_contents());
+                let original_contents = if original_contents.is_zero_page() {
+                    OverlaidGuestPage::ZeroPage
+                } else {
+                    OverlaidGuestPage::Page(original_contents)
+                };
+
                 e.insert(OverlaySet {
                     original_contents,
                     overlays: BTreeSet::from([kind]),
@@ -386,7 +445,7 @@ impl ManagerInner {
             assert!(set.get_mut().overlays.remove(&kind));
 
             if set.get().overlays.is_empty() {
-                mapped.write_page(&set.get().original_contents);
+                mapped.restore_overlaid_data(&set.get().original_contents);
                 set.remove_entry();
             } else {
                 mapped.write_page(&set.get().active().get_contents());
@@ -456,7 +515,7 @@ impl ManagerInner {
     /// their original contents with the data in the supplied `contents` map.
     fn restore_original_contents(
         &mut self,
-        contents: BTreeMap<u64, Vec<u8>>,
+        contents: BTreeMap<u64, MigratedOverlaidGuestPage>,
     ) -> Result<(), OverlayError> {
         if contents.len() != self.overlays.len() {
             return Err(OverlayError::OriginalContentsCountMismatch {
@@ -474,10 +533,7 @@ impl ManagerInner {
                 .get_mut(&pfn)
                 .ok_or(OverlayError::NoOverlaysActive(pfn.into()))?;
 
-            entry.original_contents = OverlayContents::try_from(contents)
-                .map_err(|len| {
-                    OverlayError::InvalidSavedContentsLength(pfn.into(), len)
-                })?;
+            entry.original_contents = OverlaidGuestPage::try_from(contents)?;
         }
 
         Ok(())
@@ -566,14 +622,19 @@ impl OverlayManager {
     /// Saves the original page contents of each overlaid PFN registered with
     /// this manager, returning a mapping from raw PFN values to Vecs containing
     /// the relevant pages' contents.
-    pub(super) fn save_original_contents(&self) -> BTreeMap<u64, Vec<u8>> {
+    pub(super) fn save_original_contents(
+        &self,
+    ) -> BTreeMap<u64, MigratedOverlaidGuestPage> {
         self.inner
             .lock()
             .unwrap()
             .overlays
             .iter()
             .map(|(pfn, set)| {
-                (u64::from(*pfn), set.original_contents.0.to_vec())
+                (
+                    u64::from(*pfn),
+                    MigratedOverlaidGuestPage::from(&set.original_contents),
+                )
             })
             .collect()
     }
@@ -581,7 +642,7 @@ impl OverlayManager {
     /// Attempts
     pub(super) fn restore_original_contents(
         &self,
-        contents: BTreeMap<u64, Vec<u8>>,
+        contents: BTreeMap<u64, MigratedOverlaidGuestPage>,
     ) -> Result<(), OverlayError> {
         self.inner.lock().unwrap().restore_original_contents(contents)
     }
@@ -596,7 +657,7 @@ mod pfn {
         vmm::{MemCtx, Pfn, SubMapping},
     };
 
-    use super::{OverlayContents, OverlayError};
+    use super::{OverlaidGuestPage, OverlayContents, OverlayError};
 
     /// A mapping of a page of guest memory with a particular PFN.
     pub(super) struct MappedPfn<'a> {
@@ -621,6 +682,22 @@ mod pfn {
         /// Yields this mapping's PFN.
         pub(super) fn pfn(&self) -> Pfn {
             self.pfn
+        }
+
+        pub(super) fn restore_overlaid_data(
+            &mut self,
+            original: &OverlaidGuestPage,
+        ) {
+            assert_eq!(
+                self.mapping
+                    .write_bytes(match original {
+                        OverlaidGuestPage::ZeroPage => &[0u8; PAGE_SIZE],
+                        OverlaidGuestPage::Page(overlay_contents) =>
+                            overlay_contents.0.as_slice(),
+                    })
+                    .expect("PFN mappings are always accessible"),
+                PAGE_SIZE
+            );
         }
 
         /// Writes the supplied overlay page to this mapping's guest physical
@@ -857,7 +934,11 @@ mod test {
             .add_overlay(pfn, OverlayKind::Test { index: 0, fill: 0x88 })
             .unwrap();
 
-        let contents = BTreeMap::from([(0x60, vec![0x44; PAGE_SIZE])]);
+        let contents = BTreeMap::from([(
+            0x60,
+            MigratedOverlaidGuestPage::Page(vec![0x44; PAGE_SIZE]),
+        )]);
+
         ctx.manager.restore_original_contents(contents).unwrap();
         drop(page);
         ctx.assert_pfn_has_fill(pfn, 0x44);
