@@ -366,11 +366,29 @@ mod migrate {
 
     use crate::migrate::{Schema, SchemaId};
 
+    #[derive(Serialize, Deserialize)]
+    #[serde(tag = "type", content = "value")]
+    pub(super) enum OverlaidGuestPage {
+        Zero,
+        Page(Vec<u8>),
+    }
+
+    impl std::fmt::Debug for OverlaidGuestPage {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Zero => write!(f, "Zero"),
+                Self::Page(_) => {
+                    f.debug_tuple("Page").field(&"<page redacted>").finish()
+                }
+            }
+        }
+    }
+
     #[derive(Debug, Serialize, Deserialize)]
     pub struct HyperVEnlightenmentV1 {
         pub(super) msr_guest_os_id: u64,
         pub(super) msr_hypercall: u64,
-        pub(super) overlay_originals: BTreeMap<u64, Vec<u8>>,
+        pub(super) overlay_originals: BTreeMap<u64, OverlaidGuestPage>,
     }
 
     impl Schema<'_> for HyperVEnlightenmentV1 {
