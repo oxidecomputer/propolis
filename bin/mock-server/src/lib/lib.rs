@@ -162,8 +162,23 @@ impl InstanceContext {
             for &state in states {
                 self.generation += 1;
                 self.state = state;
-                queue.insert(self.generation, api::InstanceStateMonitorResponse { gen: self.generation, migration: api::InstanceMigrateStatusResponse { migration_in: None, migration_out: None }, state });
-                slog::info!(log, "queued instance state transition"; "state" => ?state, "gen" => ?self.generation);
+                queue.insert(
+                    self.generation,
+                    api::InstanceStateMonitorResponse {
+                        gen: self.generation,
+                        migration: api::InstanceMigrateStatusResponse {
+                            migration_in: None,
+                            migration_out: None,
+                        },
+                        state,
+                    },
+                );
+                slog::info!(
+                    log,
+                    "queued instance state transition";
+                    "state" => ?state,
+                    "gen" => ?self.generation,
+                );
             }
         })
     }
