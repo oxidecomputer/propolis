@@ -17,18 +17,13 @@
 use std::sync::{Arc, Mutex};
 
 use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
-use overlay::{
-    OverlayContents, OverlayError, OverlayKind, OverlayManager, OverlayPage,
-};
+use overlay::{OverlayError, OverlayKind, OverlayManager, OverlayPage};
 
 use crate::{
     accessors::MemAccessor,
     common::{Lifecycle, VcpuId},
     enlightenment::{
-        hyperv::{
-            bits::*,
-            hypercall::{hypercall_page_contents, MsrHypercallValue},
-        },
+        hyperv::{bits::*, hypercall::MsrHypercallValue},
         AddCpuidError,
     },
     migrate::{
@@ -143,8 +138,7 @@ impl HyperV {
                 .overlay_manager
                 .add_overlay(
                     new.gpfn(),
-                    OverlayKind::Hypercall,
-                    OverlayContents(Box::new(hypercall_page_contents())),
+                    OverlayKind::HypercallReturnNotSupported,
                 )
                 .map(|overlay| {
                     inner.hypercall_overlay = Some(overlay);
@@ -312,13 +306,15 @@ impl MigrateSingle for HyperV {
         let data: migrate::HyperVEnlightenmentV1 = offer.parse()?;
         let mut inner = self.inner.lock().unwrap();
 
+        // Re-establish any overlay pages that are active in the restored MSRs.
+        //
         // A well-behaved source should ensure that the hypercall MSR value is
         // within the guest's PA range and that its Enabled bit agrees with the
         // value of the guest OS ID MSR. But this data was received over the
         // wire, so for safety's sake, verify it all and return a migration
         // error if anything is inconsistent.
-        let hypercall_msr = MsrHypercallValue(data.msr_hypercall);
-        if hypercall_msr.enabled() {
+        let msr_hypercall_value = MsrHypercallValue(data.msr_hypercall);
+        let hypercall_overlay = if msr_hypercall_value.enabled() {
             if data.msr_guest_os_id == 0 {
                 return Err(MigrateStateError::ImportFailed(
                     "hypercall MSR enabled but guest OS ID MSR is 0"
@@ -326,41 +322,28 @@ impl MigrateSingle for HyperV {
                 ));
             }
 
-            // TODO(#850): Registering a new overlay with the overlay manager is
-            // the only way to get an `OverlayPage` for this overlay. However,
-            // the page's contents were already migrated in the RAM transfer
-            // phase, so it's not actually necessary to create a *new* overlay
-            // here; in fact, it would be incorrect to do so if the hypercall
-            // target PFN had multiple overlays and a different one was active!
-            // Fortunately, there's only one overlay type right now, so there's
-            // no way for a page to have multiple overlays.
-            //
-            // (It would also be incorrect to rewrite this page if the guest
-            // wrote data to it expecting to retrieve it later, but per the
-            // TLFS, writes to the hypercall page should #GP anyway, so guests
-            // ought not to expect too much here.)
-            //
-            // A better approach is to have the overlay manager export and
-            // import its contents and, on import, return the set of overlay
-            // page registrations that it imported. This layer can then check
-            // that these registrations are consistent with its MSR values
-            // before proceeding.
             match inner.overlay_manager.add_overlay(
-                hypercall_msr.gpfn(),
-                OverlayKind::Hypercall,
-                OverlayContents(Box::new(hypercall_page_contents())),
+                msr_hypercall_value.gpfn(),
+                OverlayKind::HypercallReturnNotSupported,
             ) {
-                Ok(overlay) => inner.hypercall_overlay = Some(overlay),
+                Ok(overlay) => Some(overlay),
                 Err(e) => {
                     return Err(MigrateStateError::ImportFailed(format!(
                         "failed to re-establish hypercall overlay: {e}"
                     )))
                 }
             }
-        }
+        } else {
+            None
+        };
 
-        inner.msr_guest_os_id_value = data.msr_guest_os_id;
-        inner.msr_hypercall_value = hypercall_msr;
+        *inner = Inner {
+            overlay_manager: inner.overlay_manager.clone(),
+            msr_guest_os_id_value: data.msr_guest_os_id,
+            msr_hypercall_value,
+            hypercall_overlay,
+        };
+
         Ok(())
     }
 }
