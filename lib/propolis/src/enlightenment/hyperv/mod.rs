@@ -294,6 +294,7 @@ impl MigrateSingle for HyperV {
         Ok(migrate::HyperVEnlightenmentV1 {
             msr_guest_os_id: inner.msr_guest_os_id_value,
             msr_hypercall: inner.msr_hypercall_value.0,
+            overlay_originals: inner.overlay_manager.save_original_contents(),
         }
         .into())
     }
@@ -303,7 +304,11 @@ impl MigrateSingle for HyperV {
         mut offer: PayloadOffer,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let data: migrate::HyperVEnlightenmentV1 = offer.parse()?;
+        let migrate::HyperVEnlightenmentV1 {
+            msr_guest_os_id,
+            msr_hypercall,
+            overlay_originals,
+        } = offer.parse()?;
         let mut inner = self.inner.lock().unwrap();
 
         // Re-establish any overlay pages that are active in the restored MSRs.
@@ -313,9 +318,9 @@ impl MigrateSingle for HyperV {
         // value of the guest OS ID MSR. But this data was received over the
         // wire, so for safety's sake, verify it all and return a migration
         // error if anything is inconsistent.
-        let msr_hypercall_value = MsrHypercallValue(data.msr_hypercall);
+        let msr_hypercall_value = MsrHypercallValue(msr_hypercall);
         let hypercall_overlay = if msr_hypercall_value.enabled() {
-            if data.msr_guest_os_id == 0 {
+            if msr_guest_os_id == 0 {
                 return Err(MigrateStateError::ImportFailed(
                     "hypercall MSR enabled but guest OS ID MSR is 0"
                         .to_string(),
@@ -337,9 +342,15 @@ impl MigrateSingle for HyperV {
             None
         };
 
+        // Hand the overlay manager the original contents of any guest pages
+        // that have active overlays. This needs to be done after all existing
+        // overlays are re-established so that the overlay PFNs appear in the
+        // manager's tables.
+        inner.overlay_manager.restore_original_contents(overlay_originals)?;
+
         *inner = Inner {
             overlay_manager: inner.overlay_manager.clone(),
-            msr_guest_os_id_value: data.msr_guest_os_id,
+            msr_guest_os_id_value: msr_guest_os_id,
             msr_hypercall_value,
             hypercall_overlay,
         };
@@ -349,6 +360,8 @@ impl MigrateSingle for HyperV {
 }
 
 mod migrate {
+    use std::collections::BTreeMap;
+
     use serde::{Deserialize, Serialize};
 
     use crate::migrate::{Schema, SchemaId};
@@ -357,6 +370,7 @@ mod migrate {
     pub struct HyperVEnlightenmentV1 {
         pub(super) msr_guest_os_id: u64,
         pub(super) msr_hypercall: u64,
+        pub(super) overlay_originals: BTreeMap<u64, Vec<u8>>,
     }
 
     impl Schema<'_> for HyperVEnlightenmentV1 {
