@@ -13,6 +13,7 @@ use dropshot::{
 };
 use futures::SinkExt;
 use slog::{error, o, Logger};
+use std::collections::BTreeMap;
 use thiserror::Error;
 use tokio::sync::{watch, Mutex};
 use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
@@ -37,21 +38,29 @@ pub struct InstanceContext {
     pub properties: api::InstanceProperties,
     serial: Arc<serial::Serial>,
     serial_task: serial::SerialTask,
-    state_watcher_rx: watch::Receiver<api::InstanceStateMonitorResponse>,
-    state_watcher_tx: watch::Sender<api::InstanceStateMonitorResponse>,
+    state_watcher_rx:
+        watch::Receiver<BTreeMap<u64, api::InstanceStateMonitorResponse>>,
+    state_watcher_tx:
+        watch::Sender<BTreeMap<u64, api::InstanceStateMonitorResponse>>,
 }
 
 impl InstanceContext {
     pub fn new(properties: api::InstanceProperties, _log: &Logger) -> Self {
-        let (state_watcher_tx, state_watcher_rx) =
-            watch::channel(api::InstanceStateMonitorResponse {
-                gen: 0,
-                state: api::InstanceState::Creating,
-                migration: api::InstanceMigrateStatusResponse {
-                    migration_in: None,
-                    migration_out: None,
+        let (state_watcher_tx, state_watcher_rx) = {
+            let mut states = BTreeMap::new();
+            states.insert(
+                0,
+                api::InstanceStateMonitorResponse {
+                    gen: 0,
+                    state: api::InstanceState::Creating,
+                    migration: api::InstanceMigrateStatusResponse {
+                        migration_in: None,
+                        migration_out: None,
+                    },
                 },
-            });
+            );
+            watch::channel(states)
+        };
         let serial = serial::Serial::new(&properties.name);
 
         let serial_task = serial::SerialTask::spawn();
@@ -72,45 +81,77 @@ impl InstanceContext {
     /// Returns an error if the state transition is invalid.
     pub async fn set_target_state(
         &mut self,
+        log: &Logger,
         target: api::InstanceStateRequested,
     ) -> Result<(), Error> {
-        match self.state {
-            api::InstanceState::Stopped
-            | api::InstanceState::Destroyed
-            | api::InstanceState::Failed => {
+        match (self.state, target) {
+            (
+                api::InstanceState::Stopped
+                | api::InstanceState::Destroyed
+                | api::InstanceState::Failed,
+                _,
+            ) => {
                 // Cannot request any state once the target is halt/destroy
                 Err(Error::TerminalState)
             }
-            api::InstanceState::Rebooting
-                if matches!(target, api::InstanceStateRequested::Run) =>
-            {
+            (
+                api::InstanceState::Rebooting,
+                api::InstanceStateRequested::Run,
+            ) => {
                 // Requesting a run when already on the road to reboot is an
                 // immediate success.
                 Ok(())
             }
-            _ => match target {
-                api::InstanceStateRequested::Run
-                | api::InstanceStateRequested::Reboot => {
-                    self.generation += 1;
-                    self.state = api::InstanceState::Running;
-                    self.state_watcher_tx
-                        .send(api::InstanceStateMonitorResponse {
-                            gen: self.generation,
-                            state: self.state,
-                            migration: api::InstanceMigrateStatusResponse {
-                                migration_in: None,
-                                migration_out: None,
-                            },
-                        })
-                        .map_err(|_| Error::TransitionSendFail)
-                }
-                api::InstanceStateRequested::Stop => {
-                    self.state = api::InstanceState::Stopped;
-                    self.serial_task.shutdown().await;
-                    Ok(())
-                }
-            },
+            (api::InstanceState::Running, api::InstanceStateRequested::Run) => {
+                Ok(())
+            }
+            (_, api::InstanceStateRequested::Reboot) => {
+                self.queue_states(
+                    log,
+                    &[
+                        api::InstanceState::Rebooting,
+                        api::InstanceState::Running,
+                    ],
+                )
+                .await;
+                Ok(())
+            }
+            (_, api::InstanceStateRequested::Run) => {
+                self.queue_states(log, &[api::InstanceState::Running]).await;
+                Ok(())
+            }
+            (
+                api::InstanceState::Stopping,
+                api::InstanceStateRequested::Stop,
+            ) => Ok(()),
+            (_, api::InstanceStateRequested::Stop) => {
+                self.queue_states(
+                    log,
+                    &[
+                        api::InstanceState::Stopping,
+                        api::InstanceState::Stopped,
+                    ],
+                )
+                .await;
+                self.serial_task.shutdown().await;
+                Ok(())
+            }
         }
+    }
+
+    async fn queue_states(
+        &mut self,
+        log: &Logger,
+        states: &[api::InstanceState],
+    ) {
+        self.state_watcher_tx.send_modify(|queue| {
+            for &state in states {
+                self.generation += 1;
+                self.state = state;
+                queue.insert(self.generation, api::InstanceStateMonitorResponse { gen: self.generation, migration: api::InstanceMigrateStatusResponse { migration_in: None, migration_out: None }, state });
+                slog::info!(log, "queued instance state transition"; "state" => ?state, "gen" => ?self.generation);
+            }
+        })
     }
 }
 
@@ -195,18 +236,11 @@ async fn instance_state_monitor(
     };
 
     loop {
-        let last = state_watcher.borrow().clone();
-        if gen <= last.gen {
-            let response = api::InstanceStateMonitorResponse {
-                gen: last.gen,
-                state: last.state,
-                migration: api::InstanceMigrateStatusResponse {
-                    migration_in: None,
-                    migration_out: None,
-                },
-            };
-            return Ok(HttpResponseOk(response));
+        let states = state_watcher.borrow().clone();
+        if let Some(state) = states.get(&(gen + 1)) {
+            return Ok(HttpResponseOk(state.clone()));
         }
+
         state_watcher.changed().await.unwrap();
     }
 }
@@ -226,9 +260,14 @@ async fn instance_state_put(
         )
     })?;
     let requested_state = request.into_inner();
-    instance.set_target_state(requested_state).await.map_err(|err| {
-        HttpError::for_internal_error(format!("Failed to transition: {}", err))
-    })?;
+    instance.set_target_state(&rqctx.log, requested_state).await.map_err(
+        |err| {
+            HttpError::for_internal_error(format!(
+                "Failed to transition: {}",
+                err
+            ))
+        },
+    )?;
     Ok(HttpResponseUpdatedNoContent {})
 }
 
