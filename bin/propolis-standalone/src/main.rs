@@ -460,7 +460,9 @@ impl Instance {
                     }
                 }
                 State::Quiesce => {
-                    // stop device emulation and vCPUs
+                    // Stop device emulation and vCPUs. Note that the device
+                    // lifecycle trait requires vCPUs to be paused before any
+                    // devices pause.
                     for vcpu_task in guard.vcpu_tasks.iter_mut() {
                         let _ = vcpu_task.hold();
                     }

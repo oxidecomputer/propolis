@@ -273,6 +273,9 @@ impl VmObjectsLocked {
 
     /// Pauses this VM's devices and its kernel VMM.
     pub(crate) async fn pause(&mut self) {
+        // Order matters here: the Propolis lifecycle trait's pause function
+        // requires that all vCPUs pause before any devices do, and all vCPUs
+        // must be paused before the kernel VM can pause.
         self.vcpu_tasks.pause_all();
         self.pause_devices().await;
         self.pause_kernel_vm();
@@ -280,6 +283,9 @@ impl VmObjectsLocked {
 
     /// Resumes this VM's devices and its kernel VMM.
     pub(crate) fn resume(&mut self) {
+        // Order matters here: the kernel VM must resume before any vCPUs can
+        // resume, and the Propolis lifecycle trait's resume function requires
+        // that all devices resume before any vCPUs do.
         self.resume_kernel_vm();
         self.resume_devices();
         self.vcpu_tasks.resume_all();
