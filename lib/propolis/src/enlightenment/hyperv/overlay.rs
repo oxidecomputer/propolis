@@ -151,9 +151,10 @@ pub(super) enum OverlayError {
     /// A caller supplied guest data to use as the original contents of an
     /// overlaid page, but that data was not page-sized.
     #[error(
-        "saved overlaid guest page contents are {0} bytes, expected PAGE_SIZE"
+        "saved overlaid guest page contents for PFN {pfn:#x} are {len} bytes, \
+        expected PAGE_SIZE"
     )]
-    InvalidOverlaidGuestPageLength(usize),
+    InvalidOverlaidGuestPageLength { pfn: u64, len: usize },
 }
 
 impl From<OverlayError> for MigrateStateError {
@@ -329,15 +330,14 @@ enum OverlaidGuestPage {
 }
 
 impl TryFrom<MigratedOverlaidGuestPage> for OverlaidGuestPage {
-    type Error = OverlayError;
+    type Error = usize;
 
     fn try_from(value: MigratedOverlaidGuestPage) -> Result<Self, Self::Error> {
         match value {
             MigratedOverlaidGuestPage::Zero => Ok(Self::ZeroPage),
-            MigratedOverlaidGuestPage::Page(vec) => Ok(Self::Page(
-                OverlayContents::try_from(vec)
-                    .map_err(OverlayError::InvalidOverlaidGuestPageLength)?,
-            )),
+            MigratedOverlaidGuestPage::Page(vec) => {
+                Ok(Self::Page(OverlayContents::try_from(vec)?))
+            }
         }
     }
 }
@@ -547,7 +547,13 @@ impl ManagerInner {
                 .get_mut(&pfn)
                 .ok_or(OverlayError::NoOverlaysActive(pfn.into()))?;
 
-            entry.original_contents = OverlaidGuestPage::try_from(contents)?;
+            entry.original_contents = OverlaidGuestPage::try_from(contents)
+                .map_err(|len| {
+                    OverlayError::InvalidOverlaidGuestPageLength {
+                        pfn: pfn.into(),
+                        len,
+                    }
+                })?;
         }
 
         Ok(())
