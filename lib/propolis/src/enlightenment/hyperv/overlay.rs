@@ -62,46 +62,25 @@
 //! drops them or calls [`OverlayPage::move_to`] on them in response to further
 //! guest activity.
 //!
-//! ## Dealing with VM shutdown
+//! ## VM shutdown
 //!
-//! When a VM is active, dropping an active `OverlayPage` should always remove
-//! its contents from guest memory and replace them either with another overlay
-//! page's contents or the original guest memory contents. Failing to do this
-//! means that guest memory has been corrupted, so it's desirable to panic if
-//! dropping an overlay page ever fails to remove it from the manager.
-//!
-//! The catch is that once a VM has halted, its overlay manager is no longer
-//! guaranteed to be able to access guest memory (since its [`MemAccessor`] may
-//! have been disconnected). To handle this while still being able to panic on
-//! failure:
-//!
-//! - `OverlayPage`s hold [`Weak`] references to their `OverlayManager`s.
-//! - [`OverlayPage::drop`] only tries to remove an overlay if it can upgrade
-//!   its manager reference.
-//! - When a manager's owner receives a [`Lifecycle::halt`] callout, it releases
-//!   all its strong references to its `OverlayManager`. (This is generally
-//!   possible because a halting VM's vCPUs are permanently quiesced and so
-//!   can't write any more data that would create or move another overlay.)
-//!
-//! This pattern allows a `HyperV` instance to "run down" its manager by
-//! simply dropping all references to it. After that, it can drop its
-//! `OverlayPage`s at any time without fear of them trying and failing to access
-//! guest memory.
+//! When a VM halts, its guest memory becomes inaccessible, so future attempts
+//! to manipulate overlay pages will fail. The `Drop` implementation for
+//! [`OverlayPage`] assumes that removing a dropped page will always succeed. To
+//! avoid panicking during shutdown, the owning Hyper-V layer must ensure that
+//! all active pages are dropped no later than the end of its
+//! [`Lifecycle::halt`] callout.
 //!
 //! [`Lifecycle::halt`]: crate::lifecycle::Lifecycle::halt
 
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Mutex},
 };
 
 use thiserror::Error;
 
-use crate::{
-    accessors::MemAccessor, common::PAGE_SIZE,
-    enlightenment::hyperv::migrate::OverlaidGuestPage as MigratedOverlaidGuestPage,
-    migrate::MigrateStateError, vmm::Pfn,
-};
+use crate::{accessors::MemAccessor, common::PAGE_SIZE, vmm::Pfn};
 
 use self::pfn::MappedPfn;
 
@@ -134,45 +113,12 @@ pub(super) enum OverlayError {
     /// caller.
     #[error("PFN {0:#x} has no overlay of kind {1:?}")]
     NoOverlayOfKind(u64, OverlayKind),
-
-    /// A caller asked to restore the original page contents for a set of
-    /// overlays, but supplied a different number of PFNs to restore than the
-    /// overlay manager is currently tracking.
-    #[error(
-        "imported overlay contents have length {actual_len}, \
-        expected {expected_len}"
-    )]
-    OriginalContentsCountMismatch { actual_len: usize, expected_len: usize },
-
-    /// A caller asked to restore the guest page underlying an invalid PFN.
-    #[error("saved overlay contents PFN {0:#x} is not a valid 52-bit PFN")]
-    InvalidImportPfn(u64),
-
-    /// A caller supplied guest data to use as the original contents of an
-    /// overlaid page, but that data was not page-sized.
-    #[error(
-        "saved overlaid guest page contents for PFN {pfn:#x} are {len} bytes, \
-        expected PAGE_SIZE"
-    )]
-    InvalidOverlaidGuestPageLength { pfn: u64, len: usize },
-}
-
-impl From<OverlayError> for MigrateStateError {
-    fn from(value: OverlayError) -> Self {
-        MigrateStateError::ImportFailed(value.to_string())
-    }
 }
 
 /// The contents of a 4 KiB page. These are boxed so that this type can be
 /// embedded in a struct that's put into a contiguous collection without putting
 /// entire pages between collection members.
 pub(super) struct OverlayContents(pub(super) Box<[u8; PAGE_SIZE]>);
-
-impl OverlayContents {
-    fn is_zero_page(&self) -> bool {
-        self.0.iter().all(|b| *b == 0)
-    }
-}
 
 impl Default for OverlayContents {
     fn default() -> Self {
@@ -268,13 +214,10 @@ impl PartialOrd for OverlayKind {
 
 /// A registered overlay page, held by a user of this module. The overlay is
 /// removed when this page is dropped.
-#[derive(Debug)]
 pub(super) struct OverlayPage {
-    /// A back reference to this page's manager. This is `Weak` so that pages
-    /// can detect when the manager's Hyper-V stack has halted and can thereby
-    /// avoid assuming that page removals should always succeed. See the module
-    /// docs for details.
-    manager: Weak<OverlayManager>,
+    /// A back reference to this page's manager, used to move or destroy the
+    /// page on request.
+    manager: Arc<OverlayManager>,
 
     /// The kind of overlay this is.
     kind: OverlayKind,
@@ -283,21 +226,20 @@ pub(super) struct OverlayPage {
     pfn: Pfn,
 }
 
+impl std::fmt::Debug for OverlayPage {
+    // Manually implemented since `OverlayManager` is not `Debug`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OverlayPage")
+            .field("kind", &self.kind)
+            .field("pfn", &self.pfn)
+            .finish()
+    }
+}
+
 impl OverlayPage {
     /// Moves this overlay to a new PFN.
-    ///
-    /// # Panics
-    ///
-    /// Panics if called when there are no more strong references to the page's
-    /// manager (which implies that the VM has shut down and that guest memory
-    /// may not be accessible).
     pub(super) fn move_to(&mut self, new_pfn: Pfn) -> Result<(), OverlayError> {
-        let manager = self
-            .manager
-            .upgrade()
-            .expect("can only move overlay pages with an active manager");
-
-        manager.move_overlay(self.pfn, new_pfn, self.kind)?;
+        self.manager.move_overlay(self.pfn, new_pfn, self.kind)?;
         self.pfn = new_pfn;
         Ok(())
     }
@@ -305,51 +247,9 @@ impl OverlayPage {
 
 impl Drop for OverlayPage {
     fn drop(&mut self) {
-        // This overlay is already registered and has a valid PFN, so the only
-        // reason the manager could fail to remove it is if it failed to access
-        // guest memory entirely. The parent enlightenment stack prevents this
-        // by holding a strong reference to the manager until the VM is halted.
-        //
-        // Once the VM *is* halted, no one will access guest memory again, so
-        // it's OK to return without attempting to restore the page's previous
-        // contents.
-        let Some(manager) = self.manager.upgrade() else {
-            return;
-        };
-
-        manager
+        self.manager
             .remove_overlay(self.pfn, self.kind)
             .expect("active overlay pages can always be removed");
-    }
-}
-
-#[derive(Debug)]
-enum OverlaidGuestPage {
-    ZeroPage,
-    Page(OverlayContents),
-}
-
-impl TryFrom<MigratedOverlaidGuestPage> for OverlaidGuestPage {
-    type Error = usize;
-
-    fn try_from(value: MigratedOverlaidGuestPage) -> Result<Self, Self::Error> {
-        match value {
-            MigratedOverlaidGuestPage::Zero => Ok(Self::ZeroPage),
-            MigratedOverlaidGuestPage::Page(vec) => {
-                Ok(Self::Page(OverlayContents::try_from(vec)?))
-            }
-        }
-    }
-}
-
-impl From<&OverlaidGuestPage> for MigratedOverlaidGuestPage {
-    fn from(value: &OverlaidGuestPage) -> Self {
-        match value {
-            OverlaidGuestPage::ZeroPage => Self::Zero,
-            OverlaidGuestPage::Page(overlay_contents) => {
-                Self::Page(overlay_contents.0.to_vec())
-            }
-        }
     }
 }
 
@@ -359,7 +259,7 @@ impl From<&OverlaidGuestPage> for MigratedOverlaidGuestPage {
 struct OverlaySet {
     /// The contents of guest memory at this set's PFN at the time an overlay
     /// first became active here.
-    original_contents: OverlaidGuestPage,
+    original_contents: OverlayContents,
 
     /// The set of overlays that have been requested at this PFN.
     ///
@@ -411,12 +311,6 @@ impl ManagerInner {
                 let mut original_contents = OverlayContents::default();
                 mapped_pfn.read_page(&mut original_contents);
                 mapped_pfn.write_page(&kind.get_contents());
-                let original_contents = if original_contents.is_zero_page() {
-                    OverlaidGuestPage::ZeroPage
-                } else {
-                    OverlaidGuestPage::Page(original_contents)
-                };
-
                 e.insert(OverlaySet {
                     original_contents,
                     overlays: BTreeSet::from([kind]),
@@ -459,7 +353,7 @@ impl ManagerInner {
             assert!(set.get_mut().overlays.remove(&kind));
 
             if set.get().overlays.is_empty() {
-                mapped.restore_overlaid_data(&set.get().original_contents);
+                mapped.write_page(&set.get().original_contents);
                 set.remove_entry();
             } else {
                 mapped.write_page(&set.get().active().get_contents());
@@ -524,40 +418,6 @@ impl ManagerInner {
 
         Ok(())
     }
-
-    /// Visits each of the overlaid pages known to this manager and overwrites
-    /// their original contents with the data in the supplied `contents` map.
-    fn import_original_page_contents(
-        &mut self,
-        contents: BTreeMap<u64, MigratedOverlaidGuestPage>,
-    ) -> Result<(), OverlayError> {
-        if contents.len() != self.overlays.len() {
-            return Err(OverlayError::OriginalContentsCountMismatch {
-                actual_len: contents.len(),
-                expected_len: self.overlays.len(),
-            });
-        }
-
-        for (pfn, contents) in contents {
-            let pfn =
-                Pfn::new(pfn).ok_or(OverlayError::InvalidImportPfn(pfn))?;
-
-            let entry = self
-                .overlays
-                .get_mut(&pfn)
-                .ok_or(OverlayError::NoOverlaysActive(pfn.into()))?;
-
-            entry.original_contents = OverlaidGuestPage::try_from(contents)
-                .map_err(|len| {
-                    OverlayError::InvalidOverlaidGuestPageLength {
-                        pfn: pfn.into(),
-                        len,
-                    }
-                })?;
-        }
-
-        Ok(())
-    }
 }
 
 /// An overlay tracker that adds, removes, and moves overlays.
@@ -570,10 +430,11 @@ impl ManagerInner {
 /// - After calling [`OverlayManager::new`], the manager's owner must call
 ///   [`OverlayManager::attach`] to attach the manager's memory accessor to a
 ///   VM's memory hierarchy before it can add any overlays.
-/// - When the manager's owner halts, it must drop all strong references to its
-///   overlay manager before dropping any remaining [`OverlayPage`]s.
+/// - The manager must drop all [`OverlayPage`]s no later than the end of its
+///   [`Lifecycle::halt`] callout (so that the overlay manager still has access
+///   to guest memory when those pages are destroyed).
 ///
-/// See the module docs for more information.
+/// [`Lifecycle::halt`]: crate::lifecycle::Lifecycle::halt
 pub(super) struct OverlayManager {
     inner: Mutex<ManagerInner>,
     acc_mem: MemAccessor,
@@ -587,15 +448,15 @@ impl Default for OverlayManager {
 }
 
 impl OverlayManager {
-    /// Creates a new overlay manager.
-    pub(super) fn new() -> Arc<Self> {
-        Arc::new(Self::default())
-    }
-
     /// Attaches this overlay manager to the supplied memory accessor hierarchy.
     pub(super) fn attach(&self, parent_mem: &MemAccessor) {
         parent_mem
             .adopt(&self.acc_mem, Some("hyperv-overlay-manager".to_string()));
+    }
+
+    /// Returns `true` if this manager has no active overlays.
+    pub(super) fn is_empty(&self) -> bool {
+        self.inner.lock().unwrap().overlays.is_empty()
     }
 
     /// Adds an overlay of the supplied `kind` with the supplied `contents` over
@@ -607,7 +468,7 @@ impl OverlayManager {
     ) -> Result<OverlayPage, OverlayError> {
         let mut inner = self.inner.lock().unwrap();
         inner.add_overlay(pfn, kind, &self.acc_mem)?;
-        Ok(OverlayPage { manager: Arc::downgrade(self), kind, pfn })
+        Ok(OverlayPage { manager: self.clone(), kind, pfn })
     }
 
     /// Removes an overlay of the supplied `kind` from the set at the supplied
@@ -638,45 +499,6 @@ impl OverlayManager {
             &self.acc_mem,
         )
     }
-
-    /// Saves the original page contents of each overlaid PFN registered with
-    /// this manager, returning a mapping from raw PFN values to `Vec`s
-    /// containing the relevant pages' contents.
-    pub(super) fn export_original_page_contents(
-        &self,
-    ) -> BTreeMap<u64, MigratedOverlaidGuestPage> {
-        self.inner
-            .lock()
-            .unwrap()
-            .overlays
-            .iter()
-            .map(|(pfn, set)| {
-                (
-                    u64::from(*pfn),
-                    MigratedOverlaidGuestPage::from(&set.original_contents),
-                )
-            })
-            .collect()
-    }
-
-    /// Sets this table's record of the original contents of each guest
-    /// physical page that is currently covered by an overlay.
-    ///
-    /// # Arguments
-    ///
-    /// - `contents`: A mapping from PFNs to the guest physical page contents
-    ///   that should be set for those PFNs.
-    ///
-    /// # Return value
-    ///
-    /// `Ok(())` if all the records in `contents` were successfully applied,
-    /// `Err` otherwise.
-    pub(super) fn import_original_page_contents(
-        &self,
-        contents: BTreeMap<u64, MigratedOverlaidGuestPage>,
-    ) -> Result<(), OverlayError> {
-        self.inner.lock().unwrap().import_original_page_contents(contents)
-    }
 }
 
 /// Helpers for dealing with page frame numbers (guest physical page numbers, or
@@ -688,7 +510,7 @@ mod pfn {
         vmm::{MemCtx, Pfn, SubMapping},
     };
 
-    use super::{OverlaidGuestPage, OverlayContents, OverlayError};
+    use super::{OverlayContents, OverlayError};
 
     /// A mapping of a page of guest memory with a particular PFN.
     pub(super) struct MappedPfn<'a> {
@@ -713,22 +535,6 @@ mod pfn {
         /// Yields this mapping's PFN.
         pub(super) fn pfn(&self) -> Pfn {
             self.pfn
-        }
-
-        pub(super) fn restore_overlaid_data(
-            &mut self,
-            original: &OverlaidGuestPage,
-        ) {
-            assert_eq!(
-                self.mapping
-                    .write_bytes(match original {
-                        OverlaidGuestPage::ZeroPage => &[0u8; PAGE_SIZE],
-                        OverlaidGuestPage::Page(overlay_contents) =>
-                            overlay_contents.0.as_slice(),
-                    })
-                    .expect("PFN mappings are always accessible"),
-                PAGE_SIZE
-            );
         }
 
         /// Writes the supplied overlay page to this mapping's guest physical
@@ -795,7 +601,7 @@ mod test {
             map.add_test_mem("test-ram".to_string(), 0, 1024 * 1024).unwrap();
             let acc_mem = MemAccessor::new(map.memctx());
 
-            let mgr = OverlayManager::new();
+            let mgr = Arc::new(OverlayManager::default());
             mgr.attach(&acc_mem);
             TestCtx { manager: mgr, _vmm_hdl: hdl, _physmem: map, acc_mem }
         }
@@ -953,25 +759,5 @@ mod test {
             .unwrap_err();
 
         ctx.assert_pfn_has_fill(pfn, 0x70);
-    }
-
-    #[test]
-    fn restore_original_contents() {
-        let ctx = TestCtx::new();
-        let pfn = Pfn::new_unchecked(0x60);
-
-        let page = ctx
-            .manager
-            .add_overlay(pfn, OverlayKind::Test { index: 0, fill: 0x88 })
-            .unwrap();
-
-        let contents = BTreeMap::from([(
-            0x60,
-            MigratedOverlaidGuestPage::Page(vec![0x44; PAGE_SIZE]),
-        )]);
-
-        ctx.manager.import_original_page_contents(contents).unwrap();
-        drop(page);
-        ctx.assert_pfn_has_fill(pfn, 0x44);
     }
 }
