@@ -322,20 +322,10 @@ impl Drop for OverlayPage {
     }
 }
 
+#[derive(Debug)]
 enum OverlaidGuestPage {
     ZeroPage,
     Page(OverlayContents),
-}
-
-impl std::fmt::Debug for OverlaidGuestPage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ZeroPage => write!(f, "ZeroPage"),
-            Self::Page(_) => {
-                f.debug_tuple("Page").field(&"<page redacted>").finish()
-            }
-        }
-    }
 }
 
 impl TryFrom<MigratedOverlaidGuestPage> for OverlaidGuestPage {
