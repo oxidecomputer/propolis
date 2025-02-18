@@ -294,7 +294,9 @@ impl MigrateSingle for HyperV {
         Ok(migrate::HyperVEnlightenmentV1 {
             msr_guest_os_id: inner.msr_guest_os_id_value,
             msr_hypercall: inner.msr_hypercall_value.0,
-            overlay_originals: inner.overlay_manager.save_original_contents(),
+            overlay_originals: inner
+                .overlay_manager
+                .export_original_page_contents(),
         }
         .into())
     }
@@ -346,7 +348,9 @@ impl MigrateSingle for HyperV {
         // that have active overlays. This needs to be done after all existing
         // overlays are re-established so that the overlay PFNs appear in the
         // manager's tables.
-        inner.overlay_manager.restore_original_contents(overlay_originals)?;
+        inner
+            .overlay_manager
+            .import_original_page_contents(overlay_originals)?;
 
         *inner = Inner {
             overlay_manager: inner.overlay_manager.clone(),
@@ -366,10 +370,17 @@ mod migrate {
 
     use crate::migrate::{Schema, SchemaId};
 
+    /// Describes the original contents of a guest physical page that is
+    /// currently covered by an overlay.
     #[derive(Serialize, Deserialize)]
     #[serde(tag = "type", content = "value")]
     pub(super) enum OverlaidGuestPage {
+        /// The original page was entirely zero.
         Zero,
+
+        /// The original page had the supplied contents. Consumers must verify
+        /// that the wrapped `Vec` has length `PAGE_SIZE` before trying to use
+        /// the page's contents.
         Page(Vec<u8>),
     }
 
