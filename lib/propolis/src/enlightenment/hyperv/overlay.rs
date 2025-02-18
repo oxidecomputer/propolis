@@ -97,13 +97,16 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{accessors::MemAccessor, common::PAGE_SIZE, vmm::Pfn};
+use crate::{
+    accessors::MemAccessor, common::PAGE_SIZE, migrate::MigrateStateError,
+    vmm::Pfn,
+};
 
 use self::pfn::MappedPfn;
 
 /// An error that can be returned from an overlay page operation.
 #[derive(Debug, Error)]
-pub enum OverlayError {
+pub(super) enum OverlayError {
     /// The guest memory context can't be accessed right now. Generally this
     /// means that the caller is trying to create an overlay too early (i.e.,
     /// before the overlay manager is attached to the memory hierarchy) or too
@@ -130,6 +133,27 @@ pub enum OverlayError {
     /// caller.
     #[error("PFN {0:#x} has no overlay of kind {1:?}")]
     NoOverlayOfKind(u64, OverlayKind),
+
+    #[error(
+        "imported overlay contents have length {actual_len}, \
+        expected {expected_len}"
+    )]
+    OriginalContentsCountMismatch { actual_len: usize, expected_len: usize },
+
+    #[error("saved overlay contents PFN {0:#x} is not a valid 52-bit PFN")]
+    InvalidImportPfn(u64),
+
+    #[error(
+        "saved overlay contents for PFN {0:#x} are {1} bytes, \
+        expected PAGE_SIZE"
+    )]
+    InvalidSavedContentsLength(u64, usize),
+}
+
+impl From<OverlayError> for MigrateStateError {
+    fn from(value: OverlayError) -> Self {
+        MigrateStateError::ImportFailed(value.to_string())
+    }
 }
 
 /// The contents of a 4 KiB page. These are boxed so that this type can be
@@ -146,6 +170,15 @@ impl Default for OverlayContents {
 impl std::fmt::Debug for OverlayContents {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("OverlayContents").field(&"<page redacted>").finish()
+    }
+}
+
+impl TryFrom<Vec<u8>> for OverlayContents {
+    type Error = usize;
+
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        let len = value.len();
+        Ok(Self(Box::new(value.try_into().map_err(|_| len)?)))
     }
 }
 
@@ -418,6 +451,37 @@ impl ManagerInner {
 
         Ok(())
     }
+
+    /// Visits each of the overlaid pages known to this manager and overwrites
+    /// their original contents with the data in the supplied `contents` map.
+    fn restore_original_contents(
+        &mut self,
+        contents: BTreeMap<u64, Vec<u8>>,
+    ) -> Result<(), OverlayError> {
+        if contents.len() != self.overlays.len() {
+            return Err(OverlayError::OriginalContentsCountMismatch {
+                actual_len: contents.len(),
+                expected_len: self.overlays.len(),
+            });
+        }
+
+        for (pfn, contents) in contents {
+            let pfn =
+                Pfn::new(pfn).ok_or(OverlayError::InvalidImportPfn(pfn))?;
+
+            let entry = self
+                .overlays
+                .get_mut(&pfn)
+                .ok_or(OverlayError::NoOverlaysActive(pfn.into()))?;
+
+            entry.original_contents = OverlayContents::try_from(contents)
+                .map_err(|len| {
+                    OverlayError::InvalidSavedContentsLength(pfn.into(), len)
+                })?;
+        }
+
+        Ok(())
+    }
 }
 
 /// An overlay tracker that adds, removes, and moves overlays.
@@ -497,6 +561,29 @@ impl OverlayManager {
             kind,
             &self.acc_mem,
         )
+    }
+
+    /// Saves the original page contents of each overlaid PFN registered with
+    /// this manager, returning a mapping from raw PFN values to Vecs containing
+    /// the relevant pages' contents.
+    pub(super) fn save_original_contents(&self) -> BTreeMap<u64, Vec<u8>> {
+        self.inner
+            .lock()
+            .unwrap()
+            .overlays
+            .iter()
+            .map(|(pfn, set)| {
+                (u64::from(*pfn), set.original_contents.0.to_vec())
+            })
+            .collect()
+    }
+
+    /// Attempts
+    pub(super) fn restore_original_contents(
+        &self,
+        contents: BTreeMap<u64, Vec<u8>>,
+    ) -> Result<(), OverlayError> {
+        self.inner.lock().unwrap().restore_original_contents(contents)
     }
 }
 
@@ -758,5 +845,21 @@ mod test {
             .unwrap_err();
 
         ctx.assert_pfn_has_fill(pfn, 0x70);
+    }
+
+    #[test]
+    fn restore_original_contents() {
+        let ctx = TestCtx::new();
+        let pfn = Pfn::new_unchecked(0x60);
+
+        let page = ctx
+            .manager
+            .add_overlay(pfn, OverlayKind::Test { index: 0, fill: 0x88 })
+            .unwrap();
+
+        let contents = BTreeMap::from([(0x60, vec![0x44; PAGE_SIZE])]);
+        ctx.manager.restore_original_contents(contents).unwrap();
+        drop(page);
+        ctx.assert_pfn_has_fill(pfn, 0x44);
     }
 }
