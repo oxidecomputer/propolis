@@ -4,7 +4,11 @@
 
 //! Routines and data structures for working with Propolis server processes.
 
-use std::{fmt::Debug, net::SocketAddrV4, os::unix::process::CommandExt};
+use std::{
+    fmt::Debug,
+    net::{SocketAddr, SocketAddrV4},
+    os::unix::process::CommandExt,
+};
 
 use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
@@ -27,6 +31,10 @@ pub struct ServerProcessParameters<'a> {
     /// The address at which the server should serve.
     pub server_addr: SocketAddrV4,
 
+    /// The address of HTTP server with which the spawned server should register
+    /// as an Oximeter producer.
+    pub metrics_addr: Option<SocketAddr>,
+
     /// The address at which the server should offer its VNC server.
     pub vnc_addr: SocketAddrV4,
 
@@ -48,6 +56,7 @@ impl PropolisServer {
             server_path,
             data_dir,
             server_addr,
+            metrics_addr,
             vnc_addr,
             log_mode,
         } = process_params;
@@ -62,17 +71,23 @@ impl PropolisServer {
         let (server_stdout, server_stderr) =
             log_mode.get_handles(&data_dir, vm_name)?;
 
+        let mut args = vec![server_path.into_string(), "run".to_string()];
+
+        if let Some(metrics_addr) = metrics_addr {
+            args.extend_from_slice(&[
+                "--metric-addr".to_string(),
+                metrics_addr.to_string(),
+            ]);
+        }
+
+        args.extend_from_slice(&[
+            bootrom_path.as_str().to_string(),
+            server_addr.to_string(),
+            vnc_addr.to_string(),
+        ]);
+
         let mut server_cmd = std::process::Command::new("pfexec");
-        server_cmd
-            .args([
-                server_path.as_str(),
-                "run",
-                bootrom_path.as_str(),
-                server_addr.to_string().as_str(),
-                vnc_addr.to_string().as_str(),
-            ])
-            .stdout(server_stdout)
-            .stderr(server_stderr);
+        server_cmd.args(args).stdout(server_stdout).stderr(server_stderr);
 
         // Gracefully shutting down a Propolis server requires PHD to send an
         // instance stop request to the server before it is actually terminated.

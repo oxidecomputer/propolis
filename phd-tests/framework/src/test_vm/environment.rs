@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
 use anyhow::Context;
 
@@ -20,11 +20,16 @@ pub enum VmLocation {
 pub struct EnvironmentSpec {
     pub(crate) location: VmLocation,
     pub(crate) propolis_artifact: String,
+    pub(crate) metrics_addr: Option<SocketAddr>,
 }
 
 impl EnvironmentSpec {
     pub(crate) fn new(location: VmLocation, propolis_artifact: &str) -> Self {
-        Self { location, propolis_artifact: propolis_artifact.to_owned() }
+        Self {
+            location,
+            propolis_artifact: propolis_artifact.to_owned(),
+            metrics_addr: None,
+        }
     }
 
     pub fn location(&mut self, location: VmLocation) -> &mut Self {
@@ -34,6 +39,14 @@ impl EnvironmentSpec {
 
     pub fn propolis(&mut self, artifact_name: &str) -> &mut Self {
         artifact_name.clone_into(&mut self.propolis_artifact);
+        self
+    }
+
+    pub fn metrics_addr(
+        &mut self,
+        metrics_addr: Option<SocketAddr>,
+    ) -> &mut Self {
+        self.metrics_addr = metrics_addr;
         self
     }
 
@@ -82,6 +95,7 @@ impl<'a> Environment<'a> {
                         Ipv4Addr::new(127, 0, 0, 1),
                         server_port,
                     ),
+                    metrics_addr: builder.metrics_addr,
                     vnc_addr: SocketAddrV4::new(
                         Ipv4Addr::new(127, 0, 0, 1),
                         vnc_port,
