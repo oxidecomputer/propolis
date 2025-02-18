@@ -11,3 +11,5 @@ individual files for details.
 - `nvme_trace.d`: Measure propolis-emulated NVMe read/write latency.
 - `time_adjustments.d`: Observe guest timing data adjustments on the target host
   of a live migration.
+- `vm_exit_codes.d`: Measure VM exits and information about them both for
+  #VMEXIT events and returns to Propolis.
