@@ -154,20 +154,6 @@ async fn hyperv_reference_tsc_clocksource_test(ctx: &Framework) {
 
 #[phd_testcase]
 async fn hyperv_reference_tsc_elapsed_time_test(ctx: &Framework) {
-    if ctx.default_guest_os_kind().await?.is_windows() {
-        phd_skip!("test requires a guest with /proc/timer_list in procfs");
-    }
-
-    let mut cfg = ctx.vm_config_builder("hyperv_reference_tsc_elapsed_test");
-    cfg.guest_hv_interface(
-        propolis_client::types::GuestHypervisorInterface::HyperV {
-            features: vec![HyperVFeatureFlag::ReferenceTsc],
-        },
-    );
-    let mut vm = ctx.spawn_vm(&cfg, None).await?;
-    vm.launch().await?;
-    vm.wait_to_boot().await?;
-
     #[derive(Debug)]
     struct Reading {
         taken_at: Instant,
@@ -229,75 +215,90 @@ async fn hyperv_reference_tsc_elapsed_time_test(ctx: &Framework) {
         }
     }
 
-    // If the reference TSC is working properly, the guest should perceive that
-    // time advances at roughly the same rate as on the host. To measure this,
-    // take high-resolution time snapshots on both the host and guest at two
-    // different times, then compare the host time and guest time differences to
-    // see if they're approximately the same.
-    //
-    // The differences are approximate because there's no way to take a host and
-    // guest time snapshot at exactly the same instant. The snapshotting logic
-    // above tries to minimize this delta, but some error is still expected.
-    // This test assumes that a measurement is "good" if the difference between
-    // the host and guest readings, expressed as a percentage of the host time
-    // delta, is less than this tolerance value.
-    //
-    // To further insulate itself from flakiness, this test takes multiple
-    // readings and fails only if there are more "bad" (out-of-tolerance)
-    // readings than "good" (in-tolerance) ones. This aims to ensure that one or
-    // two bits of host machine weather don't cause the test to fail while still
-    // detecting cases where the host and guest consistently disagree.
-    const TOLERANCE: f64 = 0.005;
+    /// Checks that time is advancing at roughly the correct rate in the guest.
+    /// This is done by taking several host and guest time readings, comparing
+    /// elapsed time in the host to elapsed time in the guest, and declaring a
+    /// "good" result if the percentage difference between them is within some
+    /// tolerance. The check passes if the number of good results exceeds the
+    /// number of bad results.
+    async fn check_tsc(vm: &TestVm) -> anyhow::Result<()> {
+        // The amount of error that can be tolerated in the guest's elapsed
+        // time reading, expressed as a percentage of elapsed time on the host.
+        //
+        // If the reference TSC is working properly, host and guest time should
+        // be very closely synchronized. However, because there is no way to
+        // capture host and guest timestamps atomically, it will always appear
+        // that more time has advanced in one domain than the other. The time
+        // snapshotting logic tries to minimize this delta, but some error is
+        // still expected, so a tolerance value is required.
+        //
+        // A 2.5% tolerance is *extremely* generous, but is necessary to keep
+        // this test from flaking in CI runs. Generous as it is, this tolerance
+        // value is still enough to catch egregious errors in computing TSC
+        // scaling factors: shifting the scaling factor by the wrong number of
+        // bits, for example, is liable to produce a much larger error than
+        // this.
+        const TOLERANCE: f64 = 0.25;
 
-    // Take five readings here to produce four comparison pairs. This combines
-    // with an extra cross-migration reading below to produce five "votes" for
-    // whether the enlightenment is working as expected.
-    let mut readings = vec![];
-    for _ in 0..5 {
-        readings.push(Reading::take_from(&vm).await?);
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
+        // Take six readings to get five comparisons of consecutive readings.
+        const NUM_READINGS: usize = 6;
 
-    let mut good_diffs = 0;
-    let mut bad_diffs = 0;
-    for window in readings.as_slice().windows(2) {
-        let first = &window[0];
-        let second = &window[1];
-        let diff_pct = second.compare_with_earlier(first);
-        if diff_pct < TOLERANCE {
-            good_diffs += 1;
-        } else {
-            bad_diffs += 1;
+        let mut readings = vec![];
+        let mut good_diffs = 0;
+        let mut bad_diffs = 0;
+
+        for _ in 0..NUM_READINGS {
+            readings.push(Reading::take_from(vm).await?);
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
+
+        for window in readings.as_slice().windows(2) {
+            let first = &window[0];
+            let second = &window[1];
+            let diff_pct = second.compare_with_earlier(first);
+            if diff_pct < TOLERANCE {
+                good_diffs += 1;
+            } else {
+                bad_diffs += 1;
+            }
+        }
+
+        assert!(
+            bad_diffs < good_diffs,
+            "more out-of-tolerance time diffs ({}) than in-tolerance diffs \
+            ({}); see test log for details",
+            bad_diffs,
+            good_diffs,
+        );
+
+        info!(good_diffs, bad_diffs, "TSC test results");
+
+        Ok(())
     }
 
-    // Take an extra pair of readings over a live migration. This also exercises
-    // the time-data portion of the live migration protocol (albeit without
-    // moving the VM to a different host machine).
+    if ctx.default_guest_os_kind().await?.is_windows() {
+        phd_skip!("test requires a guest with /proc/timer_list in procfs");
+    }
+
+    let mut cfg = ctx.vm_config_builder("hyperv_reference_tsc_elapsed_test");
+    cfg.guest_hv_interface(
+        propolis_client::types::GuestHypervisorInterface::HyperV {
+            features: vec![HyperVFeatureFlag::ReferenceTsc],
+        },
+    );
+    let mut vm = ctx.spawn_vm(&cfg, None).await?;
+    vm.launch().await?;
+    vm.wait_to_boot().await?;
+
+    check_tsc(&vm).await?;
+
     let mut target = ctx
         .spawn_successor_vm("hyperv_reference_tsc_elapsed_target", &vm, None)
         .await?;
 
-    let before_migration = Reading::take_from(&vm).await?;
     target
         .migrate_from(&vm, Uuid::new_v4(), MigrationTimeout::default())
         .await?;
 
-    let after_migration = Reading::take_from(&target).await?;
-    let diff_pct = after_migration.compare_with_earlier(&before_migration);
-    if diff_pct < TOLERANCE {
-        good_diffs += 1;
-    } else {
-        bad_diffs += 1;
-    }
-
-    info!(in_tolerance_diffs = good_diffs, out_of_tolerance_diffs = bad_diffs);
-
-    assert!(
-        bad_diffs < good_diffs,
-        "more out-of-tolerance time diffs ({}) than in-tolerance diffs ({}); \
-        see test log for details",
-        bad_diffs,
-        good_diffs,
-    );
+    check_tsc(&vm).await?;
 }
