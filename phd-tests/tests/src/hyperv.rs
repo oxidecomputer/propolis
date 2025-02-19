@@ -238,7 +238,7 @@ async fn hyperv_reference_tsc_elapsed_time_test(ctx: &Framework) {
         // scaling factors: shifting the scaling factor by the wrong number of
         // bits, for example, is liable to produce a much larger error than
         // this.
-        const TOLERANCE: f64 = 0.25;
+        const TOLERANCE: f64 = 0.025;
 
         // Take six readings to get five comparisons of consecutive readings.
         const NUM_READINGS: usize = 6;
