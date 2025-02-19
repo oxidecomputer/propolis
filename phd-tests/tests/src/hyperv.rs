@@ -112,8 +112,6 @@ async fn hyperv_reference_tsc_clocksource_test(ctx: &Framework) {
     let check_clocksource = !clocksource.ends_with("No such file or directory");
     if check_clocksource {
         assert_eq!(clocksource, "hyperv_clocksource_tsc_page");
-    } else {
-        warn!("guest doesn't support querying clocksource through sysfs");
     }
 
     // Migrate to a new VM and make sure the clocksource is kept intact. If
@@ -127,30 +125,31 @@ async fn hyperv_reference_tsc_clocksource_test(ctx: &Framework) {
         ],
         |target: &TestVm| {
             Box::pin(async move {
-                if !check_clocksource {
-                    let echo = target
-                        .run_shell_command(
-                            "echo clocksource queries not supported",
-                        )
-                        .await
-                        .unwrap();
-
-                    assert_eq!(echo, "clocksource queries not supported");
-                } else {
+                if check_clocksource {
                     let clocksource = target
                         .run_shell_command(
                             "cat /sys/devices/system/clocksource/clocksource0\
-                        /current_clocksource",
+                            /current_clocksource",
                         )
                         .await
                         .unwrap();
 
                     assert_eq!(clocksource, "hyperv_clocksource_tsc_page");
+                } else {
+                    target.run_shell_command("").await.unwrap();
                 }
             })
         },
     )
     .await?;
+
+    // Only report a Passed result for this test if it actually managed to query
+    // the clocksource. Note that if the clocksource can't be queried, but the
+    // guest stops responding during the foregoing lifecycle test, the test will
+    // fail (and report that result accordingly) before reaching this point.
+    if !check_clocksource {
+        phd_skip!("guest doesn't support querying clocksource through sysfs");
+    }
 }
 
 #[phd_testcase]
