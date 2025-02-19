@@ -38,8 +38,11 @@ pub enum Error {
 
 /// simulated instance properties
 pub struct InstanceContext {
-    pub state: api::InstanceState,
-    pub generation: u64,
+    /// The instance's current generation last observed by the
+    /// `instance-state-monitor` endpoint.
+    curr_gen: u64,
+    /// The next generation to use when inserting new state(s) into the queue.
+    next_queue_gen: u64,
     pub properties: api::InstanceProperties,
     serial: Arc<serial::Serial>,
     serial_task: serial::SerialTask,
@@ -71,8 +74,8 @@ impl InstanceContext {
         let serial_task = serial::SerialTask::spawn();
 
         Self {
-            state: api::InstanceState::Creating,
-            generation: 0,
+            curr_gen: 0,
+            next_queue_gen: 1,
             properties,
             serial,
             serial_task,
@@ -89,7 +92,7 @@ impl InstanceContext {
         log: &Logger,
         target: api::InstanceStateRequested,
     ) -> Result<(), Error> {
-        match (self.state, target) {
+        match (self.current_state(), target) {
             (
                 api::InstanceState::Stopped
                 | api::InstanceState::Destroyed
@@ -153,6 +156,14 @@ impl InstanceContext {
         }
     }
 
+    fn current_state(&self) -> api::InstanceState {
+        self.state_watcher_rx
+            .borrow()
+            .get(&self.curr_gen)
+            .expect("current generation must be in the queue, this is weird 'n' bad")
+            .state
+    }
+
     async fn queue_states(
         &mut self,
         log: &Logger,
@@ -160,12 +171,12 @@ impl InstanceContext {
     ) {
         self.state_watcher_tx.send_modify(|queue| {
             for &state in states {
-                self.generation += 1;
-                self.state = state;
+                let generation = self.next_queue_gen;
+                self.next_queue_gen += 1;
                 queue.insert(
-                    self.generation,
+                    generation,
                     api::InstanceStateMonitorResponse {
-                        gen: self.generation,
+                        gen: generation,
                         migration: api::InstanceMigrateStatusResponse {
                             migration_in: None,
                             migration_out: None,
@@ -177,7 +188,7 @@ impl InstanceContext {
                     log,
                     "queued instance state transition";
                     "state" => ?state,
-                    "gen" => ?self.generation,
+                    "gen" => ?generation,
                 );
             }
         })
@@ -239,7 +250,7 @@ async fn instance_get(
     })?;
     let instance_info = api::Instance {
         properties: instance.properties.clone(),
-        state: instance.state,
+        state: instance.current_state(),
     };
     Ok(HttpResponseOk(api::InstanceGetResponse { instance: instance_info }))
 }
@@ -265,8 +276,20 @@ async fn instance_state_monitor(
     };
 
     loop {
-        let states = state_watcher.borrow().clone();
-        if let Some(state) = states.get(&(gen + 1)) {
+        let next_gen = gen + 1;
+        let state = state_watcher.borrow().get(&next_gen).cloned();
+        if let Some(state) = state {
+            // Advance to the state  with the generation we showed to the
+            // watcher, for use in `instance_get` and when determining what
+            // state transitions are valid.
+            rqctx
+                .context()
+                .instance
+                .lock()
+                .await
+                .as_mut()
+                .expect("if we didn't have an instance, we shouldn't have gotten here")
+                .curr_gen = next_gen;
             return Ok(HttpResponseOk(state.clone()));
         }
 
@@ -323,11 +346,15 @@ async fn instance_serial(
             ws_stream.send(Message::Close(None)).await?;
             Err("Instance not yet created!".into())
         }
-        Some(InstanceContext { state, .. })
-            if *state != api::InstanceState::Running =>
+        Some(instance_ctx)
+            if instance_ctx.current_state() != api::InstanceState::Running =>
         {
             ws_stream.send(Message::Close(None)).await?;
-            Err(format!("Instance isn't Running! ({:?})", state).into())
+            Err(format!(
+                "Instance isn't Running! ({:?})",
+                instance_ctx.current_state()
+            )
+            .into())
         }
         Some(instance_ctx) => {
             let serial = instance_ctx.serial.clone();
