@@ -17,18 +17,13 @@
 use std::sync::{Arc, Mutex};
 
 use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
-use overlay::{
-    OverlayContents, OverlayError, OverlayKind, OverlayManager, OverlayPage,
-};
+use overlay::{OverlayError, OverlayKind, OverlayManager, OverlayPage};
 
 use crate::{
     accessors::MemAccessor,
     common::{Lifecycle, VcpuId},
     enlightenment::{
-        hyperv::{
-            bits::*,
-            hypercall::{hypercall_page_contents, MsrHypercallValue},
-        },
+        hyperv::{bits::*, hypercall::MsrHypercallValue},
         AddCpuidError,
     },
     migrate::{
@@ -52,6 +47,13 @@ mod probes {
 
 const TYPE_NAME: &str = "guest-hyperv-interface";
 
+/// A collection of overlay pages that a Hyper-V enlightenment stack might be
+/// managing.
+#[derive(Default)]
+struct OverlayPages {
+    hypercall: Option<OverlayPage>,
+}
+
 #[derive(Default)]
 struct Inner {
     /// This enlightenment's overlay manager.
@@ -63,7 +65,8 @@ struct Inner {
     /// The last value stored in the [`bits::HV_X64_MSR_HYPERCALL`] MSR.
     msr_hypercall_value: MsrHypercallValue,
 
-    hypercall_overlay: Option<OverlayPage>,
+    /// This enlightenment's active overlay page handles.
+    overlays: OverlayPages,
 }
 
 pub struct HyperV {
@@ -95,7 +98,7 @@ impl HyperV {
         // manually cleared this bit).
         if value == 0 {
             inner.msr_hypercall_value.clear_enabled();
-            inner.hypercall_overlay.take();
+            inner.overlays.hypercall.take();
         }
 
         inner.msr_guest_os_id_value = value;
@@ -131,23 +134,22 @@ impl HyperV {
         // the guest.
         if !new.enabled() {
             inner.msr_hypercall_value = new;
-            inner.hypercall_overlay.take();
+            inner.overlays.hypercall.take();
             return WrmsrOutcome::Handled;
         }
 
         // Ensure the overlay is in the correct position.
-        let res = if let Some(overlay) = inner.hypercall_overlay.as_mut() {
+        let res = if let Some(overlay) = inner.overlays.hypercall.as_mut() {
             overlay.move_to(new.gpfn())
         } else {
             inner
                 .overlay_manager
                 .add_overlay(
                     new.gpfn(),
-                    OverlayKind::Hypercall,
-                    OverlayContents(Box::new(hypercall_page_contents())),
+                    OverlayKind::HypercallReturnNotSupported,
                 )
                 .map(|overlay| {
-                    inner.hypercall_overlay = Some(overlay);
+                    inner.overlays.hypercall = Some(overlay);
                 })
         };
 
@@ -250,40 +252,63 @@ impl Lifecycle for HyperV {
         TYPE_NAME
     }
 
-    fn reset(&self) {
+    fn pause(&self) {
         let mut inner = self.inner.lock().unwrap();
 
-        // Create a new overlay manager that tracks no pages. The old overlay
-        // manager needs to be dropped before any of the overlay pages that
-        // referenced it, so explicitly replace the existing manager with a new
-        // one (and drop the old one) before default-initializing the rest of
-        // the enlightenment's state.
-        let new_overlay_manager = Arc::new(OverlayManager::default());
-        let _ = std::mem::replace(
-            &mut inner.overlay_manager,
-            new_overlay_manager.clone(),
-        );
+        // Remove all active overlays from service. If the VM migrates, this
+        // allows the original guest pages that sit underneath those overlays to
+        // be transferred as part of the guest RAM transfer phase instead of
+        // possibly being serialized and sent during the device state phase. Any
+        // active overlays will be re-established on the target during its
+        // device state import phase.
+        //
+        // Any guest data written to the overlay pages will be lost. That's OK
+        // because all the overlays this module currently supports are
+        // semantically read-only (guests should expect to take an exception if
+        // they try to write to them, although today no such exception is
+        // raised).
+        //
+        // The caller who is coordinating the "pause VM" operation is required
+        // to ensure that devices are paused only if vCPUs are paused, so no
+        // vCPU will be able to observe the missing overlay.
+        inner.overlays = OverlayPages::default();
 
-        *inner = Inner {
-            overlay_manager: new_overlay_manager,
-            ..Default::default()
-        };
+        assert!(inner.overlay_manager.is_empty());
+    }
 
-        inner.overlay_manager.attach(&self.acc_mem);
+    fn resume(&self) {
+        let mut inner = self.inner.lock().unwrap();
+
+        assert!(inner.overlay_manager.is_empty());
+
+        // Re-establish any overlays that were removed when the enlightenment
+        // was paused.
+        //
+        // Writes to the hypercall MSR only persist if they specify a valid
+        // overlay PFN, so adding the hypercall overlay is guaranteed to
+        // succeed.
+        let hypercall_overlay =
+            inner.msr_hypercall_value.enabled().then(|| {
+                inner
+                    .overlay_manager
+                    .add_overlay(
+                        inner.msr_hypercall_value.gpfn(),
+                        OverlayKind::HypercallReturnNotSupported,
+                    )
+                    .expect("hypercall MSR is only enabled with a valid PFN")
+            });
+
+        inner.overlays = OverlayPages { hypercall: hypercall_overlay };
+    }
+
+    fn reset(&self) {
+        let inner = self.inner.lock().unwrap();
+        assert!(inner.overlay_manager.is_empty());
     }
 
     fn halt(&self) {
-        let mut inner = self.inner.lock().unwrap();
-
-        // Create a new overlay manager and drop the reference to the old one.
-        // This should be the only active reference to this manager, since all
-        // overlay page operations happen during VM exits, and the vCPUs have
-        // all quiesced by this point.
-        //
-        // This ensures that when this object is dropped, any overlay pages it
-        // owns can be dropped safely.
-        assert_eq!(Arc::strong_count(&inner.overlay_manager), 1);
-        inner.overlay_manager = OverlayManager::new();
+        let inner = self.inner.lock().unwrap();
+        assert!(inner.overlay_manager.is_empty());
     }
 
     fn migrate(&'_ self) -> Migrator<'_> {
@@ -309,58 +334,48 @@ impl MigrateSingle for HyperV {
         mut offer: PayloadOffer,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let data: migrate::HyperVEnlightenmentV1 = offer.parse()?;
+        let migrate::HyperVEnlightenmentV1 { msr_guest_os_id, msr_hypercall } =
+            offer.parse()?;
         let mut inner = self.inner.lock().unwrap();
 
+        // Re-establish any overlay pages that are active in the restored MSRs.
+        //
         // A well-behaved source should ensure that the hypercall MSR value is
         // within the guest's PA range and that its Enabled bit agrees with the
         // value of the guest OS ID MSR. But this data was received over the
         // wire, so for safety's sake, verify it all and return a migration
         // error if anything is inconsistent.
-        let hypercall_msr = MsrHypercallValue(data.msr_hypercall);
-        if hypercall_msr.enabled() {
-            if data.msr_guest_os_id == 0 {
+        let msr_hypercall_value = MsrHypercallValue(msr_hypercall);
+        let hypercall_overlay = if msr_hypercall_value.enabled() {
+            if msr_guest_os_id == 0 {
                 return Err(MigrateStateError::ImportFailed(
                     "hypercall MSR enabled but guest OS ID MSR is 0"
                         .to_string(),
                 ));
             }
 
-            // TODO(#850): Registering a new overlay with the overlay manager is
-            // the only way to get an `OverlayPage` for this overlay. However,
-            // the page's contents were already migrated in the RAM transfer
-            // phase, so it's not actually necessary to create a *new* overlay
-            // here; in fact, it would be incorrect to do so if the hypercall
-            // target PFN had multiple overlays and a different one was active!
-            // Fortunately, there's only one overlay type right now, so there's
-            // no way for a page to have multiple overlays.
-            //
-            // (It would also be incorrect to rewrite this page if the guest
-            // wrote data to it expecting to retrieve it later, but per the
-            // TLFS, writes to the hypercall page should #GP anyway, so guests
-            // ought not to expect too much here.)
-            //
-            // A better approach is to have the overlay manager export and
-            // import its contents and, on import, return the set of overlay
-            // page registrations that it imported. This layer can then check
-            // that these registrations are consistent with its MSR values
-            // before proceeding.
             match inner.overlay_manager.add_overlay(
-                hypercall_msr.gpfn(),
-                OverlayKind::Hypercall,
-                OverlayContents(Box::new(hypercall_page_contents())),
+                msr_hypercall_value.gpfn(),
+                OverlayKind::HypercallReturnNotSupported,
             ) {
-                Ok(overlay) => inner.hypercall_overlay = Some(overlay),
+                Ok(overlay) => Some(overlay),
                 Err(e) => {
                     return Err(MigrateStateError::ImportFailed(format!(
                         "failed to re-establish hypercall overlay: {e}"
                     )))
                 }
             }
-        }
+        } else {
+            None
+        };
 
-        inner.msr_guest_os_id_value = data.msr_guest_os_id;
-        inner.msr_hypercall_value = hypercall_msr;
+        *inner = Inner {
+            overlay_manager: inner.overlay_manager.clone(),
+            msr_guest_os_id_value: msr_guest_os_id,
+            msr_hypercall_value,
+            overlays: OverlayPages { hypercall: hypercall_overlay },
+        };
+
         Ok(())
     }
 }

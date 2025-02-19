@@ -12,7 +12,7 @@ use crate::migrate::Migrator;
 /// are so driven through those phases via various event functions (`start`,
 /// `pause`, `resume`, etc).
 ///
-/// Note: Calling any of these methods on a [Lifecycle] instance should be done
+/// NOTE: Calling any of these methods on a [Lifecycle] instance should be done
 /// from a context with access to a [Tokio runtime](tokio::runtime::Runtime):
 ///
 /// - [Lifecycle::start]
@@ -51,13 +51,21 @@ pub trait Lifecycle: Send + Sync + 'static {
     /// The device is not required to finish pausing inline. Instead, its
     /// implementation of [`Lifecycle::paused`] should return a future that
     /// completes only when the device is paused.
+    ///
+    /// WARNING: This function may only be called after pausing all of a VM's
+    /// vCPUs. This allows components to mutate state (such as VM memory) in
+    /// ways that should otherwise not be visible to a running vCPU.
     fn pause(&self) {}
 
     /// Directs this device to resume servicing the guest after pausing.
     ///
-    /// N.B. It is legal to interpose a `reset` between a pause and resume.
-    ///      If one occurs, the state driver ensures that the entire VM will be
-    ///      reset and reinitialized before any devices are resumed.
+    /// WARNING: This function must be called before resuming any of a VM's
+    /// vCPUs. This allows components to restore any world-state they preserved
+    /// during their `pause` callouts before vCPUs get a chance to perceive it.
+    ///
+    /// NOTE: It is legal to call `reset` between pausing and resuming. If this
+    /// occurs, the caller must ensure that all VM devices and CPUs will be
+    /// reset and reinitialized before resuming any devices.
     fn resume(&self) {}
 
     /// Directs this device to reset itself to the state it would have on a cold
