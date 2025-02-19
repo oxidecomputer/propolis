@@ -51,6 +51,7 @@ mod probes {
     }
     fn hyperv_wrmsr_reference_tsc(val: u64, gpa: u64, enabled: bool) {}
     fn hyperv_wrmsr_hypercall_bad_gpa(gpa: u64) {}
+    fn hyperv_rdmsr_reference_time(time_units: u64) {}
 }
 
 const TYPE_NAME: &str = "guest-hyperv-interface";
@@ -223,22 +224,64 @@ impl HyperV {
         let time_data = vmm::time::export_time_data(self.vmm_hdl())
             .expect("VMM time data can always be exported");
 
-        // `hrtime` is the current host high-resolution timer value (in
-        // nanoseconds), and `boot_hrtime` is the high-resolution timer value at
-        // which the VM was started, so it suffices to subtract the latter from
-        // the former and divide by 100 to get 100-nanosecond units.
+        // Two fields in the `time_data` struct are relevant here:
         //
-        // This module assumes that if its user migrates this VM, the migration
-        // procedure will adjust `boot_hrtime` on the target to account for any
-        // hrtime differences between the source and target VM hosts.
-        let ns_since_boot: u64 = time_data
+        // - `hrtime` is the time since the host booted, in nanoseconds.
+        // - `boot_hrtime` is the host time at which the VM booted.
+        //
+        // `boot_hrtime` is allowed to be negative if the VM started before
+        // its current host did. This can happen if the VM migrated to this host
+        // after being started on some other (even longer-lived) host.
+        //
+        // Validate a couple of assumptions:
+        //
+        // - The host never reports a negative uptime. (Note that i64::MAX
+        //   nanoseconds is 9.2e18 ns, so it takes approximately 292 years for
+        //   a nanosecond uptime counter to wrap.)
+        // - The guest's boot time is never in the future, i.e., it is never
+        //   greater than the current host time. If this happens, it either
+        //   means that host time went backwards or that the guest's
+        //   `boot_hrtime` was incorrectly mutated. In either case, this
+        //   computation is going to produce an incorrect guest timestamp value.
+        //
+        // These cases are both unexpected, so if either occurs, just crash the
+        // VM rather than make the guest deal (perhaps badly, e.g. by persisting
+        // an invalid calculated wall-clock time to disk) with reference time
+        // going backwards or with large skips in reference time.
+        //
+        // Note that during a live migration, the migration protocol is expected
+        // to verify these conditions and fail migration if creating either of
+        // them is required to represent guest time accurately.
+        assert!(time_data.hrtime >= 0);
+        assert!(time_data.hrtime >= time_data.boot_hrtime);
+
+        // Since hrtime is non-negative, this subtraction should never
+        // underflow, but it can *overflow* if `boot_hrtime` is negative and of
+        // sufficient magnitude.
+        //
+        // Although this situation could be represented by trying to wrap the
+        // reference counter, it's simpler just to abort, since this implies a
+        // VM uptime of more than 292 years. (If you are dealing with this
+        // problem from the 24th century, please accept the present author's
+        // apologies!)
+        let guest_uptime = time_data
             .hrtime
             .checked_sub(time_data.boot_hrtime)
-            .expect("overflow/underflow while calculating reference uptime")
-            .try_into()
-            .expect("guest uptime won't roll over");
+            .expect("overflow while calculating reference uptime");
 
-        RdmsrOutcome::Handled(ns_since_boot / 100)
+        // Since hrtime >= boot_hrtime, the resulting guest uptime should always
+        // be non-negative, and so it should be trivial to represent it as a
+        // u64.
+        let guest_uptime: u64 = guest_uptime
+            .try_into()
+            .expect("boot_hrtime should be less than host hrtime");
+
+        // The computed uptime is in nanoseconds, but reference time is measured
+        // in 100 ns units.
+        let reference_uptime = guest_uptime / 100;
+
+        probes::hyperv_rdmsr_reference_time!(|| reference_uptime);
+        RdmsrOutcome::Handled(reference_uptime)
     }
 
     fn handle_wrmsr_reference_tsc(&self, value: u64) -> WrmsrOutcome {
