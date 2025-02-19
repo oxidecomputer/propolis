@@ -17,7 +17,9 @@ use crate::{
     },
     serial::{BufferKind, SerialConsole},
     test_vm::{
-        environment::Environment, server::ServerProcessParameters, spec::VmSpec,
+        environment::Environment, environment::MetricsLocation,
+        metrics::FakeOximeterContext, server::ServerProcessParameters,
+        spec::VmSpec,
     },
     Framework,
 };
@@ -51,6 +53,7 @@ type PropolisClientResult<T> = StdResult<ResponseValue<T>, PropolisClientError>;
 
 pub(crate) mod config;
 pub(crate) mod environment;
+pub(crate) mod metrics;
 mod server;
 pub(crate) mod spec;
 
@@ -156,6 +159,7 @@ pub struct TestVm {
     id: Uuid,
     client: Client,
     server: Option<server::PropolisServer>,
+    metrics: Option<metrics::FakeOximeterServer>,
     spec: VmSpec,
     environment_spec: EnvironmentSpec,
     data_dir: Utf8PathBuf,
@@ -228,9 +232,17 @@ impl TestVm {
         vm_id: Uuid,
         vm_spec: VmSpec,
         environment_spec: EnvironmentSpec,
-        params: ServerProcessParameters,
+        mut params: ServerProcessParameters,
         cleanup_task_tx: UnboundedSender<JoinHandle<()>>,
     ) -> Result<Self> {
+        let metrics = environment_spec.metrics.as_ref().map(|m| match m {
+            MetricsLocation::Local => {
+                let metrics_server = metrics::spawn_fake_oximeter_server();
+                params.metrics_addr = Some(metrics_server.local_addr());
+                metrics_server
+            }
+        });
+
         let data_dir = params.data_dir.to_path_buf();
         let server_addr = params.server_addr;
         let server = server::PropolisServer::new(
@@ -245,6 +257,7 @@ impl TestVm {
             id: vm_id,
             client,
             server: Some(server),
+            metrics,
             spec: vm_spec,
             environment_spec,
             data_dir,
@@ -277,6 +290,10 @@ impl TestVm {
             metadata: self.spec.metadata.clone(),
             description: "Pheidippides-managed VM".to_string(),
         }
+    }
+
+    pub fn metrics_sampler(&self) -> Option<FakeOximeterContext> {
+        self.metrics.as_ref().map(|m| m.sampler())
     }
 
     /// Sends an instance ensure request to this VM's server, allowing it to

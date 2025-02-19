@@ -4,53 +4,16 @@
 
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use dropshot::endpoint;
-use dropshot::ApiDescription;
-use dropshot::ConfigDropshot;
-use dropshot::HttpError;
-use dropshot::HttpResponseCreated;
-use dropshot::HttpServer;
-use dropshot::HttpServerStarter;
-use dropshot::RequestContext;
-use dropshot::TypedBody;
-use omicron_common::api::internal::nexus::ProducerEndpoint;
-use omicron_common::api::internal::nexus::ProducerKind;
-use omicron_common::api::internal::nexus::ProducerRegistrationResponse;
 use oximeter::types::{ProducerResults, ProducerResultsItem, Sample};
 use oximeter::{Datum, FieldValue};
 use phd_testcase::*;
-use slog::Drain;
-use slog::Logger;
-use tracing::trace;
-use uuid::Uuid;
-
-fn test_logger() -> Logger {
-    let dec = slog_term::PlainSyncDecorator::new(slog_term::TestStdoutWriter);
-    let drain = slog_term::FullFormat::new(dec).build().fuse();
-    Logger::root(drain, slog::o!("component" => "fake-cleanup-task"))
-}
-
-// Re-registration interval for tests. A long value here helps avoid log spew
-// from Oximeter, which will re-register after about 1/6th of this interval
-// elapses.
-const INTERVAL: Duration = Duration::from_secs(300);
+use tracing::{trace, warn};
 
 // For convenience when comparing times below.
 const NANOS_PER_SEC: f64 = 1_000_000_000.0;
-
-struct PropolisOximeterSampler {
-    addr: std::net::SocketAddr,
-    uuid: Uuid,
-}
-
-struct FakeNexusContext {
-    sampler: Arc<Mutex<Option<PropolisOximeterSampler>>>,
-}
 
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, strum::EnumString)]
 #[strum(serialize_all = "snake_case")]
@@ -61,7 +24,7 @@ enum VcpuState {
     Waiting,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct VcpuUsageMetric {
     metrics: HashMap<VcpuState, u64>,
 }
@@ -78,10 +41,54 @@ struct VcpuUsageMetric {
 /// `VirtualMachineMetrics` collects these all back together into a single view
 /// to test against. See [`VirtualMachineMetrics::add_producer_result`] as the
 /// means to accumulate samples into this struct.
+#[derive(Debug)]
 struct VirtualMachineMetrics {
     oldest_time: DateTime<Utc>,
     reset: Option<u64>,
     vcpus: HashMap<u32, VcpuUsageMetric>,
+}
+
+/// Collect a record of all metrics for a VM as of the time this function is called.
+async fn vm_metrics_snapshot(
+    sampler: &crate::stats::phd_framework::FakeOximeterContext,
+) -> VirtualMachineMetrics {
+    let min_metric_time = Utc::now();
+
+    let metrics_check = move |producer_items| {
+        producer_results_as_vm_metrics(producer_items)
+            .filter(|metrics| metrics.oldest_time >= min_metric_time)
+    };
+
+    sampler.wait_for_propolis_stats(metrics_check).await
+}
+
+fn producer_results_as_vm_metrics(
+    s: ProducerResults,
+) -> Option<VirtualMachineMetrics> {
+    let results = s;
+    let mut metrics = VirtualMachineMetrics {
+        oldest_time: Utc::now(),
+        reset: None,
+        vcpus: HashMap::new(),
+    };
+
+    for result in results {
+        match result {
+            ProducerResultsItem::Ok(samples) => {
+                metrics.add_producer_result(&samples);
+            }
+            ProducerResultsItem::Err(e) => {
+                panic!("ProducerResultsItem error: {}", e);
+            }
+        }
+    }
+
+    if metrics.vcpus.is_empty() {
+        trace!("no vcpu metrics yet?");
+        return None;
+    }
+
+    Some(metrics)
 }
 
 impl VirtualMachineMetrics {
@@ -174,182 +181,42 @@ impl VirtualMachineMetrics {
     }
 }
 
-impl FakeNexusContext {
-    fn new() -> Self {
-        Self { sampler: Arc::new(Mutex::new(None)) }
-    }
-
-    fn set_producer_info(&self, info: ProducerEndpoint) {
-        assert_eq!(info.kind, ProducerKind::Instance);
-        *self.sampler.lock().unwrap() =
-            Some(PropolisOximeterSampler { addr: info.address, uuid: info.id });
-    }
-
-    async fn wait_for_producer(&self) {
-        loop {
-            {
-                let sampler = self.sampler.lock().unwrap();
-                if sampler.is_some() {
-                    return;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    /// Sample Propolis' Oximeter metrics, waiting up to a few seconds so that
-    /// all measurements are from the time this function was called or later.
-    async fn wait_for_propolis_stats(&self) -> VirtualMachineMetrics {
-        let min_metric_time = Utc::now();
-
-        let result = backoff::future::retry(
-            backoff::ExponentialBackoff {
-                max_interval: Duration::from_secs(1),
-                max_elapsed_time: Some(Duration::from_secs(10)),
-                ..Default::default()
-            },
-            || async {
-                if let Some(metrics) = self.sample_propolis_stats().await {
-                    if metrics.oldest_time >= min_metric_time {
-                        Ok(metrics)
-                    } else {
-                        Err(backoff::Error::transient(anyhow::anyhow!(
-                            "sampled metrics are not recent enough"
-                        )))
-                    }
-                } else {
-                    Err(backoff::Error::transient(anyhow::anyhow!(
-                        "full metrics sample not available (yet?)"
-                    )))
-                }
-            },
-        )
-        .await;
-
-        result.expect("propolis-server Oximeter stats should become available")
-    }
-
-    /// Sample Propolis' Oximeter metrics, including the timestamp of the oldest
-    /// metric reflected in the sample.
-    ///
-    /// Returns `None` for some kinds of incomplete stats or when no stats are
-    /// available at all.
-    async fn sample_propolis_stats(&self) -> Option<VirtualMachineMetrics> {
-        let metrics_url = {
-            let sampler = self.sampler.lock().unwrap();
-            let stats = sampler.as_ref().expect("stats url info exists");
-            format!("http://{}/{}", stats.addr, stats.uuid)
-        };
-        let res = reqwest::Client::new()
-            .get(metrics_url)
-            .send()
-            .await
-            .expect("can send oximeter stats request");
-        assert!(
-            res.status().is_success(),
-            "failed to fetch stats from propolis-server"
-        );
-        trace!(?res, "got stats response");
-        let results =
-            res.json::<ProducerResults>().await.expect("can deserialize");
-
-        let mut metrics = VirtualMachineMetrics {
-            oldest_time: Utc::now(),
-            reset: None,
-            vcpus: HashMap::new(),
-        };
-
-        for result in results {
-            match result {
-                ProducerResultsItem::Ok(samples) => {
-                    metrics.add_producer_result(&samples);
-                }
-                ProducerResultsItem::Err(e) => {
-                    panic!("ProducerResultsItem error: {}", e);
-                }
-            }
-        }
-
-        if metrics.vcpus.is_empty() {
-            trace!("no vcpu metrics yet?");
-            return None;
-        }
-
-        Some(metrics)
-    }
-}
-
-// Stub functionality for our fake Nexus that test Oximeter produces
-// (`propolis-server`) will register with.
-#[endpoint {
-    method = POST,
-    path = "/metrics/producers",
-}]
-async fn register_producer(
-    rqctx: RequestContext<FakeNexusContext>,
-    producer_info: TypedBody<ProducerEndpoint>,
-) -> Result<HttpResponseCreated<ProducerRegistrationResponse>, HttpError> {
-    let info = producer_info.into_inner();
-    trace!(?info, "producer registration");
-    rqctx.context().set_producer_info(info);
-
-    Ok(HttpResponseCreated(ProducerRegistrationResponse {
-        lease_duration: INTERVAL,
-    }))
-}
-
-// Start a Dropshot server mocking the Nexus registration endpoint.
-fn spawn_fake_nexus_server() -> HttpServer<FakeNexusContext> {
-    let log = test_logger();
-
-    let mut api = ApiDescription::new();
-    api.register(register_producer).expect("Expected to register endpoint");
-    let server = HttpServerStarter::new(
-        &ConfigDropshot {
-            bind_address: "[::1]:0".parse().unwrap(),
-            request_body_max_bytes: 2048,
-            ..Default::default()
-        },
-        api,
-        FakeNexusContext::new(),
-        &log,
-    )
-    .expect("Expected to start Dropshot server")
-    .start();
-
-    slog::info!(
-        log,
-        "fake nexus test server listening";
-        "address" => ?server.local_addr(),
-    );
-
-    server
-}
-
 #[phd_testcase]
 async fn instance_vcpu_stats(ctx: &Framework) {
-    let fake_nexus = spawn_fake_nexus_server();
+    /// Allow as much as 20% measurement error for time comparisons in this
+    /// test. When measuring active guest time, some guests (looking at you
+    /// Windows) may have services that continue running in the time period
+    /// where our test workload completes but we're still waiting for metrics;
+    /// this means Oximeter can see more running time than we know we caused.
+    /// When measuring guest idle time, these same idle services can result in
+    /// the VM being less idle than our intended idling.
+    ///
+    /// "0.XX" here reflects an expectation that a system with no user-directed
+    /// activity will actually be idle for XX% of a given time period. In
+    /// practice this may be as low as 5% or less (many Linux guests), and as
+    /// high as 12% in practice for Windows guests. Round up to 20% for some
+    /// buffer.
+    const TOLERANCE: f64 = 0.8;
 
     let mut env = ctx.environment_builder();
-    env.metrics_addr(Some(fake_nexus.local_addr()));
+    env.metrics(Some(crate::stats::phd_framework::MetricsLocation::Local));
 
     let mut vm_config = ctx.vm_config_builder("instance_vcpu_stats");
     vm_config.cpus(1);
 
-    let mut source = ctx.spawn_vm(&vm_config, Some(&env)).await?;
+    let mut vm = ctx.spawn_vm(&vm_config, Some(&env)).await?;
 
-    source.launch().await?;
+    let sampler = vm.metrics_sampler().expect("metrics are enabled");
+    vm.launch().await?;
 
-    fake_nexus.app_private().wait_for_producer().await;
-    source.wait_to_boot().await?;
+    vm.wait_to_boot().await?;
 
     // From watching Linux guests, some services may be relatively active right
     // at and immediately after login. Wait a few seconds to try counting any
     // post-boot festivities as part of "baseline".
-    source.run_shell_command("sleep 10").await?;
+    vm.run_shell_command("sleep 20").await?;
 
-    let start_metrics =
-        fake_nexus.app_private().wait_for_propolis_stats().await;
+    let start_metrics = vm_metrics_snapshot(&sampler).await;
 
     // Measure a specific amount of time with guest vCPUs in the "run" state.
     //
@@ -362,36 +229,38 @@ async fn instance_vcpu_stats(ctx: &Framework) {
     // Instead, run some busywork, time how long that took on the host OS, then
     // know the guest OS should have spent around that long running. This still
     // relies us measuring the completion time relatively quickly after the
-    // busywork completes, but it's one fewer sources of nondeterminism.
+    // busywork completes, but it's one fewer vms of nondeterminism.
 
     let run_start = std::time::SystemTime::now();
-    source.run_shell_command("i=0").await?;
-    source.run_shell_command("lim=2000000").await?;
-    source
-        .run_shell_command("while [ $i -lt $lim ]; do i=$((i+1)); done")
-        .await?;
+    vm.run_shell_command("i=0").await?;
+    vm.run_shell_command("lim=2000000").await?;
+    vm.run_shell_command("while [ $i -lt $lim ]; do i=$((i+1)); done").await?;
     let run_time = run_start.elapsed().expect("time goes forwards");
-    trace!("measured run time {:?}", run_time);
+    tracing::warn!("measured run time {:?}", run_time);
 
-    let now_metrics = fake_nexus.app_private().wait_for_propolis_stats().await;
+    let now_metrics = vm_metrics_snapshot(&sampler).await;
+    let total_run_window = run_start.elapsed().expect("time goes forwards");
+    tracing::warn!("start_metrics: {:?}", start_metrics);
+    tracing::warn!("now_metrics:   {:?}", now_metrics);
 
     let run_delta = (now_metrics.vcpu_state_total(&VcpuState::Run)
         - start_metrics.vcpu_state_total(&VcpuState::Run))
         as u128;
 
-    // The guest should not have run longer than we were running a shell command
-    // in the guest..
-    assert!(run_delta < run_time.as_nanos());
+    // The guest should not have run longer than the total time we were
+    // measuring it..
+    assert!(run_delta < total_run_window.as_nanos());
 
     // Our measurement of how long the guest took should be pretty close to the
-    // guest's measured running time. Check only that the guest ran for at least
-    // 90% of the time we measured it running because we're woken strictly after
-    // the guest completed its work - we know we've overcounted some.
+    // guest's measured running time. It won't be exact: the guest may have
+    // services that continue in the period between the shell command completing
+    // and a final metrics collection - it may be running for more time than we
+    // intended.
     //
-    // (Anecdotally the actual difference here on a responsive test system is
-    // closer to 10ms, or <1% of expected runtime. Lots of margin for error on a
-    // very busy CI system.)
-    let min_guest_run_delta = (run_time.as_nanos() as f64 * 0.9) as u128;
+    // (Anecdotally the actual difference here depends on the guest, with
+    // minimal Linux guests like Alpine being quite close with <1% differences
+    // here.)
+    let min_guest_run_delta = (run_time.as_nanos() as f64 * TOLERANCE) as u128;
     assert!(
         run_delta > min_guest_run_delta,
         "{} > {}",
@@ -421,18 +290,17 @@ async fn instance_vcpu_stats(ctx: &Framework) {
     // to get final kstat readings. The miminum amount of idling time is
     // the time elapsed since just after the initial kstat readings.
     let max_idle_start = std::time::SystemTime::now();
-    let idle_start_metrics =
-        fake_nexus.app_private().wait_for_propolis_stats().await;
+    let idle_start_metrics = vm_metrics_snapshot(&sampler).await;
     let idle_start = std::time::SystemTime::now();
-    source.run_shell_command("sleep 20").await?;
+    vm.run_shell_command("sleep 10").await?;
 
-    let now_metrics = fake_nexus.app_private().wait_for_propolis_stats().await;
+    let now_metrics = vm_metrics_snapshot(&sampler).await;
 
     // The guest VM would continues to exist with its idle vCPU being accounted
-    // by the kstats Oximeter samples. This means `wait_for_propolis_stats`
-    // could introduce as much as a full Oximeter sample interval of additional
-    // idle vCPU, and is we why wait to measure idle time until *after* getting
-    // new Oximeter metrics.
+    // by the kstats Oximeter samples. This means `vm_metrics_snapshot` could
+    // introduce as much as a full Oximeter sample interval of additional idle
+    // vCPU, and is we why wait to measure idle time until *after* getting new
+    // Oximeter metrics.
     let max_idle_time = max_idle_start.elapsed().expect("time goes forwards");
     let idle_time = idle_start.elapsed().expect("time goes forwards");
     trace!("measured idle time {:?}", idle_time);
@@ -450,7 +318,8 @@ async fn instance_vcpu_stats(ctx: &Framework) {
         idle_delta as f64 / NANOS_PER_SEC,
         idle_time.as_nanos() as f64 / NANOS_PER_SEC
     );
-    let min_guest_idle_delta = (idle_time.as_nanos() as f64 * 0.9) as u128;
+    let min_guest_idle_delta =
+        (idle_time.as_nanos() as f64 * TOLERANCE) as u128;
     assert!(
         idle_delta > min_guest_idle_delta,
         "{} > {}",
@@ -459,11 +328,17 @@ async fn instance_vcpu_stats(ctx: &Framework) {
     );
 
     // The delta in vCPU `run` time should be negligible. We've run one shell
-    // command which in turn just idled.
+    // command which in turn just idled. In reality, if the guest has idle
+    // processes running even sitting at an empty prompt, assume there is up to
+    // THRESHOLD activity happening anyway. This is another threshold that
+    // varies based on guest OS type.
     let run_delta = (now_metrics.vcpu_state_total(&VcpuState::Run)
         - idle_start_metrics.vcpu_state_total(&VcpuState::Run))
         as u128;
-    assert!(run_delta < Duration::from_millis(100).as_nanos());
+    let idle_delta = (now_metrics.vcpu_state_total(&VcpuState::Idle)
+        - idle_start_metrics.vcpu_state_total(&VcpuState::Idle))
+        as u128;
+    assert!(run_delta < (idle_delta as f64 * (1.0 - TOLERANCE)) as u128);
 
     let full_run_delta = (now_metrics.vcpu_state_total(&VcpuState::Run)
         - start_metrics.vcpu_state_total(&VcpuState::Run))
@@ -485,14 +360,40 @@ async fn instance_vcpu_stats(ctx: &Framework) {
     // been spent emulating instructions on the guest's behalf. Anecdotally the
     // this is on the order of 8ms between the two samples. This should be very
     // low; the workload is almost entirely guest user mode execution.
-    assert!(full_emul_delta < Duration::from_millis(100).as_nanos());
+    if vm.guest_os_kind().is_linux() {
+        // Unfortunately, the above is currently too optimistic in the general
+        // case of arbitrary guest OSes - if a guest OS has idle services, and
+        // those idle services involve checking the current time, and the guest
+        // has determined the TSC is unreliable, we may count substantial
+        // emulation time due to emulating guest accesses to the ACPI PM timer.
+        //
+        // Linux guests are known to not (currently?) consult the current time
+        // if fully idle, so we can be more precise about emulation time
+        // assertions.
+        assert!(
+            full_emul_delta < Duration::from_millis(100).as_nanos(),
+            "full emul delta was above threshold: {} > {}",
+            full_emul_delta,
+            Duration::from_millis(100).as_nanos()
+        );
+    } else {
+        warn!(
+            "guest OS may cause substantial emulation time due to benign \
+               factors outside our control; skipping emulation stat check"
+        );
+    }
 
     // Waiting is a similar but more constrained situation as `emul`: time when
     // the vCPU was runnable but not *actually* running. This should be a very
     // short duration, and on my workstation this is around 400 microseconds.
     // Again, test against a significantly larger threshold in case CI is
     // extremely slow.
-    assert!(full_waiting_delta < Duration::from_millis(20).as_nanos());
+    assert!(
+        full_waiting_delta < Duration::from_millis(20).as_nanos(),
+        "full waiting delta was above threshold: {} > {}",
+        full_waiting_delta,
+        Duration::from_millis(20).as_nanos()
+    );
 
     trace!("run: {}", full_run_delta);
     trace!("idle: {}", full_idle_delta);

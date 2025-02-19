@@ -16,6 +16,7 @@ bhyve_api.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 cfg-if.workspace = true
 cpuid_utils.workspace = true
+dropshot.workspace = true
 errno.workspace = true
 fatfs.workspace = true
 futures.workspace = true
@@ -23,6 +24,8 @@ flate2.workspace = true
 hex.workspace = true
 libc.workspace = true
 newtype_derive.workspace = true
+omicron-common.workspace = true
+oximeter.workspace = true
 propolis-client.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 ring.workspace = true

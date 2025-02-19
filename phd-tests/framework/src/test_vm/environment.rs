@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddrV4};
 
 use anyhow::Context;
 
@@ -16,11 +16,22 @@ pub enum VmLocation {
     // TODO: Support remote VMs.
 }
 
+/// Specifies where test VMs should report metrics to, if anywhere.
+#[derive(Clone, Copy, Debug)]
+pub enum MetricsLocation {
+    /// Oximeter metrics should be reported to a server colocated with the test
+    /// VM to be started.
+    Local,
+    // When the time comes to support remote VMs, it will presumably be useful
+    // to have local and (perhaps multiple) remote VMs report metrics to the
+    // same server. But we don't support remote VMs yet.
+}
+
 #[derive(Clone, Debug)]
 pub struct EnvironmentSpec {
     pub(crate) location: VmLocation,
     pub(crate) propolis_artifact: String,
-    pub(crate) metrics_addr: Option<SocketAddr>,
+    pub(crate) metrics: Option<MetricsLocation>,
 }
 
 impl EnvironmentSpec {
@@ -28,7 +39,7 @@ impl EnvironmentSpec {
         Self {
             location,
             propolis_artifact: propolis_artifact.to_owned(),
-            metrics_addr: None,
+            metrics: None,
         }
     }
 
@@ -42,11 +53,8 @@ impl EnvironmentSpec {
         self
     }
 
-    pub fn metrics_addr(
-        &mut self,
-        metrics_addr: Option<SocketAddr>,
-    ) -> &mut Self {
-        self.metrics_addr = metrics_addr;
+    pub fn metrics(&mut self, metrics: Option<MetricsLocation>) -> &mut Self {
+        self.metrics = metrics;
         self
     }
 
@@ -88,6 +96,18 @@ impl<'a> Environment<'a> {
                     .port_allocator
                     .next()
                     .context("getting VNC server port")?;
+                let metrics_addr = builder.metrics.and_then(|m| match m {
+                    MetricsLocation::Local => {
+                        // If the test requests metrics are local, we'll start
+                        // an Oximeter stand-in for this VM when setting up this
+                        // environment later. `start_local_vm` will patch in the
+                        // actual server address when it has created one.
+                        //
+                        // If the VM is to be started remotely but requests
+                        // "Local" metrics, that's probably an error.
+                        None
+                    }
+                });
                 let params = ServerProcessParameters {
                     server_path: propolis_server,
                     data_dir: framework.tmp_directory.as_path(),
@@ -95,7 +115,7 @@ impl<'a> Environment<'a> {
                         Ipv4Addr::new(127, 0, 0, 1),
                         server_port,
                     ),
-                    metrics_addr: builder.metrics_addr,
+                    metrics_addr,
                     vnc_addr: SocketAddrV4::new(
                         Ipv4Addr::new(127, 0, 0, 1),
                         vnc_port,
