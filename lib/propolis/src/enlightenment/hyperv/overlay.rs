@@ -186,6 +186,7 @@ impl std::fmt::Debug for OverlayContents {
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub enum OverlayKind {
     Hypercall,
+    ReferenceTsc,
 
     #[cfg(test)]
     Test(u8),
@@ -677,6 +678,17 @@ impl OverlayManager {
         )
     }
 
+    /// Returns `Ok(true)` if the supplied PFN can be used as the target of an
+    /// overlay page, `Ok(false)` if it can't, and `Err` if the guest memory
+    /// context is inaccessible such that it's not possible to tell.
+    pub(super) fn pfn_is_valid(&self, pfn: Pfn) -> Result<bool, OverlayError> {
+        let memctx = self
+            .acc_mem
+            .access()
+            .ok_or(OverlayError::GuestMemoryInaccessible)?;
+        Ok(MappedPfn::new(pfn, &memctx).is_ok())
+    }
+
     pub(super) fn export(&self) -> migrate::HyperVOverlaysV1 {
         self.inner.lock().unwrap().export()
     }
@@ -709,6 +721,7 @@ pub mod migrate {
     #[serde(tag = "kind", content = "value")]
     pub enum MigratedOverlayKind {
         Hypercall,
+        ReferenceTsc,
 
         #[cfg(test)]
         Test(u8),
@@ -718,6 +731,7 @@ pub mod migrate {
         fn from(value: OverlayKind) -> Self {
             match value {
                 OverlayKind::Hypercall => Self::Hypercall,
+                OverlayKind::ReferenceTsc => Self::ReferenceTsc,
 
                 #[cfg(test)]
                 OverlayKind::Test(n) => Self::Test(n),
@@ -729,6 +743,7 @@ pub mod migrate {
         fn from(value: MigratedOverlayKind) -> Self {
             match value {
                 MigratedOverlayKind::Hypercall => Self::Hypercall,
+                MigratedOverlayKind::ReferenceTsc => Self::ReferenceTsc,
 
                 #[cfg(test)]
                 MigratedOverlayKind::Test(n) => Self::Test(n),
