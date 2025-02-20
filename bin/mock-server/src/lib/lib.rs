@@ -290,7 +290,6 @@ async fn instance_state_monitor(
         "instance state monitor request";
         "request_gen" => gen,
     );
-    let next_gen = gen + 1;
     loop {
         let state = {
             let mock_state = state_watcher.borrow_and_update();
@@ -298,7 +297,7 @@ async fn instance_state_monitor(
                 // We are single-stepping, and have not yet reached the
                 // requested generation. Keep waiting until single-stepped to
                 // where we need to be.
-                Some(g) if next_gen > g => {
+                Some(g) if gen > g => {
                     slog::info!(
                         rqctx.log,
                         "instance state monitor: wait for single step...";
@@ -310,7 +309,7 @@ async fn instance_state_monitor(
                 // Otherwise, if we have stepped to the requested generation, or
                 // if we are not in single-step mode, just return the current
                 // thing.
-                _ => mock_state.queue.get(&next_gen).cloned(),
+                _ => mock_state.queue.get(&gen).cloned(),
             }
         };
 
@@ -319,7 +318,6 @@ async fn instance_state_monitor(
                 rqctx.log,
                 "instance state monitor";
                 "request_gen" => gen,
-                "current_gen" => next_gen,
                 "state" => ?state.state,
             );
             // Advance to the state with the generation we showed to the
@@ -332,7 +330,7 @@ async fn instance_state_monitor(
                 .await
                 .as_mut()
                 .expect("if we didn't have an instance, we shouldn't have gotten here")
-                .curr_gen = next_gen;
+                .curr_gen = gen;
             return Ok(HttpResponseOk(state));
         }
 
