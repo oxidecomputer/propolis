@@ -637,7 +637,7 @@ mod raw {
 
     #[allow(dead_code)]
     #[derive(Copy, Clone, FromBytes, FromZeroes, AsBytes)]
-    #[repr(packed)]
+    #[repr(C, packed)]
     pub(crate) struct PixelFormat {
         pub bits_per_pixel: u8,
         pub depth: u8,
@@ -653,7 +653,7 @@ mod raw {
     }
 
     #[derive(Copy, Clone, FromBytes, FromZeroes)]
-    #[repr(packed)]
+    #[repr(C, packed)]
     pub(crate) struct FramebufferUpdateRequest {
         pub incremental: u8,
         pub position: Position,
@@ -661,7 +661,7 @@ mod raw {
     }
 
     #[derive(Copy, Clone, FromBytes, FromZeroes)]
-    #[repr(packed)]
+    #[repr(C, packed)]
     pub(crate) struct KeyEvent {
         pub down_flag: u8,
         pub _padding: [u8; 2],
@@ -669,14 +669,14 @@ mod raw {
     }
 
     #[derive(Copy, Clone, FromBytes, FromZeroes)]
-    #[repr(packed)]
+    #[repr(C, packed)]
     pub(crate) struct PointerEvent {
         pub button_mask: u8,
         pub position: Position,
     }
 
     #[derive(Copy, Clone, FromBytes, FromZeroes)]
-    #[repr(packed)]
+    #[repr(C, packed)]
     pub(crate) struct Position {
         pub x: U16,
         pub y: U16,
@@ -688,7 +688,7 @@ mod raw {
     }
 
     #[derive(Copy, Clone, FromBytes, FromZeroes)]
-    #[repr(packed)]
+    #[repr(C, packed)]
     pub(crate) struct Resolution {
         width: U16,
         height: U16,
@@ -700,7 +700,7 @@ mod raw {
     }
 
     #[derive(Copy, Clone, AsBytes)]
-    #[repr(packed)]
+    #[repr(C, packed)]
     #[allow(dead_code)]
     pub(crate) struct FramebufferUpdateHeader {
         msg_type: u8,

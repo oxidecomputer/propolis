@@ -1020,7 +1020,7 @@ impl MachineInitializer<'_> {
             .map(|ident| {
                 match ident.eax & 0xf00 {
                     // If family ID is 0xf, extended family is added to it
-                    0xf00 => (ident.eax >> 20 & 0xff) + 0xf,
+                    0xf00 => ((ident.eax >> 20) & 0xff) + 0xf,
                     // ... otherwise base family ID is used
                     base => base >> 8,
                 }
@@ -1048,7 +1048,7 @@ impl MachineInitializer<'_> {
         };
 
         let proc_id = cpuid_ident
-            .map(|id| u64::from(id.eax) | u64::from(id.edx) << 32)
+            .map(|id| u64::from(id.eax) | (u64::from(id.edx) << 32))
             .unwrap_or(0);
 
         let proc_version = cpuid_procname

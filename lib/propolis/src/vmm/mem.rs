@@ -1061,7 +1061,7 @@ impl<T: Copy + FromBytes> Iterator for GuestData<MemMany<'_, T>> {
     fn next(&mut self) -> Option<Self::Item> {
         let res = self.get(self.pos);
         self.pos += 1;
-        res.map(GuestData::from)
+        res
     }
 }
 

@@ -258,7 +258,7 @@ struct State {
 }
 impl State {
     fn dma_addr(&self) -> u64 {
-        u64::from(self.dma_addr_high) << 32 | u64::from(self.dma_addr_low)
+        (u64::from(self.dma_addr_high) << 32) | u64::from(self.dma_addr_low)
     }
     fn reset(&mut self) {
         self.selected = None;
@@ -987,7 +987,7 @@ mod test {
             &mem,
             req_addr,
             DmaReq {
-                ctrl: u32::from(LegacyId::Signature as u16) << 16 | 0x000a,
+                ctrl: (u32::from(LegacyId::Signature as u16) << 16) | 0x000a,
                 len: 4,
                 addr: dma_addr,
             },
@@ -1010,7 +1010,7 @@ mod test {
         write_dma_req(
             &mem,
             req_addr,
-            DmaReq { ctrl: 0xfffe << 16 | 0x000a, len: 4, addr: dma_addr },
+            DmaReq { ctrl: (0xfffe << 16) | 0x000a, len: 4, addr: dma_addr },
         );
 
         // Put garbage at dma destination to confirm it gets overwritten

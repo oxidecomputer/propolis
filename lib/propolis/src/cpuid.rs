@@ -165,7 +165,7 @@ impl Specializer {
                 None => break,
                 Some(vals) => {
                     // bits 7:5 hold the cache level
-                    let visible_count = match (vals.eax & 0b11100000 >> 5) {
+                    let visible_count = match ((vals.eax & 0b11100000) >> 5) {
                         0b001 | 0b010 => {
                             // L1/L2 shared by SMT siblings
                             if self.has_smt {
