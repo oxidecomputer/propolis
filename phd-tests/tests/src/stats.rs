@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::Duration;
 
-use phd_framework::test_vm::{FakeOximeterContext, MetricsLocation};
+use phd_framework::test_vm::{FakeOximeterSampler, MetricsLocation};
 
 use chrono::{DateTime, Utc};
 use oximeter::types::{ProducerResults, ProducerResultsItem, Sample};
@@ -64,7 +64,7 @@ struct VirtualMachineMetrics {
 
 /// Collect a record of all metrics for a VM as of the time this function is called.
 async fn vm_metrics_snapshot(
-    sampler: &FakeOximeterContext,
+    sampler: &FakeOximeterSampler,
 ) -> VirtualMachineMetrics {
     let min_metric_time = Utc::now();
 

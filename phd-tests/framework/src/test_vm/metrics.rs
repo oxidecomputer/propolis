@@ -25,7 +25,7 @@ fn test_logger() -> Logger {
     Logger::root(drain, slog::o!("component" => "fake-cleanup-task"))
 }
 
-struct PropolisOximeterSampler {
+struct OximeterProducerInfo {
     addr: std::net::SocketAddr,
     uuid: Uuid,
 }
@@ -35,8 +35,8 @@ pub(crate) struct FakeOximeterServer {
 }
 
 pub(crate) struct FakeOximeterServerState {
-    sampler_sender: watch::Sender<Option<PropolisOximeterSampler>>,
-    sampler: watch::Receiver<Option<PropolisOximeterSampler>>,
+    sampler_sender: watch::Sender<Option<OximeterProducerInfo>>,
+    sampler: watch::Receiver<Option<OximeterProducerInfo>>,
 }
 
 impl FakeOximeterServer {
@@ -44,15 +44,15 @@ impl FakeOximeterServer {
         self.server.local_addr()
     }
 
-    pub fn sampler(&self) -> FakeOximeterContext {
-        FakeOximeterContext {
+    pub fn sampler(&self) -> FakeOximeterSampler {
+        FakeOximeterSampler {
             sampler: self.server.app_private().sampler.clone(),
         }
     }
 }
 
-pub struct FakeOximeterContext {
-    sampler: watch::Receiver<Option<PropolisOximeterSampler>>,
+pub struct FakeOximeterSampler {
+    sampler: watch::Receiver<Option<OximeterProducerInfo>>,
 }
 
 impl FakeOximeterServerState {
@@ -68,7 +68,7 @@ impl FakeOximeterServerState {
         assert_eq!(info.kind, ProducerKind::Instance);
 
         let new_sampler =
-            PropolisOximeterSampler { addr: info.address, uuid: info.id };
+            OximeterProducerInfo { addr: info.address, uuid: info.id };
 
         // There should always be at least one Receiver on the channel since we
         // hold one in `self`.
@@ -78,7 +78,7 @@ impl FakeOximeterServerState {
     }
 }
 
-impl FakeOximeterContext {
+impl FakeOximeterSampler {
     /// Sample Propolis' Oximeter metrics, taking some function that determines
     /// if a sample is satisfactory for the caller to proceed with.
     ///

@@ -57,7 +57,7 @@ pub(crate) mod spec;
 
 pub use config::*;
 pub use environment::{MetricsLocation, VmLocation};
-pub use metrics::FakeOximeterContext;
+pub use metrics::FakeOximeterSampler;
 
 use self::environment::EnvironmentSpec;
 
@@ -291,7 +291,7 @@ impl TestVm {
         }
     }
 
-    pub fn metrics_sampler(&self) -> Option<FakeOximeterContext> {
+    pub fn metrics_sampler(&self) -> Option<FakeOximeterSampler> {
         self.metrics.as_ref().map(|m| m.sampler())
     }
 
