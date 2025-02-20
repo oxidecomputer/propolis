@@ -99,7 +99,7 @@ impl FakeOximeterSampler {
             },
             || async {
                 let producer_results = self.sample_propolis_stats().await
-                    .map_err(|e| backoff::Error::transient(e))?;
+                    .map_err(backoff::Error::transient)?;
 
                 if let Some(metrics) = f(producer_results) {
                     Ok(metrics)
