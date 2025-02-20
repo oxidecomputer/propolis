@@ -168,7 +168,10 @@ impl OverlayKind {
     /// WARNING: The priorities of existing overlay kinds should not be changed,
     /// since this can cause a PFN's active overlay to change if a VM is
     /// migrated from a Propolis using one ordering to a Propolis using a
-    /// different ordering.
+    /// different ordering. Note, however, that this only occurs when multiple
+    /// overlays are present at a single PFN, and stacked overlays will
+    /// (hopefully) be extremely rare in practice, since a guest that asks for
+    /// them will be unable to access one or more of the overlays it set up.
     fn priority(&self) -> u32 {
         let high: u16 = match self {
             Self::HypercallReturnNotSupported => 0,
@@ -229,9 +232,10 @@ pub(super) struct OverlayPage {
 impl std::fmt::Debug for OverlayPage {
     // Manually implemented since `OverlayManager` is not `Debug`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let OverlayPage { kind, pfn, manager: _ } = self;
         f.debug_struct("OverlayPage")
-            .field("kind", &self.kind)
-            .field("pfn", &self.pfn)
+            .field("kind", &kind)
+            .field("pfn", &pfn)
             .finish()
     }
 }
@@ -265,9 +269,9 @@ struct OverlaySet {
     ///
     /// TLFS section 5.2.1 specifies that when there are multiple overlays for a
     /// given page, the order in which they are applied is
-    /// implementation-defined. Here, the overlay with the lowest priority (as
-    /// given by [`OverlayKind::priority`]) is active, and the others are
-    /// pending.
+    /// implementation-defined. Here, the overlay with the lowest numerical
+    /// priority value (as given by [`OverlayKind::priority`]) is active, and
+    /// the others are pending.
     overlays: BTreeSet<OverlayKind>,
 }
 
@@ -427,12 +431,12 @@ impl ManagerInner {
 /// `HyperV` instances that own an overlay manager are expected to do the
 /// following:
 ///
-/// - After calling [`OverlayManager::new`], the manager's owner must call
+/// - After calling [`OverlayManager::new`], the Hyper-V instance must call
 ///   [`OverlayManager::attach`] to attach the manager's memory accessor to a
 ///   VM's memory hierarchy before it can add any overlays.
-/// - The manager must drop all [`OverlayPage`]s no later than the end of its
-///   [`Lifecycle::halt`] callout (so that the overlay manager still has access
-///   to guest memory when those pages are destroyed).
+/// - The Hyper-V instance must drop all [`OverlayPage`]s no later than the end
+///   of its [`Lifecycle::halt`] callout (so that the overlay manager still has
+///   access to guest memory when those pages are destroyed).
 ///
 /// [`Lifecycle::halt`]: crate::lifecycle::Lifecycle::halt
 pub(super) struct OverlayManager {
