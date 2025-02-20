@@ -301,9 +301,8 @@ impl Cmd {
             }
         };
 
-        let artifact_dir = artifact_args
-            .artifact_directory
-            .unwrap_or_else(|| {
+        let artifact_dir =
+            artifact_args.artifact_directory.unwrap_or_else(|| {
                 // if there's no explicitly overridden `artifact_dir` path, use
                 // `target/phd/artifacts`.
                 phd_dir.join("artifacts")
@@ -331,9 +330,8 @@ impl Cmd {
 
         mkdir(&tmp_dir, "temp directory")?;
 
-        let artifacts_toml = artifact_args
-            .artifact_toml_path
-            .unwrap_or_else(|| {
+        let artifacts_toml =
+            artifact_args.artifact_toml_path.unwrap_or_else(|| {
                 // if there's no explicitly overridden `artifacts.toml` path,
                 // determine the default one from the workspace path.
                 relativize(&meta.workspace_root)
