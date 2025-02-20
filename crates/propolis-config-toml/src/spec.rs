@@ -37,6 +37,9 @@ pub enum TomlToSpecError {
     #[error("failed to parse PCI path string {0:?}")]
     PciPathParseFailed(String, #[source] std::io::Error),
 
+    #[error("spec key {0:?} defined multiple times")]
+    DuplicateSpecKey(SpecKey),
+
     #[error("invalid storage device kind {kind:?} for device {name:?}")]
     InvalidStorageDeviceType { kind: String, name: String },
 
@@ -69,6 +72,27 @@ pub enum TomlToSpecError {
 pub struct SpecConfig {
     pub enable_pcie: bool,
     pub components: BTreeMap<SpecKey, ComponentV0>,
+}
+
+// Inspired by `api_spec_v0.rs`'s `insert_component` and
+// `propolis-cli/src/main.rs`'s `add_component_to_spec`. Same purpose as both of
+// them.
+//
+// Before either of those are transforming one kind of spec to another, TOML
+// configurations are parsed to a SpecConfig in this file, where there is *also*
+// an opportunity for duplicate keys to clobber spec items.
+#[track_caller]
+fn spec_component_add(
+    spec: &mut SpecConfig,
+    key: SpecKey,
+    component: ComponentV0,
+) -> Result<(), TomlToSpecError> {
+    if spec.components.contains_key(&key) {
+        return Err(TomlToSpecError::DuplicateSpecKey(key));
+    }
+
+    spec.components.insert(key, component);
+    Ok(())
 }
 
 impl TryFrom<&super::Config> for SpecConfig {
@@ -109,12 +133,13 @@ impl TryFrom<&super::Config> for SpecConfig {
                     .unwrap_or(0)
                     .max(0) as u32;
 
-                spec.components.insert(
+                spec_component_add(
+                    &mut spec,
                     SpecKey::Name(MIGRATION_FAILURE_DEVICE_NAME.to_owned()),
                     ComponentV0::MigrationFailureInjector(
                         MigrationFailureInjector { fail_exports, fail_imports },
                     ),
-                );
+                )?;
 
                 continue;
             }
@@ -140,20 +165,24 @@ impl TryFrom<&super::Config> for SpecConfig {
                         backend_config,
                     )?;
 
-                    spec.components.insert(device_id, device_spec);
-                    spec.components.insert(backend_id, backend_spec);
+                    spec_component_add(&mut spec, device_id, device_spec)?;
+                    spec_component_add(&mut spec, backend_id, backend_spec)?;
                 }
                 "pci-virtio-viona" => {
                     let ParsedNic { device_spec, backend_spec, backend_id } =
                         parse_network_device_from_config(device_name, device)?;
 
-                    spec.components
-                        .insert(device_id, ComponentV0::VirtioNic(device_spec));
+                    spec_component_add(
+                        &mut spec,
+                        device_id,
+                        ComponentV0::VirtioNic(device_spec),
+                    )?;
 
-                    spec.components.insert(
+                    spec_component_add(
+                        &mut spec,
                         backend_id,
                         ComponentV0::VirtioNetworkBackend(backend_spec),
-                    );
+                    )?;
                 }
                 "softnpu-pci-port" => {
                     let pci_path: PciPath =
@@ -163,12 +192,13 @@ impl TryFrom<&super::Config> for SpecConfig {
                             )
                         })?;
 
-                    spec.components.insert(
+                    spec_component_add(
+                        &mut spec,
                         device_id,
                         ComponentV0::SoftNpuPciPort(SoftNpuPciPort {
                             pci_path,
                         }),
-                    );
+                    )?;
                 }
                 "softnpu-port" => {
                     let vnic_name =
@@ -179,20 +209,22 @@ impl TryFrom<&super::Config> for SpecConfig {
                     let backend_name =
                         SpecKey::Name(format!("{device_id}:backend"));
 
-                    spec.components.insert(
+                    spec_component_add(
+                        &mut spec,
                         device_id,
                         ComponentV0::SoftNpuPort(SoftNpuPort {
                             link_name: device_name.to_string(),
                             backend_id: backend_name.clone(),
                         }),
-                    );
+                    )?;
 
-                    spec.components.insert(
+                    spec_component_add(
+                        &mut spec,
                         backend_name,
                         ComponentV0::DlpiNetworkBackend(DlpiNetworkBackend {
                             vnic_name: vnic_name.to_owned(),
                         }),
-                    );
+                    )?;
                 }
                 "softnpu-p9" => {
                     let pci_path: PciPath =
@@ -202,19 +234,21 @@ impl TryFrom<&super::Config> for SpecConfig {
                             )
                         })?;
 
-                    spec.components.insert(
+                    spec_component_add(
+                        &mut spec,
                         device_id,
                         ComponentV0::SoftNpuP9(SoftNpuP9 { pci_path }),
-                    );
+                    )?;
                 }
                 "pci-virtio-9p" => {
-                    spec.components.insert(
+                    spec_component_add(
+                        &mut spec,
                         device_id,
                         ComponentV0::P9fs(parse_p9fs_from_config(
                             device_name,
                             device,
                         )?),
-                    );
+                    )?;
                 }
                 _ => {
                     return Err(TomlToSpecError::UnrecognizedDeviceType(
@@ -233,13 +267,14 @@ impl TryFrom<&super::Config> for SpecConfig {
                     )
                 })?;
 
-            spec.components.insert(
+            spec_component_add(
+                &mut spec,
                 SpecKey::Name(format!("pci-bridge-{}", bridge.pci_path)),
                 ComponentV0::PciPciBridge(PciPciBridge {
                     downstream_bus: bridge.downstream_bus,
                     pci_path,
                 }),
-            );
+            )?;
         }
 
         Ok(spec)
