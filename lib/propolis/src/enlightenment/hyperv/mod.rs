@@ -506,8 +506,17 @@ impl Lifecycle for HyperV {
     }
 
     fn reset(&self) {
-        let inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap();
+
+        // The overlay manager shouldn't have any active overlays, because
+        // `pause` drops them all, and state drivers are required to call
+        // `pause` before `reset`.
         assert!(inner.overlay_manager.is_empty());
+
+        *inner = Inner {
+            overlay_manager: inner.overlay_manager.clone(),
+            ..Default::default()
+        };
     }
 
     fn halt(&self) {
