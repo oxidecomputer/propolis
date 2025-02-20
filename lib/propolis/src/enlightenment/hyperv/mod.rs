@@ -63,12 +63,46 @@ pub struct Features {
     pub reference_tsc: bool,
 }
 
+/// Wrapper around a hypercall overlay page.
+struct HypercallOverlay(OverlayPage);
+
+/// Wrapper around a TSC overlay page.
+struct TscOverlay(OverlayPage);
+
+impl MsrReferenceTscValue {
+    /// If this MSR value would enable the reference TSC page, attempts to
+    /// create a reference TSC overlay at the MSR's specified PFN.
+    ///
+    /// This routine swallows errors from [`OverlayManager::add_overlay`].
+    /// Notably, this means it returns `None` if a reference TSC overlay already
+    /// exists at the specified PFN.
+    fn create_overlay(
+        &self,
+        manager: &Arc<OverlayManager>,
+        vmm_hdl: &VmmHdl,
+    ) -> Option<TscOverlay> {
+        if !self.enabled() {
+            return None;
+        }
+
+        let time_data = vmm::time::export_time_data(vmm_hdl)
+            .expect("time data can be exported from a VMM handle");
+
+        let page = ReferenceTscPage::new(time_data.guest_freq);
+
+        manager
+            .add_overlay(self.gpfn(), OverlayKind::ReferenceTsc(page))
+            .ok()
+            .map(TscOverlay)
+    }
+}
+
 /// A collection of overlay pages that a Hyper-V enlightenment stack might be
 /// managing.
 #[derive(Default)]
 struct OverlayPages {
-    hypercall: Option<OverlayPage>,
-    tsc: Option<OverlayPage>,
+    hypercall: Option<HypercallOverlay>,
+    tsc: Option<TscOverlay>,
 }
 
 #[derive(Default)]
@@ -185,7 +219,7 @@ impl HyperV {
 
         // Ensure the overlay is in the correct position.
         let res = if let Some(overlay) = inner.overlays.hypercall.as_mut() {
-            overlay.move_to(new.gpfn())
+            overlay.0.move_to(new.gpfn())
         } else {
             inner
                 .overlay_manager
@@ -194,7 +228,7 @@ impl HyperV {
                     OverlayKind::HypercallReturnNotSupported,
                 )
                 .map(|overlay| {
-                    inner.overlays.hypercall = Some(overlay);
+                    inner.overlays.hypercall = Some(HypercallOverlay(overlay));
                 })
         };
 
@@ -307,16 +341,9 @@ impl HyperV {
         let old_overlay = inner.overlays.tsc.take();
         inner.overlays.tsc = if new.enabled() {
             if let Some(mut overlay) = old_overlay {
-                overlay.move_to(new.gpfn()).ok().map(|_| overlay)
+                overlay.0.move_to(new.gpfn()).ok().map(|_| overlay)
             } else {
-                let time_data = vmm::time::export_time_data(self.vmm_hdl())
-                    .expect("time data can be exported from a VMM handle");
-
-                let page = ReferenceTscPage::new(time_data.guest_freq);
-                inner
-                    .overlay_manager
-                    .add_overlay(new.gpfn(), OverlayKind::ReferenceTsc(page))
-                    .ok()
+                new.create_overlay(&inner.overlay_manager, self.vmm_hdl())
             }
         } else {
             None
@@ -469,8 +496,10 @@ impl Lifecycle for HyperV {
         // Writes to the hypercall MSR only persist if they specify a valid
         // overlay PFN, so adding the hypercall overlay is guaranteed to
         // succeed.
-        let hypercall_overlay =
-            inner.msr_hypercall_value.enabled().then(|| {
+        let hypercall_overlay = inner
+            .msr_hypercall_value
+            .enabled()
+            .then(|| {
                 inner
                     .overlay_manager
                     .add_overlay(
@@ -478,28 +507,12 @@ impl Lifecycle for HyperV {
                         OverlayKind::HypercallReturnNotSupported,
                     )
                     .expect("hypercall MSR is only enabled with a valid PFN")
-            });
+            })
+            .map(HypercallOverlay);
 
         let tsc_overlay = inner
             .msr_reference_tsc_value
-            .enabled()
-            .then(|| {
-                // TODO(gjc): this is not correct since we might have migrated in;
-                // instead the time data needs to be established at enlightenment
-                // setup time
-                let time_data = vmm::time::export_time_data(self.vmm_hdl())
-                    .expect("time data can be exported from a VMM handle");
-
-                let page = ReferenceTscPage::new(time_data.guest_freq);
-                inner
-                    .overlay_manager
-                    .add_overlay(
-                        inner.msr_reference_tsc_value.gpfn(),
-                        OverlayKind::ReferenceTsc(page),
-                    )
-                    .ok()
-            })
-            .flatten();
+            .create_overlay(&inner.overlay_manager, self.vmm_hdl());
 
         inner.overlays =
             OverlayPages { hypercall: hypercall_overlay, tsc: tsc_overlay };
@@ -576,7 +589,7 @@ impl MigrateSingle for HyperV {
                 msr_hypercall_value.gpfn(),
                 OverlayKind::HypercallReturnNotSupported,
             ) {
-                Ok(overlay) => Some(overlay),
+                Ok(overlay) => Some(HypercallOverlay(overlay)),
                 Err(e) => {
                     return Err(MigrateStateError::ImportFailed(format!(
                         "failed to re-establish hypercall overlay: {e}"
@@ -589,23 +602,7 @@ impl MigrateSingle for HyperV {
 
         let msr_reference_tsc_value = MsrReferenceTscValue(msr_reference_tsc);
         let tsc_overlay = msr_reference_tsc_value
-            .enabled()
-            .then(|| {
-                // TODO(gjc): this is not correct; the page config needs to come
-                // from the source
-                let time_data = vmm::time::export_time_data(self.vmm_hdl())
-                    .expect("time data can be exported from a VMM handle");
-
-                let page = ReferenceTscPage::new(time_data.guest_freq);
-                inner
-                    .overlay_manager
-                    .add_overlay(
-                        inner.msr_reference_tsc_value.gpfn(),
-                        OverlayKind::ReferenceTsc(page),
-                    )
-                    .ok()
-            })
-            .flatten();
+            .create_overlay(&inner.overlay_manager, self.vmm_hdl());
 
         *inner = Inner {
             overlay_manager: inner.overlay_manager.clone(),
