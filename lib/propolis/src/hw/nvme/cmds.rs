@@ -614,7 +614,7 @@ impl TryFrom<u32> for FeatNumberQueues {
 impl From<FeatNumberQueues> for u32 {
     fn from(value: FeatNumberQueues) -> Self {
         // Convert to 0's based DW0
-        u32::from(value.ncq.saturating_sub(1)) << 16
+        (u32::from(value.ncq.saturating_sub(1)) << 16)
             | u32::from(value.nsq.saturating_sub(1))
     }
 }
@@ -632,7 +632,7 @@ impl From<u32> for FeatInterruptVectorConfig {
 }
 impl From<FeatInterruptVectorConfig> for u32 {
     fn from(value: FeatInterruptVectorConfig) -> Self {
-        u32::from(value.iv) | u32::from(value.cd) << 16
+        u32::from(value.iv) | (u32::from(value.cd) << 16)
     }
 }
 
@@ -664,14 +664,14 @@ impl NvmCmd {
         let cmd = match raw.opcode() {
             bits::NVM_OPC_FLUSH => NvmCmd::Flush,
             bits::NVM_OPC_WRITE => NvmCmd::Write(WriteCmd {
-                slba: u64::from(raw.cdw11) << 32 | u64::from(raw.cdw10),
+                slba: (u64::from(raw.cdw11) << 32) | u64::from(raw.cdw10),
                 // Convert from 0's based value
                 nlb: raw.cdw12 as u16 + 1,
                 prp1: raw.prp1,
                 prp2: raw.prp2,
             }),
             bits::NVM_OPC_READ => NvmCmd::Read(ReadCmd {
-                slba: u64::from(raw.cdw11) << 32 | u64::from(raw.cdw10),
+                slba: (u64::from(raw.cdw11) << 32) | u64::from(raw.cdw10),
                 // Convert from 0's based value
                 nlb: raw.cdw12 as u16 + 1,
                 prp1: raw.prp1,
@@ -1014,8 +1014,8 @@ impl Completion {
 
     /// Helper method to combine [StatusCodeType] and status code
     const fn status_field(sct: StatusCodeType, sc: u8) -> u16 {
-        (sc as u16) << 1 | ((sct as u8) as u16) << 9
-        // (more as u16) << 14 | (dnr as u16) << 15
+        ((sc as u16) << 1) | (((sct as u8) as u16) << 9)
+        // ((more as u16) << 14) | ((dnr as u16) << 15)
     }
 }
 
