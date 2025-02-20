@@ -58,9 +58,6 @@ pub mod server_log_mode;
 pub mod test_vm;
 pub(crate) mod zfs;
 
-pub use test_vm::environment::MetricsLocation;
-pub use test_vm::metrics::FakeOximeterContext;
-
 /// An instance of the PHD test framework.
 pub struct Framework {
     pub(crate) tmp_directory: Utf8PathBuf,

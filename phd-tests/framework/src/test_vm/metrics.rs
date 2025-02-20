@@ -63,9 +63,15 @@ impl FakeOximeterServerState {
     }
 
     async fn set_producer_info(&self, info: ProducerEndpoint) {
+        // Just don't know what to do with other ProducerKinds, if or when we'll
+        // see them here..
         assert_eq!(info.kind, ProducerKind::Instance);
+
         let new_sampler =
             PropolisOximeterSampler { addr: info.address, uuid: info.id };
+
+        // There should always be at least one Receiver on the channel since we
+        // hold one in `self`.
         self.sampler_sender
             .send(Some(new_sampler))
             .expect("channel is subscribed");
@@ -73,8 +79,14 @@ impl FakeOximeterServerState {
 }
 
 impl FakeOximeterContext {
-    /// Sample Propolis' Oximeter metrics, waiting up to a few seconds so that
-    /// all measurements are from the time this function was called or later.
+    /// Sample Propolis' Oximeter metrics, taking some function that determines
+    /// if a sample is satisfactory for the caller to proceed with.
+    ///
+    /// `wait_for_propolis_stats` will poll the corresponding Oximeter producer
+    /// and call `f` with each returned set of results.
+    ///
+    /// Panics if `f` does not return `Some` after some number of retries and
+    /// `ProducerResults` updates.
     pub async fn wait_for_propolis_stats<U>(
         &self,
         f: impl Fn(ProducerResults) -> Option<U>,

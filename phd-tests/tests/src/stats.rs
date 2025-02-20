@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::Duration;
 
+use phd_framework::test_vm::{FakeOximeterContext, MetricsLocation};
+
 use chrono::{DateTime, Utc};
 use oximeter::types::{ProducerResults, ProducerResultsItem, Sample};
 use oximeter::{Datum, FieldValue};
@@ -34,13 +36,25 @@ struct VcpuUsageMetric {
 /// Oximeter producers produce a series of lists of samples, where each list
 /// of samples is conceptually distinct but may still be interesting to
 /// tset. In `propolis-server`, the first list of samples will be
-/// `virtual_machine:vcpu_usage`, which may be blank of kstats have not been
+/// `virtual_machine:vcpu_usage`, which may be blank if kstats have not been
 /// sampled since the last producer poll. The second list of samples
 /// will be `virtual_machine:reset`.
 ///
 /// `VirtualMachineMetrics` collects these all back together into a single view
 /// to test against. See [`VirtualMachineMetrics::add_producer_result`] as the
 /// means to accumulate samples into this struct.
+///
+/// ### Should this be in `framework`?
+///
+/// Arguably! It happens to encompass all `propolis-server` metrics today after
+/// all. I expect we'll have many more Oximeter-produced stats from
+/// `propolis-server` in the future, though, and only a few of them might be
+/// relevant to these specific tests. Other tests may not want to wait for fresh
+/// vCPU data that they don't care about, as well.
+///
+/// As-is, this is trying to be a relatively-standalone halfway point before the
+/// most comprehensive approach: running Clickhouse alongside PHD and storing
+/// Oximeter data there, maybe even querying samples with OxQL.
 #[derive(Debug)]
 struct VirtualMachineMetrics {
     oldest_time: DateTime<Utc>,
@@ -50,7 +64,7 @@ struct VirtualMachineMetrics {
 
 /// Collect a record of all metrics for a VM as of the time this function is called.
 async fn vm_metrics_snapshot(
-    sampler: &crate::stats::phd_framework::FakeOximeterContext,
+    sampler: &FakeOximeterContext,
 ) -> VirtualMachineMetrics {
     let min_metric_time = Utc::now();
 
@@ -63,9 +77,8 @@ async fn vm_metrics_snapshot(
 }
 
 fn producer_results_as_vm_metrics(
-    s: ProducerResults,
+    results: ProducerResults,
 ) -> Option<VirtualMachineMetrics> {
-    let results = s;
     let mut metrics = VirtualMachineMetrics {
         oldest_time: Utc::now(),
         reset: None,
@@ -199,7 +212,7 @@ async fn instance_vcpu_stats(ctx: &Framework) {
     const TOLERANCE: f64 = 0.8;
 
     let mut env = ctx.environment_builder();
-    env.metrics(Some(crate::stats::phd_framework::MetricsLocation::Local));
+    env.metrics(Some(MetricsLocation::Local));
 
     let mut vm_config = ctx.vm_config_builder("instance_vcpu_stats");
     vm_config.cpus(1);
@@ -236,12 +249,10 @@ async fn instance_vcpu_stats(ctx: &Framework) {
     vm.run_shell_command("lim=2000000").await?;
     vm.run_shell_command("while [ $i -lt $lim ]; do i=$((i+1)); done").await?;
     let run_time = run_start.elapsed().expect("time goes forwards");
-    tracing::warn!("measured run time {:?}", run_time);
+    trace!("measured run time {:?}", run_time);
 
     let now_metrics = vm_metrics_snapshot(&sampler).await;
     let total_run_window = run_start.elapsed().expect("time goes forwards");
-    tracing::warn!("start_metrics: {:?}", start_metrics);
-    tracing::warn!("now_metrics:   {:?}", now_metrics);
 
     let run_delta = (now_metrics.vcpu_state_total(&VcpuState::Run)
         - start_metrics.vcpu_state_total(&VcpuState::Run))
@@ -370,11 +381,12 @@ async fn instance_vcpu_stats(ctx: &Framework) {
         // Linux guests are known to not (currently?) consult the current time
         // if fully idle, so we can be more precise about emulation time
         // assertions.
+        const LIMIT: u128 = Duration::from_millis(100).as_nanos();
         assert!(
-            full_emul_delta < Duration::from_millis(100).as_nanos(),
+            full_emul_delta < LIMIT,
             "full emul delta was above threshold: {} > {}",
             full_emul_delta,
-            Duration::from_millis(100).as_nanos()
+            LIMIT
         );
     } else {
         warn!(
@@ -388,11 +400,12 @@ async fn instance_vcpu_stats(ctx: &Framework) {
     // short duration, and on my workstation this is around 400 microseconds.
     // Again, test against a significantly larger threshold in case CI is
     // extremely slow.
+    const LIMIT: u128 = Duration::from_millis(20).as_nanos();
     assert!(
-        full_waiting_delta < Duration::from_millis(20).as_nanos(),
+        full_waiting_delta < LIMIT,
         "full waiting delta was above threshold: {} > {}",
         full_waiting_delta,
-        Duration::from_millis(20).as_nanos()
+        LIMIT
     );
 
     trace!("run: {}", full_run_delta);

@@ -17,9 +17,7 @@ use crate::{
     },
     serial::{BufferKind, SerialConsole},
     test_vm::{
-        environment::Environment, environment::MetricsLocation,
-        metrics::FakeOximeterContext, server::ServerProcessParameters,
-        spec::VmSpec,
+        environment::Environment, server::ServerProcessParameters, spec::VmSpec,
     },
     Framework,
 };
@@ -58,7 +56,8 @@ mod server;
 pub(crate) mod spec;
 
 pub use config::*;
-pub use environment::VmLocation;
+pub use environment::{MetricsLocation, VmLocation};
+pub use metrics::FakeOximeterContext;
 
 use self::environment::EnvironmentSpec;
 
