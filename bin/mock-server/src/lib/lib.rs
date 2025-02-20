@@ -285,15 +285,28 @@ async fn instance_state_monitor(
         (state_watcher, gen)
     };
 
+    slog::debug!(
+        rqctx.log,
+        "instance state monitor request";
+        "request_gen" => gen,
+    );
+    let next_gen = gen + 1;
     loop {
-        let next_gen = gen + 1;
         let state = {
-            let mock_state = state_watcher.borrow();
+            let mock_state = state_watcher.borrow_and_update();
             match mock_state.single_step_gen {
                 // We are single-stepping, and have not yet reached the
                 // requested generation. Keep waiting until single-stepped to
                 // where we need to be.
-                Some(g) if next_gen > g => None,
+                Some(g) if next_gen > g => {
+                    slog::info!(
+                        rqctx.log,
+                        "instance state monitor: wait for single step...";
+                        "request_gen" => gen,
+                        "current_gen" => g,
+                    );
+                    None
+                }
                 // Otherwise, if we have stepped to the requested generation, or
                 // if we are not in single-step mode, just return the current
                 // thing.
@@ -302,6 +315,13 @@ async fn instance_state_monitor(
         };
 
         if let Some(state) = state {
+            slog::info!(
+                rqctx.log,
+                "instance state monitor";
+                "request_gen" => gen,
+                "current_gen" => next_gen,
+                "state" => ?state.state,
+            );
             // Advance to the state with the generation we showed to the
             // watcher, for use in `instance_get` and when determining what
             // state transitions are valid.
@@ -530,6 +550,11 @@ async fn mock_step(
             .as_mut()
             .expect("we just checked that it's set");
         *g += 1;
+        slog::info!(
+            rqctx.log,
+            "instance state stepped to generation {g}";
+            "gen" => *g,
+        );
     });
     Ok(HttpResponseUpdatedNoContent())
 }
