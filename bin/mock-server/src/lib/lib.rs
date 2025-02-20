@@ -22,6 +22,7 @@ use tokio_tungstenite::WebSocketStream;
 
 mod api_types;
 use api_types::types::{self as api, InstanceEnsureRequest};
+pub use api_types::MockMode;
 
 #[derive(Debug, Eq, PartialEq, Error)]
 pub enum Error {
@@ -452,7 +453,7 @@ async fn instance_serial_history_get(
 }]
 async fn mock_mode_get(
     rqctx: RequestContext<Arc<Context>>,
-) -> Result<HttpResponseOk<api_types::MockMode>, HttpError> {
+) -> Result<HttpResponseOk<MockMode>, HttpError> {
     let instance = rqctx.context().instance.lock().await;
     let instance = instance.as_ref().ok_or_else(|| {
         HttpError::for_internal_error(
@@ -460,9 +461,9 @@ async fn mock_mode_get(
         )
     })?;
     let mode = if instance.state_watcher_rx.borrow().single_step_gen.is_some() {
-        api_types::MockMode::SingleStep
+        MockMode::SingleStep
     } else {
-        api_types::MockMode::Run
+        MockMode::Run
     };
     Ok(HttpResponseOk(mode))
 }
@@ -473,7 +474,7 @@ async fn mock_mode_get(
 }]
 async fn mock_mode_set(
     rqctx: RequestContext<Arc<Context>>,
-    request: TypedBody<api_types::MockMode>,
+    request: TypedBody<MockMode>,
 ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
     let instance = rqctx.context().instance.lock().await;
     let instance = instance.as_ref().ok_or_else(|| {
@@ -484,19 +485,17 @@ async fn mock_mode_set(
     let mode = request.into_inner();
     instance.state_watcher_tx.send_if_modified(|mock_state| {
         match mode {
-            api_types::MockMode::Run => {
+            MockMode::Run => {
                 mock_state.single_step_gen = None;
                 true
             }
             // If we're already in single-step mode, don't clobber the existing
             // single-step generation.
-            api_types::MockMode::SingleStep
-                if mock_state.single_step_gen.is_some() =>
-            {
+            MockMode::SingleStep if mock_state.single_step_gen.is_some() => {
                 false
             }
             // Otherwise, start single-stepping from the current generation.
-            api_types::MockMode::SingleStep => {
+            MockMode::SingleStep => {
                 mock_state.single_step_gen = Some(instance.curr_gen);
                 true
             }
