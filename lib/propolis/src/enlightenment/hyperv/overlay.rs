@@ -62,37 +62,20 @@
 //! drops them or calls [`OverlayPage::move_to`] on them in response to further
 //! guest activity.
 //!
-//! ## Dealing with VM shutdown
+//! ## VM shutdown
 //!
-//! When a VM is active, dropping an active `OverlayPage` should always remove
-//! its contents from guest memory and replace them either with another overlay
-//! page's contents or the original guest memory contents. Failing to do this
-//! means that guest memory has been corrupted, so it's desirable to panic if
-//! dropping an overlay page ever fails to remove it from the manager.
-//!
-//! The catch is that once a VM has halted, its overlay manager is no longer
-//! guaranteed to be able to access guest memory (since its [`MemAccessor`] may
-//! have been disconnected). To handle this while still being able to panic on
-//! failure:
-//!
-//! - `OverlayPage`s hold [`Weak`] references to their `OverlayManager`s.
-//! - [`OverlayPage::drop`] only tries to remove an overlay if it can upgrade
-//!   its manager reference.
-//! - When a manager's owner receives a [`Lifecycle::halt`] callout, it releases
-//!   all its strong references to its `OverlayManager`. (This is generally
-//!   possible because a halting VM's vCPUs are permanently quiesced and so
-//!   can't write any more data that would create or move another overlay.)
-//!
-//! This pattern allows a `HyperV` instance to "run down" its manager by
-//! simply dropping all references to it. After that, it can drop its
-//! `OverlayPage`s at any time without fear of them trying and failing to access
-//! guest memory.
+//! When a VM halts, its guest memory becomes inaccessible, so future attempts
+//! to manipulate overlay pages will fail. The `Drop` implementation for
+//! [`OverlayPage`] assumes that removing a dropped page will always succeed. To
+//! avoid panicking during shutdown, the owning Hyper-V layer must ensure that
+//! all active pages are dropped no later than the end of its
+//! [`Lifecycle::halt`] callout.
 //!
 //! [`Lifecycle::halt`]: crate::lifecycle::Lifecycle::halt
 
 use std::{
-    collections::{btree_map::Entry, BTreeMap},
-    sync::{Arc, Mutex, Weak},
+    collections::{btree_map::Entry, BTreeMap, BTreeSet},
+    sync::{Arc, Mutex},
 };
 
 use thiserror::Error;
@@ -103,7 +86,7 @@ use self::pfn::MappedPfn;
 
 /// An error that can be returned from an overlay page operation.
 #[derive(Debug, Error)]
-pub enum OverlayError {
+pub(super) enum OverlayError {
     /// The guest memory context can't be accessed right now. Generally this
     /// means that the caller is trying to create an overlay too early (i.e.,
     /// before the overlay manager is attached to the memory hierarchy) or too
@@ -149,24 +132,95 @@ impl std::fmt::Debug for OverlayContents {
     }
 }
 
-/// A kind of overlay page.
-#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq)]
-pub(super) enum OverlayKind {
-    Hypercall,
+impl TryFrom<Vec<u8>> for OverlayContents {
+    type Error = usize;
 
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        let len = value.len();
+        Ok(Self(Box::new(value.try_into().map_err(|_| len)?)))
+    }
+}
+
+/// A kind of overlay page, annotated with any other information that may be
+/// needed to generate the page's contents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum OverlayKind {
+    /// A hypercall page whose instruction sequence immediately returns a "not
+    /// supported" error status to its caller.
+    HypercallReturnNotSupported,
+
+    /// A dummy page used for testing.
     #[cfg(test)]
-    Test(u8),
+    Test {
+        /// An index that disambiguates different test page kinds.
+        index: u8,
+
+        /// A byte with which to fill the overlaid page when this overlay
+        /// becomes active.
+        fill: u8,
+    },
+}
+
+impl OverlayKind {
+    /// Returns the "priority" of this page relative to overlay pages of other
+    /// kinds. For each PFN the page with the lowest priority value is active.
+    ///
+    /// WARNING: The priorities of existing overlay kinds should not be changed,
+    /// since this can cause a PFN's active overlay to change if a VM is
+    /// migrated from a Propolis using one ordering to a Propolis using a
+    /// different ordering. Note, however, that this only occurs when multiple
+    /// overlays are present at a single PFN, and stacked overlays will
+    /// (hopefully) be extremely rare in practice, since a guest that asks for
+    /// them will be unable to access one or more of the overlays it set up.
+    fn priority(&self) -> u32 {
+        let high: u16 = match self {
+            Self::HypercallReturnNotSupported => 0,
+
+            #[cfg(test)]
+            Self::Test { .. } => u16::MAX,
+        };
+
+        let low: u16 = match self {
+            #[cfg(test)]
+            Self::Test { index, .. } => *index as u16,
+            _ => 0,
+        };
+
+        ((high as u32) << 16) | (low as u32)
+    }
+
+    /// Obtains the contents this overlay should display when it is active.
+    fn get_contents(&self) -> OverlayContents {
+        match self {
+            Self::HypercallReturnNotSupported => OverlayContents(Box::new(
+                super::hypercall::hypercall_page_contents(),
+            )),
+            #[cfg(test)]
+            Self::Test { index: _, fill } => {
+                OverlayContents(Box::new([*fill; PAGE_SIZE]))
+            }
+        }
+    }
+}
+
+impl Ord for OverlayKind {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.priority().cmp(&other.priority())
+    }
+}
+
+impl PartialOrd for OverlayKind {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// A registered overlay page, held by a user of this module. The overlay is
 /// removed when this page is dropped.
-#[derive(Debug)]
 pub(super) struct OverlayPage {
-    /// A back reference to this page's manager. This is `Weak` so that pages
-    /// can detect when the manager's Hyper-V stack has halted and can thereby
-    /// avoid assuming that page removals should always succeed. See the module
-    /// docs for details.
-    manager: Weak<OverlayManager>,
+    /// A back reference to this page's manager, used to move or destroy the
+    /// page on request.
+    manager: Arc<OverlayManager>,
 
     /// The kind of overlay this is.
     kind: OverlayKind,
@@ -175,21 +229,21 @@ pub(super) struct OverlayPage {
     pfn: Pfn,
 }
 
+impl std::fmt::Debug for OverlayPage {
+    // Manually implemented since `OverlayManager` is not `Debug`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let OverlayPage { kind, pfn, manager: _ } = self;
+        f.debug_struct("OverlayPage")
+            .field("kind", &kind)
+            .field("pfn", &pfn)
+            .finish()
+    }
+}
+
 impl OverlayPage {
     /// Moves this overlay to a new PFN.
-    ///
-    /// # Panics
-    ///
-    /// Panics if called when there are no more strong references to the page's
-    /// manager (which implies that the VM has shut down and that guest memory
-    /// may not be accessible).
     pub(super) fn move_to(&mut self, new_pfn: Pfn) -> Result<(), OverlayError> {
-        let manager = self
-            .manager
-            .upgrade()
-            .expect("can only move overlay pages with an active manager");
-
-        manager.move_overlay(self.pfn, new_pfn, self.kind)?;
+        self.manager.move_overlay(self.pfn, new_pfn, self.kind)?;
         self.pfn = new_pfn;
         Ok(())
     }
@@ -197,19 +251,7 @@ impl OverlayPage {
 
 impl Drop for OverlayPage {
     fn drop(&mut self) {
-        // This overlay is already registered and has a valid PFN, so the only
-        // reason the manager could fail to remove it is if it failed to access
-        // guest memory entirely. The parent enlightenment stack prevents this
-        // by holding a strong reference to the manager until the VM is halted.
-        //
-        // Once the VM *is* halted, no one will access guest memory again, so
-        // it's OK to return without attempting to restore the page's previous
-        // contents.
-        let Some(manager) = self.manager.upgrade() else {
-            return;
-        };
-
-        manager
+        self.manager
             .remove_overlay(self.pfn, self.kind)
             .expect("active overlay pages can always be removed");
     }
@@ -223,30 +265,20 @@ struct OverlaySet {
     /// first became active here.
     original_contents: OverlayContents,
 
-    /// The kind of overlay that is currently active for this set's PFN.
-    active: OverlayKind,
-
-    /// The overlays that are waiting to be applied to this PFN.
-    pending: BTreeMap<OverlayKind, OverlayContents>,
+    /// The set of overlays that have been requested at this PFN.
+    ///
+    /// TLFS section 5.2.1 specifies that when there are multiple overlays for a
+    /// given page, the order in which they are applied is
+    /// implementation-defined. Here, the overlay with the lowest numerical
+    /// priority value (as given by [`OverlayKind::priority`]) is active, and
+    /// the others are pending.
+    overlays: BTreeSet<OverlayKind>,
 }
 
 impl OverlaySet {
-    /// Returns `true` if this set contains an overlay of the supplied kind.
-    fn contains_kind(&self, kind: OverlayKind) -> bool {
-        self.active == kind || self.pending.contains_key(&kind)
+    fn active(&self) -> &OverlayKind {
+        self.overlays.first().expect("live overlay sets are never empty")
     }
-}
-
-/// Specifies whether a call to remove an overlay should return the overlay's
-/// contents to the caller.
-///
-/// Callers who don't intend to use the contents of a removed overlay should use
-/// `RemoveReturnContents::No` to avoid allocating and copying if they end up
-/// removing an active overlay.
-#[derive(PartialEq, Eq)]
-enum RemoveReturnContents {
-    Yes,
-    No,
 }
 
 /// Synchronized overlay manager state.
@@ -262,14 +294,13 @@ impl ManagerInner {
         &mut self,
         pfn: Pfn,
         kind: OverlayKind,
-        contents: OverlayContents,
         acc_mem: &MemAccessor,
     ) -> Result<(), OverlayError> {
         let memctx =
             acc_mem.access().ok_or(OverlayError::GuestMemoryInaccessible)?;
 
         let mut mapped = MappedPfn::new(pfn, &memctx)?;
-        self.add_overlay_using_mapping(&mut mapped, kind, contents)
+        self.add_overlay_using_mapping(&mut mapped, kind)
     }
 
     /// Applies a new overlay to guest memory using the supplied mapping.
@@ -277,27 +308,27 @@ impl ManagerInner {
         &mut self,
         mapped_pfn: &mut MappedPfn,
         kind: OverlayKind,
-        contents: OverlayContents,
     ) -> Result<(), OverlayError> {
         let pfn = mapped_pfn.pfn();
         match self.overlays.entry(pfn) {
             Entry::Vacant(e) => {
                 let mut original_contents = OverlayContents::default();
                 mapped_pfn.read_page(&mut original_contents);
-                mapped_pfn.write_page(&contents);
+                mapped_pfn.write_page(&kind.get_contents());
                 e.insert(OverlaySet {
                     original_contents,
-                    active: kind,
-                    pending: Default::default(),
+                    overlays: BTreeSet::from([kind]),
                 });
             }
             Entry::Occupied(e) => {
                 let set = e.into_mut();
-                if set.contains_kind(kind) {
+                if !set.overlays.insert(kind) {
                     return Err(OverlayError::KindInUse(pfn.into(), kind));
                 }
 
-                set.pending.insert(kind, contents);
+                if *set.active() == kind {
+                    mapped_pfn.write_page(&kind.get_contents());
+                }
             }
         }
 
@@ -305,23 +336,17 @@ impl ManagerInner {
     }
 
     /// Removes an existing overlay of the supplied kind from the supplied PFN.
-    ///
-    /// If `return_contents` is [`RemoveReturnContents::Yes`], then on success,
-    /// this function returns an `Ok(Some)` containing the removed overlay's
-    /// previous contents; otherwise, it returns `Ok(None)` on success.
     fn remove_overlay(
         &mut self,
         pfn: Pfn,
         kind: OverlayKind,
         acc_mem: &MemAccessor,
-        return_contents: RemoveReturnContents,
-    ) -> Result<Option<OverlayContents>, OverlayError> {
+    ) -> Result<(), OverlayError> {
         let Entry::Occupied(mut set) = self.overlays.entry(pfn) else {
             return Err(OverlayError::NoOverlaysActive(pfn.into()));
         };
 
-        let old_contents;
-        if set.get().active == kind {
+        if *set.get().active() == kind {
             let memctx = acc_mem
                 .access()
                 .ok_or(OverlayError::GuestMemoryInaccessible)?;
@@ -329,33 +354,13 @@ impl ManagerInner {
             let mut mapped = MappedPfn::new(pfn, &memctx)
                 .expect("active overlay PFNs can be mapped");
 
-            old_contents = if return_contents == RemoveReturnContents::Yes {
-                let mut contents = OverlayContents::default();
-                mapped.read_page(&mut contents);
-                Some(contents)
-            } else {
-                None
-            };
+            assert!(set.get_mut().overlays.remove(&kind));
 
-            // If there are no pending overlays left for this PFN, restore the
-            // original contents of guest memory. After this the entire overlay
-            // set is defunct and can be removed from the PFN map.
-            if set.get().pending.is_empty() {
+            if set.get().overlays.is_empty() {
                 mapped.write_page(&set.get().original_contents);
                 set.remove_entry();
             } else {
-                let set = set.get_mut();
-
-                // TLFS section 5.2.1 specifies that when there are multiple
-                // overlays for a given page, the order in which they are
-                // applied is implementation-defined, so any method of choosing
-                // a new overlay from the pending set is sufficient.
-                //
-                // Unwrapping is safe here because the set was already checked
-                // for emptiness.
-                let (kind, contents) = set.pending.pop_first().unwrap();
-                mapped.write_page(&contents);
-                set.active = kind;
+                mapped.write_page(&set.get().active().get_contents());
             }
         } else {
             // This overlay kind isn't active for this page. If it's pending,
@@ -363,20 +368,12 @@ impl ManagerInner {
             // since it has had no effect on guest memory.
             //
             // If there's no pending overlay of this kind, the caller goofed.
-            let removed = set
-                .get_mut()
-                .pending
-                .remove(&kind)
-                .ok_or(OverlayError::NoOverlayOfKind(pfn.into(), kind))?;
-
-            old_contents = if return_contents == RemoveReturnContents::Yes {
-                Some(removed)
-            } else {
-                None
-            };
+            if !set.get_mut().overlays.remove(&kind) {
+                return Err(OverlayError::NoOverlayOfKind(pfn.into(), kind));
+            }
         }
 
-        Ok(old_contents)
+        Ok(())
     }
 
     /// Moves the overlay of the supplied `kind` from `from_pfn` to `to_pfn`.
@@ -407,7 +404,7 @@ impl ManagerInner {
         // position.
         let mut to_mapping = MappedPfn::new(to_pfn, &memctx)?;
         if let Some(to_set) = self.overlays.get(&to_pfn) {
-            if to_set.contains_kind(kind) {
+            if to_set.overlays.contains(&kind) {
                 return Err(OverlayError::KindInUse(to_pfn.into(), kind));
             }
         }
@@ -415,14 +412,12 @@ impl ManagerInner {
         // Removing the old overlay might fail if it doesn't exist in
         // `from_pfn`, but if it succeeds it will always produce the previous
         // page contents.
-        let contents = self
-            .remove_overlay(from_pfn, kind, acc_mem, RemoveReturnContents::Yes)?
-            .expect("asked for old contents");
+        self.remove_overlay(from_pfn, kind, acc_mem)?;
 
         // Adding a new overlay with a valid mapping can only fail if the PFN
         // already has an overlay of the selected kind, and that was checked
         // above.
-        self.add_overlay_using_mapping(&mut to_mapping, kind, contents)
+        self.add_overlay_using_mapping(&mut to_mapping, kind)
             .expect("already checked new PFN for an overlay of this kind");
 
         Ok(())
@@ -436,13 +431,14 @@ impl ManagerInner {
 /// `HyperV` instances that own an overlay manager are expected to do the
 /// following:
 ///
-/// - After calling [`OverlayManager::new`], the manager's owner must call
+/// - After calling [`OverlayManager::new`], the Hyper-V instance must call
 ///   [`OverlayManager::attach`] to attach the manager's memory accessor to a
 ///   VM's memory hierarchy before it can add any overlays.
-/// - When the manager's owner halts, it must drop all strong references to its
-///   overlay manager before dropping any remaining [`OverlayPage`]s.
+/// - The Hyper-V instance must drop all [`OverlayPage`]s no later than the end
+///   of its [`Lifecycle::halt`] callout (so that the overlay manager still has
+///   access to guest memory when those pages are destroyed).
 ///
-/// See the module docs for more information.
+/// [`Lifecycle::halt`]: crate::lifecycle::Lifecycle::halt
 pub(super) struct OverlayManager {
     inner: Mutex<ManagerInner>,
     acc_mem: MemAccessor,
@@ -456,15 +452,15 @@ impl Default for OverlayManager {
 }
 
 impl OverlayManager {
-    /// Creates a new overlay manager.
-    pub(super) fn new() -> Arc<Self> {
-        Arc::new(Self::default())
-    }
-
     /// Attaches this overlay manager to the supplied memory accessor hierarchy.
     pub(super) fn attach(&self, parent_mem: &MemAccessor) {
         parent_mem
             .adopt(&self.acc_mem, Some("hyperv-overlay-manager".to_string()));
+    }
+
+    /// Returns `true` if this manager has no active overlays.
+    pub(super) fn is_empty(&self) -> bool {
+        self.inner.lock().unwrap().overlays.is_empty()
     }
 
     /// Adds an overlay of the supplied `kind` with the supplied `contents` over
@@ -473,11 +469,10 @@ impl OverlayManager {
         self: &Arc<Self>,
         pfn: Pfn,
         kind: OverlayKind,
-        contents: OverlayContents,
     ) -> Result<OverlayPage, OverlayError> {
         let mut inner = self.inner.lock().unwrap();
-        inner.add_overlay(pfn, kind, contents, &self.acc_mem)?;
-        Ok(OverlayPage { manager: Arc::downgrade(self), kind, pfn })
+        inner.add_overlay(pfn, kind, &self.acc_mem)?;
+        Ok(OverlayPage { manager: self.clone(), kind, pfn })
     }
 
     /// Removes an overlay of the supplied `kind` from the set at the supplied
@@ -490,7 +485,7 @@ impl OverlayManager {
         self.inner
             .lock()
             .unwrap()
-            .remove_overlay(pfn, kind, &self.acc_mem, RemoveReturnContents::No)
+            .remove_overlay(pfn, kind, &self.acc_mem)
             .map(|_| ())
     }
 
@@ -581,6 +576,8 @@ mod pfn {
 
 #[cfg(test)]
 mod test {
+    use std::collections::VecDeque;
+
     use crate::vmm::{PhysMap, VmmHdl, MAX_PHYSMEM};
 
     use super::*;
@@ -608,7 +605,7 @@ mod test {
             map.add_test_mem("test-ram".to_string(), 0, 1024 * 1024).unwrap();
             let acc_mem = MemAccessor::new(map.memctx());
 
-            let mgr = OverlayManager::new();
+            let mgr = Arc::new(OverlayManager::default());
             mgr.attach(&acc_mem);
             TestCtx { manager: mgr, _vmm_hdl: hdl, _physmem: map, acc_mem }
         }
@@ -635,21 +632,6 @@ mod test {
                 (contents.0)[0]
             );
         }
-
-        /// Asserts that page `pfn` of the context's memory is filled with
-        /// one of the supplied `fill` bytes.
-        fn assert_pfn_fill_is_one_of(&self, pfn: Pfn, fills: &[u8]) {
-            let memctx = self.acc_mem.access().unwrap();
-            let mut mapping = MappedPfn::new(pfn, &memctx).unwrap();
-            let mut contents = OverlayContents::default();
-            mapping.read_page(&mut contents);
-
-            assert!(
-                fills.iter().any(|f| contents.0.as_slice() == [*f; PAGE_SIZE]),
-                "guest memory at pfn {pfn} has unexpected fill byte {:#x}",
-                (contents.0)[0]
-            )
-        }
     }
 
     /// Tests that adding an overlay page causes its contents to appear in guest
@@ -658,11 +640,10 @@ mod test {
     fn basic_add() {
         let ctx = TestCtx::new();
         let pfn = Pfn::new_unchecked(0x10);
-        let contents = OverlayContents::filled(0xAB);
 
         let _page = ctx
             .manager
-            .add_overlay(pfn, OverlayKind::Test(0), contents)
+            .add_overlay(pfn, OverlayKind::Test { index: 0, fill: 0xAB })
             .unwrap();
 
         ctx.assert_pfn_has_fill(pfn, 0xAB);
@@ -676,11 +657,10 @@ mod test {
         let ctx = TestCtx::new();
         let pfn1 = Pfn::new_unchecked(0x10);
         let pfn2 = Pfn::new_unchecked(0x20);
-        let contents = OverlayContents::filled(0xCD);
 
         let mut page = ctx
             .manager
-            .add_overlay(pfn1, OverlayKind::Test(0), contents)
+            .add_overlay(pfn1, OverlayKind::Test { index: 0, fill: 0xCD })
             .unwrap();
 
         ctx.assert_pfn_has_fill(pfn1, 0xCD);
@@ -698,13 +678,11 @@ mod test {
     fn underlay_restored_after_drop() {
         let ctx = TestCtx::new();
         let pfn = Pfn::new_unchecked(0x10);
-        let original = OverlayContents::filled(0x11);
-        let overlaid = OverlayContents::filled(0x99);
-        ctx.write_page(pfn, &original);
+        ctx.write_page(pfn, &OverlayContents::filled(0x11));
 
         let page = ctx
             .manager
-            .add_overlay(pfn, OverlayKind::Test(0), overlaid)
+            .add_overlay(pfn, OverlayKind::Test { index: 0x11, fill: 0x99 })
             .unwrap();
 
         ctx.assert_pfn_has_fill(pfn, 0x99);
@@ -720,8 +698,7 @@ mod test {
         ctx.manager
             .add_overlay(
                 Pfn::new_unchecked(0xFFFFF),
-                OverlayKind::Test(0),
-                OverlayContents::filled(0xFF),
+                OverlayKind::Test { index: 0, fill: 0xFF },
             )
             .unwrap_err();
     }
@@ -733,53 +710,40 @@ mod test {
     fn duplicate_kind_at_pfn() {
         let ctx = TestCtx::new();
         let pfn = Pfn::new_unchecked(0x20);
-        let kind = OverlayKind::Test(0);
+        let kind = OverlayKind::Test { index: 0, fill: 0x22 };
 
-        let page = ctx
-            .manager
-            .add_overlay(pfn, kind, OverlayContents::filled(0x22))
-            .unwrap();
-
-        ctx.manager
-            .add_overlay(pfn, kind, OverlayContents::filled(0x23))
-            .unwrap_err();
-
+        let page = ctx.manager.add_overlay(pfn, kind).unwrap();
+        ctx.manager.add_overlay(pfn, kind).unwrap_err();
         drop(page);
-        ctx.manager
-            .add_overlay(pfn, kind, OverlayContents::filled(0x23))
-            .unwrap();
+        ctx.manager.add_overlay(pfn, kind).unwrap();
     }
 
-    /// Test that a page with multiple overlays always displays the contents of
-    /// one of those overlays (and that the original page contents are restored
-    /// when all the overlays are gone).
+    /// Tests that a page with multiple overlays applies those overlays in the
+    /// correct order and restores the original page contents when all the
+    /// overlays are gone.
     #[test]
     fn multiple_overlays() {
         let ctx = TestCtx::new();
         let pfn = Pfn::new_unchecked(0x40);
         let fills = [1, 2, 3, 4];
-        let mut pages: Vec<_> = fills
+        let mut pages: VecDeque<_> = fills
             .iter()
             .map(|i| {
                 ctx.manager
-                    .add_overlay(
-                        pfn,
-                        OverlayKind::Test(*i),
-                        OverlayContents::filled(*i),
-                    )
+                    .add_overlay(pfn, OverlayKind::Test { index: *i, fill: *i })
                     .unwrap()
             })
             .collect();
 
-        ctx.assert_pfn_fill_is_one_of(pfn, &fills);
-        while let Some(page) = pages.pop() {
-            drop(page);
-            if !pages.is_empty() {
-                ctx.assert_pfn_fill_is_one_of(pfn, &fills);
-            } else {
-                ctx.assert_pfn_has_fill(pfn, 0);
-            }
-        }
+        ctx.assert_pfn_has_fill(pfn, 1);
+        pages.pop_front();
+        ctx.assert_pfn_has_fill(pfn, 2);
+        pages.pop_front();
+        ctx.assert_pfn_has_fill(pfn, 3);
+        pages.pop_front();
+        ctx.assert_pfn_has_fill(pfn, 4);
+        pages.pop_front();
+        ctx.assert_pfn_has_fill(pfn, 0);
     }
 
     /// Tests that removing a nonexistent overlay from a PFN fails without
@@ -791,14 +755,12 @@ mod test {
 
         let _page = ctx
             .manager
-            .add_overlay(
-                pfn,
-                OverlayKind::Test(0),
-                OverlayContents::filled(0x70),
-            )
+            .add_overlay(pfn, OverlayKind::Test { index: 0, fill: 0x70 })
             .unwrap();
 
-        ctx.manager.remove_overlay(pfn, OverlayKind::Test(1)).unwrap_err();
+        ctx.manager
+            .remove_overlay(pfn, OverlayKind::Test { index: 1, fill: 0x70 })
+            .unwrap_err();
 
         ctx.assert_pfn_has_fill(pfn, 0x70);
     }
