@@ -41,22 +41,29 @@ pub struct InstanceContext {
     /// The instance's current generation last observed by the
     /// `instance-state-monitor` endpoint.
     curr_gen: u64,
-    /// The next generation to use when inserting new state(s) into the queue.
-    next_queue_gen: u64,
     pub properties: api::InstanceProperties,
     serial: Arc<serial::Serial>,
     serial_task: serial::SerialTask,
-    state_watcher_rx:
-        watch::Receiver<BTreeMap<u64, api::InstanceStateMonitorResponse>>,
-    state_watcher_tx:
-        watch::Sender<BTreeMap<u64, api::InstanceStateMonitorResponse>>,
+    state_watcher_rx: watch::Receiver<MockState>,
+    state_watcher_tx: watch::Sender<MockState>,
+}
+
+struct MockState {
+    queue: BTreeMap<u64, api::InstanceStateMonitorResponse>,
+    /// The next generation to use when inserting new state(s) into the queue.
+    next_queue_gen: u64,
+    /// Current generation when single-stepping.
+    ///
+    /// This is set when setting the single-step mock mode, and unset if not in
+    /// that mode.
+    single_step_gen: Option<u64>,
 }
 
 impl InstanceContext {
     pub fn new(properties: api::InstanceProperties, _log: &Logger) -> Self {
         let (state_watcher_tx, state_watcher_rx) = {
-            let mut states = BTreeMap::new();
-            states.insert(
+            let mut queue = BTreeMap::new();
+            queue.insert(
                 0,
                 api::InstanceStateMonitorResponse {
                     gen: 0,
@@ -67,7 +74,11 @@ impl InstanceContext {
                     },
                 },
             );
-            watch::channel(states)
+            watch::channel(MockState {
+                queue,
+                single_step_gen: None,
+                next_queue_gen: 1,
+            })
         };
         let serial = serial::Serial::new(&properties.name);
 
@@ -75,7 +86,6 @@ impl InstanceContext {
 
         Self {
             curr_gen: 0,
-            next_queue_gen: 1,
             properties,
             serial,
             serial_task,
@@ -157,8 +167,7 @@ impl InstanceContext {
     }
 
     fn current_state(&self) -> api::InstanceState {
-        self.state_watcher_rx
-            .borrow()
+        self.state_watcher_rx.borrow().queue
             .get(&self.curr_gen)
             .expect("current generation must be in the queue, this is weird 'n' bad")
             .state
@@ -169,11 +178,11 @@ impl InstanceContext {
         log: &Logger,
         states: &[api::InstanceState],
     ) {
-        self.state_watcher_tx.send_modify(|queue| {
+        self.state_watcher_tx.send_modify(|mock_state| {
             for &state in states {
-                let generation = self.next_queue_gen;
-                self.next_queue_gen += 1;
-                queue.insert(
+                let generation = mock_state.next_queue_gen;
+                mock_state.next_queue_gen += 1;
+                mock_state.queue.insert(
                     generation,
                     api::InstanceStateMonitorResponse {
                         gen: generation,
@@ -277,9 +286,22 @@ async fn instance_state_monitor(
 
     loop {
         let next_gen = gen + 1;
-        let state = state_watcher.borrow().get(&next_gen).cloned();
+        let state = {
+            let mock_state = state_watcher.borrow();
+            match mock_state.single_step_gen {
+                // We are single-stepping, and have not yet reached the
+                // requested generation. Keep waiting until single-stepped to
+                // where we need to be.
+                Some(g) if next_gen > g => None,
+                // Otherwise, if we have stepped to the requested generation, or
+                // if we are not in single-step mode, just return the current
+                // thing.
+                _ => mock_state.queue.get(&next_gen).cloned(),
+            }
+        };
+
         if let Some(state) = state {
-            // Advance to the state  with the generation we showed to the
+            // Advance to the state with the generation we showed to the
             // watcher, for use in `instance_get` and when determining what
             // state transitions are valid.
             rqctx
@@ -290,7 +312,7 @@ async fn instance_state_monitor(
                 .as_mut()
                 .expect("if we didn't have an instance, we shouldn't have gotten here")
                 .curr_gen = next_gen;
-            return Ok(HttpResponseOk(state.clone()));
+            return Ok(HttpResponseOk(state));
         }
 
         state_watcher.changed().await.unwrap();
@@ -422,6 +444,95 @@ async fn instance_serial_history_get(
         data,
         last_byte_offset: end as u64,
     }))
+}
+
+#[endpoint {
+    method = GET,
+    path = "/mock/mode"
+}]
+async fn mock_mode_get(
+    rqctx: RequestContext<Arc<Context>>,
+) -> Result<HttpResponseOk<api_types::MockMode>, HttpError> {
+    let instance = rqctx.context().instance.lock().await;
+    let instance = instance.as_ref().ok_or_else(|| {
+        HttpError::for_internal_error(
+            "Server not initialized (no instance)".to_string(),
+        )
+    })?;
+    let mode = if instance.state_watcher_rx.borrow().single_step_gen.is_some() {
+        api_types::MockMode::SingleStep
+    } else {
+        api_types::MockMode::Run
+    };
+    Ok(HttpResponseOk(mode))
+}
+
+#[endpoint {
+    method = PUT,
+    path = "/mock/mode"
+}]
+async fn mock_mode_set(
+    rqctx: RequestContext<Arc<Context>>,
+    request: TypedBody<api_types::MockMode>,
+) -> Result<HttpResponseUpdatedNoContent, HttpError> {
+    let instance = rqctx.context().instance.lock().await;
+    let instance = instance.as_ref().ok_or_else(|| {
+        HttpError::for_internal_error(
+            "Server not initialized (no instance)".to_string(),
+        )
+    })?;
+    let mode = request.into_inner();
+    instance.state_watcher_tx.send_if_modified(|mock_state| {
+        match mode {
+            api_types::MockMode::Run => {
+                mock_state.single_step_gen = None;
+                true
+            }
+            // If we're already in single-step mode, don't clobber the existing
+            // single-step generation.
+            api_types::MockMode::SingleStep
+                if mock_state.single_step_gen.is_some() =>
+            {
+                false
+            }
+            // Otherwise, start single-stepping from the current generation.
+            api_types::MockMode::SingleStep => {
+                mock_state.single_step_gen = Some(instance.curr_gen);
+                true
+            }
+        }
+    });
+    Ok(HttpResponseUpdatedNoContent())
+}
+
+#[endpoint {
+    method = PUT,
+    path = "/mock/step"
+}]
+async fn mock_step(
+    rqctx: RequestContext<Arc<Context>>,
+) -> Result<HttpResponseUpdatedNoContent, HttpError> {
+    let instance = rqctx.context().instance.lock().await;
+    let instance = instance.as_ref().ok_or_else(|| {
+        HttpError::for_internal_error(
+            "Server not initialized (no instance)".to_string(),
+        )
+    })?;
+    if instance.state_watcher_rx.borrow().single_step_gen.is_none() {
+        return Err(HttpError::for_bad_request(
+            None,
+            "not in single-step mode".to_string(),
+        ));
+    }
+
+    instance.state_watcher_tx.send_modify(|state| {
+        let g = state
+            .single_step_gen
+            .as_mut()
+            .expect("we just checked that it's set");
+        *g += 1;
+    });
+    Ok(HttpResponseUpdatedNoContent())
 }
 
 mod serial {
@@ -699,6 +810,9 @@ pub fn api() -> ApiDescription<Arc<Context>> {
     api.register(instance_state_put).unwrap();
     api.register(instance_serial).unwrap();
     api.register(instance_serial_history_get).unwrap();
+    api.register(mock_mode_get).unwrap();
+    api.register(mock_mode_set).unwrap();
+    api.register(mock_step).unwrap();
     api
 }
 
