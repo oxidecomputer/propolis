@@ -290,7 +290,26 @@ impl<'a> VmEnsureNotStarted<'a> {
                     kernel_vm_paused: false,
                 })
             }
-            Err(e) => Err(self.fail(e).await),
+            Err(e) => {
+                // In the happy path, `vmm_rt` is moved to the caller inside
+                // `VmEnsureObjectsCreated`. Here, we would `self.fail()` and
+                // implicitly drop `vmm_rt` before returning up the stack. This
+                // would result in a Tokio panic like `Cannot drop a runtime in
+                // a context where blocking is not allowed`, killing
+                // `propolis-server` and even resulting in API clients just
+                // losing connections instead of getting well-formed error
+                // responses back.
+                //
+                // So instead, spawn_blocking() to get a context where blocking
+                // is allowed, drop the `vmm_rt` there, and continue on with
+                // whatever unfortunate failure has transpired.
+                tokio::task::spawn_blocking(move || {
+                    std::mem::drop(vmm_rt);
+                })
+                .await
+                .expect("can drop vmm_rt");
+                Err(self.fail(e).await)
+            }
         }
     }
 
