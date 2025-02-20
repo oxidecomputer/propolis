@@ -315,11 +315,7 @@ impl HyperV {
                 let page = ReferenceTscPage::new(time_data.guest_freq);
                 inner
                     .overlay_manager
-                    .add_overlay(
-                        new.gpfn(),
-                        OverlayKind::ReferenceTsc,
-                        OverlayContents(page.into()),
-                    )
+                    .add_overlay(new.gpfn(), OverlayKind::ReferenceTsc(page))
                     .ok()
             }
         } else {
