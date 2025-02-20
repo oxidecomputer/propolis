@@ -148,10 +148,6 @@ impl FakeOximeterSampler {
         );
         trace!(?res, "got stats response");
         Ok(res.json::<ProducerResults>().await?)
-        /*
-        let results =
-            res.json::<ProducerResults>().await.expect("can deserialize");
-            */
     }
 }
 
