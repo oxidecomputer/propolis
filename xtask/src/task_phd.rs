@@ -303,7 +303,6 @@ impl Cmd {
 
         let artifact_dir = artifact_args
             .artifact_directory
-            .map(Utf8PathBuf::from)
             .unwrap_or_else(|| {
                 // if there's no explicitly overridden `artifact_dir` path, use
                 // `target/phd/artifacts`.
@@ -334,7 +333,6 @@ impl Cmd {
 
         let artifacts_toml = artifact_args
             .artifact_toml_path
-            .map(Utf8PathBuf::from)
             .unwrap_or_else(|| {
                 // if there's no explicitly overridden `artifacts.toml` path,
                 // determine the default one from the workspace path.
