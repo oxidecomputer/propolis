@@ -184,6 +184,19 @@ impl PciVirtioViona {
         let msix_count = Some(3);
         let dev_features = hdl.get_avail_features()?;
 
+        // Do in-kernel configuration of device MTU
+        if let Some(mtu) = info.mtu {
+            if hdl.api_version().unwrap() >= viona_api::ApiVersion::V4 {
+                hdl.set_mtu(mtu)?;
+            } else if mtu != 1500 {
+                // Squawk about MTUs not matching the default of 1500
+                return Err(io::Error::new(
+                    ErrorKind::Unsupported,
+                    "viona device version is inadequate to set MTU",
+                ));
+            }
+        }
+
         let queues =
             VirtQueues::new(NonZeroU16::new(queue_size).unwrap(), queue_count);
         let (virtio_state, pci_state) = PciVirtioState::create(
@@ -717,6 +730,16 @@ impl VionaHdl {
     /// This is used for matching kernal statistic entries to the viona device.
     fn instance_id(&self) -> io::Result<u32> {
         self.0.instance_id()
+    }
+
+    /// Set MTU for viona device
+    fn set_mtu(&self, mtu: u16) -> io::Result<()> {
+        self.0.ioctl_usize(viona_api::VNA_IOC_SET_MTU, mtu.into())?;
+        Ok(())
+    }
+
+    fn api_version(&self) -> io::Result<u32> {
+        self.0.api_version()
     }
 
     /// Set the desired promiscuity level on this interface.
