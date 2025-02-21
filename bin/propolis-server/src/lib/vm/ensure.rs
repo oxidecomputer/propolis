@@ -256,9 +256,6 @@ impl<'a> VmEnsureNotStarted<'a> {
         // When the runtime is returned to this thread, it must not be dropped.
         // That means that the path between this result and returning an
         // `Ok(VmEnsureObjectsCreated)` must be infallible.
-        //
-        // `VmEnsureObjectsCreated` (and later state transitions) take care to
-        // `shutdown_background` the runtime.
         let result: InitResult = tokio::task::spawn_blocking(move || {
             // Create the runtime that will host tasks created by
             // VMM components (e.g. block device runtime tasks).
@@ -341,6 +338,12 @@ impl<'a> VmEnsureNotStarted<'a> {
 /// Represents an instance ensure request that has proceeded far enough to
 /// create a set of VM objects, but that has not yet installed those objects as
 /// an `ActiveVm` or notified the requestor that its request is complete.
+///
+/// WARNING: dropping `VmEnsureObjectsCreated` is a panic risk since dropping
+/// the contained `tokio::runtime::Runtime` on in a worker thread will panic. It
+/// is probably a bug to drop `VmEnsureObjectsCreated`, as it is expected users
+/// will quickly call [`VmEnsureObjectsCreated::ensure_active`], but if you
+/// must, take care in handling the contained `vmm_rt`.
 pub(crate) struct VmEnsureObjectsCreated<'a> {
     log: &'a slog::Logger,
     vm: &'a Arc<super::Vm>,
