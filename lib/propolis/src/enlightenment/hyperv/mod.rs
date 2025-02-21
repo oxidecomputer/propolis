@@ -132,8 +132,14 @@ impl Inner {
     fn handle_rdmsr_reference_tsc(&self) -> RdmsrOutcome {
         match self.reference_tsc {
             ReferenceTsc::Disabled => RdmsrOutcome::GpException,
+            // Well-behaved users of the enlightenment shouldn't allow vCPUs to
+            // start dispatching calls to it until the enlightenment is fully
+            // initialized.
             ReferenceTsc::Uninitialized => {
-                panic!("reference TSC MSR read before enlightenment was ready")
+                panic!(
+                    "reference TSC read from uninitialized enlightenment \
+                    (perhaps vCPUs were started without calling attach()?)"
+                )
             }
             ReferenceTsc::Enabled { msr_value, .. } => {
                 RdmsrOutcome::Handled(msr_value.0)
@@ -155,7 +161,7 @@ impl Inner {
 
         // Unlike the hypercall MSR, writes to the reference TSC MSR always
         // succeed without raising an exception, even if they try to enable the
-        // TSC overlay page at an invalid PFN.
+        // TSC overlay page at an invalid PFN. See TLFS section 12.7.1.
         let old_overlay = self.overlays.tsc.take();
         self.reference_tsc.set_msr_value(new);
         self.overlays.tsc = if new.enabled() {
@@ -183,6 +189,12 @@ pub struct HyperV {
 
 impl HyperV {
     /// Creates a new Hyper-V enlightenment stack with the supplied `features`.
+    ///
+    /// The caller must call [`attach`] to finish initializing this
+    /// enlightenment stack before starting any VM components that depend on it.
+    /// Otherwise the stack may panic while the VM is running.
+    ///
+    /// [`attach`]: super::Enlightenment::attach
     pub fn new(log: &slog::Logger, features: Features) -> Self {
         let acc_mem = MemAccessor::new_orphan();
         let log = log.new(slog::o!("component" => "hyperv"));
@@ -209,7 +221,10 @@ impl HyperV {
     /// routine is called before the enlightenment receives its `attach`
     /// callout.
     fn vmm_hdl(&self) -> &Arc<VmmHdl> {
-        self.vmm_hdl.get().unwrap()
+        self.vmm_hdl.get().expect(
+            "a fully-initialized Hyper-V enlightenment always has a \
+            VMM handle (did the library user remember to call `attach`?)",
+        )
     }
 
     /// Handles a write to the HV_X64_MSR_GUEST_OS_ID register.
@@ -477,7 +492,10 @@ impl super::Enlightenment for HyperV {
         // `attach` should only called once on each enlightenment instance.
         // `VmmHdl` doesn't implement `Debug`, so it's not possible to use
         // `unwrap` or `expect` here.
-        assert!(self.vmm_hdl.set(vmm_hdl).is_ok());
+        assert!(
+            self.vmm_hdl.set(vmm_hdl).is_ok(),
+            "Enlightenment::attach should be called exactly once per stack"
+        );
     }
 }
 
@@ -578,7 +596,7 @@ impl MigrateSingle for HyperV {
             reference_tsc: match inner.reference_tsc {
                 ReferenceTsc::Disabled => None,
                 ReferenceTsc::Uninitialized => {
-                    panic!("asked to export an uninitialized TSC enlightenment")
+                    return Err(MigrateStateError::NotReadyForExport);
                 }
                 ReferenceTsc::Enabled { msr_value, guest_freq } => {
                     Some(migrate::ReferenceTscV1 {
@@ -699,10 +717,12 @@ mod migrate {
         /// first boots and determines the TSC scaling factor that's written to
         /// its reference TSC page.
         ///
-        /// The overarching migration protocol also migrates this frequency as
-        /// part of the kernel VMM's time data. It is included separately here
-        /// to avoid requiring device state import to occur after time data
-        /// import.
+        /// This module assumes that the guest's observed TSC frequency is
+        /// invariant: when a VM migrates, the migrator is required to take
+        /// steps to ensure that the guest TSC frequency on the target is the
+        /// same as on the source. Migrators can use the
+        /// [`crate::vmm::time::adjust_time_data`] function to compute the
+        /// appropriate scaling factors to pass to bhyve to achieve this.
         pub(super) guest_freq: u64,
     }
 

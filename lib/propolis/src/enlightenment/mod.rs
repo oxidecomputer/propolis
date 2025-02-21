@@ -82,7 +82,8 @@ pub trait Enlightenment: Lifecycle + Send + Sync {
     /// Attaches this enlightenment stack to a VM.
     ///
     /// Users of an enlightenment stack must guarantee that this function is
-    /// called exactly once per instance of that stack.
+    /// called exactly once per instance of that stack and must do this before
+    /// starting any vCPUs or other VM components that may use the stack.
     ///
     /// # Arguments
     ///
