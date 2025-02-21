@@ -14,7 +14,7 @@
 //! that intends to implement a Hyper-V-compatible interface:
 //! https://github.com/MicrosoftDocs/Virtualization-Documentation/blob/main/tlfs/Requirements%20for%20Implementing%20the%20Microsoft%20Hypervisor%20Interface.pdf
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
 use overlay::{OverlayError, OverlayKind, OverlayManager, OverlayPage};
@@ -27,7 +27,7 @@ use crate::{
         hyperv::{
             bits::*,
             hypercall::MsrHypercallValue,
-            tsc::{MsrReferenceTscValue, ReferenceTscPage},
+            tsc::{MsrReferenceTscValue, ReferenceTsc},
         },
         AddCpuidError,
     },
@@ -69,44 +69,12 @@ struct HypercallOverlay(OverlayPage);
 /// Wrapper around a TSC overlay page.
 struct TscOverlay(OverlayPage);
 
-impl MsrReferenceTscValue {
-    /// If this MSR value would enable the reference TSC page, attempts to
-    /// create a reference TSC overlay at the MSR's specified PFN.
-    ///
-    /// This routine swallows errors from [`OverlayManager::add_overlay`].
-    /// Notably, this means it returns `None` if a reference TSC overlay already
-    /// exists at the specified PFN.
-    fn create_overlay(
-        &self,
-        manager: &Arc<OverlayManager>,
-        guest_freq: u64,
-    ) -> Option<TscOverlay> {
-        if !self.enabled() {
-            return None;
-        }
-
-        let page = ReferenceTscPage::new(guest_freq);
-
-        manager
-            .add_overlay(self.gpfn(), OverlayKind::ReferenceTsc(page))
-            .ok()
-            .map(TscOverlay)
-    }
-}
-
 /// A collection of overlay pages that a Hyper-V enlightenment stack might be
 /// managing.
 #[derive(Default)]
 struct OverlayPages {
     hypercall: Option<HypercallOverlay>,
     tsc: Option<TscOverlay>,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum ReferenceTsc {
-    Disabled,
-    Uninitialized,
-    Present { msr_value: MsrReferenceTscValue, guest_freq: u64 },
 }
 
 struct Inner {
@@ -119,6 +87,7 @@ struct Inner {
     /// The last value stored in the [`bits::HV_X64_MSR_HYPERCALL`] MSR.
     msr_hypercall_value: MsrHypercallValue,
 
+    /// The state of this stack's reference TSC enlightenment.
     reference_tsc: ReferenceTsc,
 
     /// This enlightenment's active overlay page handles.
@@ -140,14 +109,16 @@ impl Inner {
         }
     }
 
+    /// Resets this enlightenment block's volatile values (e.g. MSR values) to
+    /// their initial values.
     fn reset(&mut self) {
         *self = Self {
             overlay_manager: self.overlay_manager.clone(),
             msr_guest_os_id_value: 0,
             msr_hypercall_value: MsrHypercallValue::default(),
             reference_tsc: match &self.reference_tsc {
-                ReferenceTsc::Present { guest_freq, .. } => {
-                    ReferenceTsc::Present {
+                ReferenceTsc::Enabled { guest_freq, .. } => {
+                    ReferenceTsc::Enabled {
                         guest_freq: *guest_freq,
                         msr_value: MsrReferenceTscValue::default(),
                     }
@@ -164,22 +135,16 @@ impl Inner {
             ReferenceTsc::Uninitialized => {
                 panic!("reference TSC MSR read before enlightenment was ready")
             }
-            ReferenceTsc::Present { msr_value, .. } => {
+            ReferenceTsc::Enabled { msr_value, .. } => {
                 RdmsrOutcome::Handled(msr_value.0)
             }
         }
     }
 
     fn handle_wrmsr_reference_tsc(&mut self, value: u64) -> WrmsrOutcome {
-        let (msr_value, guest_freq) = match &mut self.reference_tsc {
-            ReferenceTsc::Disabled => return WrmsrOutcome::GpException,
-            ReferenceTsc::Uninitialized => panic!(
-                "reference TSC MSR written before enlightenment was ready"
-            ),
-            ReferenceTsc::Present { msr_value, guest_freq } => {
-                (msr_value, *guest_freq)
-            }
-        };
+        if !self.reference_tsc.is_present() {
+            return WrmsrOutcome::GpException;
+        }
 
         let new = MsrReferenceTscValue(value);
         probes::hyperv_wrmsr_reference_tsc!(|| (
@@ -188,18 +153,21 @@ impl Inner {
             new.enabled()
         ));
 
+        // Unlike the hypercall MSR, writes to the reference TSC MSR always
+        // succeed without raising an exception, even if they try to enable the
+        // TSC overlay page at an invalid PFN.
         let old_overlay = self.overlays.tsc.take();
+        self.reference_tsc.set_msr_value(new);
         self.overlays.tsc = if new.enabled() {
             if let Some(mut overlay) = old_overlay {
                 overlay.0.move_to(new.gpfn()).ok().map(|_| overlay)
             } else {
-                new.create_overlay(&self.overlay_manager, guest_freq)
+                self.reference_tsc.create_overlay(&self.overlay_manager)
             }
         } else {
             None
         };
 
-        *msr_value = new;
         WrmsrOutcome::Handled
     }
 }
@@ -210,6 +178,7 @@ pub struct HyperV {
     features: Features,
     inner: Mutex<Inner>,
     acc_mem: MemAccessor,
+    vmm_hdl: OnceLock<Arc<VmmHdl>>,
 }
 
 impl HyperV {
@@ -228,7 +197,19 @@ impl HyperV {
             features,
             inner: Mutex::new(Inner::new(&features)),
             acc_mem,
+            vmm_hdl: OnceLock::new(),
         }
+    }
+
+    /// Returns a reference to this manager's VMM handle.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the handle has not been initialized yet, which occurs if this
+    /// routine is called before the enlightenment receives its `attach`
+    /// callout.
+    fn vmm_hdl(&self) -> &Arc<VmmHdl> {
+        self.vmm_hdl.get().unwrap()
     }
 
     /// Handles a write to the HV_X64_MSR_GUEST_OS_ID register.
@@ -318,6 +299,8 @@ impl HyperV {
         }
     }
 
+    /// Handles a read of the `HV_X64_MSR_TIME_REF_COUNT` register. See TLFS
+    /// section 12.4.
     fn handle_rdmsr_time_ref_count(&self) -> RdmsrOutcome {
         if !self.features.reference_tsc {
             return RdmsrOutcome::GpException;
@@ -480,11 +463,21 @@ impl super::Enlightenment for HyperV {
             let time_data = vmm::time::export_time_data(&vmm_hdl)
                 .expect("VMM time data is accessible during attach");
 
-            inner.reference_tsc = ReferenceTsc::Present {
+            // N.B. This guest TSC frequency may be overwritten by a future
+            // request to import state from a migration source. This is
+            // intentional; the migration protocol will configure the kernel VMM
+            // to apply hardware TSC scaling so that the guest observes the
+            // imported frequency.
+            inner.reference_tsc = ReferenceTsc::Enabled {
                 guest_freq: time_data.guest_freq,
                 msr_value: MsrReferenceTscValue::default(),
             }
         }
+
+        // `attach` should only called once on each enlightenment instance.
+        // `VmmHdl` doesn't implement `Debug`, so it's not possible to use
+        // `unwrap` or `expect` here.
+        assert!(self.vmm_hdl.set(vmm_hdl).is_ok());
     }
 }
 
@@ -543,8 +536,10 @@ impl Lifecycle for HyperV {
             .map(HypercallOverlay);
 
         let tsc_overlay = inner
-            .msr_reference_tsc_value
-            .create_overlay(&inner.overlay_manager, self.vmm_hdl());
+            .reference_tsc
+            .is_present()
+            .then(|| inner.reference_tsc.create_overlay(&inner.overlay_manager))
+            .flatten();
 
         inner.overlays =
             OverlayPages { hypercall: hypercall_overlay, tsc: tsc_overlay };
@@ -558,10 +553,7 @@ impl Lifecycle for HyperV {
         // `pause` before `reset`.
         assert!(inner.overlay_manager.is_empty());
 
-        *inner = Inner {
-            overlay_manager: inner.overlay_manager.clone(),
-            ..Default::default()
-        };
+        inner.reset();
     }
 
     fn halt(&self) {
@@ -583,7 +575,18 @@ impl MigrateSingle for HyperV {
         Ok(migrate::HyperVEnlightenmentV1 {
             msr_guest_os_id: inner.msr_guest_os_id_value,
             msr_hypercall: inner.msr_hypercall_value.0,
-            msr_reference_tsc: inner.msr_reference_tsc_value.0,
+            reference_tsc: match inner.reference_tsc {
+                ReferenceTsc::Disabled => None,
+                ReferenceTsc::Uninitialized => {
+                    panic!("asked to export an uninitialized TSC enlightenment")
+                }
+                ReferenceTsc::Enabled { msr_value, guest_freq } => {
+                    Some(migrate::ReferenceTscV1 {
+                        msr_value: msr_value.0,
+                        guest_freq,
+                    })
+                }
+            },
         }
         .into())
     }
@@ -632,39 +635,40 @@ impl MigrateSingle for HyperV {
             None
         };
 
-        let (reference_tsc, tsc_overlay) =
-            if let Some(imported_tsc) = reference_tsc {
-                if matches!(inner.reference_tsc, ReferenceTsc::Disabled) {
-                    return Err(MigrateStateError::ImportFailed(
-                        "imported payload has reference TSC data, but that \
+        let (reference_tsc, tsc_overlay) = if let Some(imported_tsc) =
+            reference_tsc
+        {
+            if !inner.reference_tsc.is_present() {
+                return Err(MigrateStateError::ImportFailed(
+                    "imported payload has reference TSC data, but that \
                         enlightenment is disabled"
-                            .to_string(),
-                    ));
-                }
+                        .to_string(),
+                ));
+            }
 
-                let msr_value = MsrReferenceTscValue(imported_tsc.msr_value);
-                let overlay = msr_value.create_overlay(
-                    &inner.overlay_manager,
-                    imported_tsc.guest_freq,
-                );
-
-                let reference_tsc = ReferenceTsc::Present {
-                    msr_value: MsrReferenceTscValue(imported_tsc.msr_value),
-                    guest_freq: imported_tsc.guest_freq,
-                };
-
-                (reference_tsc, overlay)
-            } else {
-                if !matches!(inner.reference_tsc, ReferenceTsc::Disabled) {
-                    return Err(MigrateStateError::ImportFailed(
-                        "imported payload has no reference TSC data, but that \
-                        enlightenment is enabled"
-                            .to_string(),
-                    ));
-                }
-
-                (ReferenceTsc::Disabled, None)
+            // Ensure that the TSC overlay exists and that it exposes the
+            // correct scaling factor for the guest's nominal TSC frequency.
+            // This may be different from the default scaling factor that was
+            // read from the kernel VMM when the enlightenment stack was
+            // initialized.
+            let reference_tsc = ReferenceTsc::Enabled {
+                msr_value: MsrReferenceTscValue(imported_tsc.msr_value),
+                guest_freq: imported_tsc.guest_freq,
             };
+
+            let overlay = reference_tsc.create_overlay(&inner.overlay_manager);
+            (reference_tsc, overlay)
+        } else {
+            if inner.reference_tsc.is_present() {
+                return Err(MigrateStateError::ImportFailed(
+                    "imported payload has no reference TSC data, but that \
+                        enlightenment is enabled"
+                        .to_string(),
+                ));
+            }
+
+            (ReferenceTsc::Disabled, None)
+        };
 
         *inner = Inner {
             overlay_manager: inner.overlay_manager.clone(),
@@ -685,9 +689,20 @@ mod migrate {
 
     use crate::migrate::{Schema, SchemaId};
 
+    /// Reference TSC enlightenment state.
     #[derive(Debug, Serialize, Deserialize)]
     pub struct ReferenceTscV1 {
+        /// The value of the `HV_X64_MSR_REFERENCE_TSC` MSR.
         pub(super) msr_value: u64,
+
+        /// The nominal TSC frequency for this VM. This is established when a VM
+        /// first boots and determines the TSC scaling factor that's written to
+        /// its reference TSC page.
+        ///
+        /// The overarching migration protocol also migrates this frequency as
+        /// part of the kernel VMM's time data. It is included separately here
+        /// to avoid requiring device state import to occur after time data
+        /// import.
         pub(super) guest_freq: u64,
     }
 
