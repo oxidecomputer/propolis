@@ -94,10 +94,14 @@ use std::sync::Arc;
 use oximeter::types::ProducerRegistry;
 use oximeter_instruments::kstat::KstatSampler;
 use propolis::enlightenment::{
-    bhyve::BhyveGuestInterface, hyperv::HyperV, Enlightenment,
+    bhyve::BhyveGuestInterface,
+    hyperv::{Features as HyperVFeatures, HyperV},
+    Enlightenment,
 };
 use propolis_api_types::{
-    instance_spec::components::board::GuestHypervisorInterface,
+    instance_spec::components::board::{
+        GuestHypervisorInterface, HyperVFeatureFlag,
+    },
     InstanceEnsureResponse, InstanceMigrateInitiateResponse,
     InstanceProperties, InstanceState,
 };
@@ -492,14 +496,23 @@ async fn initialize_vm_objects(
     let vmm_log = log.new(slog::o!("component" => "vmm"));
 
     let (guest_hv_interface, guest_hv_lifecycle) =
-        match spec.board.guest_hv_interface {
+        match &spec.board.guest_hv_interface {
             GuestHypervisorInterface::Bhyve => {
                 let bhyve = Arc::new(BhyveGuestInterface);
                 let lifecycle = bhyve.clone();
                 (bhyve as Arc<dyn Enlightenment>, lifecycle.as_lifecycle())
             }
-            GuestHypervisorInterface::HyperV { .. } => {
-                let hyperv = Arc::new(HyperV::new(&vmm_log));
+            GuestHypervisorInterface::HyperV { features } => {
+                let mut hv_features = HyperVFeatures::default();
+                for f in features {
+                    match f {
+                        HyperVFeatureFlag::ReferenceTsc => {
+                            hv_features.reference_tsc = true
+                        }
+                    }
+                }
+
+                let hyperv = Arc::new(HyperV::new(&vmm_log, hv_features));
                 let lifecycle = hyperv.clone();
                 (hyperv as Arc<dyn Enlightenment>, lifecycle.as_lifecycle())
             }

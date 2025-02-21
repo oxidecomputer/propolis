@@ -80,7 +80,10 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{accessors::MemAccessor, common::PAGE_SIZE, vmm::Pfn};
+use crate::{
+    accessors::MemAccessor, common::PAGE_SIZE,
+    enlightenment::hyperv::tsc::ReferenceTscPage, vmm::Pfn,
+};
 
 use self::pfn::MappedPfn;
 
@@ -143,13 +146,14 @@ impl TryFrom<Vec<u8>> for OverlayContents {
 
 /// A kind of overlay page, annotated with any other information that may be
 /// needed to generate the page's contents.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum OverlayKind {
     /// A hypercall page whose instruction sequence immediately returns a "not
     /// supported" error status to its caller.
     HypercallReturnNotSupported,
 
-    /// A dummy page used for testing.
+    ReferenceTsc(ReferenceTscPage),
+
     #[cfg(test)]
     Test {
         /// An index that disambiguates different test page kinds.
@@ -175,6 +179,7 @@ impl OverlayKind {
     fn priority(&self) -> u32 {
         let high: u16 = match self {
             Self::HypercallReturnNotSupported => 0,
+            Self::ReferenceTsc(_) => 1,
 
             #[cfg(test)]
             Self::Test { .. } => u16::MAX,
@@ -195,6 +200,7 @@ impl OverlayKind {
             Self::HypercallReturnNotSupported => OverlayContents(Box::new(
                 super::hypercall::hypercall_page_contents(),
             )),
+            Self::ReferenceTsc(page) => OverlayContents(page.into()),
             #[cfg(test)]
             Self::Test { index: _, fill } => {
                 OverlayContents(Box::new([*fill; PAGE_SIZE]))
@@ -202,6 +208,14 @@ impl OverlayKind {
         }
     }
 }
+
+impl PartialEq for OverlayKind {
+    fn eq(&self, other: &Self) -> bool {
+        self.priority() == other.priority()
+    }
+}
+
+impl Eq for OverlayKind {}
 
 impl Ord for OverlayKind {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
