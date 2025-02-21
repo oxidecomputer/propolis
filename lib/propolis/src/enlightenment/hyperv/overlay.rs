@@ -80,11 +80,12 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{accessors::MemAccessor, common::PAGE_SIZE, vmm::Pfn};
+use crate::{
+    accessors::MemAccessor, common::PAGE_SIZE,
+    enlightenment::hyperv::tsc::ReferenceTscPage, vmm::Pfn,
+};
 
 use self::pfn::MappedPfn;
-
-use super::tsc::ReferenceTscPage;
 
 /// An error that can be returned from an overlay page operation.
 #[derive(Debug, Error)]

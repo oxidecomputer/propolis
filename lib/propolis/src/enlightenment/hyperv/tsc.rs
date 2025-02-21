@@ -132,8 +132,14 @@
 //! ensures this by requiring migration targets to support hardware-based TSC
 //! scaling and offsetting.)
 
+use std::sync::Arc;
+
 use crate::{
     common::{GuestAddr, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE},
+    enlightenment::hyperv::{
+        overlay::{OverlayKind, OverlayManager},
+        TscOverlay,
+    },
     vmm::Pfn,
 };
 
@@ -247,5 +253,77 @@ fn guest_freq_to_scale(guest_freq: u64) -> Option<u64> {
         None
     } else {
         Some(scale as u64)
+    }
+}
+
+/// The enablement status of a reference TSC enlightenment.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum ReferenceTsc {
+    /// The enlightenment is disabled.
+    Disabled,
+
+    /// The enlightenment is enabled, but has not yet been initialized.
+    Uninitialized,
+
+    /// The enlightenment is enabled and initialized.
+    Enabled { msr_value: MsrReferenceTscValue, guest_freq: u64 },
+}
+
+impl ReferenceTsc {
+    /// Returns `true` if the reference TSC enlightenment is present in this
+    /// Hyper-V stack, regardless of whether it has been initialized yet.
+    pub(super) fn is_present(&self) -> bool {
+        matches!(
+            self,
+            ReferenceTsc::Uninitialized | ReferenceTsc::Enabled { .. }
+        )
+    }
+
+    /// Sets this enlightenment's reference TSC MSR value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this enlightenment is not enabled and fully initialized.
+    pub(super) fn set_msr_value(&mut self, value: MsrReferenceTscValue) {
+        match self {
+            Self::Enabled { msr_value, .. } => *msr_value = value,
+            _ => panic!(
+                "setting TSC MSR value for invalid enlightenment {self:?}"
+            ),
+        }
+    }
+
+    /// Registers a reference TSC overlay page with the supplied overlay manager
+    /// at the PFN specified by this struct's `msr_value`.
+    ///
+    /// # Return value
+    ///
+    /// `Some` if an overlay was successfully created at the relevant PFN.
+    /// `None` if the MSR value indicates the overlay is disabled or if the
+    /// overlay could not be created at the requested PFN.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this enlightenment is not enabled and fully initialized.
+    pub(super) fn create_overlay(
+        &self,
+        overlay_manager: &Arc<OverlayManager>,
+    ) -> Option<TscOverlay> {
+        let Self::Enabled { msr_value, guest_freq } = self else {
+            panic!(
+                "asked to create a TSC overlay for invalid enlightenment \
+                {self:?}"
+            );
+        };
+
+        if !msr_value.enabled() {
+            return None;
+        }
+
+        let page = ReferenceTscPage::new(*guest_freq);
+        overlay_manager
+            .add_overlay(msr_value.gpfn(), OverlayKind::ReferenceTsc(page))
+            .ok()
+            .map(TscOverlay)
     }
 }
