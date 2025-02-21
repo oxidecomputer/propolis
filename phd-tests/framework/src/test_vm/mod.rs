@@ -51,11 +51,13 @@ type PropolisClientResult<T> = StdResult<ResponseValue<T>, PropolisClientError>;
 
 pub(crate) mod config;
 pub(crate) mod environment;
+pub(crate) mod metrics;
 mod server;
 pub(crate) mod spec;
 
 pub use config::*;
-pub use environment::VmLocation;
+pub use environment::{MetricsLocation, VmLocation};
+pub use metrics::FakeOximeterSampler;
 
 use self::environment::EnvironmentSpec;
 
@@ -156,6 +158,7 @@ pub struct TestVm {
     id: Uuid,
     client: Client,
     server: Option<server::PropolisServer>,
+    metrics: Option<metrics::FakeOximeterServer>,
     spec: VmSpec,
     environment_spec: EnvironmentSpec,
     data_dir: Utf8PathBuf,
@@ -228,9 +231,17 @@ impl TestVm {
         vm_id: Uuid,
         vm_spec: VmSpec,
         environment_spec: EnvironmentSpec,
-        params: ServerProcessParameters,
+        mut params: ServerProcessParameters,
         cleanup_task_tx: UnboundedSender<JoinHandle<()>>,
     ) -> Result<Self> {
+        let metrics = environment_spec.metrics.as_ref().map(|m| match m {
+            MetricsLocation::Local => {
+                let metrics_server = metrics::spawn_fake_oximeter_server();
+                params.metrics_addr = Some(metrics_server.local_addr());
+                metrics_server
+            }
+        });
+
         let data_dir = params.data_dir.to_path_buf();
         let server_addr = params.server_addr;
         let server = server::PropolisServer::new(
@@ -245,6 +256,7 @@ impl TestVm {
             id: vm_id,
             client,
             server: Some(server),
+            metrics,
             spec: vm_spec,
             environment_spec,
             data_dir,
@@ -270,6 +282,19 @@ impl TestVm {
         self.environment_spec.clone()
     }
 
+    pub fn instance_properties(&self) -> InstanceProperties {
+        InstanceProperties {
+            id: self.id,
+            name: format!("phd-vm-{}", self.id),
+            metadata: self.spec.metadata.clone(),
+            description: "Pheidippides-managed VM".to_string(),
+        }
+    }
+
+    pub fn metrics_sampler(&self) -> Option<FakeOximeterSampler> {
+        self.metrics.as_ref().map(|m| m.sampler())
+    }
+
     /// Sends an instance ensure request to this VM's server, allowing it to
     /// transition into the running state.
     #[instrument(skip_all, fields(vm = self.spec.vm_name, vm_id = %self.id))]
@@ -282,13 +307,6 @@ impl TestVm {
             return Err(VmStateError::InstanceAlreadyEnsured.into());
         }
 
-        let properties = InstanceProperties {
-            id: self.id,
-            name: format!("phd-vm-{}", self.id),
-            metadata: self.spec.metadata.clone(),
-            description: "Pheidippides-managed VM".to_string(),
-        };
-
         let init = match migrate {
             None => InstanceInitializationMethod::Spec {
                 spec: self.spec.instance_spec.clone(),
@@ -299,8 +317,10 @@ impl TestVm {
                 src_addr: info.src_addr.to_string(),
             },
         };
-        let ensure_req =
-            InstanceEnsureRequest { properties: properties.clone(), init };
+        let ensure_req = InstanceEnsureRequest {
+            properties: self.instance_properties(),
+            init,
+        };
 
         // There is a brief period where the Propolis server process has begun
         // to run but hasn't started its Dropshot server yet. Ensure requests
