@@ -321,7 +321,6 @@ impl<'a> VmEnsureNotStarted<'a> {
                     kernel_vm_paused: false,
                 })
             }
-
             Err(e) => Err(self.fail(e).await),
         }
     }
