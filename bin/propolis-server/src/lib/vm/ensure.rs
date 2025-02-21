@@ -236,39 +236,70 @@ impl<'a> VmEnsureNotStarted<'a> {
             },
         ));
 
-        // Create the runtime that will host tasks created by VMM components
-        // (e.g. block device runtime tasks).
-        let vmm_rt = tokio::runtime::Builder::new_multi_thread()
-            .thread_name("tokio-rt-vmm")
-            .worker_threads(usize::max(
-                VMM_MIN_RT_THREADS,
-                VMM_BASE_RT_THREADS + spec.board.cpus as usize,
-            ))
-            .enable_all()
-            .build()?;
-
         let log_for_init = self.log.clone();
         let properties = self.ensure_request.properties.clone();
         let options = self.ensure_options.clone();
         let queue_for_init = input_queue.clone();
-        let init_result = vmm_rt
-            .spawn(async move {
-                initialize_vm_objects(
-                    log_for_init,
-                    spec,
-                    properties,
-                    options,
-                    queue_for_init,
-                )
-                .await
-            })
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!("failed to join VM object creation task: {e}")
-            })?;
 
-        match init_result {
-            Ok(objects) => {
+        // Either the block following this succeeds with both a Tokio runtime
+        // and VM objects, or entirely fails with no partial state for us to
+        // clean up.
+        type InitResult =
+            anyhow::Result<(tokio::runtime::Runtime, InputVmObjects)>;
+
+        // We need to create a new runtime to host the tasks for this VMM's
+        // objects, but that initialization is fallible and results in dropping
+        // the fledgling VMM runtime itself. Dropping a Tokio runtime on a
+        // worker thread in a Tokio runtime will panic, so do all init in a
+        // `spawn_blocking` where this won't be an issue.
+        //
+        // When the runtime is returned to this thread, it must not be dropped.
+        // That means that the path between this result and returning an
+        // `Ok(VmEnsureObjectsCreated)` must be infallible.
+        //
+        // `VmEnsureObjectsCreated` (and later state transitions) take care to
+        // `shutdown_background` the runtime.
+        let result: InitResult = tokio::task::spawn_blocking(move || {
+            // Create the runtime that will host tasks created by
+            // VMM components (e.g. block device runtime tasks).
+            let vmm_rt = tokio::runtime::Builder::new_multi_thread()
+                .thread_name("tokio-rt-vmm")
+                .worker_threads(usize::max(
+                    VMM_MIN_RT_THREADS,
+                    VMM_BASE_RT_THREADS + spec.board.cpus as usize,
+                ))
+                .enable_all()
+                .build()?;
+
+            let init_result = vmm_rt
+                .block_on(async move {
+                    initialize_vm_objects(
+                        log_for_init,
+                        spec,
+                        properties,
+                        options,
+                        queue_for_init,
+                    )
+                    .await
+                })
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to join VM object creation task: {e}"
+                    )
+                })?;
+            Ok((vmm_rt, init_result))
+        })
+        .await
+        .map_err(|e| {
+            // This is extremely unexpected: if the join failed, the init
+            // task panicked or was cancelled. If the init itself failed,
+            // which is somewhat more reasonable, we would expect the join
+            // to succeed and have an error below.
+            anyhow::anyhow!("failed to join VMM runtime init task: {e}")
+        })?;
+
+        match result {
+            Ok((vmm_rt, objects)) => {
                 // N.B. Once these `VmObjects` exist, it is no longer safe to
                 //      call `vm_init_failed`.
                 let objects = Arc::new(VmObjects::new(
@@ -290,26 +321,8 @@ impl<'a> VmEnsureNotStarted<'a> {
                     kernel_vm_paused: false,
                 })
             }
-            Err(e) => {
-                // In the happy path, `vmm_rt` is moved to the caller inside
-                // `VmEnsureObjectsCreated`. Here, we would `self.fail()` and
-                // implicitly drop `vmm_rt` before returning up the stack. This
-                // would result in a Tokio panic like `Cannot drop a runtime in
-                // a context where blocking is not allowed`, killing
-                // `propolis-server` and even resulting in API clients just
-                // losing connections instead of getting well-formed error
-                // responses back.
-                //
-                // So instead, spawn_blocking() to get a context where blocking
-                // is allowed, drop the `vmm_rt` there, and continue on with
-                // whatever unfortunate failure has transpired.
-                tokio::task::spawn_blocking(move || {
-                    std::mem::drop(vmm_rt);
-                })
-                .await
-                .expect("can drop vmm_rt");
-                Err(self.fail(e).await)
-            }
+
+            Err(e) => Err(self.fail(e).await),
         }
     }
 
