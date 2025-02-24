@@ -210,9 +210,7 @@ impl ExternalRequestQueue {
                 reboot: RequestDisposition::Deny(
                     RequestDeniedReason::InstanceNotActive,
                 ),
-                mutate: RequestDisposition::Deny(
-                    RequestDeniedReason::InstanceNotActive,
-                ),
+                mutate: RequestDisposition::Enqueue,
                 stop: RequestDisposition::Enqueue,
             },
             log,
@@ -295,7 +293,7 @@ impl ExternalRequestQueue {
                     start: Disposition::Ignore,
                     migrate_as_source: Disposition::Deny(reason),
                     reboot: Disposition::Deny(reason),
-                    mutate: Disposition::Deny(reason),
+                    mutate: Disposition::Enqueue,
                     stop: self.allowed.stop,
                 }
             }
@@ -577,18 +575,27 @@ mod test {
     }
 
     #[tokio::test]
-    async fn mutation_requires_running_and_not_migrating_out() {
+    async fn mutation_requires_not_migrating_out() {
         let mut queue =
             ExternalRequestQueue::new(test_logger(), InstanceAutoStart::No);
 
-        // Mutating a VM before it has started is not allowed.
-        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_err());
+        // Mutating a VM before it has started is allowed.
+        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_ok());
+        assert!(matches!(
+            queue.pop_front(),
+            Some(ExternalRequest::ReconfigureCrucibleVolume { .. })
+        ));
 
-        // Merely dequeuing the start request doesn't allow mutation; the VM
-        // actually has to be running.
+        // Mutating a VM is also allowed while it is starting.
         assert!(queue.try_queue(ExternalRequest::Start).is_ok());
         assert!(matches!(queue.pop_front(), Some(ExternalRequest::Start)));
-        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_err());
+        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_ok());
+        assert!(matches!(
+            queue.pop_front(),
+            Some(ExternalRequest::ReconfigureCrucibleVolume { .. })
+        ));
+
+        // And it's allowed once the VM has started running.
         queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
         assert!(queue.try_queue(make_reconfigure_crucible_request()).is_ok());
         assert!(matches!(
@@ -610,10 +617,14 @@ mod test {
     }
 
     #[tokio::test]
-    async fn mutation_disallowed_after_stop() {
+    async fn mutation_disallowed_after_stop_requested() {
         let mut queue =
             ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
         queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
+
+        assert!(queue.try_queue(ExternalRequest::Stop).is_ok());
+        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_err());
+
         queue.notify_instance_state_change(InstanceStateChange::Stopped);
         assert!(queue.try_queue(make_reconfigure_crucible_request()).is_err());
     }

@@ -292,7 +292,7 @@ impl TestVm {
 
         let init = match migrate {
             None => InstanceInitializationMethod::Spec {
-                spec: self.spec.instance_spec.clone(),
+                spec: self.spec.instance_spec(),
             },
             Some(info) => InstanceInitializationMethod::MigrationTarget {
                 migration_id: info.migration_id,
@@ -489,7 +489,7 @@ impl TestVm {
         let timeout_duration = match Into::<MigrationTimeout>::into(timeout) {
             MigrationTimeout::Explicit(val) => val,
             MigrationTimeout::InferFromMemorySize => {
-                let mem_mib = self.spec.instance_spec.board.memory_mb;
+                let mem_mib = self.spec.instance_spec().board.memory_mb;
                 std::time::Duration::from_secs(
                     (MIGRATION_SECS_PER_GUEST_GIB * mem_mib) / 1024,
                 )
@@ -573,7 +573,7 @@ impl TestVm {
 
     fn generate_replacement_components(&self) -> ReplacementComponents {
         let mut map = ReplacementComponents::new();
-        for (id, comp) in &self.spec.instance_spec.components {
+        for (id, comp) in &self.spec.instance_spec().components {
             match comp {
                 ComponentV0::MigrationFailureInjector(inj) => {
                     map.insert(

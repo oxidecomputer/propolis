@@ -23,9 +23,7 @@ use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::{serial::Serial, spec::Spec, vcpu_tasks::VcpuTaskController};
 
-use super::{
-    state_driver::VmStartReason, BlockBackendMap, CrucibleBackendMap, DeviceMap,
-};
+use super::{BlockBackendMap, CrucibleBackendMap, DeviceMap};
 
 /// A collection of components that make up a Propolis VM instance.
 pub(crate) struct VmObjects {
@@ -189,6 +187,14 @@ impl VmObjectsLocked {
         &self.ps2ctrl
     }
 
+    pub(crate) fn device_map(&self) -> &DeviceMap {
+        &self.devices
+    }
+
+    pub(crate) fn block_backend_map(&self) -> &BlockBackendMap {
+        &self.block_backends
+    }
+
     /// Iterates over all of the lifecycle trait objects in this VM and calls
     /// `func` on each one.
     pub(crate) fn for_each_device(
@@ -244,33 +250,6 @@ impl VmObjectsLocked {
         self.machine.reinitialize().unwrap();
     }
 
-    /// Starts a VM's devices and allows all of its vCPU tasks to run.
-    ///
-    /// This function may be called either after initializing a new VM from
-    /// scratch or after an inbound live migration. In the latter case, this
-    /// routine assumes that the caller initialized and activated the VM's vCPUs
-    /// prior to importing state from the migration source.
-    pub(super) async fn start(
-        &mut self,
-        reason: VmStartReason,
-    ) -> anyhow::Result<()> {
-        match reason {
-            VmStartReason::ExplicitRequest => {
-                self.reset_vcpus();
-            }
-            VmStartReason::MigratedIn => {
-                self.resume_kernel_vm();
-            }
-        }
-
-        let result = self.start_devices().await;
-        if result.is_ok() {
-            self.vcpu_tasks.resume_all();
-        }
-
-        result
-    }
-
     /// Pauses this VM's devices and its kernel VMM.
     pub(crate) async fn pause(&mut self) {
         // Order matters here: the Propolis lifecycle trait's pause function
@@ -288,6 +267,16 @@ impl VmObjectsLocked {
         // that all devices resume before any vCPUs do.
         self.resume_kernel_vm();
         self.resume_devices();
+        self.vcpu_tasks.resume_all();
+    }
+
+    /// Resumes this VM's vCPU tasks.
+    ///
+    /// This is intended for use in VM startup sequences where the state driver
+    /// needs fine-grained control over the order in which devices and vCPUs
+    /// start. When pausing and resuming a VM that's already been started, use
+    /// [`Self::pause`] and [`Self::resume`] instead.
+    pub(crate) async fn resume_vcpus(&mut self) {
         self.vcpu_tasks.resume_all();
     }
 
@@ -322,30 +311,6 @@ impl VmObjectsLocked {
         // vCPUs.
         self.resume_devices();
         self.vcpu_tasks.resume_all();
-    }
-
-    /// Starts all of a VM's devices and allows its block backends to process
-    /// requests from their devices.
-    async fn start_devices(&self) -> anyhow::Result<()> {
-        self.for_each_device_fallible(|name, dev| {
-            info!(self.log, "sending startup complete to {}", name);
-            let res = dev.start();
-            if let Err(e) = &res {
-                error!(self.log, "startup failed for {}: {:?}", name, e);
-            }
-            res
-        })?;
-
-        for (name, backend) in self.block_backends.iter() {
-            info!(self.log, "starting block backend {}", name);
-            let res = backend.start().await;
-            if let Err(e) = &res {
-                error!(self.log, "startup failed for {}: {:?}", name, e);
-                return res;
-            }
-        }
-
-        Ok(())
     }
 
     /// Pauses all of a VM's devices.

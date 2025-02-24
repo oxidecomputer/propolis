@@ -290,15 +290,8 @@ impl Framework {
         vm: &TestVm,
         environment: Option<&EnvironmentSpec>,
     ) -> anyhow::Result<TestVm> {
-        let mut vm_spec =
-            VmSpec { vm_name: vm_name.to_owned(), ..vm.vm_spec() };
-
-        // Reconcile any differences between the generation numbers in the VM
-        // objects' instance spec and the associated Crucible disk handles.
-        // This may be needed because a test can call `set_generation` on a disk
-        // handle to change its active generation number mid-test, and this
-        // won't automatically be reflected in the VM's instance spec.
-        vm_spec.refresh_crucible_backends();
+        let mut vm_spec = vm.vm_spec().clone();
+        vm_spec.set_vm_name(vm_name.to_owned());
 
         // Create new metadata for an instance based on this predecessor. It
         // should have the same project and silo IDs, but the sled identifiers

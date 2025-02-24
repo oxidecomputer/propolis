@@ -88,8 +88,9 @@ async fn shutdown_persistence_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
-async fn vcr_replace_test(ctx: &Framework) {
-    let mut config = ctx.vm_config_builder("crucible_vcr_replace_test");
+async fn vcr_replace_during_start_test(ctx: &Framework) {
+    let mut config =
+        ctx.vm_config_builder("crucible_vcr_replace_during_start_test");
 
     // Create a blank data disk on which to perform VCR replacement. This is
     // necessary because Crucible doesn't permit VCR replacements for volumes
@@ -111,11 +112,22 @@ async fn vcr_replace_test(ctx: &Framework) {
     let disk_hdl =
         spec.get_disk_by_device_name(DATA_DISK_NAME).cloned().unwrap();
     let disk = disk_hdl.as_crucible().unwrap();
+    disk.enable_vcr_black_hole();
 
     let mut vm = ctx.spawn_vm_with_spec(spec, None).await?;
     vm.launch().await?;
-    vm.wait_to_boot().await?;
 
+    // The VM is expected not to reach the Running state. Unfortunately, there's
+    // no great way to test that this is never going to happen; as a best-effort
+    // alternative, wait for a short while and assert that the VM doesn't reach
+    // Running in the timeout interval.
+    vm.wait_for_state(InstanceState::Running, Duration::from_secs(5))
+        .await
+        .unwrap_err();
+
+    disk.disable_vcr_black_hole();
     disk.set_generation(2);
     vm.replace_crucible_vcr(disk).await?;
+
+    vm.wait_to_boot().await?;
 }

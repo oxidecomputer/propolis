@@ -90,6 +90,7 @@
 //! [`ensure`]: crate::vm::ensure
 
 use std::{
+    collections::VecDeque,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -109,7 +110,7 @@ use crate::{
         destination::DestinationProtocol, source::SourceProtocol, MigrateRole,
     },
     spec::StorageBackend,
-    vm::state_publisher::ExternalStateUpdate,
+    vm::{state_publisher::ExternalStateUpdate, BlockBackendMap},
 };
 
 use super::{
@@ -150,6 +151,10 @@ struct InputQueueInner {
     /// State change requests from the external API.
     external_requests: request_queue::ExternalRequestQueue,
 
+    /// State change requests from the external API that were previously read
+    /// but not handled immediately.
+    buffered_external: VecDeque<ExternalRequest>,
+
     /// State change requests from the VM's components. These take precedence
     /// over external state change requests.
     guest_events: super::guest_event::GuestEventQueue,
@@ -162,6 +167,7 @@ impl InputQueueInner {
                 log, auto_start,
             ),
             guest_events: super::guest_event::GuestEventQueue::default(),
+            buffered_external: Default::default(),
         }
     }
 }
@@ -211,6 +217,8 @@ impl InputQueue {
                 let mut guard = self.inner.lock().unwrap();
                 if let Some(guest_event) = guard.guest_events.pop_front() {
                     return InputQueueEvent::GuestEvent(guest_event);
+                } else if let Some(req) = guard.buffered_external.pop_front() {
+                    return InputQueueEvent::ExternalRequest(req);
                 } else if let Some(req) = guard.external_requests.pop_front() {
                     return InputQueueEvent::ExternalRequest(req);
                 }
@@ -225,6 +233,13 @@ impl InputQueue {
             // here, the ensuing wait will be satisfied immediately.
             self.notify.notified().await;
         }
+    }
+
+    /// Pushes an external request to the end of the buffered external request
+    /// list.
+    fn buffer_external_request(&self, req: ExternalRequest) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.buffered_external.push_back(req);
     }
 
     /// Notifies the external request queue that the instance's state has
@@ -471,10 +486,9 @@ impl StateDriver {
         info!(self.log, "state driver launched");
 
         let final_state = if migrated_in {
-            if self.start_vm(VmStartReason::MigratedIn).await.is_ok() {
-                self.event_loop().await
-            } else {
-                InstanceState::Failed
+            match self.start_vm(VmStartReason::MigratedIn).await {
+                Ok(()) => self.event_loop().await,
+                Err(_) => InstanceState::Failed,
             }
         } else {
             self.event_loop().await
@@ -520,20 +534,162 @@ impl StateDriver {
     ) -> anyhow::Result<()> {
         info!(self.log, "starting instance"; "reason" => ?start_reason);
 
-        let start_result =
-            self.objects.lock_exclusive().await.start(start_reason).await;
-        match &start_result {
-            Ok(()) => {
-                self.publish_steady_state(InstanceState::Running);
-            }
-            Err(e) => {
-                error!(&self.log, "failed to start devices";
-                                 "error" => ?e);
-                self.publish_steady_state(InstanceState::Failed);
+        // The start sequence is arranged so that calls to block backends can be
+        // interleaved with processing of requests from the external request
+        // queue. This allows Nexus to reconfigure Crucible volumes while they
+        // are being activated, which is necessary to unwedge activations that
+        // are targeting a downstairs that became invalid between the time Nexus
+        // passed its address to a VM and the time the VM actually tried to
+        // connect to it.
+        //
+        // Before getting into any of that, handle the synchronous portions of
+        // VM startup. First, ensure that the kernel VM and all its associated
+        // devices are in the correct initial states.
+        let objects = self.objects.lock_shared().await;
+        match start_reason {
+            // If this VM is a migration target, migration will have properly
+            // initialized the vCPUs, but will have left the kernel VM paused.
+            // Resume it here before asking any in-kernel components to start.
+            VmStartReason::MigratedIn => objects.resume_kernel_vm(),
+
+            // If this VM is starting from scratch, its kernel VM is active, but
+            // its vCPUs have not been initialized yet.
+            VmStartReason::ExplicitRequest => objects.reset_vcpus(),
+        }
+
+        // Send synchronous start commands to all devices.
+        for (name, dev) in objects.device_map() {
+            info!(self.log, "sending start request to {}", name);
+            let res = dev.start();
+            if let Err(e) = &res {
+                error!(self.log, "startup failed for {}: {:?}", name, e);
+                return res;
             }
         }
 
-        start_result
+        // Next, prepare to start block backends. This is done by capturing the
+        // current block backend set and creating a future that issues all the
+        // start requests.
+        //
+        // For this to work, the set of block backends to be started must not
+        // change while the VM is starting. This is guaranteed because all such
+        // requests to hotplug a block backend will be dispatched to the VM's
+        // request queue; if any such requests are seen below, they can simply
+        // be buffered and handled after the rest of the VM has started.
+        async fn start_block_backends(
+            log: slog::Logger,
+            backends: BlockBackendMap,
+        ) -> anyhow::Result<()> {
+            for (name, backend) in backends {
+                info!(log, "starting block backend {}", name);
+                let res = backend.start().await;
+                if let Err(e) = &res {
+                    error!(log, "startup failed for {}: {:?}", name, e);
+                    return res;
+                }
+            }
+
+            Ok(())
+        }
+
+        let block_backends = objects.block_backend_map().clone();
+        let block_backend_fut =
+            start_block_backends(self.log.clone(), block_backends);
+        tokio::pin!(block_backend_fut);
+
+        // Drop the VM object lock before proceeding to allow other API calls
+        // that simply read the VM to make progress. Again, note that the set of
+        // objects being started still can't change, not because the lock is
+        // held, but because the only entity that can change them is the current
+        // task, which can decide whether and how to buffer incoming requests.
+        drop(objects);
+
+        loop {
+            let event = tokio::select! {
+                // If the VM successfully starts, return immediately and let
+                // the caller process any events that may happen to be on the
+                // queue.
+                biased;
+
+                res = &mut block_backend_fut => {
+                    if res.is_ok() {
+                        let objects = &self.objects;
+                        objects.lock_exclusive().await.resume_vcpus().await;
+                        self.publish_steady_state(InstanceState::Running);
+                        info!(&self.log, "VM successfully started");
+                    }
+
+                    return res;
+                }
+
+                dequeued = self.input_queue.wait_for_next_event() => {
+                    dequeued
+                }
+            };
+
+            // The VM's vCPUs haven't been started yet, so there should be no
+            // way for the VM to produce any guest events to handle.
+            let InputQueueEvent::ExternalRequest(req) = event else {
+                unreachable!("can't get guest events before the VM starts");
+            };
+
+            // Handle requests to reconfigure one of the existing Crucible
+            // volumes inline, but buffer other requests so that they can be
+            // handled after the VM has finished starting.
+            //
+            // Buffering some requests and servicing others can theoretically
+            // change the order in which those requests are retired. That's not
+            // a problem here because the request queue will stop accepting new
+            // VCR change requests once a request to stop has been queued.
+            match req {
+                ExternalRequest::Stop => {
+                    info!(
+                        &self.log,
+                        "got request to stop while still starting"
+                    );
+
+                    // Buffer this request to stop so that it can be processed
+                    // as part of the main event loop once the VM finishes
+                    // starting.
+                    //
+                    // It is possible, at least in theory, to drop the block
+                    // backend startup future (or cooperatively cancel it) and
+                    // then pause/halt the VM immediately. This requires block
+                    // backends' startup operations to be cancel-safe (in the
+                    // sense that it must be possible to pause and halt a
+                    // backend whose startup sequence was interrupted). Since
+                    // block backends aren't currently required to guarantee
+                    // this, just buffer the stop request.
+                    self.input_queue.buffer_external_request(req);
+                }
+                ExternalRequest::ReconfigureCrucibleVolume {
+                    backend_id,
+                    new_vcr_json,
+                    result_tx,
+                } => {
+                    let _ = result_tx.send(
+                        self.reconfigure_crucible_volume(
+                            &backend_id,
+                            new_vcr_json,
+                        )
+                        .await,
+                    );
+                }
+                // The request queue is expected to reject (or at least silently
+                // ignore) requests to migrate or reboot an instance that hasn't
+                // reported that it's fully started. Similarly, requests to
+                // start a VM that's already starting are expected to be ignored
+                // for idempotency.
+                r @ ExternalRequest::Start
+                | r @ ExternalRequest::MigrateAsSource { .. }
+                | r @ ExternalRequest::Reboot => {
+                    unreachable!(
+                        "external request {r:?} shouldn't be queued while \
+                        starting"
+                    );
+                }
+            }
+        }
     }
 
     async fn handle_guest_event(
@@ -583,7 +739,7 @@ impl StateDriver {
         match request {
             ExternalRequest::Start => {
                 match self.start_vm(VmStartReason::ExplicitRequest).await {
-                    Ok(_) => HandleEventOutcome::Continue,
+                    Ok(()) => HandleEventOutcome::Continue,
                     Err(_) => HandleEventOutcome::Exit {
                         final_state: InstanceState::Failed,
                     },
