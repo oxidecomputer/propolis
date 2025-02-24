@@ -208,7 +208,7 @@ impl<'dr> VmConfig<'dr> {
         self
     }
 
-    pub(crate) async fn vm_spec(
+    pub async fn vm_spec(
         &self,
         framework: &Framework,
     ) -> anyhow::Result<VmSpec> {

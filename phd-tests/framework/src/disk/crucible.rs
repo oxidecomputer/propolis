@@ -8,7 +8,7 @@ use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::Mutex,
 };
 
 use anyhow::Context;
@@ -62,9 +62,70 @@ impl Drop for Downstairs {
 /// An RAII wrapper around a Crucible disk.
 #[derive(Debug)]
 pub struct CrucibleDisk {
-    /// The name to use in instance specs that include this disk.
     device_name: DeviceName,
+    inner: Mutex<Inner>,
+}
 
+impl CrucibleDisk {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        device_name: DeviceName,
+        min_disk_size_gib: u64,
+        block_size: BlockSize,
+        downstairs_binary_path: &impl AsRef<std::ffi::OsStr>,
+        downstairs_ports: &[u16],
+        data_dir_root: &impl AsRef<Path>,
+        read_only_parent: Option<&impl AsRef<Path>>,
+        guest_os: Option<GuestOsKind>,
+        log_mode: ServerLogMode,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            device_name,
+            inner: Mutex::new(Inner::new(
+                min_disk_size_gib,
+                block_size,
+                downstairs_binary_path,
+                downstairs_ports,
+                data_dir_root,
+                read_only_parent,
+                guest_os,
+                log_mode,
+            )?),
+        })
+    }
+
+    /// Obtains the current volume construction request for this disk.
+    pub fn vcr(&self) -> VolumeConstructionRequest {
+        self.inner.lock().unwrap().vcr()
+    }
+
+    /// Sets the generation number to use in subsequent calls to create a
+    /// backend spec for this disk.
+    pub fn set_generation(&self, generation: u64) {
+        self.inner.lock().unwrap().generation = generation;
+    }
+}
+
+impl super::DiskConfig for CrucibleDisk {
+    fn device_name(&self) -> &DeviceName {
+        &self.device_name
+    }
+
+    fn backend_spec(&self) -> ComponentV0 {
+        self.inner.lock().unwrap().backend_spec()
+    }
+
+    fn guest_os(&self) -> Option<GuestOsKind> {
+        self.inner.lock().unwrap().guest_os()
+    }
+
+    fn as_crucible(&self) -> Option<&CrucibleDisk> {
+        Some(self)
+    }
+}
+
+#[derive(Debug)]
+struct Inner {
     /// The UUID to insert into this disk's `VolumeConstructionRequest`s.
     id: Uuid,
 
@@ -91,15 +152,14 @@ pub struct CrucibleDisk {
 
     /// The generation number to insert into this disk's
     /// `VolumeConstructionRequest`s.
-    generation: AtomicU64,
+    generation: u64,
 }
 
-impl CrucibleDisk {
+impl Inner {
     /// Constructs a new Crucible disk that stores its files in the supplied
     /// `data_dir`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        device_name: DeviceName,
         min_disk_size_gib: u64,
         block_size: BlockSize,
         downstairs_binary_path: &impl AsRef<std::ffi::OsStr>,
@@ -253,7 +313,6 @@ impl CrucibleDisk {
         }
 
         Ok(Self {
-            device_name,
             id: disk_uuid,
             block_size,
             blocks_per_extent,
@@ -270,28 +329,25 @@ impl CrucibleDisk {
                 },
             ),
             guest_os,
-            generation: AtomicU64::new(1),
+            generation: 1,
         })
     }
 
-    /// Sets the generation number to use in subsequent calls to create a
-    /// backend spec for this disk.
-    pub fn set_generation(&self, gen: u64) {
-        self.generation.store(gen, Ordering::Relaxed);
-    }
-}
-
-impl super::DiskConfig for CrucibleDisk {
-    fn device_name(&self) -> &DeviceName {
-        &self.device_name
-    }
-
     fn backend_spec(&self) -> ComponentV0 {
-        let gen = self.generation.load(Ordering::Relaxed);
+        let vcr = self.vcr();
+
+        ComponentV0::CrucibleStorageBackend(CrucibleStorageBackend {
+            request_json: serde_json::to_string(&vcr)
+                .expect("VolumeConstructionRequest should serialize"),
+            readonly: false,
+        })
+    }
+
+    fn vcr(&self) -> VolumeConstructionRequest {
         let downstairs_addrs =
             self.downstairs_instances.iter().map(|ds| ds.address).collect();
 
-        let vcr = VolumeConstructionRequest::Volume {
+        VolumeConstructionRequest::Volume {
             id: self.id,
             block_size: self.block_size.bytes(),
             sub_volumes: vec![VolumeConstructionRequest::Region {
@@ -299,7 +355,7 @@ impl super::DiskConfig for CrucibleDisk {
                 blocks_per_extent: self.blocks_per_extent,
                 extent_count: self.extent_count,
                 opts: CrucibleOpts {
-                    id: Uuid::new_v4(),
+                    id: self.id,
                     target: downstairs_addrs,
                     lossy: false,
                     flush_timeout: None,
@@ -310,7 +366,7 @@ impl super::DiskConfig for CrucibleDisk {
                     control: None,
                     read_only: false,
                 },
-                gen,
+                r#gen: self.generation,
             }],
             read_only_parent: self.read_only_parent.as_ref().map(|p| {
                 Box::new(VolumeConstructionRequest::File {
@@ -319,21 +375,11 @@ impl super::DiskConfig for CrucibleDisk {
                     path: p.to_string_lossy().to_string(),
                 })
             }),
-        };
-
-        ComponentV0::CrucibleStorageBackend(CrucibleStorageBackend {
-            request_json: serde_json::to_string(&vcr)
-                .expect("VolumeConstructionRequest should serialize"),
-            readonly: false,
-        })
+        }
     }
 
     fn guest_os(&self) -> Option<GuestOsKind> {
         self.guest_os
-    }
-
-    fn as_crucible(&self) -> Option<&CrucibleDisk> {
-        Some(self)
     }
 }
 

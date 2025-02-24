@@ -252,12 +252,27 @@ impl Framework {
         config: &VmConfig<'_>,
         environment: Option<&EnvironmentSpec>,
     ) -> anyhow::Result<TestVm> {
-        TestVm::new(
-            self,
+        self.spawn_vm_with_spec(
             config
                 .vm_spec(self)
                 .await
-                .context("building VM config for test VM")?,
+                .context("building VM spec from VmConfig")?,
+            environment,
+        )
+        .await
+    }
+
+    /// Spawns a new test VM using the supplied `spec`. If `environment` is
+    /// `Some`, the VM is spawned using the supplied environment; otherwise it
+    /// is spawned using the default `environment_builder`.
+    pub async fn spawn_vm_with_spec(
+        &self,
+        spec: VmSpec,
+        environment: Option<&EnvironmentSpec>,
+    ) -> anyhow::Result<TestVm> {
+        TestVm::new(
+            self,
+            spec,
             environment.unwrap_or(&self.environment_builder()),
         )
         .await

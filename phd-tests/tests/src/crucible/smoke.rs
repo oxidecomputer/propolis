@@ -4,6 +4,10 @@
 
 use std::time::Duration;
 
+use phd_framework::{
+    disk::{BlockSize, DiskSource},
+    test_vm::{DiskBackend, DiskInterface},
+};
 use phd_testcase::*;
 use propolis_client::types::InstanceState;
 
@@ -81,4 +85,35 @@ async fn shutdown_persistence_test(ctx: &Framework) {
     // The touched file from the previous VM should be present in the new one.
     let lsout = vm.run_shell_command("ls foo.bar 2> /dev/null").await?;
     assert_eq!(lsout, "foo.bar");
+}
+
+#[phd_testcase]
+async fn vcr_replace_test(ctx: &Framework) {
+    let mut config = ctx.vm_config_builder("crucible_vcr_replace_test");
+
+    // Create a blank data disk on which to perform VCR replacement. This is
+    // necessary because Crucible doesn't permit VCR replacements for volumes
+    // whose read-only parents are local files (which is true for artifact-based
+    // Crucible disks).
+    config.data_disk(
+        "vcr-replacement-target",
+        DiskSource::Blank(1024 * 1024 * 1024),
+        DiskInterface::Nvme,
+        DiskBackend::Crucible {
+            min_disk_size_gib: 1,
+            block_size: BlockSize::Bytes512,
+        },
+        5,
+    );
+
+    let spec = config.vm_spec(ctx).await?;
+    let disks = spec.get_crucible_disks();
+    let disk = disks[0].as_crucible().unwrap();
+
+    let mut vm = ctx.spawn_vm_with_spec(spec, None).await?;
+    vm.launch().await?;
+    vm.wait_to_boot().await?;
+
+    disk.set_generation(2);
+    vm.replace_crucible_vcr(disk).await?;
 }
