@@ -614,6 +614,12 @@ impl TestVm {
                 .with_context(|| format!("serializing VCR {vcr:?}"))?,
         };
 
+        info!(
+            disk_name = disk.device_name().as_str(),
+            vcr = ?vcr,
+            "issuing Crucible VCR replacement request"
+        );
+
         let response_value = self
             .client
             .instance_issue_crucible_vcr_request()
