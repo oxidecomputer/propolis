@@ -64,6 +64,7 @@ use crate::{
     accessors::MemAccessor,
     common::{Lifecycle, VcpuId},
     msr::{MsrId, RdmsrOutcome, WrmsrOutcome},
+    vmm::VmmHdl,
 };
 
 pub mod bhyve;
@@ -81,7 +82,8 @@ pub trait Enlightenment: Lifecycle + Send + Sync {
     /// Attaches this enlightenment stack to a VM.
     ///
     /// Users of an enlightenment stack must guarantee that this function is
-    /// called exactly once per instance of that stack.
+    /// called exactly once per instance of that stack and must do this before
+    /// starting any vCPUs or other VM components that may use the stack.
     ///
     /// # Arguments
     ///
@@ -89,7 +91,8 @@ pub trait Enlightenment: Lifecycle + Send + Sync {
     ///   Stacks that wish to access guest memory should call
     ///   [`MemAccessor::new_orphan`] when they're created and then should call
     ///   [`MemAccessor::adopt`] from this function.
-    fn attach(&self, mem_acc: &MemAccessor);
+    /// - `vmm_hdl`: A handle to the bhyve VMM for the VM that owns this stack.
+    fn attach(&self, mem_acc: &MemAccessor, vmm_hdl: Arc<VmmHdl>);
 
     /// Adds this hypervisor interface's CPUID entries to `cpuid`.
     ///

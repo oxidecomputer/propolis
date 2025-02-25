@@ -7,6 +7,8 @@
 //! This interface supplies no special enlightenments; it merely identifies
 //! itself as a bhyve hypervisor in CPUID leaf 0x4000_0000.
 
+use std::sync::Arc;
+
 use cpuid_utils::{
     bits::HYPERVISOR_BASE_LEAF, CpuidIdent, CpuidSet, CpuidValues,
 };
@@ -16,6 +18,7 @@ use crate::{
     common::{Lifecycle, VcpuId},
     enlightenment::{AddCpuidError, Enlightenment},
     msr::{MsrId, RdmsrOutcome, WrmsrOutcome},
+    vmm::VmmHdl,
 };
 
 /// An implementation of the bhyve guest-hypervisor interface. This interface
@@ -59,5 +62,5 @@ impl Enlightenment for BhyveGuestInterface {
         WrmsrOutcome::NotHandled
     }
 
-    fn attach(&self, _parent: &MemAccessor) {}
+    fn attach(&self, _parent: &MemAccessor, _vmm_hdl: Arc<VmmHdl>) {}
 }

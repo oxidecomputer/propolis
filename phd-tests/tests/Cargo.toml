@@ -17,5 +17,6 @@ http.workspace = true
 propolis-client.workspace = true
 phd-testcase.workspace = true
 reqwest.workspace = true
+tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 uuid.workspace = true
