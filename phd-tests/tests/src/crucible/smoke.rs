@@ -95,8 +95,9 @@ async fn vcr_replace_test(ctx: &Framework) {
     // necessary because Crucible doesn't permit VCR replacements for volumes
     // whose read-only parents are local files (which is true for artifact-based
     // Crucible disks).
+    const DATA_DISK_NAME: &str = "vcr-replacement-target";
     config.data_disk(
-        "vcr-replacement-target",
+        DATA_DISK_NAME,
         DiskSource::Blank(1024 * 1024 * 1024),
         DiskInterface::Nvme,
         DiskBackend::Crucible {
@@ -107,8 +108,9 @@ async fn vcr_replace_test(ctx: &Framework) {
     );
 
     let spec = config.vm_spec(ctx).await?;
-    let disks = spec.get_crucible_disks();
-    let disk = disks[0].as_crucible().unwrap();
+    let disk_hdl =
+        spec.get_disk_by_device_name(DATA_DISK_NAME).cloned().unwrap();
+    let disk = disk_hdl.as_crucible().unwrap();
 
     let mut vm = ctx.spawn_vm_with_spec(spec, None).await?;
     vm.launch().await?;

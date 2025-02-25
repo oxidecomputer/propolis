@@ -34,13 +34,13 @@ pub struct VmSpec {
 }
 
 impl VmSpec {
-    /// Yields an array of handles to this VM's Crucible disks.
-    pub fn get_crucible_disks(&self) -> Vec<Arc<dyn disk::DiskConfig>> {
+    pub fn get_disk_by_device_name(
+        &self,
+        name: &str,
+    ) -> Option<&Arc<dyn disk::DiskConfig>> {
         self.disk_handles
             .iter()
-            .filter(|d| d.as_crucible().is_some())
-            .cloned()
-            .collect()
+            .find(|disk| disk.device_name().as_str() == name)
     }
 
     /// Update the Crucible backend specs in the instance spec to match the
