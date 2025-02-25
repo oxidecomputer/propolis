@@ -63,6 +63,8 @@ impl Drop for Downstairs {
 #[derive(Debug)]
 pub struct CrucibleDisk {
     device_name: DeviceName,
+    disk_id: Uuid,
+    guest_os: Option<GuestOsKind>,
     inner: Mutex<Inner>,
 }
 
@@ -81,6 +83,8 @@ impl CrucibleDisk {
     ) -> anyhow::Result<Self> {
         Ok(Self {
             device_name,
+            disk_id: Uuid::new_v4(),
+            guest_os,
             inner: Mutex::new(Inner::new(
                 min_disk_size_gib,
                 block_size,
@@ -88,7 +92,6 @@ impl CrucibleDisk {
                 downstairs_ports,
                 data_dir_root,
                 read_only_parent,
-                guest_os,
                 log_mode,
             )?),
         })
@@ -96,7 +99,7 @@ impl CrucibleDisk {
 
     /// Obtains the current volume construction request for this disk.
     pub fn vcr(&self) -> VolumeConstructionRequest {
-        self.inner.lock().unwrap().vcr()
+        self.inner.lock().unwrap().vcr(self.disk_id)
     }
 
     /// Sets the generation number to use in subsequent calls to create a
@@ -112,11 +115,11 @@ impl super::DiskConfig for CrucibleDisk {
     }
 
     fn backend_spec(&self) -> ComponentV0 {
-        self.inner.lock().unwrap().backend_spec()
+        self.inner.lock().unwrap().backend_spec(self.disk_id)
     }
 
     fn guest_os(&self) -> Option<GuestOsKind> {
-        self.inner.lock().unwrap().guest_os()
+        self.guest_os
     }
 
     fn as_crucible(&self) -> Option<&CrucibleDisk> {
@@ -126,9 +129,6 @@ impl super::DiskConfig for CrucibleDisk {
 
 #[derive(Debug)]
 struct Inner {
-    /// The UUID to insert into this disk's `VolumeConstructionRequest`s.
-    id: Uuid,
-
     /// The disk's block size.
     block_size: BlockSize,
 
@@ -143,9 +143,6 @@ struct Inner {
 
     /// An optional path to a file to use as a read-only parent for this disk.
     read_only_parent: Option<PathBuf>,
-
-    /// The kind of guest OS that can be found on this disk, if there is one.
-    guest_os: Option<GuestOsKind>,
 
     /// The base64-encoded encryption key to use for this disk.
     encryption_key: String,
@@ -166,7 +163,6 @@ impl Inner {
         downstairs_ports: &[u16],
         data_dir_root: &impl AsRef<Path>,
         read_only_parent: Option<&impl AsRef<Path>>,
-        guest_os: Option<GuestOsKind>,
         log_mode: ServerLogMode,
     ) -> anyhow::Result<Self> {
         // To create a region, Crucible requires a block size, an extent size
@@ -313,7 +309,6 @@ impl Inner {
         }
 
         Ok(Self {
-            id: disk_uuid,
             block_size,
             blocks_per_extent,
             extent_count: extents_in_disk as u32,
@@ -328,13 +323,12 @@ impl Inner {
                     bytes
                 },
             ),
-            guest_os,
             generation: 1,
         })
     }
 
-    fn backend_spec(&self) -> ComponentV0 {
-        let vcr = self.vcr();
+    fn backend_spec(&self, disk_id: Uuid) -> ComponentV0 {
+        let vcr = self.vcr(disk_id);
 
         ComponentV0::CrucibleStorageBackend(CrucibleStorageBackend {
             request_json: serde_json::to_string(&vcr)
@@ -343,19 +337,19 @@ impl Inner {
         })
     }
 
-    fn vcr(&self) -> VolumeConstructionRequest {
+    fn vcr(&self, disk_id: Uuid) -> VolumeConstructionRequest {
         let downstairs_addrs =
             self.downstairs_instances.iter().map(|ds| ds.address).collect();
 
         VolumeConstructionRequest::Volume {
-            id: self.id,
+            id: disk_id,
             block_size: self.block_size.bytes(),
             sub_volumes: vec![VolumeConstructionRequest::Region {
                 block_size: self.block_size.bytes(),
                 blocks_per_extent: self.blocks_per_extent,
                 extent_count: self.extent_count,
                 opts: CrucibleOpts {
-                    id: self.id,
+                    id: disk_id,
                     target: downstairs_addrs,
                     lossy: false,
                     flush_timeout: None,
@@ -376,10 +370,6 @@ impl Inner {
                 })
             }),
         }
-    }
-
-    fn guest_os(&self) -> Option<GuestOsKind> {
-        self.guest_os
     }
 }
 
