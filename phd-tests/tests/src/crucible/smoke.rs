@@ -108,12 +108,16 @@ async fn vcr_replace_during_start_test(ctx: &Framework) {
         5,
     );
 
+    // Configure the disk so that when the VM starts, it will have an invalid
+    // downstairs address.
     let spec = config.vm_spec(ctx).await?;
     let disk_hdl =
         spec.get_disk_by_device_name(DATA_DISK_NAME).cloned().unwrap();
     let disk = disk_hdl.as_crucible().unwrap();
     disk.enable_vcr_black_hole();
 
+    // Try to start the VM, but don't wait for it to boot; it should get stuck
+    // while activating using an invalid downstairs address.
     let mut vm = ctx.spawn_vm_with_spec(spec, None).await?;
     vm.launch().await?;
 
@@ -125,9 +129,17 @@ async fn vcr_replace_during_start_test(ctx: &Framework) {
         .await
         .unwrap_err();
 
+    // Fix the disk's downstairs address and send a replacement request. This
+    // should be processed and should allow the VM to boot.
     disk.disable_vcr_black_hole();
     disk.set_generation(2);
     vm.replace_crucible_vcr(disk).await?;
-
     vm.wait_to_boot().await?;
+
+    assert_eq!(vm.get().await?.instance.state, InstanceState::Running);
+
+    // VCR replacements should continue to be accepted now that the instance is
+    // running.
+    disk.set_generation(3);
+    vm.replace_crucible_vcr(disk).await?;
 }

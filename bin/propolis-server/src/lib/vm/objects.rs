@@ -267,7 +267,7 @@ impl VmObjectsLocked {
         // that all devices resume before any vCPUs do.
         self.resume_kernel_vm();
         self.resume_devices();
-        self.vcpu_tasks.resume_all();
+        self.resume_vcpus();
     }
 
     /// Resumes this VM's vCPU tasks.
@@ -276,7 +276,7 @@ impl VmObjectsLocked {
     /// needs fine-grained control over the order in which devices and vCPUs
     /// start. When pausing and resuming a VM that's already been started, use
     /// [`Self::pause`] and [`Self::resume`] instead.
-    pub(crate) async fn resume_vcpus(&mut self) {
+    pub(crate) fn resume_vcpus(&mut self) {
         self.vcpu_tasks.resume_all();
     }
 
@@ -310,7 +310,7 @@ impl VmObjectsLocked {
         // Resume devices so they're ready to do more work, then resume
         // vCPUs.
         self.resume_devices();
-        self.vcpu_tasks.resume_all();
+        self.resume_vcpus();
     }
 
     /// Pauses all of a VM's devices.

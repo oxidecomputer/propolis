@@ -536,11 +536,12 @@ impl StateDriver {
 
         // The start sequence is arranged so that calls to block backends can be
         // interleaved with processing of requests from the external request
-        // queue. This allows Nexus to reconfigure Crucible volumes while they
-        // are being activated, which is necessary to unwedge activations that
-        // are targeting a downstairs that became invalid between the time Nexus
-        // passed its address to a VM and the time the VM actually tried to
-        // connect to it.
+        // queue. This allows Nexus to reconfigure Crucible backends while they
+        // are being activated, which can be necessary if the VM's original
+        // specification specifies a Crucible downstairs server that is offline
+        // or unavailable. (Downstairs instances can disappear at any time,
+        // e.g. due to sled failure, so these configurations aren't necessarily
+        // client errors.)
         //
         // Before getting into any of that, handle the synchronous portions of
         // VM startup. First, ensure that the kernel VM and all its associated
@@ -584,7 +585,11 @@ impl StateDriver {
                 info!(log, "starting block backend {}", name);
                 let res = backend.start().await;
                 if let Err(e) = &res {
-                    error!(log, "startup failed for {}: {:?}", name, e);
+                    error!(
+                        log,
+                        "startup failed for block backend {}: {:?}", name, e
+                    );
+
                     return res;
                 }
             }
@@ -614,7 +619,7 @@ impl StateDriver {
                 res = &mut block_backend_fut => {
                     if res.is_ok() {
                         let objects = &self.objects;
-                        objects.lock_exclusive().await.resume_vcpus().await;
+                        objects.lock_exclusive().await.resume_vcpus();
                         self.publish_steady_state(InstanceState::Running);
                         info!(&self.log, "VM successfully started");
                     }
