@@ -34,6 +34,15 @@ pub struct VmSpec {
 }
 
 impl VmSpec {
+    pub fn get_disk_by_device_name(
+        &self,
+        name: &str,
+    ) -> Option<&Arc<dyn disk::DiskConfig>> {
+        self.disk_handles
+            .iter()
+            .find(|disk| disk.device_name().as_str() == name)
+    }
+
     /// Update the Crucible backend specs in the instance spec to match the
     /// current backend specs given by this specification's disk handles.
     pub(crate) fn refresh_crucible_backends(&mut self) {

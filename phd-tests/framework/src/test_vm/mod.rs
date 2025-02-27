@@ -11,6 +11,7 @@ use std::{
 };
 
 use crate::{
+    disk::{crucible::CrucibleDisk, DiskConfig},
     guest_os::{
         self, windows::WindowsVm, CommandSequence, CommandSequenceEntry,
         GuestOs, GuestOsKind,
@@ -601,6 +602,39 @@ impl TestVm {
         &self,
     ) -> Result<InstanceMigrateStatusResponse> {
         Ok(self.client.instance_migrate_status().send().await?.into_inner())
+    }
+
+    pub async fn replace_crucible_vcr(
+        &self,
+        disk: &CrucibleDisk,
+    ) -> anyhow::Result<()> {
+        let vcr = disk.vcr();
+        let body = propolis_client::types::InstanceVcrReplace {
+            vcr_json: serde_json::to_string(&vcr)
+                .with_context(|| format!("serializing VCR {vcr:?}"))?,
+        };
+
+        info!(
+            disk_name = disk.device_name().as_str(),
+            vcr = ?vcr,
+            "issuing Crucible VCR replacement request"
+        );
+
+        let response_value = self
+            .client
+            .instance_issue_crucible_vcr_request()
+            .id(disk.device_name().clone().into_backend_name().into_string())
+            .body(body)
+            .send()
+            .await?;
+
+        anyhow::ensure!(
+            response_value.status().is_success(),
+            "VCR replacement request returned an error value: \
+            {response_value:?}"
+        );
+
+        Ok(())
     }
 
     pub async fn get_serial_console_history(

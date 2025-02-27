@@ -279,6 +279,8 @@ impl DiskFactory {
         mut min_disk_size_gib: u64,
         block_size: BlockSize,
     ) -> Result<Arc<CrucibleDisk>, DiskError> {
+        const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
+
         let binary_path = self.artifact_store.get_crucible_downstairs().await?;
 
         let (artifact_path, guest_os) = match source {
@@ -287,8 +289,13 @@ impl DiskFactory {
                 (Some(path), Some(os))
             }
             DiskSource::Blank(size) => {
-                min_disk_size_gib = min_disk_size_gib
-                    .max(u64::try_from(*size).map_err(anyhow::Error::from)?);
+                let blank_size =
+                    u64::try_from(*size).map_err(anyhow::Error::from)?;
+
+                let min_disk_size_b =
+                    (min_disk_size_gib * BYTES_PER_GIB).max(blank_size);
+
+                min_disk_size_gib = min_disk_size_b.div_ceil(BYTES_PER_GIB);
                 (None, None)
             }
             // It's possible in theory to have a Crucible-backed disk with
