@@ -181,6 +181,15 @@ mod running_process {
             .state;
         assert_eq!(target_migration_state, MigrationState::Error);
 
+        // Wait for the source to report that it has resumed before requesting
+        // another migration.
+        source
+            .wait_for_state(
+                InstanceState::Running,
+                std::time::Duration::from_secs(5),
+            )
+            .await?;
+
         // try again. this time, it should work!
         target2
             .migrate_from(&source, Uuid::new_v4(), MigrationTimeout::default())
@@ -233,6 +242,15 @@ mod running_process {
             .expect("target should have a migration-in status")
             .state;
         assert_eq!(target_migration_state, MigrationState::Error);
+
+        // Wait for the source to report that it has resumed before requesting
+        // another migration.
+        source
+            .wait_for_state(
+                InstanceState::Running,
+                std::time::Duration::from_secs(5),
+            )
+            .await?;
 
         // try again. this time, it should work!
         target2
