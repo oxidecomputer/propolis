@@ -103,7 +103,7 @@ pub(crate) mod ensure;
 pub(crate) mod guest_event;
 pub(crate) mod objects;
 mod request_queue;
-mod services;
+pub(crate) mod services;
 mod state_driver;
 pub(crate) mod state_publisher;
 
@@ -409,7 +409,7 @@ impl Vm {
         log: &slog::Logger,
         state_driver_queue: Arc<state_driver::InputQueue>,
         objects: &Arc<objects::VmObjects>,
-        services: services::VmServices,
+        services: &Arc<services::VmServices>,
         vmm_rt: tokio::runtime::Runtime,
     ) {
         info!(self.log, "installing active VM");
@@ -423,7 +423,7 @@ impl Vm {
                     external_state_rx: vm.external_state_rx,
                     properties: vm.properties,
                     objects: objects.clone(),
-                    services,
+                    services: services.clone(),
                     tokio_rt: vmm_rt,
                 });
             }
