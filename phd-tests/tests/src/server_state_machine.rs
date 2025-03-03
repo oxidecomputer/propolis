@@ -6,6 +6,10 @@
 
 use std::time::Duration;
 
+use phd_framework::{
+    disk::{BlockSize, DiskSource},
+    test_vm::{DiskBackend, DiskInterface},
+};
 use phd_testcase::*;
 use propolis_client::types::InstanceState;
 
@@ -88,4 +92,57 @@ async fn instance_reset_requires_running_test(ctx: &Framework) {
     assert!(vm.reset().await.is_err());
     vm.launch().await?;
     vm.wait_for_state(InstanceState::Running, Duration::from_secs(60)).await?;
+}
+
+#[phd_testcase]
+async fn stop_while_blocked_on_start_test(ctx: &Framework) {
+    // This test uses a Crucible disk backend to cause VM startup to block.
+    if !ctx.crucible_enabled() {
+        phd_skip!("test requires Crucible support");
+    }
+
+    let mut config = ctx.vm_config_builder("stop_while_blocked_on_start_test");
+
+    // Create a VM that blocks while starting by attaching a Crucible data disk
+    // to it and enabling the black hole address in its volume construction
+    // request. The invalid address will keep Crucible from activating and so
+    // will block the VM from fully starting.
+    const DATA_DISK_NAME: &str = "vcr-replacement-target";
+    config.data_disk(
+        DATA_DISK_NAME,
+        DiskSource::Blank(1024 * 1024 * 1024),
+        DiskInterface::Nvme,
+        DiskBackend::Crucible {
+            min_disk_size_gib: 1,
+            block_size: BlockSize::Bytes512,
+        },
+        5,
+    );
+
+    let spec = config.vm_spec(ctx).await?;
+    let disk_hdl =
+        spec.get_disk_by_device_name(DATA_DISK_NAME).cloned().unwrap();
+    let disk = disk_hdl.as_crucible().unwrap();
+    disk.enable_vcr_black_hole();
+
+    // Launch the VM and wait for it to advertise that its components are
+    // starting.
+    let mut vm = ctx.spawn_vm_with_spec(spec, None).await?;
+    vm.launch().await?;
+    vm.wait_for_state(InstanceState::Starting, Duration::from_secs(15))
+        .await
+        .unwrap();
+
+    // Send a stop request. This should enqueue successfully, but the VM won't
+    // stop right away because it's still starting.
+    vm.stop().await?;
+
+    // Unblock Crucible startup by fixing the broken disk's VCR.
+    disk.disable_vcr_black_hole();
+    disk.set_generation(2);
+    vm.replace_crucible_vcr(disk).await?;
+
+    // Eventually the instance should shut down.
+    vm.wait_for_state(InstanceState::Destroyed, Duration::from_secs(60))
+        .await?;
 }

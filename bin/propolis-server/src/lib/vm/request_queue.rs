@@ -166,7 +166,7 @@ struct AllowedRequests {
     start: RequestDisposition,
     migrate_as_source: RequestDisposition,
     reboot: RequestDisposition,
-    mutate: RequestDisposition,
+    reconfigure_crucible_volume: RequestDisposition,
     stop: RequestDisposition,
 }
 
@@ -206,7 +206,7 @@ impl ExternalRequestQueue {
                 reboot: RequestDisposition::Deny(
                     RequestDeniedReason::InstanceNotActive,
                 ),
-                mutate: RequestDisposition::Enqueue,
+                reconfigure_crucible_volume: RequestDisposition::Enqueue,
                 stop: RequestDisposition::Enqueue,
             },
             log,
@@ -237,7 +237,7 @@ impl ExternalRequestQueue {
             }
             ExternalRequest::Reboot => self.allowed.reboot,
             ExternalRequest::ReconfigureCrucibleVolume { .. } => {
-                self.allowed.mutate
+                self.allowed.reconfigure_crucible_volume
             }
 
             // Requests to stop always succeed. Note that a request to stop a VM
@@ -289,7 +289,7 @@ impl ExternalRequestQueue {
                     start: Disposition::Ignore,
                     migrate_as_source: Disposition::Deny(reason),
                     reboot: Disposition::Deny(reason),
-                    mutate: Disposition::Enqueue,
+                    reconfigure_crucible_volume: Disposition::Enqueue,
                     stop: self.allowed.stop,
                 }
             }
@@ -310,7 +310,7 @@ impl ExternalRequestQueue {
                     reboot: Disposition::Deny(
                         DenyReason::InvalidRequestForMigrationSource,
                     ),
-                    mutate: Disposition::Deny(
+                    reconfigure_crucible_volume: Disposition::Deny(
                         DenyReason::InvalidRequestForMigrationSource,
                     ),
                     stop: self.allowed.stop,
@@ -328,15 +328,30 @@ impl ExternalRequestQueue {
                 AllowedRequests { reboot: Disposition::Ignore, ..self.allowed }
             }
 
-            // Requests to stop the instance block other requests from being
-            // queued. Additional requests to stop are ignored for idempotency.
+            // Once the instance is asked to stop, further requests to change
+            // its state are ignored.
+            //
+            // Requests to change Crucible volume configuration can still be
+            // queued if they were previously alloewd. This allows the state
+            // driver to accept VCR mutations that are needed to allow an
+            // activation to complete even if the instance is slated to stop
+            // immediately after starting.
+            //
+            // Note that it is possible for a VCR change request to be enqueued
+            // and then not processed before the state driver stops reading from
+            // the queue. If this happens, the request will be marked as failed
+            // when the request queue containing it is dropped. (This can also
+            // happen if a guest asks to halt a VM while it has a replacement
+            // request on its queue.)
             ChangeReason::ApiRequest(ExternalRequest::Stop) => {
                 let reason = DenyReason::HaltPending;
                 AllowedRequests {
                     start: Disposition::Deny(reason),
                     migrate_as_source: Disposition::Deny(reason),
                     reboot: Disposition::Deny(reason),
-                    mutate: Disposition::Deny(reason),
+                    reconfigure_crucible_volume: self
+                        .allowed
+                        .reconfigure_crucible_volume,
                     stop: Disposition::Ignore,
                 }
             }
@@ -354,7 +369,7 @@ impl ExternalRequestQueue {
                     start: self.allowed.start,
                     migrate_as_source: Disposition::Enqueue,
                     reboot: Disposition::Enqueue,
-                    mutate: Disposition::Enqueue,
+                    reconfigure_crucible_volume: Disposition::Enqueue,
                     stop: self.allowed.stop,
                 }
             }
@@ -384,7 +399,7 @@ impl ExternalRequestQueue {
                     start: Disposition::Deny(reason),
                     migrate_as_source: Disposition::Deny(reason),
                     reboot: Disposition::Deny(reason),
-                    mutate: Disposition::Deny(reason),
+                    reconfigure_crucible_volume: Disposition::Deny(reason),
                     stop: Disposition::Ignore,
                 }
             }
@@ -394,7 +409,7 @@ impl ExternalRequestQueue {
                     start: Disposition::Deny(reason),
                     migrate_as_source: Disposition::Deny(reason),
                     reboot: Disposition::Deny(reason),
-                    mutate: Disposition::Deny(reason),
+                    reconfigure_crucible_volume: Disposition::Deny(reason),
                     stop: self.allowed.stop,
                 }
             }

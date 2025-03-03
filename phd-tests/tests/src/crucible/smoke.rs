@@ -89,6 +89,10 @@ async fn shutdown_persistence_test(ctx: &Framework) {
 
 #[phd_testcase]
 async fn vcr_replace_during_start_test(ctx: &Framework) {
+    if !ctx.crucible_enabled() {
+        phd_skip!("Crucible backends not enabled (no downstairs path)");
+    }
+
     let mut config =
         ctx.vm_config_builder("crucible_vcr_replace_during_start_test");
 
