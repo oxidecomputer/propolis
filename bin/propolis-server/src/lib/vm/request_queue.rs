@@ -74,10 +74,6 @@ pub enum ExternalRequest {
 
     /// Attempts to update the volume construction request for the supplied
     /// Crucible volume.
-    ///
-    /// TODO: Due to https://github.com/oxidecomputer/crucible/issues/871, this
-    /// is only allowed once the VM is started and the volume has activated, but
-    /// it should be allowed even before the VM has started.
     ReconfigureCrucibleVolume {
         /// The ID of the Crucible backend in the VM's Crucible backend map.
         backend_id: SpecKey,
