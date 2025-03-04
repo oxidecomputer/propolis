@@ -628,15 +628,40 @@ mod test {
     }
 
     #[tokio::test]
-    async fn mutation_disallowed_after_stop_requested() {
+    async fn mutation_allowed_after_stop_requested() {
         let mut queue =
             ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
         queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
 
         assert!(queue.try_queue(ExternalRequest::Stop).is_ok());
-        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_err());
+        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_ok());
+    }
 
+    #[tokio::test]
+    async fn mutation_disallowed_after_stopped() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
+        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
         queue.notify_instance_state_change(InstanceStateChange::Stopped);
         assert!(queue.try_queue(make_reconfigure_crucible_request()).is_err());
+    }
+
+    #[tokio::test]
+    async fn vcr_requests_canceled_when_queue_drops() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
+        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let req = ExternalRequest::ReconfigureCrucibleVolume {
+            backend_id: SpecKey::Uuid(Uuid::new_v4()),
+            new_vcr_json: "".to_string(),
+            result_tx: tx,
+        };
+
+        assert!(queue.try_queue(req).is_ok());
+        drop(queue);
+        let err = rx.await.unwrap().unwrap_err();
+        assert_eq!(err.status_code, hyper::StatusCode::GONE);
     }
 }
