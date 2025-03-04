@@ -19,10 +19,10 @@ use newtype_uuid::{GenericUuid, TypedUuid, TypedUuidKind, TypedUuidTag};
 use propolis_client::support::nvme_serial_from_str;
 use propolis_client::types::{
     BlobStorageBackend, Board, Chipset, ComponentV0, CrucibleStorageBackend,
-    I440Fx, InstanceEnsureRequest, InstanceInitializationMethod,
-    InstanceMetadata, InstanceSpecGetResponse, InstanceSpecV0, NvmeDisk,
-    QemuPvpanic, ReplacementComponent, SerialPort, SerialPortNumber,
-    VirtioDisk,
+    GuestHypervisorInterface, HyperVFeatureFlag, I440Fx, InstanceEnsureRequest,
+    InstanceInitializationMethod, InstanceMetadata, InstanceSpecGetResponse,
+    InstanceSpecV0, NvmeDisk, QemuPvpanic, ReplacementComponent, SerialPort,
+    SerialPortNumber, VirtioDisk,
 };
 use propolis_client::{PciPath, SpecKey};
 use propolis_config_toml::spec::SpecConfig;
@@ -189,6 +189,10 @@ struct VmConfig {
     // cloud_init ISO file
     #[clap(long, action, conflicts_with = "spec")]
     cloud_init: Option<PathBuf>,
+
+    /// enable Hyper-V compatible enlightenments for this VM
+    #[clap(long, action)]
+    hyperv: bool,
 }
 
 fn add_component_to_spec(
@@ -293,7 +297,13 @@ impl VmConfig {
                 cpuid: None,
                 cpus: self.vcpus,
                 memory_mb: self.memory,
-                guest_hv_interface: None,
+                guest_hv_interface: if self.hyperv {
+                    Some(GuestHypervisorInterface::HyperV {
+                        features: vec![HyperVFeatureFlag::ReferenceTsc],
+                    })
+                } else {
+                    None
+                },
             },
             components: Default::default(),
         };

@@ -51,3 +51,16 @@ pub struct InstanceSerialHistoryParams {
     /// `max_bytes`.
     pub max_bytes: Option<u64>,
 }
+
+#[derive(
+    Copy, Clone, Debug, PartialEq, Eq, JsonSchema, Serialize, Deserialize,
+)]
+pub enum MockMode {
+    /// The mock server should run freely, advancing the state every time the
+    /// instance_state_monitor endpoint is requested while new state
+    /// transitions are queued.
+    Run,
+    /// The mock server should only advance the current state when the
+    /// /mock/step endpoint is requested.
+    SingleStep,
+}

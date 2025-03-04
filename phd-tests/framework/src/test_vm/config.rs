@@ -10,9 +10,9 @@ use propolis_client::{
     support::nvme_serial_from_str,
     types::{
         Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
-        CpuidEntry, CpuidVendor, InstanceMetadata, InstanceSpecV0,
-        MigrationFailureInjector, NvmeDisk, SerialPort, SerialPortNumber,
-        VirtioDisk,
+        CpuidEntry, CpuidVendor, GuestHypervisorInterface, InstanceMetadata,
+        InstanceSpecV0, MigrationFailureInjector, NvmeDisk, SerialPort,
+        SerialPortNumber, VirtioDisk,
     },
     PciPath, SpecKey,
 };
@@ -56,6 +56,7 @@ pub struct VmConfig<'dr> {
     boot_order: Option<Vec<&'dr str>>,
     disks: Vec<DiskRequest<'dr>>,
     migration_failure: Option<MigrationFailureInjector>,
+    guest_hv_interface: Option<GuestHypervisorInterface>,
 }
 
 impl<'dr> VmConfig<'dr> {
@@ -75,6 +76,7 @@ impl<'dr> VmConfig<'dr> {
             boot_order: None,
             disks: Vec::new(),
             migration_failure: None,
+            guest_hv_interface: None,
         };
 
         config.boot_disk(
@@ -109,6 +111,14 @@ impl<'dr> VmConfig<'dr> {
 
     pub fn cpuid(&mut self, entries: Vec<CpuidEntry>) -> &mut Self {
         self.cpuid = Some(entries);
+        self
+    }
+
+    pub fn guest_hv_interface(
+        &mut self,
+        interface: GuestHypervisorInterface,
+    ) -> &mut Self {
+        self.guest_hv_interface = Some(interface);
         self
     }
 
@@ -198,7 +208,7 @@ impl<'dr> VmConfig<'dr> {
         self
     }
 
-    pub(crate) async fn vm_spec(
+    pub async fn vm_spec(
         &self,
         framework: &Framework,
     ) -> anyhow::Result<VmSpec> {
@@ -211,6 +221,7 @@ impl<'dr> VmConfig<'dr> {
             boot_order,
             disks,
             migration_failure,
+            guest_hv_interface,
         } = self;
 
         let bootrom_path = framework
@@ -288,7 +299,7 @@ impl<'dr> VmConfig<'dr> {
                         cpuid_utils::CpuidVendor::Intel => CpuidVendor::Intel,
                     },
                 }),
-                guest_hv_interface: None,
+                guest_hv_interface: guest_hv_interface.clone(),
             },
             components: Default::default(),
         };

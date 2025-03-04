@@ -460,7 +460,9 @@ impl Instance {
                     }
                 }
                 State::Quiesce => {
-                    // stop device emulation and vCPUs
+                    // Stop device emulation and vCPUs. Note that the device
+                    // lifecycle trait requires vCPUs to be paused before any
+                    // devices pause.
                     for vcpu_task in guard.vcpu_tasks.iter_mut() {
                         let _ = vcpu_task.hold();
                     }
@@ -873,7 +875,7 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
         .unwrap_or_else(|| cpuid_utils::host::query(CpuidIdent::leaf(1)));
     let family = match cpuid_ident.eax & 0xf00 {
         // If family ID is 0xf, extended family is added to it
-        0xf00 => (cpuid_ident.eax >> 20 & 0xff) + 0xf,
+        0xf00 => ((cpuid_ident.eax >> 20) & 0xff) + 0xf,
         // ... otherwise base family ID is used
         base => base >> 8,
     };
@@ -892,7 +894,8 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
         //unknown
         _ => 0x2,
     };
-    let proc_id = u64::from(cpuid_ident.eax) | u64::from(cpuid_ident.edx) << 32;
+    let proc_id =
+        u64::from(cpuid_ident.eax) | (u64::from(cpuid_ident.edx) << 32);
     let procname_entries = params.cpuid_procname.or_else(|| {
         if cpuid_utils::host::query(CpuidIdent::leaf(0x8000_0000)).eax
             >= 0x8000_0004

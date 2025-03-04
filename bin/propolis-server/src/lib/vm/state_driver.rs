@@ -2,7 +2,92 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! A task to handle requests to change a VM's state or configuration.
+//! Structures and tasks that handle VM state and configuration change requests.
+//!
+//! This module handles the second high-level phase of a VM's lifecycle: once a
+//! VM's components and services exist, it enters an event loop that changes the
+//! VM's state in response to external API requests and signals arriving from
+//! within the VM. See the [`ensure`] module for more information about the
+//! initialization phase.
+//!
+//! This module's main struct is the [`StateDriver`], which holds references to
+//! an active VM's components, the VM's event queues, and the sender side of a
+//! channel that publishes instance state updates. External API requests are
+//! routed to the driver's event queue and handled by the driver task. This
+//! model ensures that only one task handles VM events and updates VM state; the
+//! idea is to minimize the number of different tasks and threads one has to
+//! consider when reasoning about concurrency in the VM state machine.
+//!
+//! On a migration in, the state driver implicitly starts the VM before entering
+//! the main event loop:
+//!
+//! ```text
+//!                   +-----------------------+
+//!                   | VM components created |
+//!                   +-----------+-----------+
+//!                               |
+//!                               |
+//!            Yes +--------------v--------------+ No
+//!              +-+ Initialized via migration?  +-+
+//!              | +-----------------------------+ |
+//!              |                                 |
+//!       +------v--------+                        |
+//!       | Auto-start VM |                        |
+//!       +------+--------+                        |
+//!              |                                 |
+//! +------------v------------+                    |
+//! | Start devices and vCPUs |                    |
+//! +------------+------------+                    |
+//!              |                                 |
+//!              |                                 |
+//!              |    +-----------------------+    |
+//!              +----> Enter main event loop <----+
+//!                   +-----------------------+
+//! ```
+//!
+//! Once in the main event loop, a VM generally remains active until it receives
+//! a signal telling it to do something else:
+//!
+//! ```text
+//! +-----------------+   +-----------------+  error during startup
+//! | Not yet started |   | Not yet started |       +--------+
+//! | (migrating in)  |   |   (Creating)    +-------> Failed |
+//! +-------+---------+   +--------+--------+       +--------+
+//!         |                      |
+//!         |                      | Successful start request
+//!         +-----------+          |
+//!                    +v----------v-----------+ API/chipset request
+//!          +---------+        Running        +------+
+//!          |         +---^-------+--------^--+   +--v--------+
+//!          |             |       |        +------+ Rebooting |
+//!          |             |       |               +-----------+
+//! +--------v------+      |       |
+//! | Migrating out +------+       | API/chipset request
+//! +--------+------+              |
+//!          |                +----v-----+
+//!          |                | Stopping |
+//!          |                +----+-----+
+//!          |                     |
+//!          |                     |            +-----------------+
+//!          |                +----v-----+      |    Destroyed    |
+//!          +----------------> Stopped  +------> (after rundown) |
+//!                           +----------+      +-----------------+
+//! ```
+//!
+//! The state driver's [`InputQueue`] receives events that can push a running VM
+//! out of its steady "running" state. These can come either from the external
+//! API or from events happening in the guest (e.g. a vCPU asserting a pin on
+//! the virtual chipset that should reset or halt the VM). The policy that
+//! determines what API requests can be accepted in which states is implemented
+//! in the [`request_queue`] module.
+//!
+//! The "stopped" and "failed" states are terminal states. When the state driver
+//! reaches one of these states, it exits the event loop, returning its final
+//! state to the wrapper function that launched the driver. The wrapper task is
+//! responsible for running down the VM objects and structures and resetting the
+//! server so that it can start another VM.
+//!
+//! [`ensure`]: crate::vm::ensure
 
 use std::{
     sync::{Arc, Mutex},
@@ -248,7 +333,10 @@ struct StateDriver {
     migration_src_state: crate::migrate::source::PersistentState,
 }
 
-/// The values returned by a state driver task when it exits.
+/// Contains a state driver's terminal state and the channel it used to publish
+/// state updates to the rest of the server. The driver's owner can use these to
+/// publish the VM's terminal state after running down all of its objects and
+/// services.
 pub(super) struct StateDriverOutput {
     /// The channel this driver used to publish external instance state changes.
     pub state_publisher: StatePublisher,
@@ -258,9 +346,14 @@ pub(super) struct StateDriverOutput {
     pub final_state: InstanceState,
 }
 
-/// Creates a new set of VM objects in response to an `ensure_request` directed
-/// to the supplied `vm`.
-pub(super) async fn run_state_driver(
+/// Given an instance ensure request, processes the request and hands the
+/// resulting activated VM off to a [`StateDriver`] that will drive the main VM
+/// event loop.
+///
+/// Returns the final state driver disposition. Note that this routine does not
+/// return a `Result`; if the VM fails to start, the returned
+/// [`StateDriverOutput`] contains appropriate state for a failed VM.
+pub(super) async fn ensure_vm_and_launch_driver(
     log: slog::Logger,
     vm: Arc<super::Vm>,
     mut state_publisher: StatePublisher,
@@ -269,7 +362,7 @@ pub(super) async fn run_state_driver(
     ensure_options: super::EnsureOptions,
 ) -> StateDriverOutput {
     let ensure_options = Arc::new(ensure_options);
-    let activated_vm = match create_and_activate_vm(
+    let activated_vm = match ensure_active_vm(
         &log,
         &vm,
         &mut state_publisher,
@@ -318,7 +411,7 @@ pub(super) async fn run_state_driver(
 
 /// Processes the supplied `ensure_request` to create a set of VM objects that
 /// can be moved into a new `StateDriver`.
-async fn create_and_activate_vm<'a>(
+async fn ensure_active_vm<'a>(
     log: &'a slog::Logger,
     vm: &'a Arc<super::Vm>,
     state_publisher: &'a mut StatePublisher,
@@ -371,23 +464,27 @@ async fn create_and_activate_vm<'a>(
 }
 
 impl StateDriver {
+    /// Directs this state driver to enter its main event loop. The driver may
+    /// perform additional tasks (e.g. automatically starting a migration
+    /// target) before it begins processing events from its queues.
     pub(super) async fn run(mut self, migrated_in: bool) -> StateDriverOutput {
         info!(self.log, "state driver launched");
 
         let final_state = if migrated_in {
             if self.start_vm(VmStartReason::MigratedIn).await.is_ok() {
-                self.run_loop().await
+                self.event_loop().await
             } else {
                 InstanceState::Failed
             }
         } else {
-            self.run_loop().await
+            self.event_loop().await
         };
 
         StateDriverOutput { state_publisher: self.external_state, final_state }
     }
 
-    async fn run_loop(&mut self) -> InstanceState {
+    /// Runs the state driver's main event loop.
+    async fn event_loop(&mut self) -> InstanceState {
         info!(self.log, "state driver entered main loop");
         loop {
             let event = self.input_queue.wait_for_next_event().await;
@@ -415,6 +512,8 @@ impl StateDriver {
         }
     }
 
+    /// Starts the driver's VM by sending start commands to its devices and
+    /// vCPUs.
     async fn start_vm(
         &mut self,
         start_reason: VmStartReason,

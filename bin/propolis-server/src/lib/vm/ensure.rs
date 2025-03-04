@@ -4,34 +4,104 @@
 
 //! Tools for handling instance ensure requests.
 //!
-//! To initialize a new VM, the server must (1) create a set of VM objects from
-//! an instance spec, (2) set up VM services that use those objects, (3) use the
-//! objects and services to drive the VM state machine to the `ActiveVm` state,
-//! and (4) notify the original caller of the "instance ensure" API of the
-//! completion of its request. If VM initialization fails, the actions required
-//! to compensate and drive the state machine to `RundownComplete` depend on how
-//! many steps were completed.
+//! This module handles the first high-level phase of a VM's lifecycle, which
+//! creates all of the VM's components and attendant data structures. These are
+//! handed off to a `StateDriver` that implements the main VM event loop. See
+//! the [`state_driver`] module docs for more details.
 //!
-//! When live migrating into an instance, the live migration task interleaves
-//! initialization steps with the steps of the live migration protocol, and
-//! needs to be able to unwind initialization correctly whenever the migration
-//! protocol fails.
+//! This module uses distinct structs that each represent a distinct phase of VM
+//! initialization. When a server receives a new ensure request, it creates the
+//! first of these structures, then hands it off to the procedure described in
+//! the ensure request to drive the rest of the initialization process, as in
+//! the diagram below:
 //!
-//! The `VmEnsure` types in this module exist to hide the gory details of
-//! initializing and unwinding from higher-level operations like the live
-//! migration task. Each type represents a phase of the initialization process
-//! and has a routine that consumes the current phase and moves to the next
-//! phase. If a higher-level operation fails, it can call a failure handler on
-//! its current phase to unwind the whole operation and drive the VM state
-//! machine to the correct resting state.
+//! ```text
+//!                 +-------------------------+
+//!                 |                         |
+//!                 |  Initial state (no VM)  |
+//!                 |                         |
+//!                 +-----------+-------------+
+//!                             |
+//!                    Receive ensure request
+//!                             |
+//!                             v
+//!                     VmEnsureNotStarted
+//!                             |
+//!                             |
+//!                   +---------v----------+
+//!          Yes      |                    |        No
+//!           +-------+  Live migration?   +---------+
+//!           |       |                    |         |
+//!           |       +--------------------+         |
+//!           |                                      |
+//!     +-----v------+                               |
+//!     |Get params  |                               |
+//!     |from source |                               |
+//!     +-----+------+                               |
+//!           |                                      |
+//!     +-----v------+                     +---------v-----------+
+//!     |Initialize  |                     |Initialize components|
+//!     |components  |                     |    from params      |
+//!     +-----+------+                     +---------+-----------+
+//!           |                                      |
+//!           v                                      v
+//! VmEnsureObjectsCreated                 VmEnsureObjectsCreated
+//!           |                                      |
+//!           |                                      |
+//!     +-----v------+                               |
+//!     |Import state|                               |
+//!     |from source |                               |
+//!     +-----+------+                               |
+//!           |                                      |
+//!           |                                      |
+//!           |        +------------------+          |
+//!           +-------->Launch VM services<----------+
+//!                    +--------+---------+
+//!                             |
+//!                             |
+//!                    +--------v---------+
+//!                    |Move VM to Active |
+//!                    +--------+---------+
+//!                             |
+//!                             |
+//!                             v
+//!                      VmEnsureActive<'_>
+//! ```
+//!
+//! When initializing a VM from scratch, the ensure request contains a spec that
+//! determines what components the VM should create, and they are created into
+//! their default initial states. When migrating in, the VM-ensure structs are
+//! handed off to the migration protocol, which fetches a spec from the
+//! migration source, uses its contents to create the VM's components, and
+//! imports the source VM's device state into those components.
+//!
+//! Once all components exist and are initialized, this module sets up "VM
+//! services" (e.g. the serial console and metrics) that connect this VM to
+//! other Oxide APIs and services. It then updates the server's VM state machine
+//! and yields a completed "active" VM that can be passed into a state driver
+//! run loop.
+//!
+//! Separating the initialization steps in this manner hides the gory details of
+//! initializing a VM (and unwinding initialization) from higher-level
+//! procedures like the migration protocol. Each initialize phase has a failure
+//! handler that allows a higher-level driver to unwind the entire ensure
+//! operation and drive the VM state machine to the correct resting state.
+//!
+//! [`state_driver`]: crate::vm::state_driver
 
 use std::sync::Arc;
 
 use oximeter::types::ProducerRegistry;
 use oximeter_instruments::kstat::KstatSampler;
-use propolis::enlightenment::{bhyve::BhyveGuestInterface, Enlightenment};
+use propolis::enlightenment::{
+    bhyve::BhyveGuestInterface,
+    hyperv::{Features as HyperVFeatures, HyperV},
+    Enlightenment,
+};
 use propolis_api_types::{
-    instance_spec::components::board::GuestHypervisorInterface,
+    instance_spec::components::board::{
+        GuestHypervisorInterface, HyperVFeatureFlag,
+    },
     InstanceEnsureResponse, InstanceMigrateInitiateResponse,
     InstanceProperties, InstanceState,
 };
@@ -170,39 +240,67 @@ impl<'a> VmEnsureNotStarted<'a> {
             },
         ));
 
-        // Create the runtime that will host tasks created by VMM components
-        // (e.g. block device runtime tasks).
-        let vmm_rt = tokio::runtime::Builder::new_multi_thread()
-            .thread_name("tokio-rt-vmm")
-            .worker_threads(usize::max(
-                VMM_MIN_RT_THREADS,
-                VMM_BASE_RT_THREADS + spec.board.cpus as usize,
-            ))
-            .enable_all()
-            .build()?;
-
         let log_for_init = self.log.clone();
         let properties = self.ensure_request.properties.clone();
         let options = self.ensure_options.clone();
         let queue_for_init = input_queue.clone();
-        let init_result = vmm_rt
-            .spawn(async move {
-                initialize_vm_objects(
-                    log_for_init,
-                    spec,
-                    properties,
-                    options,
-                    queue_for_init,
-                )
-                .await
-            })
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!("failed to join VM object creation task: {e}")
-            })?;
 
-        match init_result {
-            Ok(objects) => {
+        // Either the block following this succeeds with both a Tokio runtime
+        // and VM objects, or entirely fails with no partial state for us to
+        // clean up.
+        type InitResult =
+            anyhow::Result<(tokio::runtime::Runtime, InputVmObjects)>;
+
+        // We need to create a new runtime to host the tasks for this VMM's
+        // objects, but that initialization is fallible and results in dropping
+        // the fledgling VMM runtime itself. Dropping a Tokio runtime on a
+        // worker thread in a Tokio runtime will panic, so do all init in a
+        // `spawn_blocking` where this won't be an issue.
+        //
+        // When the runtime is returned to this thread, it must not be dropped.
+        // That means that the path between this result and returning an
+        // `Ok(VmEnsureObjectsCreated)` must be infallible.
+        let result: InitResult = tokio::task::spawn_blocking(move || {
+            // Create the runtime that will host tasks created by
+            // VMM components (e.g. block device runtime tasks).
+            let vmm_rt = tokio::runtime::Builder::new_multi_thread()
+                .thread_name("tokio-rt-vmm")
+                .worker_threads(usize::max(
+                    VMM_MIN_RT_THREADS,
+                    VMM_BASE_RT_THREADS + spec.board.cpus as usize,
+                ))
+                .enable_all()
+                .build()?;
+
+            let init_result = vmm_rt
+                .block_on(async move {
+                    initialize_vm_objects(
+                        log_for_init,
+                        spec,
+                        properties,
+                        options,
+                        queue_for_init,
+                    )
+                    .await
+                })
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to join VM object creation task: {e}"
+                    )
+                })?;
+            Ok((vmm_rt, init_result))
+        })
+        .await
+        .map_err(|e| {
+            // This is extremely unexpected: if the join failed, the init
+            // task panicked or was cancelled. If the init itself failed,
+            // which is somewhat more reasonable, we would expect the join
+            // to succeed and have an error below.
+            anyhow::anyhow!("failed to join VMM runtime init task: {e}")
+        })?;
+
+        match result {
+            Ok((vmm_rt, objects)) => {
                 // N.B. Once these `VmObjects` exist, it is no longer safe to
                 //      call `vm_init_failed`.
                 let objects = Arc::new(VmObjects::new(
@@ -244,6 +342,12 @@ impl<'a> VmEnsureNotStarted<'a> {
 /// Represents an instance ensure request that has proceeded far enough to
 /// create a set of VM objects, but that has not yet installed those objects as
 /// an `ActiveVm` or notified the requestor that its request is complete.
+///
+/// WARNING: dropping `VmEnsureObjectsCreated` is a panic risk since dropping
+/// the contained `tokio::runtime::Runtime` on in a worker thread will panic. It
+/// is probably a bug to drop `VmEnsureObjectsCreated`, as it is expected users
+/// will quickly call [`VmEnsureObjectsCreated::ensure_active`], but if you
+/// must, take care in handling the contained `vmm_rt`.
 pub(crate) struct VmEnsureObjectsCreated<'a> {
     log: &'a slog::Logger,
     vm: &'a Arc<super::Vm>,
@@ -391,9 +495,28 @@ async fn initialize_vm_objects(
 
     let vmm_log = log.new(slog::o!("component" => "vmm"));
 
-    let guest_hv_interface = match spec.board.guest_hv_interface {
-        GuestHypervisorInterface::Bhyve => Arc::new(BhyveGuestInterface),
-    };
+    let (guest_hv_interface, guest_hv_lifecycle) =
+        match &spec.board.guest_hv_interface {
+            GuestHypervisorInterface::Bhyve => {
+                let bhyve = Arc::new(BhyveGuestInterface);
+                let lifecycle = bhyve.clone();
+                (bhyve as Arc<dyn Enlightenment>, lifecycle.as_lifecycle())
+            }
+            GuestHypervisorInterface::HyperV { features } => {
+                let mut hv_features = HyperVFeatures::default();
+                for f in features {
+                    match f {
+                        HyperVFeatureFlag::ReferenceTsc => {
+                            hv_features.reference_tsc = true
+                        }
+                    }
+                }
+
+                let hyperv = Arc::new(HyperV::new(&vmm_log, hv_features));
+                let lifecycle = hyperv.clone();
+                (hyperv as Arc<dyn Enlightenment>, lifecycle.as_lifecycle())
+            }
+        };
 
     // Set up the 'shell' instance into which the rest of this routine will
     // add components.
@@ -458,7 +581,7 @@ async fn initialize_vm_objects(
     let ramfb =
         init.initialize_fwcfg(spec.board.cpus, &options.bootrom_version)?;
 
-    init.register_guest_hv_interface(guest_hv_interface.as_lifecycle());
+    init.register_guest_hv_interface(guest_hv_lifecycle);
     init.initialize_cpus().await?;
     let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
         &machine,

@@ -14,6 +14,13 @@ pub enum MigrateStateError {
     #[error("device not migratable")]
     NonMigratable,
 
+    /// The device isn't in a state where its state can be exported. Because
+    /// fully-initialized devices should be able to pause and export their state
+    /// at any time, this generally means that the device was asked to export
+    /// its state before it was fully initialized.
+    #[error("device's state is not ready to be exported")]
+    NotReadyForExport,
+
     /// I/O Error encounted while performing import/export
     #[error("IO Error")]
     Io(#[from] std::io::Error),

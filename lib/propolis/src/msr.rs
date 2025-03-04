@@ -10,7 +10,7 @@
 pub struct MsrId(pub u32);
 
 /// An outcome resulting from a request to emulate the RDMSR instruction.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RdmsrOutcome {
     /// This RDMSR was not handled. The caller must decide how to dispose of it.
     NotHandled,
@@ -25,7 +25,7 @@ pub enum RdmsrOutcome {
 }
 
 /// An outcome resulting from a request to emulate the WRMSR instruction.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WrmsrOutcome {
     /// This WRMSR was not handled. The caller must decide how to dispose of it.
     NotHandled,

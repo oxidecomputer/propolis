@@ -26,6 +26,8 @@ pub mod ioctls {
     pub const VNA_IOC_SET_PROMISC: i32 = VNA_IOC | 0x24;
     pub const VNA_IOC_GET_PARAMS: i32 = VNA_IOC | 0x25;
     pub const VNA_IOC_SET_PARAMS: i32 = VNA_IOC | 0x26;
+    pub const VNA_IOC_GET_MTU: i32 = VNA_IOC | 0x27;
+    pub const VNA_IOC_SET_MTU: i32 = VNA_IOC | 0x28;
 }
 
 pub const VIONA_VQ_MAX: u16 = 2;
@@ -84,11 +86,13 @@ mod structs {
     use libc::size_t;
     use std::ffi::c_void;
 
+    #[repr(C)]
     pub struct vioc_get_params {
         pub vgp_param: *mut c_void,
         pub vgp_param_sz: size_t,
     }
 
+    #[repr(C)]
     pub struct vioc_set_params {
         pub vsp_param: *mut c_void,
         pub vsp_param_sz: size_t,
@@ -100,7 +104,7 @@ mod structs {
 /// This is the viona interface version which viona_api expects to operate
 /// against.  All constants and structs defined by the crate are done so in
 /// terms of that specific version.
-pub const VIONA_CURRENT_INTERFACE_VERSION: u32 = 3;
+pub const VIONA_CURRENT_INTERFACE_VERSION: u32 = 4;
 
 /// Maximum size of packed nvlists used in viona parameter ioctls
 pub const VIONA_MAX_PARAM_NVLIST_SZ: usize = 4096;

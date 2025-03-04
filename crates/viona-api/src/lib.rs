@@ -141,6 +141,8 @@ impl VionaFd {
                 | ioctls::VNA_IOC_RING_INTR_CLR
                 | ioctls::VNA_IOC_VERSION
                 | ioctls::VNA_IOC_SET_PROMISC
+                | ioctls::VNA_IOC_GET_MTU
+                | ioctls::VNA_IOC_SET_MTU
         )
     }
 }
@@ -178,6 +180,9 @@ unsafe fn ioctl(
 #[repr(u32)]
 #[derive(Copy, Clone)]
 pub enum ApiVersion {
+    /// Add support for getting/setting MTU
+    V4 = 4,
+
     /// Adds support for interface parameters
     V3 = 3,
 
@@ -189,7 +194,7 @@ pub enum ApiVersion {
 }
 impl ApiVersion {
     pub const fn current() -> Self {
-        Self::V3
+        Self::V4
     }
 }
 impl PartialEq<ApiVersion> for u32 {
