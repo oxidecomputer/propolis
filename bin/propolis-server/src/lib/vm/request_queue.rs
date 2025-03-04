@@ -332,7 +332,7 @@ impl ExternalRequestQueue {
             // its state are ignored.
             //
             // Requests to change Crucible volume configuration can still be
-            // queued if they were previously alloewd. This allows the state
+            // queued if they were previously allowed. This allows the state
             // driver to accept VCR mutations that are needed to allow an
             // activation to complete even if the instance is slated to stop
             // immediately after starting.

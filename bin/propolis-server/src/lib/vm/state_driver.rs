@@ -644,14 +644,18 @@ impl StateDriver {
                 biased;
 
                 res = &mut block_backend_fut => {
+                    // If the VM started up successfully, publish that it is
+                    // running and queue up any external requests that were
+                    // deferred while startup was ongoing.
+                    //
+                    // If startup failed, just return the error without changing
+                    // any state or processing any additional requests. The
+                    // caller will move the instance to the appropriate terminal
+                    // state and clean up the VM as needed.
                     if res.is_ok() {
                         let objects = &self.objects;
                         objects.lock_exclusive().await.resume_vcpus();
                         self.publish_steady_state(InstanceState::Running);
-
-                        // If a stop request was seen while in the startup
-                        // sequence, self-request a stop for the main event
-                        // loop to handle.
                         if stopped_while_starting {
                             self.input_queue.push_self_request(
                                 ExternalRequest::Stop
