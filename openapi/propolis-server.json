@@ -1526,7 +1526,7 @@
         ]
       },
       "MigrationFailureInjector": {
-        "description": "Describes a synthetic device that registers for VM lifecycle notifications and returns errors during attempts to migrate.\n\nThis is only supported by Propolis servers compiled without the `omicron-build` feature.",
+        "description": "Describes a synthetic device that registers for VM lifecycle notifications and returns errors during attempts to migrate.\n\nThis is only supported by Propolis servers compiled with the `failure-injection` feature.",
         "type": "object",
         "properties": {
           "fail_exports": {
