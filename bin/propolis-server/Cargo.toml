@@ -88,4 +88,4 @@ falcon = ["propolis/falcon"]
 # never occur on real otherwise-unperturbed systems. We conditionally compile
 # code supporting failure injection to avoid the risk of somehow injecting
 # failures into a real system not under test.
-failure-injection = ["propolis/failure-injection"]
+failure-injection = []

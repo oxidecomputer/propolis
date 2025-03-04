@@ -270,7 +270,7 @@ impl Cmd {
                 return Ok(());
             }
             Self::List { phd_args } => {
-                let phd_runner = build_bin("phd-runner", false, None)?;
+                let phd_runner = build_bin("phd-runner", false, None, None)?;
                 let status = run_exit_code(
                     phd_runner.command().arg("list").args(phd_args),
                 )?;
@@ -278,7 +278,7 @@ impl Cmd {
             }
 
             Self::RunnerHelp { phd_args } => {
-                let phd_runner = build_bin("phd-runner", false, None)?;
+                let phd_runner = build_bin("phd-runner", false, None, None)?;
                 let status = run_exit_code(
                     phd_runner.command().arg("help").args(phd_args),
                 )?;
@@ -298,6 +298,12 @@ impl Cmd {
                 let bin = build_bin(
                     "propolis-server",
                     propolis_args.release,
+                    // Some PHD tests specifically cover cases where a component
+                    // in the system has encountered an error, so enable
+                    // failure-injection. Do not enable `omicron-build` like we
+                    // do in Buildomat because someone running `cargo xtask phd`
+                    // is not building a propolis-server destined for Omicron.
+                    Some("failure-injection"),
                     Some(server_build_env),
                 )?;
                 let path = bin
@@ -352,7 +358,7 @@ impl Cmd {
             anyhow::bail!("Missing artifacts config `{artifacts_toml}`!");
         }
 
-        let phd_runner = build_bin("phd-runner", false, None)?;
+        let phd_runner = build_bin("phd-runner", false, None, None)?;
         let mut cmd = if cfg!(target_os = "illumos") {
             let mut cmd = Command::new("pfexec");
             cmd.arg(phd_runner.path());
@@ -425,9 +431,15 @@ impl BasePropolisArgs {
     }
 }
 
+/// Build the binary `name` in debug or release with an optional build
+/// environment variables and a list of Cargo features.
+///
+/// `features` is passed directly to Cargo, and so must be a space or
+/// comma-separated list of features to activate.
 fn build_bin(
     name: impl AsRef<str>,
     release: bool,
+    features: Option<&str>,
     build_env: Option<HashMap<String, String>>,
 ) -> anyhow::Result<escargot::CargoRun> {
     let name = name.as_ref();
@@ -435,6 +447,9 @@ fn build_bin(
 
     let mut cmd =
         escargot::CargoBuild::new().package(name).bin(name).current_target();
+    if let Some(features) = features {
+        cmd = cmd.features(features);
+    }
     if let Some(env) = build_env {
         for (k, v) in env {
             cmd = cmd.env(k, v);
