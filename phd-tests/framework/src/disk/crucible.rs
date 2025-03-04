@@ -389,7 +389,7 @@ impl Inner {
         let downstairs_addrs = self
             .downstairs_instances
             .iter()
-            .map(|ds| ds.vcr_address())
+            .map(Downstairs::vcr_address)
             .collect();
 
         VolumeConstructionRequest::Volume {
