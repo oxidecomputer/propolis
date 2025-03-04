@@ -83,3 +83,9 @@ omicron-build = ["propolis/omicron-build"]
 
 # Falcon builds require corresponding bits turned on in the dependency libs
 falcon = ["propolis/falcon"]
+
+# Testing necessitates injecting failures which should hopefully be rare or even
+# never occur on real otherwise-unperturbed systems. We conditionally compile
+# code supporting failure injection to avoid the risk of somehow injecting
+# failures into a real system not under test.
+failure-injection = ["propolis/failure-injection"]

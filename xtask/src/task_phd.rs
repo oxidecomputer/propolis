@@ -4,7 +4,7 @@
 
 use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
-use std::{fs, process::Command, time};
+use std::{collections::HashMap, fs, process::Command, time};
 
 macro_rules! cargo_log {
     ($tag:literal, $($arg:tt)*) => {
@@ -270,7 +270,7 @@ impl Cmd {
                 return Ok(());
             }
             Self::List { phd_args } => {
-                let phd_runner = build_bin("phd-runner", false)?;
+                let phd_runner = build_bin("phd-runner", false, None)?;
                 let status = run_exit_code(
                     phd_runner.command().arg("list").args(phd_args),
                 )?;
@@ -278,7 +278,7 @@ impl Cmd {
             }
 
             Self::RunnerHelp { phd_args } => {
-                let phd_runner = build_bin("phd-runner", false)?;
+                let phd_runner = build_bin("phd-runner", false, None)?;
                 let status = run_exit_code(
                     phd_runner.command().arg("help").args(phd_args),
                 )?;
@@ -292,7 +292,14 @@ impl Cmd {
                 cmd
             }
             None => {
-                let bin = build_bin("propolis-server", propolis_args.release)?;
+                let mut server_build_env = HashMap::new();
+                server_build_env
+                    .insert("PHD_BUILD".to_string(), "true".to_string());
+                let bin = build_bin(
+                    "propolis-server",
+                    propolis_args.release,
+                    Some(server_build_env),
+                )?;
                 let path = bin
                     .path()
                     .try_into()
@@ -345,7 +352,7 @@ impl Cmd {
             anyhow::bail!("Missing artifacts config `{artifacts_toml}`!");
         }
 
-        let phd_runner = build_bin("phd-runner", false)?;
+        let phd_runner = build_bin("phd-runner", false, None)?;
         let mut cmd = if cfg!(target_os = "illumos") {
             let mut cmd = Command::new("pfexec");
             cmd.arg(phd_runner.path());
@@ -421,12 +428,18 @@ impl BasePropolisArgs {
 fn build_bin(
     name: impl AsRef<str>,
     release: bool,
+    build_env: Option<HashMap<String, String>>,
 ) -> anyhow::Result<escargot::CargoRun> {
     let name = name.as_ref();
     cargo_log!("Compiling", "{name}");
 
     let mut cmd =
         escargot::CargoBuild::new().package(name).bin(name).current_target();
+    if let Some(env) = build_env {
+        for (k, v) in env {
+            cmd = cmd.env(k, v);
+        }
+    }
     let profile = if release {
         cmd = cmd.release();
         "release [optimized]"
