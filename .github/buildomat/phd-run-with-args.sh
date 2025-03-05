@@ -47,7 +47,7 @@ fi
 # more memory than this. Hopefully we won't have Propolis CI running on a
 # machine with ~4GiB of memory, but this number could be tuned down if the need
 # arises.
-/usr/lib/rsrvrctl -s 4096
+pfexec /usr/lib/rsrvrctl -s 4096
 
 banner 'Tests'
 
