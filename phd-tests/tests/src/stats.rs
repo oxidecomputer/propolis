@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::Duration;
 
+use propolis_client::types::HyperVFeatureFlag;
+
 use phd_framework::test_vm::{FakeOximeterSampler, MetricsLocation};
 
 use chrono::{DateTime, Utc};
@@ -35,7 +37,7 @@ struct VcpuUsageMetric {
 ///
 /// Oximeter producers produce a series of lists of samples, where each list
 /// of samples is conceptually distinct but may still be interesting to
-/// tset. In `propolis-server`, the first list of samples will be
+/// test. In `propolis-server`, the first list of samples will be
 /// `virtual_machine:vcpu_usage`, which may be blank if kstats have not been
 /// sampled since the last producer poll. The second list of samples
 /// will be `virtual_machine:reset`.
@@ -215,6 +217,18 @@ async fn instance_vcpu_stats(ctx: &Framework) {
     env.metrics(Some(MetricsLocation::Local));
 
     let mut vm_config = ctx.vm_config_builder("instance_vcpu_stats");
+    vm_config.guest_hv_interface(
+        propolis_client::types::GuestHypervisorInterface::HyperV {
+            features: vec![HyperVFeatureFlag::ReferenceTsc],
+        },
+    );
+    // Having one CPU simplifies the math for time expectations later in the
+    // test. One CPU means one second per second of time across all one vCPU's
+    // microstates, and if we have caused guest load the guest vCPU should
+    // be in "run" basically entirely until the load completes.
+    //
+    // Using the (configurable!) default "could" work, but this lets us avoid
+    // having to for additional probably-idle CPUs.
     vm_config.cpus(1);
 
     let mut vm = ctx.spawn_vm(&vm_config, Some(&env)).await?;
@@ -367,26 +381,31 @@ async fn instance_vcpu_stats(ctx: &Framework) {
         - start_metrics.vcpu_state_total(&VcpuState::Emulation))
         as u128;
 
-    // Pick 100ms as a comically high upper bound for how much time might have
-    // been spent emulating instructions on the guest's behalf. Anecdotally the
-    // this is on the order of 8ms between the two samples. This should be very
-    // low; the workload is almost entirely guest user mode execution.
+    // Theoretically 100ms would be a comically high upper bound for how much
+    // time we've spent emulating instructions on the guest's behalf during this
+    // test. In reality, the situation is more subtle. Guest OSes can be
+    // surprisingly heavy on the APIC, and if they believe the TSC is
+    // unreliable, heavy on the ACPI PM timer too. We've at least set up guest
+    // enlightments to present a reliable TSC, so as long as the guest picks up
+    // that enlightenment and does not fall back to the ACPI PM timer, that
+    // source of instruction emulation activity is quashed.
+    //
+    // So, it's hard to make a universal statement about how much time should be
+    // spent emulating instructions here. Instead, only check this if we know
+    // the guest is going to result in predictable times. Specifically: expect
+    // that Linux doesn't use the APIC much while idle and trusts the HyperV TSC
+    // enlightenment, and so is a candidate for reliable assertions on
+    // instruction emulation time.
     if vm.guest_os_kind().is_linux() {
-        // Unfortunately, the above is currently too optimistic in the general
-        // case of arbitrary guest OSes - if a guest OS has idle services, and
-        // those idle services involve checking the current time, and the guest
-        // has determined the TSC is unreliable, we may count substantial
-        // emulation time due to emulating guest accesses to the ACPI PM timer.
-        //
-        // Linux guests are known to not (currently?) consult the current time
-        // if fully idle, so we can be more precise about emulation time
-        // assertions.
-        const LIMIT: u128 = Duration::from_millis(100).as_nanos();
+        const EMUL_LIMIT: u128 = Duration::from_millis(100).as_nanos();
+        // As of writing this test, `full_emul_delta` is around 12-13ms with an
+        // Alpine guest. 100ms is hopefully plenty of margin for slower or
+        // busier test systems, or reasonable implementation changes.
         assert!(
-            full_emul_delta < LIMIT,
+            full_emul_delta < EMUL_LIMIT,
             "full emul delta was above threshold: {} > {}",
             full_emul_delta,
-            LIMIT
+            EMUL_LIMIT
         );
     } else {
         warn!(
@@ -400,12 +419,12 @@ async fn instance_vcpu_stats(ctx: &Framework) {
     // short duration, and on my workstation this is around 400 microseconds.
     // Again, test against a significantly larger threshold in case CI is
     // extremely slow.
-    const LIMIT: u128 = Duration::from_millis(20).as_nanos();
+    const WAIT_LIMIT: u128 = Duration::from_millis(20).as_nanos();
     assert!(
-        full_waiting_delta < LIMIT,
+        full_waiting_delta < WAIT_LIMIT,
         "full waiting delta was above threshold: {} > {}",
         full_waiting_delta,
-        LIMIT
+        WAIT_LIMIT
     );
 
     trace!("run: {}", full_run_delta);
