@@ -4,7 +4,9 @@
 
 use std::net::SocketAddr;
 use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
+use crate::log_config::{LogConfig, LogFormat};
 use dropshot::{
     endpoint, ApiDescription, ConfigDropshot, HttpError, HttpResponseCreated,
     HttpServer, HttpServerStarter, RequestContext, TypedBody,
@@ -23,10 +25,23 @@ use uuid::Uuid;
 // elapses.
 const INTERVAL: Duration = Duration::from_secs(300);
 
-fn test_logger() -> Logger {
-    let dec = slog_term::PlainSyncDecorator::new(slog_term::TestStdoutWriter);
-    let drain = slog_term::FullFormat::new(dec).build().fuse();
-    Logger::root(drain, slog::o!("component" => "fake-cleanup-task"))
+fn oximeter_logger(log_config: LogConfig) -> Logger {
+    // Morally the fake Oximeter server is a distinct process that happens to
+    // cohabitate with the test process. If the log config is such that we want
+    // to log supporting processes to their own files, the Oximeter server's
+    // logs probably should be in distinct files too.
+    if log_config.log_format == LogFormat::Bunyan {
+        let drain = Arc::new(Mutex::new(slog_bunyan::default(
+            slog_term::TestStdoutWriter,
+        )))
+        .fuse();
+        Logger::root(drain, slog::o!("component" => "phd-oximeter-consumer"))
+    } else {
+        let dec =
+            slog_term::PlainSyncDecorator::new(slog_term::TestStdoutWriter);
+        let drain = slog_term::FullFormat::new(dec).build().fuse();
+        Logger::root(drain, slog::o!("component" => "phd-oximeter-consumer"))
+    }
 }
 
 struct OximeterProducerInfo {
@@ -151,7 +166,7 @@ impl FakeOximeterSampler {
     }
 }
 
-// Stub functionality for our fake Nexus that test Oximeter produces
+// Stub functionality for our fake Nexus that test Oximeter producers
 // (`propolis-server`) will register with.
 #[endpoint {
     method = POST,
@@ -172,8 +187,8 @@ async fn register_producer(
 
 // Start a Dropshot server mocking the Oximeter registration endpoint we would
 // expect from Nexus.
-pub fn spawn_fake_oximeter_server() -> FakeOximeterServer {
-    let log = test_logger();
+pub fn spawn_fake_oximeter_server(log_config: LogConfig) -> FakeOximeterServer {
+    let log = oximeter_logger(log_config);
 
     let mut api = ApiDescription::new();
     api.register(register_producer).expect("Expected to register endpoint");
@@ -192,7 +207,7 @@ pub fn spawn_fake_oximeter_server() -> FakeOximeterServer {
 
     slog::info!(
         log,
-        "fake nexus test server listening";
+        "fake oximeter test server listening";
         "address" => ?server.local_addr(),
     );
 

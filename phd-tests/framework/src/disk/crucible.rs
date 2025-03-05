@@ -21,9 +21,7 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use super::BlockSize;
-use crate::{
-    disk::DeviceName, guest_os::GuestOsKind, server_log_mode::ServerLogMode,
-};
+use crate::{disk::DeviceName, guest_os::GuestOsKind, log_config::LogConfig};
 
 /// An RAII wrapper around a directory containing Crucible data files. Deletes
 /// the directory and its contents when dropped.
@@ -79,7 +77,7 @@ impl CrucibleDisk {
         data_dir_root: &impl AsRef<Path>,
         read_only_parent: Option<&impl AsRef<Path>>,
         guest_os: Option<GuestOsKind>,
-        log_mode: ServerLogMode,
+        log_config: LogConfig,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             device_name,
@@ -92,7 +90,7 @@ impl CrucibleDisk {
                 downstairs_ports,
                 data_dir_root,
                 read_only_parent,
-                log_mode,
+                log_config,
             )?),
         })
     }
@@ -163,7 +161,7 @@ impl Inner {
         downstairs_ports: &[u16],
         data_dir_root: &impl AsRef<Path>,
         read_only_parent: Option<&impl AsRef<Path>>,
-        log_mode: ServerLogMode,
+        log_config: LogConfig,
     ) -> anyhow::Result<Self> {
         // To create a region, Crucible requires a block size, an extent size
         // given as a number of blocks, and an extent count. Compute the latter
@@ -288,7 +286,12 @@ impl Inner {
                 dir_arg.as_ref(),
             ];
 
-            let (stdout, stderr) = log_mode.get_handles(
+            // NOTE: `log_format` is ignored here because Crucible determines
+            // Bunyan or plain formatting based on `atty::is()`. In practice
+            // this is fine, and matches what we want right now, but it might be
+            // nice to connect this more directly to the output desire expressed
+            // by the test runner.
+            let (stdout, stderr) = log_config.output_mode.get_handles(
                 data_dir_root,
                 &format!("crucible_{}_{}", disk_uuid, port),
             )?;

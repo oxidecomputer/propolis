@@ -3984,6 +3984,7 @@ dependencies = [
  "serde_json",
  "slog",
  "slog-async",
+ "slog-bunyan",
  "slog-term",
  "tar",
  "termwiz",

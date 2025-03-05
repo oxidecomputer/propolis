@@ -237,7 +237,11 @@ impl TestVm {
     ) -> Result<Self> {
         let metrics = environment_spec.metrics.as_ref().map(|m| match m {
             MetricsLocation::Local => {
-                let metrics_server = metrics::spawn_fake_oximeter_server();
+                // Our fake oximeter server should have the same logging
+                // discipline as any other subprocess we'd start in support of
+                // the test, so copy the config from `ServerProcessParameters`.
+                let metrics_server =
+                    metrics::spawn_fake_oximeter_server(params.log_config);
                 params.metrics_addr = Some(metrics_server.local_addr());
                 metrics_server
             }

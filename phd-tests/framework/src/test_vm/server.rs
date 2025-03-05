@@ -14,7 +14,7 @@ use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
 use tracing::{debug, info};
 
-use crate::server_log_mode::ServerLogMode;
+use crate::log_config::LogConfig;
 
 /// Parameters used to launch and configure the Propolis server process. These
 /// are distinct from the parameters used to configure the VM that that process
@@ -38,7 +38,7 @@ pub struct ServerProcessParameters<'a> {
     /// The address at which the server should offer its VNC server.
     pub vnc_addr: SocketAddrV4,
 
-    pub log_mode: ServerLogMode,
+    pub log_config: LogConfig,
 }
 
 pub struct PropolisServer {
@@ -58,7 +58,7 @@ impl PropolisServer {
             server_addr,
             metrics_addr,
             vnc_addr,
-            log_mode,
+            log_config,
         } = process_params;
 
         info!(
@@ -69,7 +69,7 @@ impl PropolisServer {
         );
 
         let (server_stdout, server_stderr) =
-            log_mode.get_handles(&data_dir, vm_name)?;
+            log_config.output_mode.get_handles(&data_dir, vm_name)?;
 
         let mut args = vec![server_path.into_string(), "run".to_string()];
 

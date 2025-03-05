@@ -120,7 +120,7 @@ impl<'a> Environment<'a> {
                         Ipv4Addr::new(127, 0, 0, 1),
                         vnc_port,
                     ),
-                    log_mode: framework.server_log_mode,
+                    log_config: framework.log_config,
                 };
                 Ok(Self::Local(params))
             }
