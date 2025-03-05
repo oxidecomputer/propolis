@@ -8,8 +8,8 @@ mod fixtures;
 
 use clap::Parser;
 use config::{ListOptions, ProcessArgs, RunOptions};
-use phd_tests::phd_testcase::{Framework, FrameworkParameters};
 use phd_framework::log_config::{LogConfig, LogFormat};
+use phd_tests::phd_testcase::{Framework, FrameworkParameters};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -47,7 +47,10 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_tests(run_opts: &RunOptions, runner_args: &ProcessArgs) -> anyhow::Result<ExecutionStats> {
+async fn run_tests(
+    run_opts: &RunOptions,
+    runner_args: &ProcessArgs,
+) -> anyhow::Result<ExecutionStats> {
     let ctx_params = FrameworkParameters {
         propolis_server_path: run_opts.propolis_server_cmd.clone(),
         crucible_downstairs: run_opts.crucible_downstairs()?,
@@ -65,7 +68,7 @@ async fn run_tests(run_opts: &RunOptions, runner_args: &ProcessArgs) -> anyhow::
                 LogFormat::Bunyan
             } else {
                 LogFormat::Plain
-            }
+            },
         },
         default_guest_cpus: run_opts.default_guest_cpus,
         default_guest_memory_mib: run_opts.default_guest_memory_mib,

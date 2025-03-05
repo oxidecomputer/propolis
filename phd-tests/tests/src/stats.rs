@@ -6,9 +6,8 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::Duration;
 
-use propolis_client::types::HyperVFeatureFlag;
-
 use phd_framework::test_vm::{FakeOximeterSampler, MetricsLocation};
+use propolis_client::types::HyperVFeatureFlag;
 
 use chrono::{DateTime, Utc};
 use oximeter::types::{ProducerResults, ProducerResultsItem, Sample};
