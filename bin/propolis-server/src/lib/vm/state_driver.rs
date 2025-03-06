@@ -120,7 +120,10 @@ use super::{
     },
     guest_event::{self, GuestEvent},
     objects::VmObjects,
-    request_queue::{self, ExternalRequest, InstanceAutoStart},
+    request_queue::{
+        self, CompletedRequest, ComponentChangeRequest, ExternalRequest,
+        InstanceAutoStart, StateChangeRequest,
+    },
     state_publisher::{MigrationStateUpdate, StatePublisher},
     InstanceEnsureResponseTx,
 };
@@ -256,15 +259,19 @@ impl InputQueue {
         // dequeue an event will always pick this event up).
     }
 
-    /// Notifies the external request queue that the instance's state has
-    /// changed so that it can change the dispositions for new state change
-    /// requests.
-    fn notify_instance_state_change(
-        &self,
-        state: request_queue::InstanceStateChange,
-    ) {
+    /// Notifies the external request queue that the state driver has completed
+    /// a request from that queue.
+    fn notify_request_completed(&self, state: CompletedRequest) {
         let mut guard = self.inner.lock().unwrap();
-        guard.external_requests.notify_instance_state_change(state);
+        guard.external_requests.notify_request_completed(state);
+    }
+
+    /// Notifies the external request queue that the instance has stopped. This
+    /// is used to stop the queue when the instance stops without a request from
+    /// the API (e.g. because the guest requested a chipset-driven shutdown).
+    fn notify_stopped(&self) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.external_requests.notify_stopped();
     }
 
     /// Submits an external state change request to the queue.
@@ -655,14 +662,24 @@ impl StateDriver {
                     if res.is_ok() {
                         let objects = &self.objects;
                         objects.lock_exclusive().await.resume_vcpus();
-                        self.publish_steady_state(InstanceState::Running);
+                        self.external_state
+                            .update(ExternalStateUpdate::Instance(InstanceState::Running));
+
+                        self.input_queue.notify_request_completed(
+                            CompletedRequest::Start { succeeded: true },
+                        );
+
                         if stopped_while_starting {
                             self.input_queue.push_self_request(
-                                ExternalRequest::Stop
+                                ExternalRequest::stop()
                             );
                         }
 
                         info!(&self.log, "VM successfully started");
+                    } else {
+                        self.input_queue.notify_request_completed(
+                            CompletedRequest::Start { succeeded: false },
+                        );
                     }
 
                     return res;
@@ -690,7 +707,7 @@ impl StateDriver {
             // a problem here because the request queue will stop accepting new
             // VCR change requests once a request to stop has been queued.
             match req {
-                ExternalRequest::Stop => {
+                ExternalRequest::State(StateChangeRequest::Stop) => {
                     info!(
                         &self.log,
                         "got request to stop while still starting"
@@ -702,11 +719,13 @@ impl StateDriver {
                     // off the queue and reach this path once more.
                     stopped_while_starting = true;
                 }
-                ExternalRequest::ReconfigureCrucibleVolume {
-                    backend_id,
-                    new_vcr_json,
-                    result_tx,
-                } => {
+                ExternalRequest::Component(
+                    ComponentChangeRequest::ReconfigureCrucibleVolume {
+                        backend_id,
+                        new_vcr_json,
+                        result_tx,
+                    },
+                ) => {
                     let _ = result_tx.send(
                         self.reconfigure_crucible_volume(
                             &backend_id,
@@ -720,9 +739,11 @@ impl StateDriver {
                 // reported that it's fully started. Similarly, requests to
                 // start a VM that's already starting are expected to be ignored
                 // for idempotency.
-                r @ ExternalRequest::Start
-                | r @ ExternalRequest::MigrateAsSource { .. }
-                | r @ ExternalRequest::Reboot => {
+                r @ ExternalRequest::State(StateChangeRequest::Start)
+                | r @ ExternalRequest::State(
+                    StateChangeRequest::MigrateAsSource { .. },
+                )
+                | r @ ExternalRequest::State(StateChangeRequest::Reboot) => {
                     unreachable!(
                         "external request {r:?} shouldn't be queued while \
                         starting"
@@ -740,6 +761,11 @@ impl StateDriver {
             GuestEvent::VcpuSuspendHalt(_when) => {
                 info!(self.log, "Halting due to VM suspend event",);
                 self.do_halt().await;
+                self.external_state.update(ExternalStateUpdate::Instance(
+                    InstanceState::Stopped,
+                ));
+
+                self.input_queue.notify_stopped();
                 HandleEventOutcome::Exit {
                     final_state: InstanceState::Destroyed,
                 }
@@ -760,6 +786,11 @@ impl StateDriver {
             GuestEvent::ChipsetHalt => {
                 info!(self.log, "Halting due to chipset-driven halt");
                 self.do_halt().await;
+                self.external_state.update(ExternalStateUpdate::Instance(
+                    InstanceState::Stopped,
+                ));
+
+                self.input_queue.notify_stopped();
                 HandleEventOutcome::Exit {
                     final_state: InstanceState::Destroyed,
                 }
@@ -777,7 +808,7 @@ impl StateDriver {
         request: ExternalRequest,
     ) -> HandleEventOutcome {
         match request {
-            ExternalRequest::Start => {
+            ExternalRequest::State(StateChangeRequest::Start) => {
                 match self.start_vm(VmStartReason::ExplicitRequest).await {
                     Ok(()) => HandleEventOutcome::Continue,
                     Err(_) => HandleEventOutcome::Exit {
@@ -785,31 +816,50 @@ impl StateDriver {
                     },
                 }
             }
-            ExternalRequest::MigrateAsSource { migration_id, websock } => {
-                self.migrate_as_source(migration_id, websock.into_inner())
-                    .await;
-
-                // The callee either queues its own stop request (on a
-                // successful migration out) or resumes the VM (on a failed
-                // migration out). Either way, the main loop can just proceed to
-                // process the queue as normal.
-                HandleEventOutcome::Continue
+            ExternalRequest::State(StateChangeRequest::MigrateAsSource {
+                migration_id,
+                websock,
+            }) => {
+                if self
+                    .migrate_as_source(migration_id, websock.into_inner())
+                    .await
+                    .is_ok()
+                {
+                    self.do_halt().await;
+                    HandleEventOutcome::Exit {
+                        final_state: InstanceState::Destroyed,
+                    }
+                } else {
+                    HandleEventOutcome::Continue
+                }
             }
-            ExternalRequest::Reboot => {
+            ExternalRequest::State(StateChangeRequest::Reboot) => {
                 self.do_reboot().await;
+                self.input_queue
+                    .notify_request_completed(CompletedRequest::Reboot);
+
                 HandleEventOutcome::Continue
             }
-            ExternalRequest::Stop => {
+            ExternalRequest::State(StateChangeRequest::Stop) => {
                 self.do_halt().await;
+                self.external_state.update(ExternalStateUpdate::Instance(
+                    InstanceState::Stopped,
+                ));
+
+                self.input_queue
+                    .notify_request_completed(CompletedRequest::Stop);
+
                 HandleEventOutcome::Exit {
                     final_state: InstanceState::Destroyed,
                 }
             }
-            ExternalRequest::ReconfigureCrucibleVolume {
-                backend_id,
-                new_vcr_json,
-                result_tx,
-            } => {
+            ExternalRequest::Component(
+                ComponentChangeRequest::ReconfigureCrucibleVolume {
+                    backend_id,
+                    new_vcr_json,
+                    result_tx,
+                },
+            ) => {
                 let _ = result_tx.send(
                     self.reconfigure_crucible_volume(&backend_id, new_vcr_json)
                         .await,
@@ -829,9 +879,6 @@ impl StateDriver {
 
         // Notify other consumers that the instance successfully rebooted and is
         // now back to Running.
-        self.input_queue.notify_instance_state_change(
-            request_queue::InstanceStateChange::Rebooted,
-        );
         self.external_state
             .update(ExternalStateUpdate::Instance(InstanceState::Running));
     }
@@ -854,34 +901,13 @@ impl StateDriver {
 
             guard.halt().await;
         }
-
-        self.publish_steady_state(InstanceState::Stopped);
-    }
-
-    fn publish_steady_state(&mut self, state: InstanceState) {
-        let change = match state {
-            InstanceState::Running => {
-                request_queue::InstanceStateChange::StartedRunning
-            }
-            InstanceState::Stopped => {
-                request_queue::InstanceStateChange::Stopped
-            }
-            InstanceState::Failed => request_queue::InstanceStateChange::Failed,
-            _ => panic!(
-                "Called publish_steady_state on non-terminal state {:?}",
-                state
-            ),
-        };
-
-        self.input_queue.notify_instance_state_change(change);
-        self.external_state.update(ExternalStateUpdate::Instance(state));
     }
 
     async fn migrate_as_source(
         &mut self,
         migration_id: Uuid,
         websock: dropshot::WebsocketConnection,
-    ) {
+    ) -> Result<(), ()> {
         let conn = tokio_tungstenite::WebSocketStream::from_raw_socket(
             websock.into_inner(),
             tokio_tungstenite::tungstenite::protocol::Role::Server,
@@ -908,7 +934,7 @@ impl StateDriver {
                     },
                 ));
 
-                return;
+                return Err(());
             }
         };
 
@@ -936,15 +962,25 @@ impl StateDriver {
                 // On a successful migration out, the protocol promises to leave
                 // the VM objects in a paused state, so don't pause them again.
                 self.paused = true;
-                self.input_queue
-                    .queue_external_request(ExternalRequest::Stop)
-                    .expect("can always queue a request to stop");
+                self.input_queue.notify_request_completed(
+                    CompletedRequest::MigrationOut { succeeded: true },
+                );
+
+                Ok(())
             }
             Err(e) => {
                 info!(self.log, "migration out failed, resuming";
                       "error" => ?e);
 
-                self.publish_steady_state(InstanceState::Running);
+                self.input_queue.notify_request_completed(
+                    CompletedRequest::MigrationOut { succeeded: false },
+                );
+
+                self.external_state.update(ExternalStateUpdate::Instance(
+                    InstanceState::Running,
+                ));
+
+                Err(())
             }
         }
     }

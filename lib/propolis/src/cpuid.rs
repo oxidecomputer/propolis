@@ -70,7 +70,7 @@ impl Specializer {
 
     /// Specify vCPU ID to specialize for
     pub fn with_vcpuid(self, vcpuid: i32) -> Self {
-        assert!((vcpuid as usize) < bhyve_api::VM_MAXCPU);
+        assert!((vcpuid as usize) < crate::vcpu::MAXCPU);
         Self { vcpuid: Some(vcpuid), ..self }
     }
 
