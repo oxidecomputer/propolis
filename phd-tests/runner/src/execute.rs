@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use phd_tests::phd_testcase::{Framework, TestCase, TestOutcome};
@@ -37,21 +37,9 @@ pub struct ExecutionStats {
     pub failed_test_cases: Vec<&'static TestCase>,
 }
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Status {
-    Ran(TestOutcome),
-    NotRun,
-}
-
-struct Execution {
-    tc: &'static TestCase,
-    status: Status,
-}
-
 /// Executes a set of tests using the supplied test context.
 pub async fn run_tests_with_ctx(
-    ctx: &Arc<Framework>,
-    mut fixtures: TestFixtures,
+    ctx: &mut Vec<(Arc<Framework>, TestFixtures)>,
     run_opts: &RunOptions,
 ) -> ExecutionStats {
     let mut executions = Vec::new();
@@ -60,10 +48,10 @@ pub async fn run_tests_with_ctx(
         &run_opts.include_filter,
         &run_opts.exclude_filter,
     ) {
-        executions.push(Execution { tc, status: Status::NotRun });
+        executions.push(tc);
     }
 
-    let mut stats = ExecutionStats {
+    let stats = ExecutionStats {
         tests_passed: 0,
         tests_failed: 0,
         tests_skipped: 0,
@@ -77,90 +65,128 @@ pub async fn run_tests_with_ctx(
         return stats;
     }
 
-    fixtures.execution_setup().unwrap();
+    let stats = Arc::new(Mutex::new(stats));
+
+    async fn run_tests(
+        execution_rx: crossbeam_channel::Receiver<&'static TestCase>,
+        test_ctx: Arc<Framework>,
+        mut fixtures: TestFixtures,
+        stats: Arc<Mutex<ExecutionStats>>,
+        sigint_rx: watch::Receiver<bool>,
+    ) -> Result<(), ()> {
+        fixtures.execution_setup().unwrap();
+
+        loop {
+            // Check for SIGINT only at the top of the loop because while
+            // waiting for a new testcase is theoretically a blocking
+            // operation, it won't be in a meaningful way for our use. The
+            // recv() will return immediately because either there are more
+            // testcases to run or the sender is closed. The only long
+            // blocking operation to check against in this loop is the test
+            // run itself.
+            if *sigint_rx.borrow() {
+                info!("Test run interrupted by SIGINT");
+                break;
+            }
+
+            let tc = match execution_rx.recv() {
+                Ok(tc) => tc,
+                Err(_) => {
+                    // RecvError means the channel is closed, so we're all
+                    // done.
+                    break;
+                }
+            };
+
+            info!("Starting test {}", tc.fully_qualified_name());
+
+            // Failure to run a setup fixture is fatal to the rest of the
+            // run, but it's still possible to report results, so return
+            // gracefully instead of panicking.
+            if let Err(e) = fixtures.test_setup() {
+                error!("Error running test setup fixture: {}", e);
+                // TODO: set this on stats too
+                break;
+            }
+
+            {
+                let mut stats = stats.lock().unwrap();
+                stats.tests_not_run -= 1;
+            }
+
+            let test_outcome = tc.run(test_ctx.as_ref()).await;
+
+            info!(
+                "test {} ... {}{}",
+                tc.fully_qualified_name(),
+                match test_outcome {
+                    TestOutcome::Passed => "ok",
+                    TestOutcome::Failed(_) => "FAILED: ",
+                    TestOutcome::Skipped(_) => "skipped: ",
+                },
+                match &test_outcome {
+                    TestOutcome::Failed(Some(s))
+                    | TestOutcome::Skipped(Some(s)) => s,
+                    TestOutcome::Failed(None) | TestOutcome::Skipped(None) =>
+                        "[no message]",
+                    _ => "",
+                }
+            );
+
+            {
+                let mut stats = stats.lock().unwrap();
+                match test_outcome {
+                    TestOutcome::Passed => stats.tests_passed += 1,
+                    TestOutcome::Failed(_) => {
+                        stats.tests_failed += 1;
+                        stats.failed_test_cases.push(tc);
+                    }
+                    TestOutcome::Skipped(_) => stats.tests_skipped += 1,
+                }
+            }
+
+            if let Err(e) = fixtures.test_cleanup().await {
+                error!("Error running cleanup fixture: {}", e);
+                // TODO: set this on stats
+                break;
+            }
+        }
+
+        fixtures.execution_cleanup().unwrap();
+
+        Ok(())
+    }
+
     let sigint_rx = set_sigint_handler();
     info!("Running {} test(s)", executions.len());
     let start_time = Instant::now();
-    for execution in &mut executions {
-        if *sigint_rx.borrow() {
-            info!("Test run interrupted by SIGINT");
-            break;
-        }
 
-        info!("Starting test {}", execution.tc.fully_qualified_name());
+    let (execution_tx, execution_rx) =
+        crossbeam_channel::unbounded::<&'static TestCase>();
 
-        // Failure to run a setup fixture is fatal to the rest of the run, but
-        // it's still possible to report results, so return gracefully instead
-        // of panicking.
-        if let Err(e) = fixtures.test_setup() {
-            error!("Error running test setup fixture: {}", e);
-            break;
-        }
+    let mut test_runners = tokio::task::JoinSet::new();
 
-        stats.tests_not_run -= 1;
-        let test_ctx = ctx.clone();
-        let tc = execution.tc;
-        let mut sigint_rx_task = sigint_rx.clone();
-        let test_outcome = tokio::spawn(async move {
-            tokio::select! {
-                // Ensure interrupt signals are always handled instead of
-                // continuing to run the test.
-                biased;
-                result = sigint_rx_task.changed() => {
-                    assert!(
-                        result.is_ok(),
-                        "SIGINT channel shouldn't drop while tests are running"
-                    );
-
-                    TestOutcome::Failed(
-                        Some("test interrupted by SIGINT".to_string())
-                    )
-                }
-                outcome = tc.run(test_ctx.as_ref()) => outcome
-            }
-        })
-        .await
-        .unwrap_or_else(|_| {
-            TestOutcome::Failed(Some(
-                "test task panicked, see test logs".to_string(),
-            ))
-        });
-
-        info!(
-            "test {} ... {}{}",
-            execution.tc.fully_qualified_name(),
-            match test_outcome {
-                TestOutcome::Passed => "ok",
-                TestOutcome::Failed(_) => "FAILED: ",
-                TestOutcome::Skipped(_) => "skipped: ",
-            },
-            match &test_outcome {
-                TestOutcome::Failed(Some(s))
-                | TestOutcome::Skipped(Some(s)) => s,
-                TestOutcome::Failed(None) | TestOutcome::Skipped(None) =>
-                    "[no message]",
-                _ => "",
-            }
-        );
-
-        match test_outcome {
-            TestOutcome::Passed => stats.tests_passed += 1,
-            TestOutcome::Failed(_) => {
-                stats.tests_failed += 1;
-                stats.failed_test_cases.push(execution.tc);
-            }
-            TestOutcome::Skipped(_) => stats.tests_skipped += 1,
-        }
-
-        execution.status = Status::Ran(test_outcome);
-        if let Err(e) = fixtures.test_cleanup().await {
-            error!("Error running cleanup fixture: {}", e);
-            break;
-        }
+    for (ctx, fixtures) in ctx.drain(..) {
+        test_runners.spawn(run_tests(
+            execution_rx.clone(),
+            ctx,
+            fixtures,
+            Arc::clone(&stats),
+            sigint_rx.clone(),
+        ));
     }
-    stats.duration = start_time.elapsed();
 
-    fixtures.execution_cleanup().unwrap();
+    for execution in &mut executions {
+        execution_tx.send(execution).expect("ok");
+    }
+    std::mem::drop(execution_tx);
+
+    let _ = test_runners.join_all().await;
+
+    let mut stats =
+        Mutex::into_inner(Arc::into_inner(stats).expect("only one ref"))
+            .expect("lock not panicked");
+    stats.duration = start_time.elapsed();
 
     stats
 }

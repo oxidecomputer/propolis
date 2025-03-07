@@ -4001,6 +4001,7 @@ dependencies = [
  "camino",
  "cargo_metadata",
  "clap",
+ "crossbeam-channel",
  "phd-framework",
  "phd-tests",
  "tokio",

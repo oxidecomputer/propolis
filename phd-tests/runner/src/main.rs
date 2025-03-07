@@ -47,35 +47,103 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run_tests(run_opts: &RunOptions) -> anyhow::Result<ExecutionStats> {
-    let ctx_params = FrameworkParameters {
-        propolis_server_path: run_opts.propolis_server_cmd.clone(),
-        crucible_downstairs: run_opts.crucible_downstairs()?,
-        base_propolis: run_opts.base_propolis(),
-        tmp_directory: run_opts.tmp_directory.clone(),
-        artifact_directory: run_opts.artifact_directory(),
-        artifact_toml: run_opts.artifact_toml_path.clone(),
-        server_log_mode: run_opts.server_logging_mode,
-        default_guest_cpus: run_opts.default_guest_cpus,
-        default_guest_memory_mib: run_opts.default_guest_memory_mib,
-        default_guest_os_artifact: run_opts.default_guest_artifact.clone(),
-        default_bootrom_artifact: run_opts.default_bootrom_artifact.clone(),
-        port_range: 9000..10000,
-        max_buildomat_wait: Duration::from_secs(
-            run_opts.max_buildomat_wait_secs,
-        ),
-    };
+    let parallelism = run_opts.parallelism.unwrap_or_else(|| {
+        // Assume no test starts more than 4 VMs. This is a really conservative
+        // guess to make sure we don't cause tests to fail simply because we ran
+        // too many at once.
+        let cpus_per_runner = run_opts.default_guest_cpus as u64 * 4;
+        let memory_mib_per_runner = run_opts.default_guest_memory_mib * 4;
 
-    let ctx = Arc::new(
-        Framework::new(ctx_params)
-            .await
-            .expect("should be able to set up a test context"),
-    );
+        // I assume there's a smarter way to do this in illumos. sorry!!
+        let lgrpinfo = std::process::Command::new("/usr/bin/lgrpinfo")
+            .args(["-mc", "-u", "m"])
+            .output()
+            .expect("can run lgrpinfo");
+        assert_eq!(lgrpinfo.status.code(), Some(0));
+        let lgrpinfo_output_str =
+            String::from_utf8(lgrpinfo.stdout).expect("utf8 output");
+        let lines: Vec<&str> = lgrpinfo_output_str.split("\n").collect();
+        let cpuline = lines[1];
+        let cpu_range = cpuline
+            .strip_prefix("\tCPUS: ")
+            .expect("`CPUs` line starts as expected");
+        let mut cpu_range_parts = cpu_range.split("-");
+        let cpu_low = cpu_range_parts.next().expect("range has a low");
+        let cpu_high = cpu_range_parts.next().expect("range has a high");
+        let ncpus = cpu_high.parse::<u64>().expect("can parse cpu_low")
+            - cpu_low.parse::<u64>().expect("can parse cpu_high");
 
-    let fixtures = TestFixtures::new(ctx.clone()).unwrap();
+        let lim_by_cpus = ncpus / cpus_per_runner;
+
+        let memoryline = lines[2];
+        let memory = memoryline
+            .strip_prefix("\tMemory: ")
+            .expect("`Memory` line starts as expected");
+        let installed = memory
+            .split(",")
+            .next()
+            .expect("memory line is comma-separated elements");
+        let installed_mb = installed
+            .strip_prefix("installed ")
+            .expect("memory line starts with installed")
+            .strip_suffix("M")
+            .expect("memory line ends with M")
+            .parse::<u64>()
+            .expect("can parse memory MB");
+
+        let lim_by_mem = installed_mb / memory_mib_per_runner;
+
+        std::cmp::min(lim_by_cpus as u16, lim_by_mem as u16)
+    });
+
+    // /!\ Arbitrary choice warning /!\
+    //
+    // We probably only need a half dozen ports at most for any test. 200 is an
+    // incredible overallocation to never have to worry about the problem. As
+    // long as we don't have hundreds of test runners running concurrently.
+    const PORT_RANGE_PER_RUNNER: u16 = 125;
+
+    let mut runners = Vec::new();
+
+    // Create up to parallelism collections of PHD framework settings.  For the
+    // most part we can reuse the same settings for all test-running tasks -
+    // state is not mutably shared. The important exception is port ranges for
+    // servers PHD will run, where we want non-overlapping port ranges to ensure
+    // that concurrent tests don't accidentally use a neighbor's servers.
+    for i in 0..parallelism {
+        let port_range = (9000 + PORT_RANGE_PER_RUNNER * i)
+            ..(9000 + PORT_RANGE_PER_RUNNER * (i + 1));
+        let ctx_params = FrameworkParameters {
+            propolis_server_path: run_opts.propolis_server_cmd.clone(),
+            crucible_downstairs: run_opts.crucible_downstairs()?,
+            base_propolis: run_opts.base_propolis(),
+            tmp_directory: run_opts.tmp_directory.clone(),
+            artifact_directory: run_opts.artifact_directory(),
+            artifact_toml: run_opts.artifact_toml_path.clone(),
+            server_log_mode: run_opts.server_logging_mode,
+            default_guest_cpus: run_opts.default_guest_cpus,
+            default_guest_memory_mib: run_opts.default_guest_memory_mib,
+            default_guest_os_artifact: run_opts.default_guest_artifact.clone(),
+            default_bootrom_artifact: run_opts.default_bootrom_artifact.clone(),
+            port_range,
+            max_buildomat_wait: Duration::from_secs(
+                run_opts.max_buildomat_wait_secs,
+            ),
+        };
+
+        let ctx = Arc::new(
+            Framework::new(ctx_params)
+                .await
+                .expect("should be able to set up a test context"),
+        );
+
+        let fixtures = TestFixtures::new(ctx.clone()).unwrap();
+        runners.push((ctx, fixtures));
+    }
 
     // Run the tests and print results.
     let execution_stats =
-        execute::run_tests_with_ctx(&ctx, fixtures, run_opts).await;
+        execute::run_tests_with_ctx(&mut runners, run_opts).await;
     if !execution_stats.failed_test_cases.is_empty() {
         println!("\nfailures:");
         for tc in &execution_stats.failed_test_cases {
