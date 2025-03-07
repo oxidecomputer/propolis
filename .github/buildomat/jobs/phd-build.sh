@@ -31,6 +31,8 @@ rustc --version
 # should fire during tests.
 banner build-propolis
 
+# Compile propolis-server so that it allows development features to be used even
+# though the `omicron-build` feature is enabled.
 export PHD_BUILD="true"
 ptime -m cargo build --verbose -p propolis-server \
 	--features omicron-build,failure-injection
