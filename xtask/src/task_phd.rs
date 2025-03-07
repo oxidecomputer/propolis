@@ -112,6 +112,16 @@ struct PropolisArgs {
     /// If set, build `propolis-server` in release mode.
     #[clap(long, short = 'r')]
     release: bool,
+
+    /// If set, build `propolis-server` with `omicron-build`. This may enable
+    /// codepaths that only work on `stlouis`, or otherwise expect specific test
+    /// environment configuration (such as having a reservoir large enough to
+    /// allocate VMs).
+    ///
+    /// This can be helpful if you're debugging an issue that occurs in CI,
+    /// where `propolis-server` is also tested with `omicron-build`.
+    #[clap(long)]
+    omicron_build: bool,
 }
 
 #[derive(Debug, Clone, clap::Parser)]
@@ -295,15 +305,22 @@ impl Cmd {
                 let mut server_build_env = HashMap::new();
                 server_build_env
                     .insert("PHD_BUILD".to_string(), "true".to_string());
+
+                // Some PHD tests specifically cover cases where a component in
+                // the system has encountered an error, so enable
+                // failure-injection. Do not enable `omicron-build` by default
+                // because it configures `propolis-server` to expect an Omicron-
+                // or stlouis-specific environment.
+                let mut propolis_features = vec!["failure-injection"];
+                if propolis_args.omicron_build {
+                    // If you know your environment looks like we'd expect in
+                    // Omicron, have at it!
+                    propolis_features.push("omicron-build");
+                }
                 let bin = build_bin(
                     "propolis-server",
                     propolis_args.release,
-                    // Some PHD tests specifically cover cases where a component
-                    // in the system has encountered an error, so enable
-                    // failure-injection. Do not enable `omicron-build` like we
-                    // do in Buildomat because someone running `cargo xtask phd`
-                    // is not building a propolis-server destined for Omicron.
-                    Some("failure-injection"),
+                    Some(&propolis_features.join(",")),
                     Some(server_build_env),
                 )?;
                 let path = bin
