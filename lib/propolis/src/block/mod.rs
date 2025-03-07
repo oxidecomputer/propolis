@@ -251,6 +251,16 @@ pub trait Backend: Send + Sync + 'static {
     ///
     /// Spawning of any tasks required to do such request processing can be done
     /// as part of this start-up.
+    ///
+    /// This operation will be invoked only once per backend (when its VM
+    /// starts). Block backends are not explicitly resumed during VM lifecycle
+    /// events; instead, their corresponding devices will stop issuing new
+    /// requests while paused and resume issuing them when they are resumed.
+    ///
+    /// WARNING: The caller may abort VM startup and cancel the future created
+    /// by this routine. In this case the caller may not call [`stop`] prior to
+    /// dropping the backend. This routine is, however, guaranteed to be called
+    /// before the VM's vCPUs are started.
     async fn start(&self) -> anyhow::Result<()>;
 
     /// Stop attempting to process new [Request]s from [Device] (if attached)
@@ -260,6 +270,12 @@ pub trait Backend: Send + Sync + 'static {
     ///
     /// If any tasks were spawned as part of [Backend::start()], they should be
     /// brought to rest as part of this call.
+    ///
+    /// This operation will be invoked only once per backend (when its VM
+    /// stops). Block backends are not explicitly paused during VM lifecycle
+    /// events; instead, their corresponding devices will stop issuing new
+    /// requests when they are told to pause (and will only report they are
+    /// fully paused when all their in-flight requests have completed).
     async fn stop(&self) -> ();
 
     /// Attempt to detach from associated [Device]

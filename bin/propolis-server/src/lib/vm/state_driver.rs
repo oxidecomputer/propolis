@@ -90,7 +90,6 @@
 //! [`ensure`]: crate::vm::ensure
 
 use std::{
-    collections::VecDeque,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -142,6 +141,12 @@ pub(super) enum VmStartReason {
     ExplicitRequest,
 }
 
+enum VmStartOutcome {
+    Succeeded,
+    Failed,
+    Aborted,
+}
+
 /// A kind of event the state driver can handle.
 #[derive(Debug)]
 enum InputQueueEvent {
@@ -153,10 +158,6 @@ enum InputQueueEvent {
 struct InputQueueInner {
     /// State change requests from the external API.
     external_requests: request_queue::ExternalRequestQueue,
-
-    /// State change requests from the external API that were previously read
-    /// but not handled immediately.
-    self_request: VecDeque<ExternalRequest>,
 
     /// State change requests from the VM's components. These take precedence
     /// over external state change requests.
@@ -170,7 +171,6 @@ impl InputQueueInner {
                 log, auto_start,
             ),
             guest_events: super::guest_event::GuestEventQueue::default(),
-            self_request: Default::default(),
         }
     }
 }
@@ -209,9 +209,6 @@ impl InputQueue {
     /// - Guest events: These are signals raised from the VM's vCPUs and
     ///   devices (e.g. a request to reboot or halt the VM arising from a vCPU
     ///   asserting a virtual chipset signal).
-    /// - Self-requests: The state driver may buffer external requests for
-    ///   later processing by pushing them to the self-request queue. See
-    ///   [`Self::push_self_request`].
     /// - External requests: These are state change requests received via the
     ///   server API. See [`super::request_queue`] for more details about how
     ///   these requests are queued.
@@ -228,8 +225,6 @@ impl InputQueue {
                 let mut guard = self.inner.lock().unwrap();
                 if let Some(guest_event) = guard.guest_events.pop_front() {
                     return InputQueueEvent::GuestEvent(guest_event);
-                } else if let Some(req) = guard.self_request.pop_front() {
-                    return InputQueueEvent::ExternalRequest(req);
                 } else if let Some(req) = guard.external_requests.pop_front() {
                     return InputQueueEvent::ExternalRequest(req);
                 }
@@ -244,19 +239,6 @@ impl InputQueue {
             // here, the ensuing wait will be satisfied immediately.
             self.notify.notified().await;
         }
-    }
-
-    /// Pushes a self-requested state change request to this queue.
-    ///
-    /// This routine may only be called from the state driver task.
-    fn push_self_request(&self, req: ExternalRequest) {
-        let mut guard = self.inner.lock().unwrap();
-        guard.self_request.push_back(req);
-
-        // Since this routine is only called from the state driver task, the
-        // driver is by definition not waiting for a new event at this point, so
-        // it's not necessary to signal the notify here (the next call to
-        // dequeue an event will always pick this event up).
     }
 
     /// Notifies the external request queue that the state driver has completed
@@ -508,8 +490,9 @@ impl StateDriver {
 
         let final_state = if migrated_in {
             match self.start_vm(VmStartReason::MigratedIn).await {
-                Ok(()) => self.event_loop().await,
-                Err(_) => InstanceState::Failed,
+                VmStartOutcome::Succeeded => self.event_loop().await,
+                VmStartOutcome::Failed => InstanceState::Failed,
+                VmStartOutcome::Aborted => InstanceState::Destroyed,
             }
         } else {
             self.event_loop().await
@@ -552,7 +535,7 @@ impl StateDriver {
     async fn start_vm(
         &mut self,
         start_reason: VmStartReason,
-    ) -> anyhow::Result<()> {
+    ) -> VmStartOutcome {
         info!(self.log, "starting instance"; "reason" => ?start_reason);
 
         // Tell listeners that the VM's components are now starting up and not
@@ -591,9 +574,9 @@ impl StateDriver {
         for (name, dev) in objects.device_map() {
             info!(self.log, "sending start request to {}", name);
             let res = dev.start();
-            if let Err(e) = &res {
+            if let Err(e) = res {
                 error!(self.log, "startup failed for {}: {:?}", name, e);
-                return res;
+                return VmStartOutcome::Failed;
             }
         }
 
@@ -642,70 +625,63 @@ impl StateDriver {
         // the VM while it was being started. If such a request is seen, send a
         // self-request to stop just before returning so that the VM will stop
         // immediately.
-        let mut stopped_while_starting = false;
+        enum Selection {
+            BackendFuture(anyhow::Result<()>),
+            Event(InputQueueEvent),
+        }
         loop {
-            let event = tokio::select! {
+            let selection = tokio::select! {
                 // If the VM successfully starts, return immediately and let
                 // the caller process any events that may happen to be on the
                 // queue.
                 biased;
 
                 res = &mut block_backend_fut => {
-                    // If the VM started up successfully, publish that it is
-                    // running and queue up any external requests that were
-                    // deferred while startup was ongoing.
-                    //
-                    // If startup failed, just return the error without changing
-                    // any state or processing any additional requests. The
-                    // caller will move the instance to the appropriate terminal
-                    // state and clean up the VM as needed.
-                    if res.is_ok() {
-                        let objects = &self.objects;
-                        objects.lock_exclusive().await.resume_vcpus();
-                        self.external_state
-                            .update(ExternalStateUpdate::Instance(InstanceState::Running));
-
-                        self.input_queue.notify_request_completed(
-                            CompletedRequest::Start { succeeded: true },
-                        );
-
-                        if stopped_while_starting {
-                            self.input_queue.push_self_request(
-                                ExternalRequest::stop()
-                            );
-                        }
-
-                        info!(&self.log, "VM successfully started");
-                    } else {
-                        self.input_queue.notify_request_completed(
-                            CompletedRequest::Start { succeeded: false },
-                        );
-                    }
-
-                    return res;
+                    Selection::BackendFuture(res)
                 }
 
-                dequeued = self.input_queue.wait_for_next_event() => {
-                    dequeued
+                event = self.input_queue.wait_for_next_event() => {
+                    Selection::Event(event)
                 }
             };
 
-            // The VM's vCPUs only start when the block backend startup future
-            // resolves and is selected above. If control reached that point,
-            // that branch wasn't selected, so the vCPUs should still be paused,
-            // which means the dequeued event should not be a guest event.
-            let InputQueueEvent::ExternalRequest(req) = event else {
-                unreachable!("can't get guest events before vCPUs start");
+            let req: ExternalRequest = match selection {
+                Selection::BackendFuture(Ok(())) => {
+                    let objects = &self.objects;
+                    objects.lock_exclusive().await.resume_vcpus();
+                    self.external_state.update(ExternalStateUpdate::Instance(
+                        InstanceState::Running,
+                    ));
+
+                    self.input_queue.notify_request_completed(
+                        CompletedRequest::Start { succeeded: true },
+                    );
+
+                    info!(&self.log, "VM successfully started");
+                    return VmStartOutcome::Succeeded;
+                }
+
+                Selection::BackendFuture(Err(e)) => {
+                    info!(&self.log, "VM startup failed: {e}");
+                    self.input_queue.notify_request_completed(
+                        CompletedRequest::Start { succeeded: false },
+                    );
+
+                    return VmStartOutcome::Failed;
+                }
+
+                // The VM's vCPUs only start when the block backend startup
+                // future resolves and is selected above. If control reached
+                // that point, that branch wasn't selected, so the vCPUs should
+                // still be paused, which means the dequeued event should not be
+                // a guest event.
+                Selection::Event(InputQueueEvent::GuestEvent(_)) => {
+                    unreachable!("can't get guest events before vCPUs start")
+                }
+
+                Selection::Event(InputQueueEvent::ExternalRequest(req)) => req,
             };
 
-            // Handle requests to reconfigure one of the existing Crucible
-            // volumes inline, but buffer other requests so that they can be
-            // handled after the VM has finished starting.
-            //
-            // Buffering some requests and servicing others can theoretically
-            // change the order in which those requests are retired. That's not
-            // a problem here because the request queue will stop accepting new
-            // VCR change requests once a request to stop has been queued.
             match req {
                 ExternalRequest::State(StateChangeRequest::Stop) => {
                     info!(
@@ -713,11 +689,21 @@ impl StateDriver {
                         "got request to stop while still starting"
                     );
 
-                    // Remember that the VM should stop once it has started.
-                    // It's not safe to issue a self-request here because the
-                    // next loop iteration will simply pop the self-request back
-                    // off the queue and reach this path once more.
-                    stopped_while_starting = true;
+                    // Don't send any pause/halt notifications here, since
+                    // (depending on what async work was in flight when this
+                    // notification was received) there may be a
+                    // partially-started component that is not prepared to be
+                    // paused and halted. Instead, simply move the VM to
+                    // Stopped, return an "aborted" status, and let the caller
+                    // arrange to drop all the VM's components. (Note that no
+                    // vCPUs have started yet, so no guest work is in flight at
+                    // this point.)
+                    self.external_state.update(ExternalStateUpdate::Instance(
+                        InstanceState::Stopped,
+                    ));
+
+                    self.input_queue.notify_stopped();
+                    return VmStartOutcome::Aborted;
                 }
                 ExternalRequest::Component(
                     ComponentChangeRequest::ReconfigureCrucibleVolume {
@@ -810,9 +796,12 @@ impl StateDriver {
         match request {
             ExternalRequest::State(StateChangeRequest::Start) => {
                 match self.start_vm(VmStartReason::ExplicitRequest).await {
-                    Ok(()) => HandleEventOutcome::Continue,
-                    Err(_) => HandleEventOutcome::Exit {
+                    VmStartOutcome::Succeeded => HandleEventOutcome::Continue,
+                    VmStartOutcome::Failed => HandleEventOutcome::Exit {
                         final_state: InstanceState::Failed,
+                    },
+                    VmStartOutcome::Aborted => HandleEventOutcome::Exit {
+                        final_state: InstanceState::Destroyed,
                     },
                 }
             }

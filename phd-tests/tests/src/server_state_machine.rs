@@ -133,16 +133,9 @@ async fn stop_while_blocked_on_start_test(ctx: &Framework) {
         .await
         .unwrap();
 
-    // Send a stop request. This should enqueue successfully, but the VM won't
-    // stop right away because it's still starting.
+    // Send a stop request. This should enqueue successfully, and the VM should
+    // shut down even though activation is blocked.
     vm.stop().await?;
-
-    // Unblock Crucible startup by fixing the broken disk's VCR.
-    disk.disable_vcr_black_hole();
-    disk.set_generation(2);
-    vm.replace_crucible_vcr(disk).await?;
-
-    // Eventually the instance should shut down.
     vm.wait_for_state(InstanceState::Destroyed, Duration::from_secs(60))
         .await?;
 }
