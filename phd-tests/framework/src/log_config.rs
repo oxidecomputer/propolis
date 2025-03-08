@@ -2,16 +2,23 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Types and helpers specifying where a server process's stdout/stderr should
-//! be recorded.
+//! Types and helpers specifying how logs should be formatted and where they
+//! should be directed.
 
 use std::{path::Path, process::Stdio, str::FromStr};
 
 use tracing::info;
 
-/// Specifies where a process's output should be written.
+/// Specifies how a test's logging should be managed.
 #[derive(Debug, Clone, Copy)]
-pub enum ServerLogMode {
+pub struct LogConfig {
+    pub output_mode: OutputMode,
+    pub log_format: LogFormat,
+}
+
+/// Specifies where a output for a test's processes should be written.
+#[derive(Debug, Clone, Copy)]
+pub enum OutputMode {
     /// Write to files in the server's factory's temporary directory.
     TmpFile,
 
@@ -22,14 +29,14 @@ pub enum ServerLogMode {
     Null,
 }
 
-impl FromStr for ServerLogMode {
+impl FromStr for OutputMode {
     type Err = std::io::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "file" | "tmpfile" => Ok(ServerLogMode::TmpFile),
-            "stdio" => Ok(ServerLogMode::Stdio),
-            "null" => Ok(ServerLogMode::Null),
+            "file" | "tmpfile" => Ok(OutputMode::TmpFile),
+            "stdio" => Ok(OutputMode::Stdio),
+            "null" => Ok(OutputMode::Null),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 s.to_string(),
@@ -38,7 +45,7 @@ impl FromStr for ServerLogMode {
     }
 }
 
-impl ServerLogMode {
+impl OutputMode {
     /// Returns the stdout/stderr handles to pass to processes using the
     /// specified logging mode.
     ///
@@ -54,7 +61,7 @@ impl ServerLogMode {
         file_prefix: &str,
     ) -> anyhow::Result<(Stdio, Stdio)> {
         match self {
-            ServerLogMode::TmpFile => {
+            OutputMode::TmpFile => {
                 let mut stdout_path = directory.as_ref().to_path_buf();
                 stdout_path.push(format!("{}.stdout.log", file_prefix));
 
@@ -67,8 +74,19 @@ impl ServerLogMode {
                     std::fs::File::create(stderr_path)?.into(),
                 ))
             }
-            ServerLogMode::Stdio => Ok((Stdio::inherit(), Stdio::inherit())),
-            ServerLogMode::Null => Ok((Stdio::null(), Stdio::null())),
+            OutputMode::Stdio => Ok((Stdio::inherit(), Stdio::inherit())),
+            OutputMode::Null => Ok((Stdio::null(), Stdio::null())),
         }
     }
+}
+
+/// Specifies how output for a test's processes should be structured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogFormat {
+    /// Format logs as plain hopefully human-readable output.
+    Plain,
+
+    /// Format logs as Bunyan output, more suitable for machine processing (such
+    /// as in CI).
+    Bunyan,
 }

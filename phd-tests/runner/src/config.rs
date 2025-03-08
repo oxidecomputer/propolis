@@ -6,7 +6,7 @@ use anyhow::Context;
 use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand};
 use phd_framework::{
-    artifacts, server_log_mode::ServerLogMode, BasePropolisSource,
+    artifacts, log_config::OutputMode, BasePropolisSource,
     CrucibleDownstairsSource,
 };
 use std::str::FromStr;
@@ -143,8 +143,8 @@ pub struct RunOptions {
     #[clap(long, value_parser)]
     artifact_directory: Option<Utf8PathBuf>,
 
-    /// If true, direct Propolis servers created by the runner to log to
-    /// stdout/stderr handles inherited from the runner.
+    /// Configure where Propolis servers and other processes created by the
+    /// runner to log to.
     ///
     /// Valid options are:
     ///
@@ -154,7 +154,7 @@ pub struct RunOptions {
     ///
     /// - null: Don't log anywhere.
     #[clap(long, default_value = "file")]
-    pub server_logging_mode: ServerLogMode,
+    pub output_mode: OutputMode,
 
     /// The number of CPUs to assign to the guest in tests where the test is
     /// using the default machine configuration.

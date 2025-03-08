@@ -19,8 +19,8 @@ use thiserror::Error;
 use crate::{
     artifacts::ArtifactStore,
     guest_os::GuestOsKind,
+    log_config::LogConfig,
     port_allocator::{PortAllocator, PortAllocatorError},
-    server_log_mode::ServerLogMode,
 };
 
 use self::{crucible::CrucibleDisk, file::FileBackedDisk};
@@ -190,7 +190,7 @@ pub(crate) struct DiskFactory {
     port_allocator: Arc<PortAllocator>,
 
     /// The logging discipline to use for Crucible server processes.
-    log_mode: ServerLogMode,
+    log_config: LogConfig,
 }
 
 impl DiskFactory {
@@ -201,13 +201,13 @@ impl DiskFactory {
         storage_dir: &impl AsRef<Utf8Path>,
         artifact_store: Arc<ArtifactStore>,
         port_allocator: Arc<PortAllocator>,
-        log_mode: ServerLogMode,
+        log_config: LogConfig,
     ) -> Self {
         Self {
             storage_dir: storage_dir.as_ref().to_path_buf(),
             artifact_store,
             port_allocator,
-            log_mode,
+            log_config,
         }
     }
 }
@@ -325,7 +325,7 @@ impl DiskFactory {
             &self.storage_dir,
             artifact_path.as_ref(),
             guest_os,
-            self.log_mode,
+            self.log_config,
         )
         .map(Arc::new)
         .map_err(Into::into)
