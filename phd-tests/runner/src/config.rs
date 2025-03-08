@@ -156,6 +156,12 @@ pub struct RunOptions {
     #[clap(long, default_value = "file")]
     pub server_logging_mode: ServerLogMode,
 
+    /// The parallelism with which to run PHD tests. If not provided, phd-runner
+    /// will guess a reasonable number from the test environment's number of
+    /// CPUs and available memory.
+    #[clap(long, value_parser)]
+    pub parallelism: Option<u16>,
+
     /// The number of CPUs to assign to the guest in tests where the test is
     /// using the default machine configuration.
     #[clap(long, value_parser, default_value = "2")]
