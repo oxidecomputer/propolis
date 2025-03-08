@@ -2,29 +2,22 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Handles requests to change a Propolis server's state via the external API.
+//! Handles requests to change a Propolis server's state or component
+//! configuration via the external API.
 //!
-//! An instance accepts or rejects requests to change state based on a
-//! combination of its current state and its knowledge of the requests it has
-//! previously queued but not processed yet. The latter knowledge is used to
-//! reject requests that will never be fulfilled (because they're preceded by an
-//! action that will forbid them; consider rebooting after stopping) or that may
-//! need be to redirected to a migration target.
+//! The queue accepts or rejects requests based on a combination of its current
+//! state and its knowledge of requests that it has previously queued but that
+//! have not yet been processed. The latter knowledge is used to reject requests
+//! that will never be fulfilled (because a prior request preempts them) or that
+//! may need to be redirected to a migration target.
 //!
-//! The queue maintains a disposition for each kind of request that can be sent
-//! to it, which allows that request to be enqueued, denied, or silently ignored
-//! (for idempotency purposes). These dispositions can change as new requests
-//! are queued. The queue also provides callbacks to the VM state driver that
-//! allow the driver to advise the queue of state changes that further affect
-//! what requests should be accepted.
-//!
-//! Users who want to share a queue must wrap it in the synchronization objects
-//! of their choice.
+//! The queue contains no synchronization of its own. Users who want to share a
+//! queue between multiple threads must wrap it in a synchronization object.
 
 use std::collections::VecDeque;
 
 use propolis_api_types::instance_spec::SpecKey;
-use slog::{debug, info, Logger};
+use slog::{info, Logger};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -53,9 +46,8 @@ impl WebsocketConnection {
     }
 }
 
-/// An external request made of a VM controller via the server API. Handled by
-/// the controller's state driver thread.
-pub enum ExternalRequest {
+/// A request to change a VM's runtime state.
+pub(crate) enum StateChangeRequest {
     /// Asks the state worker to start a brand-new VM (i.e. not one initialized
     /// by live migration, which implicitly starts the VM).
     Start,
@@ -71,7 +63,29 @@ pub enum ExternalRequest {
     /// Halts the VM. Note that this is not a graceful shutdown and does not
     /// coordinate with guest software.
     Stop,
+}
 
+impl std::fmt::Debug for StateChangeRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Start => write!(f, "Start"),
+            Self::MigrateAsSource { migration_id, .. } => f
+                .debug_struct("MigrateAsSource")
+                .field("migration_id", migration_id)
+                .finish(),
+            Self::Reboot => write!(f, "Reboot"),
+            Self::Stop => write!(f, "Stop"),
+        }
+    }
+}
+
+/// A request to reconfigure a VM's components.
+///
+/// NOTE: Successfully queuing a component change request does not guarantee
+/// that the request will be processed, because it may be preempted by a VM
+/// state change. If this happens the request will fail and notify the
+/// submitter using whatever channel is appropriate for the request's type.
+pub enum ComponentChangeRequest {
     /// Attempts to update the volume construction request for the supplied
     /// Crucible volume.
     ///
@@ -91,16 +105,9 @@ pub enum ExternalRequest {
     },
 }
 
-impl std::fmt::Debug for ExternalRequest {
+impl std::fmt::Debug for ComponentChangeRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Start => write!(f, "Start"),
-            Self::MigrateAsSource { migration_id, .. } => f
-                .debug_struct("MigrateAsSource")
-                .field("migration_id", migration_id)
-                .finish(),
-            Self::Reboot => write!(f, "Reboot"),
-            Self::Stop => write!(f, "Stop"),
             Self::ReconfigureCrucibleVolume { backend_id, .. } => f
                 .debug_struct("ReconfigureCrucibleVolume")
                 .field("backend_id", backend_id)
@@ -109,10 +116,64 @@ impl std::fmt::Debug for ExternalRequest {
     }
 }
 
+/// An external request made of a VM controller via the server API. Handled by
+/// the controller's state driver thread.
+#[derive(Debug)]
+pub(crate) enum ExternalRequest {
+    /// A request to change the VM's runtime state.
+    State(StateChangeRequest),
+
+    /// A request to reconfigure one of the VM's components.
+    Component(ComponentChangeRequest),
+}
+
+impl ExternalRequest {
+    /// Constructs a VM start request.
+    pub fn start() -> Self {
+        Self::State(StateChangeRequest::Start)
+    }
+
+    /// Constructs a VM stop request.
+    pub fn stop() -> Self {
+        Self::State(StateChangeRequest::Stop)
+    }
+
+    /// Constructs a VM reboot request.
+    pub fn reboot() -> Self {
+        Self::State(StateChangeRequest::Reboot)
+    }
+
+    /// Constructs a request to migrate a VM to another Propolis instance, using
+    /// `ws_conn` as the websocket connection to the migration target.
+    pub fn migrate_as_source(
+        migration_id: Uuid,
+        ws_conn: dropshot::WebsocketConnection,
+    ) -> Self {
+        Self::State(StateChangeRequest::MigrateAsSource {
+            migration_id,
+            websock: WebsocketConnection(Some(ws_conn)),
+        })
+    }
+
+    /// Constructs a request to update a Crucible volume's construction request.
+    /// The result of this request will be sent to the supplied `result_tx`.
+    pub fn reconfigure_crucible_volume(
+        backend_id: SpecKey,
+        new_vcr_json: String,
+        result_tx: super::CrucibleReplaceResultTx,
+    ) -> Self {
+        Self::Component(ComponentChangeRequest::ReconfigureCrucibleVolume {
+            backend_id,
+            new_vcr_json,
+            result_tx,
+        })
+    }
+}
+
 /// A set of reasons why a request to queue an external state transition can
 /// fail.
 #[derive(Copy, Clone, Debug, Error)]
-pub enum RequestDeniedReason {
+pub(crate) enum RequestDeniedReason {
     #[error("Operation requires an active instance")]
     InstanceNotActive,
 
@@ -123,35 +184,24 @@ pub enum RequestDeniedReason {
     AlreadyMigrationSource,
 
     #[error("Operation cannot be performed on a migration source")]
-    InvalidRequestForMigrationSource,
+    InvalidForMigrationSource,
 
     #[error("Instance is preparing to stop")]
     HaltPending,
+
+    #[error("Instance has migrated out and is being torn down")]
+    MigratedOut,
+
+    #[error("Instance has already halted")]
+    Halted,
 
     #[error("Instance failed to start or halted due to a failure")]
     InstanceFailed,
 }
 
-/// The set of instance state changes that should change the dispositions of
-/// future requests to the queue.
-#[derive(Copy, Clone, Debug)]
-pub enum InstanceStateChange {
-    StartedRunning,
-    Rebooted,
-    Stopped,
-    Failed,
-}
-
-/// A reason for a change in the queue's request dispositions.
-#[derive(Debug)]
-enum DispositionChangeReason<'a> {
-    ApiRequest(&'a ExternalRequest),
-    StateChange(InstanceStateChange),
-}
-
 /// The possible methods of handling a request to queue a state change.
 #[derive(Copy, Clone, Debug)]
-enum RequestDisposition {
+enum Disposition {
     /// Put the state change on the queue.
     Enqueue,
 
@@ -164,27 +214,83 @@ enum RequestDisposition {
     Deny(RequestDeniedReason),
 }
 
-/// The current disposition for each kind of incoming request.
+/// A kind of request that can be popped from the queue and then completed.
 #[derive(Copy, Clone, Debug)]
-struct AllowedRequests {
-    start: RequestDisposition,
-    migrate_as_source: RequestDisposition,
-    reboot: RequestDisposition,
-    mutate: RequestDisposition,
-    stop: RequestDisposition,
+pub(super) enum CompletedRequest {
+    Start { succeeded: bool },
+    Reboot,
+    MigrationOut { succeeded: bool },
+    Stop,
 }
 
-/// A queue for external requests to change an instance's state.
+/// The queue's internal notion of the VM's runtime state.
+#[derive(Copy, Clone, Debug)]
+enum QueueState {
+    /// The instance has not started yet and no one has asked it to start.
+    NotStarted,
+
+    /// The instance is not running yet, but the state driver will eventually
+    /// try to start it.
+    StartPending,
+
+    /// The instance has successfully started.
+    Running,
+
+    /// The instance has stopped due to a migration out.
+    MigratedOut,
+
+    /// The instance has shut down.
+    Stopped,
+
+    /// The instance failed to start.
+    Failed,
+}
+
+impl QueueState {
+    /// If `self` is a state in which new change requests should be denied
+    /// unconditionally, returns a `Some` containing an appropriate
+    /// [`RequestDeniedReason`]; returns `None` otherwise.
+    fn deny_reason(&self) -> Option<RequestDeniedReason> {
+        match self {
+            Self::MigratedOut => Some(RequestDeniedReason::MigratedOut),
+            Self::Stopped => Some(RequestDeniedReason::Halted),
+            Self::Failed => Some(RequestDeniedReason::InstanceFailed),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug)]
-pub struct ExternalRequestQueue {
-    queue: VecDeque<ExternalRequest>,
-    allowed: AllowedRequests,
+pub(super) struct ExternalRequestQueue {
+    /// The queue of unprocessed state change requests.
+    state_queue: VecDeque<StateChangeRequest>,
+
+    /// The queue of unprocessed component change requests.
+    component_queue: VecDeque<ComponentChangeRequest>,
+
+    /// The "effective" (for purposes of deciding how to dispose of requests)
+    /// state of the instance associated with this queue.
+    state: QueueState,
+
+    /// True if this queue has enqueued a reboot request that has not been
+    /// completed by the state driver.
+    awaiting_reboot: bool,
+
+    /// True if this queue has enqueued a stop request that has not been
+    /// completed by the state driver.
+    awaiting_migration_out: bool,
+
+    /// True if this queue has enqueued a request to migrate out that has not
+    /// been completed by the state driver.
+    awaiting_stop: bool,
+
+    /// The queue's logger.
     log: Logger,
 }
 
 /// Indicates whether this queue's creator will start the relevant instance
 /// without waiting for a Start request from the queue.
-pub enum InstanceAutoStart {
+pub(super) enum InstanceAutoStart {
     Yes,
     No,
 }
@@ -192,64 +298,155 @@ pub enum InstanceAutoStart {
 impl ExternalRequestQueue {
     /// Creates a new queue that logs to the supplied logger.
     pub fn new(log: Logger, auto_start: InstanceAutoStart) -> Self {
-        // If the queue is being created for an instance that will start
-        // automatically (e.g. due to a migration in), set the request
-        // disposition for future start requests to Ignore for idempotency.
-        let start = match auto_start {
-            InstanceAutoStart::Yes => RequestDisposition::Ignore,
-            InstanceAutoStart::No => RequestDisposition::Enqueue,
+        let instance_state = match auto_start {
+            InstanceAutoStart::Yes => QueueState::StartPending,
+            InstanceAutoStart::No => QueueState::NotStarted,
         };
 
         Self {
-            queue: VecDeque::new(),
-            allowed: AllowedRequests {
-                start,
-                migrate_as_source: RequestDisposition::Deny(
-                    RequestDeniedReason::InstanceNotActive,
-                ),
-                reboot: RequestDisposition::Deny(
-                    RequestDeniedReason::InstanceNotActive,
-                ),
-                mutate: RequestDisposition::Deny(
-                    RequestDeniedReason::InstanceNotActive,
-                ),
-                stop: RequestDisposition::Enqueue,
-            },
+            state_queue: Default::default(),
+            component_queue: Default::default(),
+
+            state: instance_state,
+            awaiting_reboot: false,
+            awaiting_migration_out: false,
+            awaiting_stop: false,
             log,
         }
     }
 
-    /// Pops the request at the front of the queue.
+    /// Pops the next request off of the queue. If the queue contains both state
+    /// change and component change requests, the next state change request is
+    /// popped first (even if it arrived later in time than the next component
+    /// change request).
     pub fn pop_front(&mut self) -> Option<ExternalRequest> {
-        self.queue.pop_front()
+        if let Some(state_change) = self.state_queue.pop_front() {
+            Some(ExternalRequest::State(state_change))
+        } else {
+            self.component_queue.pop_front().map(ExternalRequest::Component)
+        }
     }
 
     /// Indicates whether the queue is empty.
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
-        self.queue.is_empty()
+        self.state_queue.is_empty() && self.component_queue.is_empty()
     }
 
-    /// Asks to place the supplied request on the queue. If the request is
-    /// enqueued, updates the dispositions to use for future requests.
+    /// Attempts to replace the supplied `request` on the queue, returning `Ok`
+    /// if the request was accepted and an `Err` otherwise. In the latter case,
+    /// the error contains a [`RequestDeniedReason`] that describes why the
+    /// request was rejected.
     pub fn try_queue(
         &mut self,
         request: ExternalRequest,
     ) -> Result<(), RequestDeniedReason> {
-        let disposition = match request {
-            ExternalRequest::Start => self.allowed.start,
-            ExternalRequest::MigrateAsSource { .. } => {
-                self.allowed.migrate_as_source
+        // If the queue is in a terminal state, deny the request straightaway
+        // (unless it's a stop request, which can be ignored for idempotency).
+        let disposition = if let Some(reason) = self.state.deny_reason() {
+            if matches!(
+                request,
+                ExternalRequest::State(StateChangeRequest::Stop)
+            ) {
+                Disposition::Ignore
+            } else {
+                Disposition::Deny(reason)
             }
-            ExternalRequest::Reboot => self.allowed.reboot,
-            ExternalRequest::ReconfigureCrucibleVolume { .. } => {
-                self.allowed.mutate
-            }
+        } else {
+            // The instance hasn't stopped yet, so consider this request in
+            // light of its current state and the other as-yet unprocessed
+            // requests from the queue.
+            //
+            // In general, try to make state change requests idempotent by
+            // ignoring new requests when a request of the appropriate kind is
+            // already on the queue, and deny requests to reach a state that is
+            // precluded by an earlier state change request.
+            match request {
+                // Interpret start requests as requests to reach the Running
+                // state.
+                ExternalRequest::State(StateChangeRequest::Start) => {
+                    if self.awaiting_stop {
+                        Disposition::Deny(RequestDeniedReason::HaltPending)
+                    } else if let QueueState::NotStarted = self.state {
+                        Disposition::Enqueue
+                    } else {
+                        Disposition::Ignore
+                    }
+                }
 
-            // Requests to stop always succeed. Note that a request to stop a VM
-            // that hasn't started should still be queued to the state worker so
-            // that the worker can exit and drop its references to the instance.
-            ExternalRequest::Stop => self.allowed.stop,
+                // Only allow one attempt to migrate out at a time (if it works
+                // the VM can't migrate out again), and only allow migration out
+                // after an instance begins to run.
+                ExternalRequest::State(
+                    StateChangeRequest::MigrateAsSource { .. },
+                ) => {
+                    if self.awaiting_migration_out {
+                        Disposition::Deny(
+                            RequestDeniedReason::AlreadyMigrationSource,
+                        )
+                    } else if self.awaiting_stop {
+                        Disposition::Deny(RequestDeniedReason::HaltPending)
+                    } else if matches!(self.state, QueueState::NotStarted) {
+                        Disposition::Deny(
+                            RequestDeniedReason::InstanceNotActive,
+                        )
+                    } else {
+                        Disposition::Enqueue
+                    }
+                }
+
+                // Treat reboot requests as a request to take a VM that has
+                // already started, reset its state, and resume the VM. If the
+                // VM migrates out first, this request needs to be directed to
+                // the target, so reject it here to allow the caller to wait for
+                // the migration to resolve.
+                ExternalRequest::State(StateChangeRequest::Reboot) => {
+                    if self.awaiting_migration_out {
+                        Disposition::Deny(
+                            RequestDeniedReason::InvalidForMigrationSource,
+                        )
+                    } else if self.awaiting_stop {
+                        Disposition::Deny(RequestDeniedReason::HaltPending)
+                    } else if matches!(self.state, QueueState::NotStarted) {
+                        Disposition::Deny(
+                            RequestDeniedReason::InstanceNotActive,
+                        )
+                    } else if matches!(self.state, QueueState::StartPending) {
+                        Disposition::Deny(RequestDeniedReason::StartInProgress)
+                    } else if self.awaiting_reboot {
+                        Disposition::Ignore
+                    } else {
+                        Disposition::Enqueue
+                    }
+                }
+
+                // As with reboots, deny requests to stop a VM that might
+                // migrate out first, since the request may need to be directed
+                // to the migration target.
+                ExternalRequest::State(StateChangeRequest::Stop) => {
+                    if self.awaiting_migration_out {
+                        Disposition::Deny(
+                            RequestDeniedReason::InvalidForMigrationSource,
+                        )
+                    } else if self.awaiting_stop {
+                        Disposition::Ignore
+                    } else {
+                        Disposition::Enqueue
+                    }
+                }
+
+                // Always enqueue component change requests, even if the VM has
+                // a pending request to stop or migrate out. This allows the
+                // state driver to process these requests during a state change,
+                // which may be necessary to complete that state change. If the
+                // change request is canceled by a later state transition, the
+                // queue can use the request data to notify the requestor.
+                ExternalRequest::Component(
+                    ComponentChangeRequest::ReconfigureCrucibleVolume {
+                        ..
+                    },
+                ) => Disposition::Enqueue,
+            }
         };
 
         info!(&self.log, "Queuing external request";
@@ -257,154 +454,89 @@ impl ExternalRequestQueue {
               "disposition" => ?disposition);
 
         match disposition {
-            RequestDisposition::Enqueue => {}
-            RequestDisposition::Ignore => return Ok(()),
-            RequestDisposition::Deny(reason) => return Err(reason),
-        };
-
-        self.allowed = self.get_new_dispositions(
-            DispositionChangeReason::ApiRequest(&request),
-        );
-        self.queue.push_back(request);
-        Ok(())
-    }
-
-    /// Notifies the queue that the instance's state has changed and that its
-    /// disposition should be updated accordingly.
-    pub fn notify_instance_state_change(&mut self, state: InstanceStateChange) {
-        self.allowed = self
-            .get_new_dispositions(DispositionChangeReason::StateChange(state));
-    }
-
-    /// Computes a new set of queue dispositions given the current state of the
-    /// queue and the event that is changing those dispositions.
-    fn get_new_dispositions(
-        &self,
-        reason: DispositionChangeReason,
-    ) -> AllowedRequests {
-        debug!(self.log, "Computing new queue dispositions";
-               "reason" => ?reason);
-
-        use DispositionChangeReason as ChangeReason;
-        use RequestDeniedReason as DenyReason;
-        use RequestDisposition as Disposition;
-        match reason {
-            ChangeReason::ApiRequest(ExternalRequest::Start) => {
-                let reason = DenyReason::StartInProgress;
-                AllowedRequests {
-                    start: Disposition::Ignore,
-                    migrate_as_source: Disposition::Deny(reason),
-                    reboot: Disposition::Deny(reason),
-                    mutate: Disposition::Deny(reason),
-                    stop: self.allowed.stop,
+            Disposition::Ignore => Ok(()),
+            Disposition::Deny(reason) => Err(reason),
+            Disposition::Enqueue => {
+                match request {
+                    ExternalRequest::State(StateChangeRequest::Start) => {
+                        assert!(matches!(self.state, QueueState::NotStarted));
+                        self.state = QueueState::StartPending;
+                    }
+                    ExternalRequest::State(
+                        StateChangeRequest::MigrateAsSource { .. },
+                    ) => {
+                        assert!(!self.awaiting_migration_out);
+                        self.awaiting_migration_out = true;
+                    }
+                    ExternalRequest::State(StateChangeRequest::Reboot) => {
+                        assert!(!self.awaiting_reboot);
+                        self.awaiting_reboot = true;
+                    }
+                    ExternalRequest::State(StateChangeRequest::Stop) => {
+                        assert!(!self.awaiting_stop);
+                        self.awaiting_stop = true;
+                    }
+                    ExternalRequest::Component(_) => {}
                 }
-            }
-            ChangeReason::ApiRequest(ExternalRequest::MigrateAsSource {
-                ..
-            }) => {
-                assert!(
-                    matches!(self.allowed.start, Disposition::Ignore),
-                    "{:?}",
-                    self.allowed
-                );
 
-                AllowedRequests {
-                    start: self.allowed.start,
-                    migrate_as_source: Disposition::Deny(
-                        DenyReason::AlreadyMigrationSource,
-                    ),
-                    reboot: Disposition::Deny(
-                        DenyReason::InvalidRequestForMigrationSource,
-                    ),
-                    mutate: Disposition::Deny(
-                        DenyReason::InvalidRequestForMigrationSource,
-                    ),
-                    stop: self.allowed.stop,
+                match request {
+                    ExternalRequest::State(s) => self.state_queue.push_back(s),
+                    ExternalRequest::Component(c) => {
+                        self.component_queue.push_back(c)
+                    }
                 }
-            }
 
-            // Requests to reboot prevent additional reboot requests from being
-            // queued, but do not affect other operations.
-            ChangeReason::ApiRequest(ExternalRequest::Reboot) => {
-                assert!(
-                    matches!(self.allowed.start, Disposition::Ignore),
-                    "{:?}",
-                    self.allowed
-                );
-                AllowedRequests { reboot: Disposition::Ignore, ..self.allowed }
-            }
-
-            // Requests to stop the instance block other requests from being
-            // queued. Additional requests to stop are ignored for idempotency.
-            ChangeReason::ApiRequest(ExternalRequest::Stop) => {
-                let reason = DenyReason::HaltPending;
-                AllowedRequests {
-                    start: Disposition::Deny(reason),
-                    migrate_as_source: Disposition::Deny(reason),
-                    reboot: Disposition::Deny(reason),
-                    mutate: Disposition::Deny(reason),
-                    stop: Disposition::Ignore,
-                }
-            }
-
-            // Requests to mutate VM configuration don't move the VM state
-            // machine and don't change any request dispositions.
-            ChangeReason::ApiRequest(
-                ExternalRequest::ReconfigureCrucibleVolume { .. },
-            ) => self.allowed,
-
-            // When an instance begins running, requests to migrate out of it or
-            // to reboot it become valid.
-            ChangeReason::StateChange(InstanceStateChange::StartedRunning) => {
-                AllowedRequests {
-                    start: self.allowed.start,
-                    migrate_as_source: Disposition::Enqueue,
-                    reboot: Disposition::Enqueue,
-                    mutate: Disposition::Enqueue,
-                    stop: self.allowed.stop,
-                }
-            }
-
-            // When an instance finishes rebooting, allow new reboot requests to
-            // be queued again, unless reboot requests began to be denied in the
-            // meantime.
-            ChangeReason::StateChange(InstanceStateChange::Rebooted) => {
-                let new_reboot =
-                    if let Disposition::Ignore = self.allowed.reboot {
-                        Disposition::Enqueue
-                    } else {
-                        self.allowed.reboot
-                    };
-
-                AllowedRequests { reboot: new_reboot, ..self.allowed }
-            }
-
-            // When an instance stops or fails, requests to do anything other
-            // than stop it are denied with an appropriate deny reason. Note
-            // that an instance may stop or fail due to guest activity, so the
-            // previous dispositions for migrate and reboot requests may not be
-            // "deny".
-            ChangeReason::StateChange(InstanceStateChange::Stopped) => {
-                let reason = DenyReason::InstanceNotActive;
-                AllowedRequests {
-                    start: Disposition::Deny(reason),
-                    migrate_as_source: Disposition::Deny(reason),
-                    reboot: Disposition::Deny(reason),
-                    mutate: Disposition::Deny(reason),
-                    stop: Disposition::Ignore,
-                }
-            }
-            ChangeReason::StateChange(InstanceStateChange::Failed) => {
-                let reason = DenyReason::InstanceFailed;
-                AllowedRequests {
-                    start: Disposition::Deny(reason),
-                    migrate_as_source: Disposition::Deny(reason),
-                    reboot: Disposition::Deny(reason),
-                    mutate: Disposition::Deny(reason),
-                    stop: self.allowed.stop,
-                }
+                Ok(())
             }
         }
+    }
+
+    /// Notifies this queue that the caller has finished processing a
+    /// previously-dequeued request, allowing the queue to adjust its
+    /// dispositions in response.
+    pub(super) fn notify_request_completed(&mut self, req: CompletedRequest) {
+        info!(
+            &self.log,
+            "queue notified of request completion";
+            "request" => ?req
+        );
+
+        match req {
+            CompletedRequest::Start { succeeded } => {
+                assert!(matches!(self.state, QueueState::StartPending));
+                if succeeded {
+                    self.state = QueueState::Running;
+                } else {
+                    self.state = QueueState::Failed;
+                }
+            }
+            CompletedRequest::Reboot => {
+                assert!(matches!(self.state, QueueState::Running));
+                assert!(self.awaiting_reboot);
+                self.awaiting_reboot = false;
+            }
+            CompletedRequest::MigrationOut { succeeded } => {
+                assert!(matches!(self.state, QueueState::Running));
+                assert!(self.awaiting_migration_out);
+                self.awaiting_migration_out = false;
+                if succeeded {
+                    self.state = QueueState::MigratedOut;
+                }
+            }
+            CompletedRequest::Stop => {
+                assert!(self.awaiting_stop);
+                self.awaiting_stop = false;
+                self.state = QueueState::Stopped;
+            }
+        }
+    }
+
+    /// Notifies this queue that the instance has stopped. This routine is meant
+    /// to be used in cases where an instance stops for reasons other than an
+    /// external request (e.g., a guest-requested chipset-driven shutdown).
+    pub(super) fn notify_stopped(&mut self) {
+        info!(&self.log, "queue notified that VM has stopped");
+        self.state = QueueState::Stopped;
     }
 }
 
@@ -414,11 +546,22 @@ impl ExternalRequestQueue {
 // queue that the VM is gone.
 impl Drop for ExternalRequestQueue {
     fn drop(&mut self) {
-        for req in self.queue.drain(..) {
+        // No special handling is needed for the state change queue:
+        //
+        // - Requests to start, reboot, and stop are handled asynchronously
+        //   (calls to change the instance's state return as soon as they're
+        //   queued).
+        // - Requests to migrate out contain a connection to the migration
+        //   target; dropping this connection tells the target the source is
+        //   gone.
+        //
+        // Drain the component change request queue and send messages to
+        // requestors telling them that their requests have been canceled.
+        for req in self.component_queue.drain(..) {
             match req {
                 // Crucible VCR change requestors wait for their requests to be
                 // retired.
-                ExternalRequest::ReconfigureCrucibleVolume {
+                ComponentChangeRequest::ReconfigureCrucibleVolume {
                     result_tx,
                     ..
                 } => {
@@ -431,18 +574,6 @@ impl Drop for ExternalRequestQueue {
                             hyper::StatusCode::GONE,
                         )));
                 }
-
-                // Requests to start, reboot, and stop are handled
-                // asynchronously (calls to change the instance's state return
-                // as soon as they're queued).
-                ExternalRequest::Start
-                | ExternalRequest::Reboot
-                | ExternalRequest::Stop => {}
-
-                // Dropping a request to migrate out drops the embedded
-                // connection to the migration target, thus notifying it that
-                // the source is gone.
-                ExternalRequest::MigrateAsSource { .. } => {}
             }
         }
     }
@@ -459,48 +590,89 @@ mod test {
     }
 
     fn make_migrate_as_source_request() -> ExternalRequest {
-        ExternalRequest::MigrateAsSource {
+        ExternalRequest::State(StateChangeRequest::MigrateAsSource {
             migration_id: Uuid::new_v4(),
             websock: WebsocketConnection(None),
-        }
+        })
     }
 
     fn make_reconfigure_crucible_request() -> ExternalRequest {
         let (tx, _rx) = tokio::sync::oneshot::channel();
-        ExternalRequest::ReconfigureCrucibleVolume {
-            backend_id: SpecKey::Uuid(Uuid::new_v4()),
-            new_vcr_json: "".to_string(),
-            result_tx: tx,
+        ExternalRequest::Component(
+            ComponentChangeRequest::ReconfigureCrucibleVolume {
+                backend_id: SpecKey::Uuid(Uuid::new_v4()),
+                new_vcr_json: "".to_string(),
+                result_tx: tx,
+            },
+        )
+    }
+
+    impl ExternalRequest {
+        fn assert_start(&self) {
+            assert!(
+                matches!(self, Self::State(StateChangeRequest::Start)),
+                "expected start request, got {self:?}"
+            );
+        }
+
+        fn assert_stop(&self) {
+            assert!(
+                matches!(self, Self::State(StateChangeRequest::Stop)),
+                "expected stop request, got {self:?}"
+            );
+        }
+
+        fn assert_reboot(&self) {
+            assert!(
+                matches!(self, Self::State(StateChangeRequest::Reboot)),
+                "expected reboot request, got {self:?}"
+            );
+        }
+
+        fn assert_migrate_as_source(&self) {
+            assert!(
+                matches!(
+                    self,
+                    Self::State(StateChangeRequest::MigrateAsSource { .. })
+                ),
+                "expected migrate as source request, got {self:?}"
+            );
         }
     }
 
-    #[tokio::test]
-    async fn start_requests_become_idempotent_after_first_request() {
+    #[test]
+    fn start_requests_become_idempotent_after_first_request() {
         let mut queue =
             ExternalRequestQueue::new(test_logger(), InstanceAutoStart::No);
 
         // The first request to start should succeed.
-        assert!(queue.try_queue(ExternalRequest::Start).is_ok());
+        assert!(queue.try_queue(ExternalRequest::start()).is_ok());
 
         // The second one should too, but only for idempotency: the queue should
         // then have only one start request on it.
-        assert!(queue.try_queue(ExternalRequest::Start).is_ok());
-        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Start)));
-        assert!(queue.pop_front().is_none());
+        assert!(queue.try_queue(ExternalRequest::start()).is_ok());
+        queue.pop_front().unwrap().assert_start();
+        assert!(queue.is_empty());
 
         // Start requests continue to be ignored even after the instance starts
         // to run.
-        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
-        assert!(queue.try_queue(ExternalRequest::Start).is_ok());
-        assert!(queue.pop_front().is_none());
+        queue.notify_request_completed(CompletedRequest::Start {
+            succeeded: true,
+        });
+
+        assert!(queue.try_queue(ExternalRequest::start()).is_ok());
+        assert!(queue.is_empty());
     }
 
-    #[tokio::test]
-    async fn migrate_as_source_is_not_idempotent() {
+    #[test]
+    fn migrate_as_source_is_not_idempotent() {
         // Simulate a running instance.
         let mut queue =
             ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
-        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
+
+        queue.notify_request_completed(CompletedRequest::Start {
+            succeeded: true,
+        });
 
         // Requests to migrate out should be allowed.
         assert!(queue.try_queue(make_migrate_as_source_request()).is_ok());
@@ -517,104 +689,122 @@ mod test {
 
         // If migration fails, the instance resumes running, and then another
         // request to migrate out should be allowed.
-        assert!(matches!(
-            queue.pop_front(),
-            Some(ExternalRequest::MigrateAsSource { .. })
-        ));
-        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
+        queue.pop_front().unwrap().assert_migrate_as_source();
+        queue.notify_request_completed(CompletedRequest::MigrationOut {
+            succeeded: false,
+        });
+
         assert!(queue.try_queue(make_migrate_as_source_request()).is_ok());
 
         // A successful migration stops the instance, which forecloses on future
         // requests to migrate out.
         queue.pop_front();
-        queue.notify_instance_state_change(InstanceStateChange::Stopped);
+        queue.notify_request_completed(CompletedRequest::MigrationOut {
+            succeeded: true,
+        });
+
         assert!(queue.try_queue(make_migrate_as_source_request()).is_err());
     }
 
-    #[tokio::test]
-    async fn stop_requests_enqueue_after_vm_failure() {
-        let mut queue =
-            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::No);
-        queue.notify_instance_state_change(InstanceStateChange::Failed);
-
-        assert!(queue.try_queue(ExternalRequest::Stop).is_ok());
-        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Stop)));
-    }
-
-    #[tokio::test]
-    async fn reboot_requests_are_idempotent_except_when_stopping() {
+    #[test]
+    fn stop_requests_are_idempotent() {
         let mut queue =
             ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
-        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
+
+        queue.notify_request_completed(CompletedRequest::Start {
+            succeeded: true,
+        });
+
+        assert!(queue.try_queue(ExternalRequest::stop()).is_ok());
+        assert!(queue.try_queue(ExternalRequest::stop()).is_ok());
+        queue.pop_front().unwrap().assert_stop();
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn stop_requests_ignored_after_vm_failure() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
+
+        queue.notify_request_completed(CompletedRequest::Start {
+            succeeded: false,
+        });
+
+        assert!(queue.try_queue(ExternalRequest::stop()).is_ok());
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn reboot_requests_are_idempotent_except_when_stopping() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
+        queue.notify_request_completed(CompletedRequest::Start {
+            succeeded: true,
+        });
 
         // Once the instance is started, reboot requests should be allowed, but
         // after the first, subsequent requests should be dropped for
         // idempotency.
         assert!(queue.is_empty());
         for _ in 0..5 {
-            assert!(queue.try_queue(ExternalRequest::Reboot).is_ok());
+            assert!(queue.try_queue(ExternalRequest::reboot()).is_ok());
         }
-        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Reboot)));
+        queue.pop_front().unwrap().assert_reboot();
         assert!(queue.is_empty());
 
         // Once the instance has rebooted, new requests can be queued.
-        queue.notify_instance_state_change(InstanceStateChange::Rebooted);
-        assert!(queue.try_queue(ExternalRequest::Reboot).is_ok());
-        assert!(!queue.is_empty());
-        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Reboot)));
-        queue.notify_instance_state_change(InstanceStateChange::Rebooted);
+        queue.notify_request_completed(CompletedRequest::Reboot);
+        assert!(queue.try_queue(ExternalRequest::reboot()).is_ok());
+        queue.pop_front().unwrap().assert_reboot();
+        queue.notify_request_completed(CompletedRequest::Reboot);
 
         // If a request to reboot is queued, and then a request to stop is
         // queued, new requests to reboot should always fail, even after the
         // instance finishes rebooting.
-        assert!(queue.try_queue(ExternalRequest::Reboot).is_ok());
+        assert!(queue.try_queue(ExternalRequest::reboot()).is_ok());
         assert!(!queue.is_empty());
-        assert!(queue.try_queue(ExternalRequest::Stop).is_ok());
-        assert!(queue.try_queue(ExternalRequest::Reboot).is_err());
-        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Reboot)));
-        queue.notify_instance_state_change(InstanceStateChange::Rebooted);
-        assert!(queue.try_queue(ExternalRequest::Reboot).is_err());
+        assert!(queue.try_queue(ExternalRequest::stop()).is_ok());
+        assert!(queue.try_queue(ExternalRequest::reboot()).is_err());
+        queue.pop_front().unwrap().assert_reboot();
+        queue.notify_request_completed(CompletedRequest::Reboot);
+        assert!(queue.try_queue(ExternalRequest::reboot()).is_err());
     }
 
-    #[tokio::test]
-    async fn mutation_requires_running_and_not_migrating_out() {
-        let mut queue =
-            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::No);
-
-        // Mutating a VM before it has started is not allowed.
-        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_err());
-
-        // Merely dequeuing the start request doesn't allow mutation; the VM
-        // actually has to be running.
-        assert!(queue.try_queue(ExternalRequest::Start).is_ok());
-        assert!(matches!(queue.pop_front(), Some(ExternalRequest::Start)));
-        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_err());
-        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
-        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_ok());
-        assert!(matches!(
-            queue.pop_front(),
-            Some(ExternalRequest::ReconfigureCrucibleVolume { .. })
-        ));
-
-        // Successfully requesting migration out should block new mutation
-        // requests (they should wait for the migration to resolve and then go
-        // to the target).
-        assert!(queue.try_queue(make_migrate_as_source_request()).is_ok());
-        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_err());
-
-        // But if the VM resumes (due to a failed migration out) these requests
-        // should succeed again.
-        assert!(queue.pop_front().is_some());
-        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
-        assert!(queue.try_queue(make_reconfigure_crucible_request()).is_ok());
-    }
-
-    #[tokio::test]
-    async fn mutation_disallowed_after_stop() {
+    #[test]
+    fn mutation_disallowed_after_stopped() {
         let mut queue =
             ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
-        queue.notify_instance_state_change(InstanceStateChange::StartedRunning);
-        queue.notify_instance_state_change(InstanceStateChange::Stopped);
+
+        queue.notify_request_completed(CompletedRequest::Start {
+            succeeded: true,
+        });
+
+        assert!(queue.try_queue(ExternalRequest::stop()).is_ok());
+        queue.notify_request_completed(CompletedRequest::Stop);
         assert!(queue.try_queue(make_reconfigure_crucible_request()).is_err());
+    }
+
+    #[tokio::test]
+    async fn vcr_requests_canceled_when_queue_drops() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
+
+        queue.notify_request_completed(CompletedRequest::Start {
+            succeeded: true,
+        });
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let req = ExternalRequest::Component(
+            ComponentChangeRequest::ReconfigureCrucibleVolume {
+                backend_id: SpecKey::Uuid(Uuid::new_v4()),
+                new_vcr_json: "".to_string(),
+                result_tx: tx,
+            },
+        );
+
+        assert!(queue.try_queue(req).is_ok());
+        drop(queue);
+        let err = rx.await.unwrap().unwrap_err();
+        assert_eq!(err.status_code, hyper::StatusCode::GONE);
     }
 }
