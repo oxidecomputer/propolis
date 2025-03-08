@@ -193,8 +193,8 @@ pub struct P9fs {
 /// Describes a synthetic device that registers for VM lifecycle notifications
 /// and returns errors during attempts to migrate.
 ///
-/// This is only supported by Propolis servers compiled without the
-/// `omicron-build` feature.
+/// This is only supported by Propolis servers compiled with the
+/// `failure-injection` feature.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MigrationFailureInjector {

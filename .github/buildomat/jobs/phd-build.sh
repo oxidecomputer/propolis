@@ -30,7 +30,12 @@ rustc --version
 # Build the Propolis server binary with 'dev' profile to enable assertions that
 # should fire during tests.
 banner build-propolis
-ptime -m cargo build --verbose -p propolis-server
+
+# Compile propolis-server so that it allows development features to be used even
+# though the `omicron-build` feature is enabled.
+export PHD_BUILD="true"
+ptime -m cargo build --verbose -p propolis-server \
+	--features omicron-build,failure-injection
 
 # The PHD runner requires unwind-on-panic to catch certain test failures, so
 # build it with the 'dev' profile which is so configured.

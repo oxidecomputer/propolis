@@ -26,7 +26,7 @@ use super::{
     Board, BootOrderEntry, BootSettings, Disk, Nic, QemuPvpanic, SerialPort,
 };
 
-#[cfg(not(feature = "omicron-build"))]
+#[cfg(feature = "failure-injection")]
 use super::MigrationFailure;
 
 #[cfg(feature = "falcon")]
@@ -50,7 +50,7 @@ pub(crate) enum SpecBuilderError {
     #[error("pvpanic device already specified")]
     PvpanicInUse,
 
-    #[cfg(not(feature = "omicron-build"))]
+    #[cfg(feature = "failure-injection")]
     #[error("migration failure injection already enabled")]
     MigrationFailureInjectionInUse,
 
@@ -269,7 +269,7 @@ impl SpecBuilder {
         Ok(self)
     }
 
-    #[cfg(not(feature = "omicron-build"))]
+    #[cfg(feature = "failure-injection")]
     pub fn add_migration_failure_device(
         &mut self,
         mig: MigrationFailure,

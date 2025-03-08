@@ -52,7 +52,7 @@ impl Preamble {
             };
 
             match comp {
-                #[cfg(feature = "omicron-build")]
+                #[cfg(not(feature = "failure-injection"))]
                 ReplacementComponent::MigrationFailureInjector(_) => {
                     return Err(MigrateError::InstanceSpecsIncompatible(
                         format!(
@@ -62,7 +62,7 @@ impl Preamble {
                     ));
                 }
 
-                #[cfg(not(feature = "omicron-build"))]
+                #[cfg(feature = "failure-injection")]
                 ReplacementComponent::MigrationFailureInjector(comp) => {
                     let ComponentV0::MigrationFailureInjector(src) = to_amend
                     else {
