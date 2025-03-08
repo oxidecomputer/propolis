@@ -88,6 +88,10 @@ fn guess_max_reasonable_parallelism(
     // than the test runner itself. Overprovisioning CPUs will make everyone
     // sad but should not fail tests, at least...
     let lim_by_cpus = online_cpus / cpus_per_runner;
+    info!(
+        "parallelism by cpu count: {} ({} / {})",
+        lim_by_cpus, online_cpus, cpus_per_runner
+    );
 
     let ctl = bhyve_api::VmmCtlFd::open()?;
     let reservoir =
@@ -109,7 +113,9 @@ fn guess_max_reasonable_parallelism(
             .try_into()
             .expect("physical page count is reasonable");
 
-        let installed_mb = page_size * total_pages;
+        const MB: usize = 1024 * 1024;
+
+        let installed_mb = page_size * total_pages / MB;
         // /!\ Arbitrary choice warning /!\
         //
         // It would be a little rude to spawn so many VMs that we cause the
@@ -119,7 +125,7 @@ fn guess_max_reasonable_parallelism(
         // fraction.
         vmm_mem_limit = installed_mb / 4;
 
-        eprintln!(
+        warn!(
             "phd-runner sees the VMM reservior is unconfigured, and will use \
              up to 25% of system memory ({}MiB) for test VMs. Please consider \
              using `cargo run --bin rsrvrctl set <size MiB>` to set aside \
@@ -129,6 +135,10 @@ fn guess_max_reasonable_parallelism(
     }
 
     let lim_by_mem = vmm_mem_limit / memory_mib_per_runner;
+    info!(
+        "parallelism by memory: {} ({} / {})",
+        lim_by_mem, vmm_mem_limit, memory_mib_per_runner
+    );
 
     Ok(std::cmp::min(lim_by_cpus as u16, lim_by_mem as u16))
 }
