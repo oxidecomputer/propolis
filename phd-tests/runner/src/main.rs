@@ -6,6 +6,7 @@ mod config;
 mod execute;
 mod fixtures;
 
+use anyhow::{bail, Context};
 use clap::Parser;
 use config::{ListOptions, ProcessArgs, RunOptions};
 use phd_tests::phd_testcase::{Framework, FrameworkParameters};
@@ -46,55 +47,114 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn guess_max_reasonable_parallelism(
+    default_guest_cpus: u8,
+    default_guest_memory_mib: u64,
+) -> anyhow::Result<u16> {
+    // Assume no test starts more than 3 VMs. This is a really conservative
+    // guess to make sure we don't cause tests to fail simply because we ran
+    // too many at once.
+    const MAX_VMS_GUESS: u64 = 3;
+    let cpus_per_runner = default_guest_cpus as u64 * MAX_VMS_GUESS;
+    let memory_mib_per_runner =
+        (default_guest_memory_mib * MAX_VMS_GUESS) as usize;
+
+    /// Miniscule wrapper for `sysconf(3C)` calls that checks errors.
+    fn sysconf(cfg: i32) -> std::io::Result<i64> {
+        // Safety: sysconf is an FFI call but we don't change any system
+        // state, it won't cause unwinding, etc.
+        let res = unsafe { libc::sysconf(cfg) };
+        // For the handful of variables that can be queried, the variable is
+        // defined and won't error. Technically if the variable is
+        // unsupported, `-1` is returned without changing `errno`. In such
+        // cases, returning errno might be misleading!
+        //
+        // Instead of trying to disambiguate this, and in the knowledge
+        // these calls as we make them should never fail, just fall back to
+        // a more general always-factually-correct.
+        if res == -1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("could not get sysconf({})", cfg),
+            ));
+        }
+        Ok(res)
+    }
+
+    let online_cpus = sysconf(libc::_SC_NPROCESSORS_ONLN)
+        .expect("can get number of online processors")
+        as u64;
+    // We're assuming that the system running tests is relatively idle other
+    // than the test runner itself. Overprovisioning CPUs will make everyone
+    // sad but should not fail tests, at least...
+    let lim_by_cpus = online_cpus / cpus_per_runner;
+
+    let ctl = bhyve_api::VmmCtlFd::open()?;
+    let reservoir =
+        ctl.reservoir_query().context("failed to query reservoir")?;
+    let mut vmm_mem_limit = reservoir.vrq_free_sz;
+
+    // The reservoir will be 0MiB by default if the system has not been
+    // configured with a particular size.
+    if reservoir.vrq_alloc_sz == 0 {
+        // If the reservoir is not configured, we'll try to make do with
+        // system memory and implore someone to earmark memory for test VMs in
+        // the future.
+        let page_size: usize = sysconf(libc::_SC_PAGESIZE)
+            .expect("can get page size")
+            .try_into()
+            .expect("page size is reasonable");
+        let total_pages: usize = sysconf(libc::_SC_PHYS_PAGES)
+            .expect("can get physical pages in the system")
+            .try_into()
+            .expect("physical page count is reasonable");
+
+        let installed_mb = page_size * total_pages;
+        // /!\ Arbitrary choice warning /!\
+        //
+        // It would be a little rude to spawn so many VMs that we cause the
+        // system running tests to empty the whole ARC and swap. If there's no
+        // reservior, though, we're gonna use *some* amount of memory that isn't
+        // explicitly earmarked for bhyve, though. 1/4th is just a "feels ok"
+        // fraction.
+        vmm_mem_limit = installed_mb / 4;
+
+        eprintln!(
+            "phd-runner sees the VMM reservior is unconfigured, and will use \
+             up to 25% of system memory ({}MiB) for test VMs. Please consider \
+             using `cargo run --bin rsrvrctl set <size MiB>` to set aside \
+             memory for test VMs.",
+            vmm_mem_limit
+        );
+    }
+
+    let lim_by_mem = vmm_mem_limit / memory_mib_per_runner;
+
+    Ok(std::cmp::min(lim_by_cpus as u16, lim_by_mem as u16))
+}
+
 async fn run_tests(run_opts: &RunOptions) -> anyhow::Result<ExecutionStats> {
-    let parallelism = run_opts.parallelism.unwrap_or_else(|| {
-        // Assume no test starts more than 4 VMs. This is a really conservative
-        // guess to make sure we don't cause tests to fail simply because we ran
-        // too many at once.
-        let cpus_per_runner = run_opts.default_guest_cpus as u64 * 4;
-        let memory_mib_per_runner = run_opts.default_guest_memory_mib * 4;
+    let parallelism = if let Some(parallelism) = run_opts.parallelism {
+        if parallelism == 0 {
+            bail!("Parallelism of 0 was requested; cannot run tests under these conditions!");
+        }
+        parallelism
+    } else {
+        let res = guess_max_reasonable_parallelism(
+            run_opts.default_guest_cpus,
+            run_opts.default_guest_memory_mib,
+        )?;
+        if res == 0 {
+            bail!(
+                "Inferred a parallelism of 0; this is probably because there \
+                is not much available memory for test VMs? Consider checking \
+                reservoir configuration."
+            );
+        }
+        res
+    };
 
-        // I assume there's a smarter way to do this in illumos. sorry!!
-        let lgrpinfo = std::process::Command::new("/usr/bin/lgrpinfo")
-            .args(["-mc", "-u", "m"])
-            .output()
-            .expect("can run lgrpinfo");
-        assert_eq!(lgrpinfo.status.code(), Some(0));
-        let lgrpinfo_output_str =
-            String::from_utf8(lgrpinfo.stdout).expect("utf8 output");
-        let lines: Vec<&str> = lgrpinfo_output_str.split("\n").collect();
-        let cpuline = lines[1];
-        let cpu_range = cpuline
-            .strip_prefix("\tCPUS: ")
-            .expect("`CPUs` line starts as expected");
-        let mut cpu_range_parts = cpu_range.split("-");
-        let cpu_low = cpu_range_parts.next().expect("range has a low");
-        let cpu_high = cpu_range_parts.next().expect("range has a high");
-        let ncpus = cpu_high.parse::<u64>().expect("can parse cpu_low")
-            - cpu_low.parse::<u64>().expect("can parse cpu_high");
-
-        let lim_by_cpus = ncpus / cpus_per_runner;
-
-        let memoryline = lines[2];
-        let memory = memoryline
-            .strip_prefix("\tMemory: ")
-            .expect("`Memory` line starts as expected");
-        let installed = memory
-            .split(",")
-            .next()
-            .expect("memory line is comma-separated elements");
-        let installed_mb = installed
-            .strip_prefix("installed ")
-            .expect("memory line starts with installed")
-            .strip_suffix("M")
-            .expect("memory line ends with M")
-            .parse::<u64>()
-            .expect("can parse memory MB");
-
-        let lim_by_mem = installed_mb / memory_mib_per_runner;
-
-        std::cmp::min(lim_by_cpus as u16, lim_by_mem as u16)
-    });
+    info!("running tests with max parallelism of {}", parallelism);
 
     // /!\ Arbitrary choice warning /!\
     //
