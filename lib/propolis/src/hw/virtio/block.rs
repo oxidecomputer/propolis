@@ -25,6 +25,9 @@ use lazy_static::lazy_static;
 /// Sizing for virtio-block is specified in 512B sectors
 const SECTOR_SZ: usize = 512;
 
+/// Arbitrary limit to sectors permitted per discard request
+const MAX_DISCARD_SECTORS: u32 = ((1024 * 1024) / SECTOR_SZ) as u32;
+
 struct CompletionPayload {
     /// ID of original request.
     rid: u16,
@@ -83,6 +86,27 @@ impl PciVirtioBlock {
             BlockReg::BlockSize => ro.write_u32(info.block_size),
             BlockReg::Unused => {
                 ro.fill(0);
+            }
+            BlockReg::MaxDiscardSectors => {
+                // Arbitrarily limit to 1MiB (or the device size, if smaller)
+                let sz = u32::min(
+                    MAX_DISCARD_SECTORS,
+                    (info.total_size / SECTOR_SZ as u64) as u32,
+                );
+                ro.write_u32(if info.supports_discard { sz } else { 0 });
+            }
+            BlockReg::MaxDiscardSeg => {
+                // If the device supports discard operations, only permit one
+                // segment (LBA/size) per request.
+                ro.write_u32(if info.supports_discard { 1 } else { 0 });
+            }
+            BlockReg::DiscardSectorAlign => {
+                // Expect that discard operations are block-aligned
+                ro.write_u32(if info.supports_discard {
+                    info.block_size / SECTOR_SZ as u32
+                } else {
+                    0
+                });
             }
             _ => {
                 // XXX: all zeroes for now
@@ -150,6 +174,22 @@ impl PciVirtioBlock {
                     CompletionPayload { rid, chain },
                 ))
             }
+            VIRTIO_BLK_T_DISCARD => {
+                let mut detail = DiscardWriteZeroes::default();
+                if !chain.read(&mut detail, &mem) {
+                    Err(chain)
+                } else {
+                    let off = detail.sector as usize * SECTOR_SZ;
+                    let sz = detail.num_sectors as usize * SECTOR_SZ;
+                    probes::vioblk_discard_enqueue!(|| (
+                        rid, off as u64, sz as u64,
+                    ));
+                    Ok(self.block_tracking.track(
+                        block::Request::new_discard(off, sz),
+                        CompletionPayload { rid, chain },
+                    ))
+                }
+            }
             _ => Err(chain),
         };
         match req {
@@ -192,6 +232,9 @@ impl PciVirtioBlock {
                 block::Operation::Flush => {
                     probes::vioblk_flush_complete!(|| (rid, resnum));
                 }
+                block::Operation::Discard(..) => {
+                    probes::vioblk_discard_complete!(|| (rid, resnum));
+                }
             }
             chain.write(&resnum, &mem);
             vq.push_used(chain, &mem);
@@ -216,6 +259,9 @@ impl VirtioDevice for PciVirtioBlock {
         let info = self.block_attach.info().unwrap_or_else(Default::default);
         if info.read_only {
             feat |= VIRTIO_BLK_F_RO;
+        }
+        if info.supports_discard {
+            feat |= VIRTIO_BLK_F_DISCARD;
         }
         feat
     }
@@ -305,6 +351,14 @@ struct VbReq {
     sector: u64,
 }
 
+#[derive(Copy, Clone, Debug, Default)]
+#[repr(C)]
+struct DiscardWriteZeroes {
+    sector: u64,
+    num_sectors: u32,
+    flags: u32,
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 enum BlockReg {
     Capacity,
@@ -385,4 +439,7 @@ mod probes {
 
     fn vioblk_flush_enqueue(id: u16) {}
     fn vioblk_flush_complete(id: u16, res: u8) {}
+
+    fn vioblk_discard_enqueue(id: u16, off: u64, sz: u64) {}
+    fn vioblk_discard_complete(id: u16, res: u8) {}
 }
