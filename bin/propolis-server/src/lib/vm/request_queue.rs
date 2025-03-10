@@ -69,7 +69,7 @@ impl std::fmt::Debug for StateChangeRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Start => write!(f, "Start"),
-            Self::MigrateAsSource { migration_id, .. } => f
+            Self::MigrateAsSource { migration_id, websock: _ } => f
                 .debug_struct("MigrateAsSource")
                 .field("migration_id", migration_id)
                 .finish(),
@@ -83,7 +83,7 @@ impl std::fmt::Debug for StateChangeRequest {
 ///
 /// NOTE: Successfully queuing a component change request does not guarantee
 /// that the request will be processed, because it may be preempted by a VM
-/// state change. If this happens the request will fail and notify the
+/// state change. If this happens, the request will fail and notify the
 /// submitter using whatever channel is appropriate for the request's type.
 pub enum ComponentChangeRequest {
     /// Attempts to update the volume construction request for the supplied
@@ -129,17 +129,17 @@ pub(crate) enum ExternalRequest {
 
 impl ExternalRequest {
     /// Constructs a VM start request.
-    pub fn start() -> Self {
+    pub const fn start() -> Self {
         Self::State(StateChangeRequest::Start)
     }
 
     /// Constructs a VM stop request.
-    pub fn stop() -> Self {
+    pub const fn stop() -> Self {
         Self::State(StateChangeRequest::Stop)
     }
 
     /// Constructs a VM reboot request.
-    pub fn reboot() -> Self {
+    pub const fn reboot() -> Self {
         Self::State(StateChangeRequest::Reboot)
     }
 
@@ -167,6 +167,10 @@ impl ExternalRequest {
             new_vcr_json,
             result_tx,
         })
+    }
+
+    fn is_stop(&self) -> bool {
+        matches!(self, Self::State(StateChangeRequest::Stop))
     }
 }
 
@@ -224,13 +228,14 @@ pub(super) enum CompletedRequest {
 }
 
 /// The queue's internal notion of the VM's runtime state.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum QueueState {
     /// The instance has not started yet and no one has asked it to start.
     NotStarted,
 
-    /// The instance is not running yet, but the state driver will eventually
-    /// try to start it.
+    /// The instance is not running yet, but it's on its way there: either the
+    /// state driver is actively trying to start it, or there is a request that,
+    /// when processed, will direct the driver to start the instance.
     StartPending,
 
     /// The instance has successfully started.
@@ -276,12 +281,12 @@ pub(super) struct ExternalRequestQueue {
     /// completed by the state driver.
     awaiting_reboot: bool,
 
-    /// True if this queue has enqueued a stop request that has not been
-    /// completed by the state driver.
-    awaiting_migration_out: bool,
-
     /// True if this queue has enqueued a request to migrate out that has not
     /// been completed by the state driver.
+    awaiting_migration_out: bool,
+
+    /// True if this queue has enqueued a stop request that has not been
+    /// completed by the state driver.
     awaiting_stop: bool,
 
     /// The queue's logger.
@@ -344,10 +349,7 @@ impl ExternalRequestQueue {
         // If the queue is in a terminal state, deny the request straightaway
         // (unless it's a stop request, which can be ignored for idempotency).
         let disposition = if let Some(reason) = self.state.deny_reason() {
-            if matches!(
-                request,
-                ExternalRequest::State(StateChangeRequest::Stop)
-            ) {
+            if request.is_stop() {
                 Disposition::Ignore
             } else {
                 Disposition::Deny(reason)
@@ -386,7 +388,7 @@ impl ExternalRequestQueue {
                         )
                     } else if self.awaiting_stop {
                         Disposition::Deny(RequestDeniedReason::HaltPending)
-                    } else if matches!(self.state, QueueState::NotStarted) {
+                    } else if self.state == QueueState::NotStarted {
                         Disposition::Deny(
                             RequestDeniedReason::InstanceNotActive,
                         )
@@ -407,11 +409,11 @@ impl ExternalRequestQueue {
                         )
                     } else if self.awaiting_stop {
                         Disposition::Deny(RequestDeniedReason::HaltPending)
-                    } else if matches!(self.state, QueueState::NotStarted) {
+                    } else if self.state == QueueState::NotStarted {
                         Disposition::Deny(
                             RequestDeniedReason::InstanceNotActive,
                         )
-                    } else if matches!(self.state, QueueState::StartPending) {
+                    } else if self.state == QueueState::StartPending {
                         Disposition::Deny(RequestDeniedReason::StartInProgress)
                     } else if self.awaiting_reboot {
                         Disposition::Ignore
@@ -459,7 +461,7 @@ impl ExternalRequestQueue {
             Disposition::Enqueue => {
                 match request {
                     ExternalRequest::State(StateChangeRequest::Start) => {
-                        assert!(matches!(self.state, QueueState::NotStarted));
+                        assert_eq!(self.state, QueueState::NotStarted);
                         self.state = QueueState::StartPending;
                     }
                     ExternalRequest::State(
@@ -503,7 +505,7 @@ impl ExternalRequestQueue {
 
         match req {
             CompletedRequest::Start { succeeded } => {
-                assert!(matches!(self.state, QueueState::StartPending));
+                assert_eq!(self.state, QueueState::StartPending);
                 if succeeded {
                     self.state = QueueState::Running;
                 } else {
@@ -511,12 +513,12 @@ impl ExternalRequestQueue {
                 }
             }
             CompletedRequest::Reboot => {
-                assert!(matches!(self.state, QueueState::Running));
+                assert_eq!(self.state, QueueState::Running);
                 assert!(self.awaiting_reboot);
                 self.awaiting_reboot = false;
             }
             CompletedRequest::MigrationOut { succeeded } => {
-                assert!(matches!(self.state, QueueState::Running));
+                assert_eq!(self.state, QueueState::Running);
                 assert!(self.awaiting_migration_out);
                 self.awaiting_migration_out = false;
                 if succeeded {
@@ -608,6 +610,7 @@ mod test {
     }
 
     impl ExternalRequest {
+        #[track_caller]
         fn assert_start(&self) {
             assert!(
                 matches!(self, Self::State(StateChangeRequest::Start)),
@@ -615,13 +618,12 @@ mod test {
             );
         }
 
+        #[track_caller]
         fn assert_stop(&self) {
-            assert!(
-                matches!(self, Self::State(StateChangeRequest::Stop)),
-                "expected stop request, got {self:?}"
-            );
+            assert!(self.is_stop(), "expected stop request, got {self:?}");
         }
 
+        #[track_caller]
         fn assert_reboot(&self) {
             assert!(
                 matches!(self, Self::State(StateChangeRequest::Reboot)),
@@ -629,6 +631,7 @@ mod test {
             );
         }
 
+        #[track_caller]
         fn assert_migrate_as_source(&self) {
             assert!(
                 matches!(
