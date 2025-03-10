@@ -64,8 +64,20 @@ set +e
 failcount=$?
 set -e
 
+# Disable errexit again because we may try collecting logs from runners that ran
+# no tests (in which case *.log doesn't expand and tar will fail to find a file
+# by that literal name)
+set +e
 tar -czvf /tmp/phd-tmp-files.tar.gz \
-	-C /tmp/propolis-phd /tmp/propolis-phd/*.log
+	-C $tmpdir $tmpdir/*.log
+for runnerdir in $tmpdir/runner-*; do
+	if [ -d "$runnerdir" ]; then
+		tar -rzvf /tmp/phd-tmp-files.tar.gz \
+			-C $runnerdir $runnerdir/*.log
+	fi
+done
+set -e
+
 
 exitcode=0
 if [ $failcount -eq 0 ]; then

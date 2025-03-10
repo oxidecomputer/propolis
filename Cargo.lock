@@ -777,6 +777,7 @@ dependencies = [
  "propolis_types",
  "proptest",
  "thiserror 1.0.64",
+ "uuid",
 ]
 
 [[package]]

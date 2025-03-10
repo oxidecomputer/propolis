@@ -10,6 +10,7 @@ bhyve_api.workspace = true
 propolis_api_types = {workspace = true, optional = true}
 propolis_types.workspace = true
 thiserror.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

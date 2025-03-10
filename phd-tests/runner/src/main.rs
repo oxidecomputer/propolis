@@ -175,14 +175,9 @@ async fn run_tests(run_opts: &RunOptions) -> anyhow::Result<ExecutionStats> {
 
     let mut runners = Vec::new();
 
-    // Create up to parallelism collections of PHD framework settings.  For the
-    // most part we can reuse the same settings for all test-running tasks -
-    // state is not mutably shared. The important exception is port ranges for
-    // servers PHD will run, where we want non-overlapping port ranges to ensure
-    // that concurrent tests don't accidentally use a neighbor's servers.
-    for i in 0..parallelism {
-        let port_range = (9000 + PORT_RANGE_PER_RUNNER * i)
-            ..(9000 + PORT_RANGE_PER_RUNNER * (i + 1));
+    if parallelism == 1 {
+        // If there's only one test runner, the provided config is by definition
+        // not going to have issues with parallelism. Consume it directly.
         let ctx_params = FrameworkParameters {
             propolis_server_path: run_opts.propolis_server_cmd.clone(),
             crucible_downstairs: run_opts.crucible_downstairs()?,
@@ -195,7 +190,7 @@ async fn run_tests(run_opts: &RunOptions) -> anyhow::Result<ExecutionStats> {
             default_guest_memory_mib: run_opts.default_guest_memory_mib,
             default_guest_os_artifact: run_opts.default_guest_artifact.clone(),
             default_bootrom_artifact: run_opts.default_bootrom_artifact.clone(),
-            port_range,
+            port_range: 9000..(9000 + PORT_RANGE_PER_RUNNER),
             max_buildomat_wait: Duration::from_secs(
                 run_opts.max_buildomat_wait_secs,
             ),
@@ -209,6 +204,71 @@ async fn run_tests(run_opts: &RunOptions) -> anyhow::Result<ExecutionStats> {
 
         let fixtures = TestFixtures::new(ctx.clone()).unwrap();
         runners.push((ctx, fixtures));
+    } else {
+        // Create up to parallelism collections of PHD framework settings. Many
+        // settings can be reused directly, but some describe state the
+        // framework will mutate (causing ports to be allocated, fetching
+        // artifacts, etc). Take the provided config and make it safe for
+        // Frameworks to use independently.
+        //
+        // This implies downloading artifacts {parallelism} times, extracting
+        // artifacts redundantly for the different artifact directories, makes
+        // terrible use of the port range. It'd be much better to accept some
+        // owner of the shared state that each Framework can take as a
+        // parameter.
+
+        // We'll separate directories by which Framework they're for in some
+        // cases, below. Those uniquifying names will be padded to all be the
+        // length of the longest uniquifier to help make it kind of legible..
+        let pad_size = format!("{}", parallelism - 1).len();
+
+        for i in 0..parallelism {
+            let port_range = (9000 + PORT_RANGE_PER_RUNNER * i)
+                ..(9000 + PORT_RANGE_PER_RUNNER * (i + 1));
+            let mut unshared_tmp_dir = run_opts.tmp_directory.clone();
+            unshared_tmp_dir.push(format!("runner-{:pad_size$}", i));
+
+            let mut unshared_artifacts_dir =
+                run_opts.artifact_directory().clone();
+            unshared_artifacts_dir.push(format!("runner-{:pad_size$}", i));
+
+            // The runner directories may well not exist, we just invented them
+            // after all. Create them so phd-runner can use them. This is awful.
+            // Sorry.
+            let _ = std::fs::create_dir(&unshared_tmp_dir);
+            let _ = std::fs::create_dir(&unshared_artifacts_dir);
+
+            let ctx_params = FrameworkParameters {
+                propolis_server_path: run_opts.propolis_server_cmd.clone(),
+                crucible_downstairs: run_opts.crucible_downstairs()?,
+                base_propolis: run_opts.base_propolis(),
+                tmp_directory: unshared_tmp_dir,
+                artifact_directory: unshared_artifacts_dir,
+                artifact_toml: run_opts.artifact_toml_path.clone(),
+                server_log_mode: run_opts.server_logging_mode,
+                default_guest_cpus: run_opts.default_guest_cpus,
+                default_guest_memory_mib: run_opts.default_guest_memory_mib,
+                default_guest_os_artifact: run_opts
+                    .default_guest_artifact
+                    .clone(),
+                default_bootrom_artifact: run_opts
+                    .default_bootrom_artifact
+                    .clone(),
+                port_range,
+                max_buildomat_wait: Duration::from_secs(
+                    run_opts.max_buildomat_wait_secs,
+                ),
+            };
+
+            let ctx = Arc::new(
+                Framework::new(ctx_params)
+                    .await
+                    .expect("should be able to set up a test context"),
+            );
+
+            let fixtures = TestFixtures::new(ctx.clone()).unwrap();
+            runners.push((ctx, fixtures));
+        }
     }
 
     // Run the tests and print results.
