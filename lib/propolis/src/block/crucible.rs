@@ -149,6 +149,7 @@ impl CrucibleBackend {
                     block_size: block_size as u32,
                     total_size: sectors,
                     read_only: opts.read_only.unwrap_or(false),
+                    supports_discard: false,
                 },
                 skip_flush: opts.skip_flush.unwrap_or(false),
             }),
@@ -198,6 +199,7 @@ impl CrucibleBackend {
                     block_size: block_size as u32,
                     total_size: size / block_size,
                     read_only: opts.read_only.unwrap_or(false),
+                    supports_discard: false,
                 },
                 skip_flush: opts.skip_flush.unwrap_or(false),
             }),
@@ -312,6 +314,8 @@ pub enum Error {
     BadGuestRegion,
     #[error("backend is read-only")]
     ReadOnly,
+    #[error("operation not supported")]
+    Unsupported,
 
     #[error("offset or length not multiple of blocksize")]
     BlocksizeMismatch,
@@ -329,6 +333,7 @@ impl From<Error> for block::Result {
     fn from(value: Error) -> Self {
         match value {
             Error::ReadOnly => block::Result::ReadOnly,
+            Error::Unsupported => block::Result::Unsupported,
             _ => block::Result::Failure,
         }
     }
@@ -420,6 +425,10 @@ async fn process_request(
                 // Send flush to crucible
                 let _ = block.flush(None).await?;
             }
+        }
+        block::Operation::Discard(..) => {
+            // Crucible does not support discard operations for now
+            return Err(Error::Unsupported);
         }
     }
     Ok(())
