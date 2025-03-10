@@ -54,6 +54,7 @@ args=(
     '--artifact-toml-path' $artifacts
     '--tmp-directory' $tmpdir
     '--artifact-directory' $artifactdir
+    '--parallelism' 2
     $@
 )
 
