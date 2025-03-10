@@ -203,21 +203,6 @@ pub(crate) enum RequestDeniedReason {
     InstanceFailed,
 }
 
-/// The possible methods of handling a request to queue a state change.
-#[derive(Copy, Clone, Debug)]
-enum Disposition {
-    /// Put the state change on the queue.
-    Enqueue,
-
-    /// Drop the state change silently. This is used to make requests appear
-    /// idempotent to callers without making the state driver deal with the
-    /// consequences of queuing the same state change request twice.
-    Ignore,
-
-    /// Deny the request to change state.
-    Deny(RequestDeniedReason),
-}
-
 /// A kind of request that can be popped from the queue and then completed.
 #[derive(Copy, Clone, Debug)]
 pub(super) enum CompletedRequest {
@@ -346,13 +331,52 @@ impl ExternalRequestQueue {
         &mut self,
         request: ExternalRequest,
     ) -> Result<(), RequestDeniedReason> {
+        let request_str = format!("{request:?}");
+        let res = self.try_queue_internal(request);
+        match res {
+            Ok(true) => {
+                info!(
+                    &self.log,
+                    "enqueued external request";
+                    "request" => request_str
+                )
+            }
+            Ok(false) => {
+                info!(
+                    &self.log,
+                    "ignored external request";
+                    "request" => request_str
+                )
+            }
+            Err(reason) => {
+                info!(
+                    &self.log,
+                    "denied external request";
+                    "request" => request_str,
+                    "reason" => %reason
+                )
+            }
+        }
+
+        res.map(|_| ())
+    }
+
+    /// Attempts to place `request` on the queue, returning
+    ///
+    /// - `Ok(true)` if the request was enqueued,
+    /// - `Ok(false)` if the request was ignored, and
+    /// - `Err(reason)` if the request was denied.
+    fn try_queue_internal(
+        &mut self,
+        request: ExternalRequest,
+    ) -> Result<bool, RequestDeniedReason> {
         // If the queue is in a terminal state, deny the request straightaway
         // (unless it's a stop request, which can be ignored for idempotency).
-        let disposition = if let Some(reason) = self.state.deny_reason() {
+        if let Some(reason) = self.state.deny_reason() {
             if request.is_stop() {
-                Disposition::Ignore
+                return Ok(false);
             } else {
-                Disposition::Deny(reason)
+                return Err(reason);
             }
         } else {
             // The instance hasn't stopped yet, so consider this request in
@@ -368,11 +392,9 @@ impl ExternalRequestQueue {
                 // state.
                 ExternalRequest::State(StateChangeRequest::Start) => {
                     if self.awaiting_stop {
-                        Disposition::Deny(RequestDeniedReason::HaltPending)
-                    } else if let QueueState::NotStarted = self.state {
-                        Disposition::Enqueue
-                    } else {
-                        Disposition::Ignore
+                        return Err(RequestDeniedReason::HaltPending);
+                    } else if self.state != QueueState::NotStarted {
+                        return Ok(false);
                     }
                 }
 
@@ -383,17 +405,13 @@ impl ExternalRequestQueue {
                     StateChangeRequest::MigrateAsSource { .. },
                 ) => {
                     if self.awaiting_migration_out {
-                        Disposition::Deny(
+                        return Err(
                             RequestDeniedReason::AlreadyMigrationSource,
-                        )
+                        );
                     } else if self.awaiting_stop {
-                        Disposition::Deny(RequestDeniedReason::HaltPending)
+                        return Err(RequestDeniedReason::HaltPending);
                     } else if self.state == QueueState::NotStarted {
-                        Disposition::Deny(
-                            RequestDeniedReason::InstanceNotActive,
-                        )
-                    } else {
-                        Disposition::Enqueue
+                        return Err(RequestDeniedReason::InstanceNotActive);
                     }
                 }
 
@@ -404,21 +422,17 @@ impl ExternalRequestQueue {
                 // the migration to resolve.
                 ExternalRequest::State(StateChangeRequest::Reboot) => {
                     if self.awaiting_migration_out {
-                        Disposition::Deny(
+                        return Err(
                             RequestDeniedReason::InvalidForMigrationSource,
-                        )
+                        );
                     } else if self.awaiting_stop {
-                        Disposition::Deny(RequestDeniedReason::HaltPending)
+                        return Err(RequestDeniedReason::HaltPending);
                     } else if self.state == QueueState::NotStarted {
-                        Disposition::Deny(
-                            RequestDeniedReason::InstanceNotActive,
-                        )
+                        return Err(RequestDeniedReason::InstanceNotActive);
                     } else if self.state == QueueState::StartPending {
-                        Disposition::Deny(RequestDeniedReason::StartInProgress)
+                        return Err(RequestDeniedReason::StartInProgress);
                     } else if self.awaiting_reboot {
-                        Disposition::Ignore
-                    } else {
-                        Disposition::Enqueue
+                        return Ok(false);
                     }
                 }
 
@@ -427,13 +441,11 @@ impl ExternalRequestQueue {
                 // to the migration target.
                 ExternalRequest::State(StateChangeRequest::Stop) => {
                     if self.awaiting_migration_out {
-                        Disposition::Deny(
+                        return Err(
                             RequestDeniedReason::InvalidForMigrationSource,
-                        )
+                        );
                     } else if self.awaiting_stop {
-                        Disposition::Ignore
-                    } else {
-                        Disposition::Enqueue
+                        return Ok(false);
                     }
                 }
 
@@ -447,50 +459,38 @@ impl ExternalRequestQueue {
                     ComponentChangeRequest::ReconfigureCrucibleVolume {
                         ..
                     },
-                ) => Disposition::Enqueue,
+                ) => {}
             }
         };
 
-        info!(&self.log, "Queuing external request";
-              "request" => ?request,
-              "disposition" => ?disposition);
-
-        match disposition {
-            Disposition::Ignore => Ok(()),
-            Disposition::Deny(reason) => Err(reason),
-            Disposition::Enqueue => {
-                match request {
-                    ExternalRequest::State(StateChangeRequest::Start) => {
-                        assert_eq!(self.state, QueueState::NotStarted);
-                        self.state = QueueState::StartPending;
-                    }
-                    ExternalRequest::State(
-                        StateChangeRequest::MigrateAsSource { .. },
-                    ) => {
-                        assert!(!self.awaiting_migration_out);
-                        self.awaiting_migration_out = true;
-                    }
-                    ExternalRequest::State(StateChangeRequest::Reboot) => {
-                        assert!(!self.awaiting_reboot);
-                        self.awaiting_reboot = true;
-                    }
-                    ExternalRequest::State(StateChangeRequest::Stop) => {
-                        assert!(!self.awaiting_stop);
-                        self.awaiting_stop = true;
-                    }
-                    ExternalRequest::Component(_) => {}
-                }
-
-                match request {
-                    ExternalRequest::State(s) => self.state_queue.push_back(s),
-                    ExternalRequest::Component(c) => {
-                        self.component_queue.push_back(c)
-                    }
-                }
-
-                Ok(())
+        match request {
+            ExternalRequest::State(StateChangeRequest::Start) => {
+                assert_eq!(self.state, QueueState::NotStarted);
+                self.state = QueueState::StartPending;
             }
+            ExternalRequest::State(StateChangeRequest::MigrateAsSource {
+                ..
+            }) => {
+                assert!(!self.awaiting_migration_out);
+                self.awaiting_migration_out = true;
+            }
+            ExternalRequest::State(StateChangeRequest::Reboot) => {
+                assert!(!self.awaiting_reboot);
+                self.awaiting_reboot = true;
+            }
+            ExternalRequest::State(StateChangeRequest::Stop) => {
+                assert!(!self.awaiting_stop);
+                self.awaiting_stop = true;
+            }
+            ExternalRequest::Component(_) => {}
         }
+
+        match request {
+            ExternalRequest::State(s) => self.state_queue.push_back(s),
+            ExternalRequest::Component(c) => self.component_queue.push_back(c),
+        }
+
+        Ok(true)
     }
 
     /// Notifies this queue that the caller has finished processing a
