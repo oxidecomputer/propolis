@@ -777,6 +777,7 @@ dependencies = [
  "propolis_types",
  "proptest",
  "thiserror 1.0.64",
+ "uuid",
 ]
 
 [[package]]
@@ -3998,9 +3999,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "backtrace",
+ "bhyve_api 0.0.0",
  "camino",
  "cargo_metadata",
  "clap",
+ "crossbeam-channel",
+ "libc",
  "phd-framework",
  "phd-tests",
  "tokio",

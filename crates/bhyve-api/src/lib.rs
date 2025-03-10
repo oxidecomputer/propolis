@@ -125,6 +125,7 @@ impl AsRawFd for VmmCtlFd {
     }
 }
 
+#[derive(Debug)]
 pub enum ReservoirError {
     /// Resizing operation was interrupted, but if a non-zero chunk size was
     /// specified, one or more chunk-sized adjustments to the reservoir size may

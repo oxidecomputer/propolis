@@ -5,6 +5,7 @@
 use bhyve_api::{VmmCtlFd, VmmFd};
 use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor};
 use thiserror::Error;
+use uuid::Uuid;
 
 use crate::{
     bits::{
@@ -32,7 +33,8 @@ struct Vm(bhyve_api::VmmFd);
 
 impl Vm {
     fn new() -> Result<Self, GetHostCpuidError> {
-        let name = format!("cpuid-gen-{}", std::process::id());
+        let name =
+            format!("cpuid-gen-{}-{}", std::process::id(), Uuid::new_v4());
         let mut req = bhyve_api::vm_create_req::new(name.as_bytes())
             .expect("valid VM name");
 
