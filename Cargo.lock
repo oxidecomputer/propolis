@@ -4618,6 +4618,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
+ "slab",
  "slog",
  "slog-async",
  "slog-bunyan",

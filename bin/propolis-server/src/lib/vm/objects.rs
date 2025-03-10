@@ -13,7 +13,7 @@ use std::{
 
 use futures::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
 use propolis::{
-    hw::{ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart},
+    hw::{ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb},
     vmm::VmmHdl,
     Machine,
 };
@@ -21,7 +21,9 @@ use propolis_api_types::instance_spec::SpecKey;
 use slog::{error, info};
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use crate::{serial::Serial, spec::Spec, vcpu_tasks::VcpuTaskController};
+use crate::{
+    serial::backend::ConsoleBackend, spec::Spec, vcpu_tasks::VcpuTaskController,
+};
 
 use super::{
     state_driver::VmStartReason, BlockBackendMap, CrucibleBackendMap, DeviceMap,
@@ -50,7 +52,7 @@ pub(super) struct InputVmObjects {
     pub devices: DeviceMap,
     pub block_backends: BlockBackendMap,
     pub crucible_backends: CrucibleBackendMap,
-    pub com1: Arc<Serial<LpcUart>>,
+    pub com1: Arc<ConsoleBackend>,
     pub framebuffer: Option<Arc<RamFb>>,
     pub ps2ctrl: Arc<PS2Ctrl>,
 }
@@ -81,7 +83,7 @@ pub(crate) struct VmObjectsLocked {
     crucible_backends: CrucibleBackendMap,
 
     /// A handle to the serial console connection to the VM's first COM port.
-    com1: Arc<Serial<LpcUart>>,
+    com1: Arc<ConsoleBackend>,
 
     /// A handle to the VM's framebuffer.
     framebuffer: Option<Arc<RamFb>>,
@@ -175,7 +177,7 @@ impl VmObjectsLocked {
 
     /// Yields a clonable reference to the serial console for this VM's first
     /// COM port.
-    pub(crate) fn com1(&self) -> &Arc<Serial<LpcUart>> {
+    pub(crate) fn com1(&self) -> &Arc<ConsoleBackend> {
         &self.com1
     }
 

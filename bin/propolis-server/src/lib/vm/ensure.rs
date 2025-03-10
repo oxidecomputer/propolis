@@ -381,13 +381,15 @@ impl<'a> VmEnsureObjectsCreated<'a> {
     /// installs an active VM into the parent VM state machine and notifies the
     /// ensure requester that its request is complete.
     pub(crate) async fn ensure_active(self) -> VmEnsureActive<'a> {
-        let vm_services = VmServices::new(
-            self.log,
-            &self.vm_objects,
-            &self.ensure_request.properties,
-            self.ensure_options,
-        )
-        .await;
+        let vm_services = Arc::new(
+            VmServices::new(
+                self.log,
+                &self.vm_objects,
+                &self.ensure_request.properties,
+                self.ensure_options,
+            )
+            .await,
+        );
 
         let vmm_rt_hdl = self.vmm_rt.handle().clone();
         self.vm
@@ -395,7 +397,7 @@ impl<'a> VmEnsureObjectsCreated<'a> {
                 self.log,
                 self.input_queue.clone(),
                 &self.vm_objects,
-                vm_services,
+                &vm_services,
                 self.vmm_rt,
             )
             .await;
@@ -418,6 +420,7 @@ impl<'a> VmEnsureObjectsCreated<'a> {
             vmm_rt_hdl,
             state_publisher: self.state_publisher,
             vm_objects: self.vm_objects,
+            vm_services,
             input_queue: self.input_queue,
             kernel_vm_paused: self.kernel_vm_paused,
         }
@@ -432,12 +435,14 @@ pub(crate) struct VmEnsureActive<'a> {
     vmm_rt_hdl: tokio::runtime::Handle,
     state_publisher: &'a mut StatePublisher,
     vm_objects: Arc<VmObjects>,
+    vm_services: Arc<VmServices>,
     input_queue: Arc<InputQueue>,
     kernel_vm_paused: bool,
 }
 
 pub(super) struct VmEnsureActiveOutput {
     pub vm_objects: Arc<VmObjects>,
+    pub vm_services: Arc<VmServices>,
     pub input_queue: Arc<InputQueue>,
     pub vmm_rt_hdl: tokio::runtime::Handle,
 }
@@ -474,6 +479,7 @@ impl VmEnsureActive<'_> {
     pub(super) fn into_inner(self) -> VmEnsureActiveOutput {
         VmEnsureActiveOutput {
             vm_objects: self.vm_objects,
+            vm_services: self.vm_services,
             input_queue: self.input_queue,
             vmm_rt_hdl: self.vmm_rt_hdl,
         }
@@ -555,7 +561,7 @@ async fn initialize_vm_objects(
     init.initialize_rtc(&chipset)?;
     init.initialize_hpet();
 
-    let com1 = Arc::new(init.initialize_uart(&chipset));
+    let com1 = init.initialize_uart(&chipset);
     let ps2ctrl = init.initialize_ps2(&chipset);
     init.initialize_qemu_debug_port()?;
     init.initialize_qemu_pvpanic(VirtualMachine::new(

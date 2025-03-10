@@ -6,7 +6,8 @@ use bitvec::prelude as bv;
 use futures::{SinkExt, StreamExt};
 use propolis::common::{GuestAddr, Lifecycle, PAGE_SIZE};
 use propolis::migrate::{
-    MigrateCtx, MigrateStateError, Migrator, PayloadOffer, PayloadOffers,
+    MigrateCtx, MigrateSingle, MigrateStateError, Migrator, PayloadOffer,
+    PayloadOffers,
 };
 use propolis::vmm;
 use propolis_api_types::instance_spec::SpecKey;
@@ -22,10 +23,10 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::{tungstenite, WebSocketStream};
 use uuid::Uuid;
 
-use crate::migrate::codec;
 use crate::migrate::memx;
 use crate::migrate::preamble::Preamble;
 use crate::migrate::probes;
+use crate::migrate::{codec, DevicePayload};
 use crate::migrate::{
     Device, MigrateError, MigratePhase, MigrateRole, MigrationState, PageIter,
 };
@@ -511,6 +512,21 @@ impl<T: MigrateConn> RonV0<T> {
                 return Err(MigrateError::UnexpectedMessage);
             }
         };
+
+        let com1_payload: DevicePayload = match self.read_msg().await? {
+            codec::Message::Serialized(encoded) => {
+                ron::de::from_reader(encoded.as_bytes())
+                    .map_err(codec::ProtocolError::from)?
+            }
+            msg => {
+                error!(
+                    self.log(),
+                    "device_state: unexpected COM1 history message: {msg:?}"
+                );
+                return Err(MigrateError::UnexpectedMessage);
+            }
+        };
+
         self.read_ok().await?;
 
         info!(self.log(), "Devices: {devices:#?}");
@@ -529,6 +545,18 @@ impl<T: MigrateConn> RonV0<T> {
                     })?;
                 self.import_device(&target, &device, &migrate_ctx)?;
             }
+
+            let com1_data =
+                &mut ron::Deserializer::from_str(&com1_payload.data)
+                    .map_err(codec::ProtocolError::from)?;
+            let com1_offer = PayloadOffer {
+                kind: &com1_payload.kind,
+                version: com1_payload.version,
+                payload: Box::new(<dyn erased_serde::Deserializer>::erase(
+                    com1_data,
+                )),
+            };
+            vm_objects.com1().import(com1_offer, &migrate_ctx)?;
         }
 
         self.send_msg(codec::Message::Okay).await
@@ -762,24 +790,8 @@ impl<T: MigrateConn> RonV0<T> {
                 .map_err(codec::ProtocolError::from)?,
         ))
         .await?;
-        let com1_history = match self.read_msg().await? {
-            codec::Message::Serialized(encoded) => encoded,
-            msg => {
-                error!(self.log(), "server_state: unexpected message: {msg:?}");
-                return Err(MigrateError::UnexpectedMessage);
-            }
-        };
 
-        ensure_ctx
-            .vm_objects()
-            .lock_shared()
-            .await
-            .com1()
-            .import(&com1_history)
-            .await
-            .map_err(|e| MigrateError::Codec(e.to_string()))?;
-
-        self.send_msg(codec::Message::Okay).await
+        Ok(())
     }
 
     async fn finish(

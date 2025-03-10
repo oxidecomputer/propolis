@@ -50,6 +50,7 @@ toml.workspace = true
 serde.workspace = true
 serde_derive.workspace = true
 serde_json.workspace = true
+slab.workspace = true
 slog.workspace = true
 slog-async.workspace = true
 slog-bunyan.workspace = true
