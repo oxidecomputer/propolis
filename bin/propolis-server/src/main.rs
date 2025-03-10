@@ -278,6 +278,19 @@ fn main() -> anyhow::Result<()> {
     // Ensure proper setup of USDT probes
     register_probes().unwrap();
 
+    #[cfg(all(
+        feature = "omicron-build",
+        any(feature = "failure-injection", feature = "falcon")
+    ))]
+    if option_env!("PHD_BUILD") != Some("true") {
+        panic!(
+            "`omicron-build` is enabled alongside development features, \
+            this build is NOT SUITABLE for production. Set PHD_BUILD=true in \
+            the environment and rebuild propolis-server if you really need \
+            this to work."
+        );
+    }
+
     // Command line arguments.
     let args = Args::parse();
 

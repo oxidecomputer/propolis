@@ -27,7 +27,7 @@ use super::{
     StorageDevice,
 };
 
-#[cfg(not(feature = "omicron-build"))]
+#[cfg(feature = "failure-injection")]
 use super::MigrationFailure;
 
 #[cfg(feature = "falcon")]
@@ -65,7 +65,7 @@ impl From<Spec> for InstanceSpecV0 {
             serial,
             pci_pci_bridges,
             pvpanic,
-            #[cfg(not(feature = "omicron-build"))]
+            #[cfg(feature = "failure-injection")]
             migration_failure,
             #[cfg(feature = "falcon")]
             softnpu,
@@ -157,7 +157,7 @@ impl From<Spec> for InstanceSpecV0 {
             );
         }
 
-        #[cfg(not(feature = "omicron-build"))]
+        #[cfg(feature = "failure-injection")]
         if let Some(mig) = migration_failure {
             insert_component(
                 &mut spec,
@@ -310,14 +310,14 @@ impl TryFrom<InstanceSpecV0> for Spec {
                     // apply it to the builder later.
                     boot_settings = Some((device_id, settings));
                 }
-                #[cfg(feature = "omicron-build")]
+                #[cfg(not(feature = "failure-injection"))]
                 ComponentV0::MigrationFailureInjector(_) => {
                     return Err(ApiSpecError::FeatureCompiledOut {
                         component: device_id,
-                        feature: "omicron-build",
+                        feature: "failure-injection",
                     });
                 }
-                #[cfg(not(feature = "omicron-build"))]
+                #[cfg(feature = "failure-injection")]
                 ComponentV0::MigrationFailureInjector(mig) => {
                     builder.add_migration_failure_device(MigrationFailure {
                         id: device_id,

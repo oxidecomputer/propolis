@@ -814,7 +814,7 @@ impl MachineInitializer<'_> {
         Ok(())
     }
 
-    #[cfg(not(feature = "omicron-build"))]
+    #[cfg(feature = "failure-injection")]
     pub fn initialize_test_devices(&mut self) {
         use propolis::hw::testdev::{
             MigrationFailureDevice, MigrationFailures,
