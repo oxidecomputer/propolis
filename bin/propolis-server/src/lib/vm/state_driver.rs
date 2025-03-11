@@ -141,10 +141,26 @@ pub(super) enum VmStartReason {
     ExplicitRequest,
 }
 
+/// The outcome of a request to start a VM.
 enum VmStartOutcome {
     Succeeded,
     Failed,
     Aborted,
+}
+
+impl VmStartOutcome {
+    /// If this start outcome implies that the state driver should return
+    /// immediately and allow the VM to be torn down, this routine returns
+    /// `Some(state)` where `state` is the final VM state to return from the
+    /// driver. If the driver should continue running the VM, this routine
+    /// returns `None`.
+    fn final_vm_state(&self) -> Option<InstanceState> {
+        match self {
+            Self::Succeeded => None,
+            Self::Failed => Some(InstanceState::Failed),
+            Self::Aborted => Some(InstanceState::Destroyed),
+        }
+    }
 }
 
 /// A kind of event the state driver can handle.
@@ -489,10 +505,16 @@ impl StateDriver {
         info!(self.log, "state driver launched");
 
         let final_state = if migrated_in {
-            match self.start_vm(VmStartReason::MigratedIn).await {
-                VmStartOutcome::Succeeded => self.event_loop().await,
-                VmStartOutcome::Failed => InstanceState::Failed,
-                VmStartOutcome::Aborted => InstanceState::Destroyed,
+            // If the final state is known merely from the attempt to start the
+            // VM, return it immediately; otherwise, run the event loop and wait
+            // for it to return the final state.
+            match self
+                .start_vm(VmStartReason::MigratedIn)
+                .await
+                .final_vm_state()
+            {
+                None => self.event_loop().await,
+                Some(s) => s,
             }
         } else {
             self.event_loop().await
@@ -575,7 +597,12 @@ impl StateDriver {
             info!(self.log, "sending start request to {}", name);
             let res = dev.start();
             if let Err(e) = res {
-                error!(self.log, "startup failed for {}: {:?}", name, e);
+                error!(
+                    self.log, "device start() returned an error";
+                    "device" => %name,
+                    "error" => %e
+                );
+
                 return VmStartOutcome::Failed;
             }
         }
@@ -599,7 +626,9 @@ impl StateDriver {
                 if let Err(e) = &res {
                     error!(
                         log,
-                        "startup failed for block backend {}: {:?}", name, e
+                        "block backend start() returned an error";
+                        "backend" => %name,
+                        "error" => %e
                     );
 
                     return res;
@@ -712,6 +741,9 @@ impl StateDriver {
                         result_tx,
                     },
                 ) => {
+                    // The API caller who requested this operation can hang up
+                    // and drop the receiver. This isn't fatal; just keep
+                    // starting the VM if it happens.
                     let _ = result_tx.send(
                         self.reconfigure_crucible_volume(
                             &backend_id,
@@ -795,14 +827,17 @@ impl StateDriver {
     ) -> HandleEventOutcome {
         match request {
             ExternalRequest::State(StateChangeRequest::Start) => {
-                match self.start_vm(VmStartReason::ExplicitRequest).await {
-                    VmStartOutcome::Succeeded => HandleEventOutcome::Continue,
-                    VmStartOutcome::Failed => HandleEventOutcome::Exit {
-                        final_state: InstanceState::Failed,
-                    },
-                    VmStartOutcome::Aborted => HandleEventOutcome::Exit {
-                        final_state: InstanceState::Destroyed,
-                    },
+                // If this start attempt produces a terminal VM state, return it
+                // to the driver and indicate that the driver should exit.
+                match self
+                    .start_vm(VmStartReason::ExplicitRequest)
+                    .await
+                    .final_vm_state()
+                {
+                    None => HandleEventOutcome::Continue,
+                    Some(final_state) => {
+                        HandleEventOutcome::Exit { final_state }
+                    }
                 }
             }
             ExternalRequest::State(StateChangeRequest::MigrateAsSource {
