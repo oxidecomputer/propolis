@@ -4609,6 +4609,7 @@ dependencies = [
  "propolis",
  "propolis_api_types",
  "propolis_types",
+ "proptest",
  "reqwest 0.12.7",
  "rfb",
  "rgb_frame",
