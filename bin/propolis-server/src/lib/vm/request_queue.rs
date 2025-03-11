@@ -466,15 +466,16 @@ impl ExternalRequestQueue {
                     }
                 }
 
-                // As with reboots, deny requests to stop a VM that might
-                // migrate out first, since the request may need to be directed
-                // to the migration target.
+                // Always queue requests to stop a VM unless one is already
+                // present.
+                //
+                // Note that if the VM migrates out before this request is
+                // processed, then the "logical" VM is still running (in another
+                // Propolis). The client is responsible for tracking any
+                // outstanding migrations and directing its stop requests
+                // accordingly.
                 ExternalRequest::State(StateChangeRequest::Stop) => {
-                    if self.awaiting_migration_out {
-                        return Err(
-                            RequestDeniedReason::InvalidForMigrationSource,
-                        );
-                    } else if self.awaiting_stop {
+                    if self.awaiting_stop {
                         return Ok(false);
                     }
                 }
@@ -898,12 +899,8 @@ mod test {
                     }
 
                     RequestKind::Stop => {
-                        if !migrating_out {
-                            assert!(result.is_ok());
-                            stop_requested = true;
-                        } else {
-                            assert!(result.is_err());
-                        }
+                        assert!(result.is_ok());
+                        stop_requested = true;
                     }
 
                     RequestKind::Reboot => {
@@ -1155,13 +1152,8 @@ mod test {
                     }
                 }
                 RequestKind::Stop => {
+                    assert!(result.is_ok());
                     if self.halted || self.stop_requested {
-                        assert!(result.is_ok());
-                        return;
-                    }
-
-                    if self.migrate_out_requested {
-                        assert!(result.is_err());
                         return;
                     }
 
