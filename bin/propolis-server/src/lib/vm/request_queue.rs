@@ -585,6 +585,7 @@ impl Drop for ExternalRequestQueue {
 mod test {
     use super::*;
 
+    use proptest::prelude::*;
     use uuid::Uuid;
 
     fn test_logger() -> slog::Logger {
@@ -639,6 +640,19 @@ mod test {
                     Self::State(StateChangeRequest::MigrateAsSource { .. })
                 ),
                 "expected migrate as source request, got {self:?}"
+            );
+        }
+
+        #[track_caller]
+        fn assert_reconfigure_crucible(&self) {
+            assert!(
+                matches!(
+                    self,
+                    Self::Component(
+                        ComponentChangeRequest::ReconfigureCrucibleVolume { .. }
+                    )
+                ),
+                "expected Crucible reconfiguration request, got {self:?}"
             );
         }
     }
@@ -809,5 +823,230 @@ mod test {
         drop(queue);
         let err = rx.await.unwrap().unwrap_err();
         assert_eq!(err.status_code, hyper::StatusCode::GONE);
+    }
+
+    /// A helper for generating requests as part of a property testing strategy.
+    /// `proptest` requires values that are the output of a `Strategy` to be
+    /// `Clone`, which `ExternalRequest` is not. To get around this, create a
+    /// strategy that returns variants of this enum and have a `From` impl that
+    /// then creates requests of the appropriate kind.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum RequestKind {
+        Start { will_succeed: bool },
+        Stop,
+        Reboot,
+        Migrate { will_succeed: bool },
+        ReconfigureCrucible,
+    }
+
+    impl From<RequestKind> for ExternalRequest {
+        fn from(value: RequestKind) -> Self {
+            match value {
+                RequestKind::Start { will_succeed: _ } => {
+                    ExternalRequest::start()
+                }
+                RequestKind::Stop => ExternalRequest::stop(),
+                RequestKind::Reboot => ExternalRequest::reboot(),
+                RequestKind::Migrate { will_succeed: _ } => {
+                    make_migrate_as_source_request()
+                }
+                RequestKind::ReconfigureCrucible => {
+                    make_reconfigure_crucible_request()
+                }
+            }
+        }
+    }
+
+    fn request_strategy() -> impl Strategy<Value = RequestKind> {
+        prop_oneof![
+            Just(RequestKind::Start { will_succeed: true }),
+            Just(RequestKind::Start { will_succeed: false }),
+            Just(RequestKind::Stop),
+            Just(RequestKind::Reboot),
+            Just(RequestKind::Migrate { will_succeed: true }),
+            Just(RequestKind::Migrate { will_succeed: false }),
+            Just(RequestKind::ReconfigureCrucible),
+        ]
+    }
+
+    proptest! {
+        // Tests the behavior of the request queue in circumstances where start
+        // requests are queued, but never actually acknowledged.
+        #[test]
+        fn request_queuing_before_start_acknowledged(
+            reqs in prop::collection::vec(request_strategy(), 0..100)
+        ) {
+            let mut queue =
+                ExternalRequestQueue::new(test_logger(), InstanceAutoStart::No);
+
+            let mut started = false;
+            let mut stop_requested = false;
+            let mut migrating_out = false;
+            for req in reqs {
+                let result = queue.try_queue(req.into());
+                match req {
+                    RequestKind::Start { .. } => {
+                        if !stop_requested {
+                            assert!(result.is_ok());
+                            started = true;
+                        } else {
+                            assert!(result.is_err());
+                        }
+                    }
+
+                    RequestKind::Stop => {
+                        if !migrating_out {
+                            assert!(result.is_ok());
+                            stop_requested = true;
+                        } else {
+                            assert!(result.is_err());
+                        }
+                    }
+
+                    RequestKind::Reboot => {
+                        assert!(result.is_err());
+                    }
+
+                    RequestKind::Migrate { .. } => {
+                        if started && !stop_requested && !migrating_out {
+                            assert!(result.is_ok());
+                            migrating_out = true;
+                        } else {
+                            assert!(result.is_err());
+                        }
+                    }
+
+                    RequestKind::ReconfigureCrucible => {
+                        assert!(result.is_ok());
+                    }
+                }
+            }
+        }
+
+        // Tests the behavior of the request queue in circumstances where every
+        // request made of the state driver completes immediately.
+        #[test]
+        fn request_queuing_with_immediate_dequeueing(
+            reqs in prop::collection::vec(request_strategy(), 0..100)
+        ) {
+            let mut queue =
+                ExternalRequestQueue::new(test_logger(), InstanceAutoStart::No);
+
+            // True once a start request has been queued.
+            let mut start_requested = false;
+
+            // True once the VM reaches a terminal state (stopped, failed,
+            // migrated out).
+            let mut halted = false;
+            for req in reqs {
+                let result = queue.try_queue(req.into());
+                match req {
+                    // Start requests always succeed (though they may be
+                    // ignored and not queued) on a non-halted VM.
+                    RequestKind::Start { will_succeed } => {
+                        if !halted {
+                            assert!(result.is_ok());
+
+                            // This request is only enqueued if it is the first
+                            // request to start.
+                            if !start_requested {
+                                start_requested = true;
+                                queue.pop_front().unwrap().assert_start();
+                                let completed = CompletedRequest::Start {
+                                    succeeded: will_succeed
+                                };
+
+                                queue.notify_request_completed(completed);
+
+                                // Telling the queue that a start attempt failed
+                                // moves the queue to a terminal state.
+                                if !will_succeed {
+                                    halted = true;
+                                }
+                            } else {
+                                assert!(queue.is_empty());
+                            }
+                        } else {
+                            assert!(result.is_err());
+                            assert!(queue.is_empty());
+                        }
+                    }
+
+                    // Stop requests always succeed (they are never denied), but
+                    // they are ignored for VMs that have already halted.
+                    RequestKind::Stop => {
+                        assert!(result.is_ok());
+                        if !halted {
+                            queue.pop_front().unwrap().assert_stop();
+                            queue.notify_request_completed(
+                                CompletedRequest::Stop
+                            );
+
+                            halted = true;
+                        } else {
+                            assert!(queue.is_empty());
+                        }
+                    }
+
+                    // Reboot requests are always enqueued if the VM is active.
+                    // They are ignored if there's a pending migration out, but
+                    // in this test there is never a *pending* migration out,
+                    // since all requests are dequeued and processed
+                    // immediately.
+                    RequestKind::Reboot => {
+                        if start_requested && !halted {
+                            assert!(result.is_ok());
+                            queue.pop_front().unwrap().assert_reboot();
+                            queue.notify_request_completed(
+                                CompletedRequest::Reboot
+                            );
+                        } else {
+                            assert!(result.is_err());
+                            assert!(queue.is_empty());
+                        }
+                    }
+
+                    // Migration requests have the same disposition as reboot
+                    // requests.
+                    RequestKind::Migrate { will_succeed } => {
+                        if start_requested && !halted {
+                            assert!(result.is_ok());
+                            queue
+                                .pop_front()
+                                .unwrap()
+                                .assert_migrate_as_source();
+
+
+                            let completed = CompletedRequest::MigrationOut {
+                                succeeded: will_succeed
+                            };
+
+                            queue.notify_request_completed(completed);
+                            if will_succeed {
+                                halted = true;
+                            }
+                        } else {
+                            assert!(result.is_err());
+                            assert!(queue.is_empty());
+                        }
+                    }
+
+                    // Crucible reconfiguration requests are always queued for
+                    // unhalted VMs.
+                    RequestKind::ReconfigureCrucible => {
+                        if !halted {
+                            assert!(result.is_ok());
+                            queue
+                                .pop_front()
+                                .unwrap()
+                                .assert_reconfigure_crucible();
+                        } else {
+                            assert!(result.is_err());
+                            assert!(queue.is_empty());
+                        }
+                    }
+                }
+            }
+        }
     }
 }

@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 467749978aea2988f7790844904751ed5f0797f700949e702db74ae430a659e0 # shrinks to reqs = [Migrate, Stop]
+cc 03ba07e9b5a99141bddd9b878bff86845a6da9eb1aa015b3afc7b3ebfed7a6d1 # shrinks to reqs = [Start, Stop, Migrate]
+cc 67a067444d475068e86b43528884319ff178d6d9038a3d9223c32789f871baa3 # shrinks to reqs = [Start, Migrate]
+cc b3df4b82bdb87e3533f4bd47f0a3ee8be21893c0afc15b472281b2a79006aadf # shrinks to reqs = [Migrate]
+cc 3430b43ba860946e5feb7b3b0246623708efb1465dd4fe7a604ddf479d4dc3ae # shrinks to reqs = [Start { will_succeed: true }, Migrate { will_succeed: false }, Reboot]
