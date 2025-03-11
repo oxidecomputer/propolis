@@ -1049,4 +1049,256 @@ mod test {
             }
         }
     }
+
+    /// An operation that can be performed during a [`QueueDequeueTest`].
+    #[derive(Clone, Copy, Debug)]
+    enum QueueOp {
+        Enqueue(RequestKind),
+        Dequeue,
+    }
+
+    fn queue_op_strategy() -> impl Strategy<Value = QueueOp> {
+        prop_oneof![
+            request_strategy().prop_map(QueueOp::Enqueue),
+            Just(QueueOp::Dequeue)
+        ]
+    }
+
+    /// A helper that queues and dequeues requests in a proptest-generated
+    /// order and that sends fake completion notifications back to the request
+    /// queue.
+    struct QueueDequeueTest {
+        /// The external request queue under test.
+        queue: ExternalRequestQueue,
+
+        /// The set of state change requests that the helper expects to see from
+        /// the external queue.
+        expected_state: VecDeque<RequestKind>,
+
+        /// The set of component change requests that the helper expects to see
+        /// from the external queue.
+        expected_component: VecDeque<RequestKind>,
+
+        /// True if the helper has queued a request to start its fake VM.
+        start_requested: bool,
+
+        /// True if the helper has successfully started its fake VM.
+        started: bool,
+
+        /// True if the helper has queued a request to stop its fake VM.
+        stop_requested: bool,
+
+        /// True if the helper has an outstanding request to reboot its fake VM.
+        reboot_requested: bool,
+
+        /// True if the helper has an outstanding request to migrate its fake
+        /// VM.
+        migrate_out_requested: bool,
+
+        /// True if the fake VM is halted (for any reason).
+        halted: bool,
+    }
+
+    impl QueueDequeueTest {
+        fn new() -> Self {
+            Self {
+                queue: ExternalRequestQueue::new(
+                    test_logger(),
+                    InstanceAutoStart::No,
+                ),
+                expected_state: Default::default(),
+                expected_component: Default::default(),
+                start_requested: false,
+                started: false,
+                stop_requested: false,
+                reboot_requested: false,
+                migrate_out_requested: false,
+                halted: false,
+            }
+        }
+
+        fn run(&mut self, ops: Vec<QueueOp>) {
+            for op in ops {
+                match op {
+                    QueueOp::Enqueue(request) => self.queue_request(request),
+                    QueueOp::Dequeue => {
+                        self.dequeue_request();
+                        if self.halted {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        /// Submits the supplied `request` to the external request queue,
+        /// determines the expected result of that submission based on the
+        /// helper's current flags, and asserts that the result matches the
+        /// helper's expectation. If the helper expects the request to be
+        /// queued, it pushes an entry to its internal expected-change queues.
+        fn queue_request(&mut self, request: RequestKind) {
+            let result = self.queue.try_queue(request.into());
+            match request {
+                RequestKind::Start { .. } => {
+                    if self.halted || self.stop_requested {
+                        assert!(result.is_err());
+                        return;
+                    }
+
+                    assert!(result.is_ok());
+                    if !self.start_requested {
+                        self.start_requested = true;
+                        self.expected_state.push_back(request);
+                    }
+                }
+                RequestKind::Stop => {
+                    if self.halted || self.stop_requested {
+                        assert!(result.is_ok());
+                        return;
+                    }
+
+                    if self.migrate_out_requested {
+                        assert!(result.is_err());
+                        return;
+                    }
+
+                    self.stop_requested = true;
+                    self.expected_state.push_back(request);
+                }
+                RequestKind::Reboot => {
+                    if !self.started
+                        || self.halted
+                        || self.stop_requested
+                        || self.migrate_out_requested
+                    {
+                        assert!(result.is_err());
+                        return;
+                    }
+
+                    assert!(result.is_ok());
+                    if !self.reboot_requested {
+                        self.reboot_requested = true;
+                        self.expected_state.push_back(request);
+                    }
+                }
+                RequestKind::Migrate { .. } => {
+                    if (!self.started && !self.start_requested)
+                        || self.halted
+                        || self.stop_requested
+                        || self.migrate_out_requested
+                    {
+                        assert!(result.is_err());
+                        return;
+                    }
+
+                    assert!(result.is_ok());
+                    self.expected_state.push_back(request);
+                    self.migrate_out_requested = true;
+                }
+                RequestKind::ReconfigureCrucible => {
+                    if self.halted {
+                        assert!(result.is_err());
+                        return;
+                    }
+
+                    assert!(result.is_ok());
+                    self.expected_component.push_back(request);
+                }
+            }
+        }
+
+        /// Pops a request from the helper's external queue and verifies that it
+        /// matches the first request on the helper's expected-change queue. If
+        /// the requests do match, sends a completion notification to the
+        /// external queue.
+        fn dequeue_request(&mut self) {
+            let (dequeued, expected) = match (
+                self.queue.pop_front(),
+                self.expected_state
+                    .pop_front()
+                    .or_else(|| self.expected_component.pop_front()),
+            ) {
+                (None, None) => return,
+                (Some(d), None) => {
+                    panic!("dequeued request {d:?} but expected nothing")
+                }
+                (None, Some(e)) => {
+                    panic!("expected request {e:?} but dequeued nothing")
+                }
+                (Some(d), Some(e)) => (d, e),
+            };
+
+            match (dequeued, expected) {
+                (
+                    ExternalRequest::State(StateChangeRequest::Start),
+                    RequestKind::Start { will_succeed },
+                ) => {
+                    self.queue.notify_request_completed(
+                        CompletedRequest::Start { succeeded: will_succeed },
+                    );
+                    if will_succeed {
+                        self.started = true;
+                    } else {
+                        self.halted = true;
+                    }
+                }
+                (
+                    ExternalRequest::State(StateChangeRequest::Stop),
+                    RequestKind::Stop,
+                ) => {
+                    self.queue.notify_request_completed(CompletedRequest::Stop);
+                    self.halted = true;
+                }
+                (
+                    ExternalRequest::State(StateChangeRequest::Reboot),
+                    RequestKind::Reboot,
+                ) => {
+                    self.queue
+                        .notify_request_completed(CompletedRequest::Reboot);
+                    self.reboot_requested = false;
+                }
+                (
+                    ExternalRequest::State(
+                        StateChangeRequest::MigrateAsSource { .. },
+                    ),
+                    RequestKind::Migrate { will_succeed },
+                ) => {
+                    self.queue.notify_request_completed(
+                        CompletedRequest::MigrationOut {
+                            succeeded: will_succeed,
+                        },
+                    );
+                    self.migrate_out_requested = false;
+                    if will_succeed {
+                        self.halted = true;
+                    }
+                }
+                (
+                    ExternalRequest::Component(
+                        ComponentChangeRequest::ReconfigureCrucibleVolume {
+                            ..
+                        },
+                    ),
+                    RequestKind::ReconfigureCrucible,
+                ) => {}
+                (d, e) => panic!(
+                    "dequeued request {d:?} but expected to dequeue {e:?}\n\
+                    remaining queue: {:#?}\n\
+                    remaining expected (state): {:#?}\n\
+                    remaining expected (components): {:#?}",
+                    self.queue, self.expected_state, self.expected_component
+                ),
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn request_queue_dequeue(
+            ops in prop::collection::vec(queue_op_strategy(), 0..100)
+        ) {
+            let mut test = QueueDequeueTest::new();
+            test.run(ops);
+        }
+    }
 }
