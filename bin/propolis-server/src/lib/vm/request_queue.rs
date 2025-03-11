@@ -331,44 +331,74 @@ impl ExternalRequestQueue {
         &mut self,
         request: ExternalRequest,
     ) -> Result<(), RequestDeniedReason> {
-        let request_str = format!("{request:?}");
-        let res = self.try_queue_internal(request);
-        match res {
+        let should_queue = self.should_queue(&request);
+        match should_queue {
             Ok(true) => {
                 info!(
                     &self.log,
                     "enqueued external request";
-                    "request" => request_str
-                )
+                    "request" => ?request
+                );
             }
             Ok(false) => {
                 info!(
                     &self.log,
                     "ignored external request";
-                    "request" => request_str
-                )
+                    "request" => ?request
+                );
+
+                return Ok(());
             }
             Err(reason) => {
                 info!(
                     &self.log,
                     "denied external request";
-                    "request" => request_str,
+                    "request" => ?request,
                     "reason" => %reason
-                )
+                );
+
+                return Err(reason);
             }
         }
 
-        res.map(|_| ())
+        match request {
+            ExternalRequest::State(StateChangeRequest::Start) => {
+                assert_eq!(self.state, QueueState::NotStarted);
+                self.state = QueueState::StartPending;
+            }
+            ExternalRequest::State(StateChangeRequest::MigrateAsSource {
+                ..
+            }) => {
+                assert!(!self.awaiting_migration_out);
+                self.awaiting_migration_out = true;
+            }
+            ExternalRequest::State(StateChangeRequest::Reboot) => {
+                assert!(!self.awaiting_reboot);
+                self.awaiting_reboot = true;
+            }
+            ExternalRequest::State(StateChangeRequest::Stop) => {
+                assert!(!self.awaiting_stop);
+                self.awaiting_stop = true;
+            }
+            ExternalRequest::Component(_) => {}
+        }
+
+        match request {
+            ExternalRequest::State(s) => self.state_queue.push_back(s),
+            ExternalRequest::Component(c) => self.component_queue.push_back(c),
+        }
+
+        Ok(())
     }
 
-    /// Attempts to place `request` on the queue, returning
+    /// Determines whether the supplied `request` should be queued, returning:
     ///
     /// - `Ok(true)` if the request was enqueued,
     /// - `Ok(false)` if the request was ignored, and
     /// - `Err(reason)` if the request was denied.
-    fn try_queue_internal(
+    fn should_queue(
         &mut self,
-        request: ExternalRequest,
+        request: &ExternalRequest,
     ) -> Result<bool, RequestDeniedReason> {
         // If the queue is in a terminal state, deny the request straightaway
         // (unless it's a stop request, which can be ignored for idempotency).
@@ -462,33 +492,6 @@ impl ExternalRequestQueue {
                 ) => {}
             }
         };
-
-        match request {
-            ExternalRequest::State(StateChangeRequest::Start) => {
-                assert_eq!(self.state, QueueState::NotStarted);
-                self.state = QueueState::StartPending;
-            }
-            ExternalRequest::State(StateChangeRequest::MigrateAsSource {
-                ..
-            }) => {
-                assert!(!self.awaiting_migration_out);
-                self.awaiting_migration_out = true;
-            }
-            ExternalRequest::State(StateChangeRequest::Reboot) => {
-                assert!(!self.awaiting_reboot);
-                self.awaiting_reboot = true;
-            }
-            ExternalRequest::State(StateChangeRequest::Stop) => {
-                assert!(!self.awaiting_stop);
-                self.awaiting_stop = true;
-            }
-            ExternalRequest::Component(_) => {}
-        }
-
-        match request {
-            ExternalRequest::State(s) => self.state_queue.push_back(s),
-            ExternalRequest::Component(c) => self.component_queue.push_back(c),
-        }
 
         Ok(true)
     }
