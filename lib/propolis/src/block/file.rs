@@ -5,8 +5,6 @@
 use std::fs::{metadata, File, OpenOptions};
 use std::io::{Error, ErrorKind, Result};
 use std::num::NonZeroUsize;
-use std::os::raw::c_int;
-use std::os::unix::fs::FileTypeExt;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -14,17 +12,12 @@ use std::sync::{Arc, Mutex};
 use crate::accessors::MemAccessor;
 use crate::block::{self, DeviceInfo};
 use crate::tasks::ThreadGroup;
-use crate::util::ioctl;
 use crate::vmm::{MappingExt, MemCtx};
 
 use anyhow::Context;
 
 // XXX: completely arb for now
 const MAX_WORKERS: usize = 32;
-
-const DKIOC: i32 = 0x04 << 8;
-const DKIOCGETWCE: i32 = DKIOC | 36;
-const DKIOCSETWCE: i32 = DKIOC | 37;
 
 pub struct FileBackend {
     state: Arc<WorkerState>,
@@ -38,6 +31,7 @@ struct WorkerState {
 
     /// Write-Cache-Enable state (if supported) of the underlying device
     wce_state: Mutex<Option<WceState>>,
+    discard_mech: Option<dkioc::DiscardMech>,
 
     info: block::DeviceInfo,
     skip_flush: bool,
@@ -47,17 +41,18 @@ struct WceState {
     current: bool,
 }
 impl WorkerState {
-    fn new(fp: File, info: block::DeviceInfo, skip_flush: bool) -> Arc<Self> {
-        let wce_state = match info.read_only {
-            true => None,
-            false => get_wce(&fp)
-                .map(|initial| WceState { initial, current: initial }),
-        };
-
+    fn new(
+        fp: File,
+        info: block::DeviceInfo,
+        skip_flush: bool,
+        wce_state: Option<WceState>,
+        discard_mech: Option<dkioc::DiscardMech>,
+    ) -> Arc<Self> {
         let state = WorkerState {
             attachment: block::BackendAttachment::new(),
             fp,
             wce_state: Mutex::new(wce_state),
+            discard_mech,
             skip_flush,
             info,
         };
@@ -72,6 +67,10 @@ impl WorkerState {
         while let Some(req) = self.attachment.block_for_req() {
             if self.info.read_only && req.oper().is_write() {
                 req.complete(block::Result::ReadOnly);
+                continue;
+            }
+            if self.discard_mech.is_none() && req.oper().is_discard() {
+                req.complete(block::Result::Unsupported);
                 continue;
             }
 
@@ -121,14 +120,28 @@ impl WorkerState {
                     self.fp.sync_data().map_err(|_| "io error")?;
                 }
             }
+            block::Operation::Discard(off, len) => {
+                if let Some(mech) = self.discard_mech {
+                    dkioc::do_discard(&self.fp, mech, off as u64, len as u64)
+                        .map_err(|_| {
+                        "io error while attempting to free block(s)"
+                    })?;
+                } else {
+                    unreachable!("handled above in processing_loop()");
+                }
+            }
         }
         Ok(())
     }
 
     fn set_wce(&self, enabled: bool) {
+        if self.info.read_only {
+            // Do not needlessly toggle the cache on a read-only disk
+            return;
+        }
         if let Some(state) = self.wce_state.lock().unwrap().as_mut() {
             if state.current != enabled {
-                if let Some(new_wce) = set_wce(&self.fp, enabled).ok() {
+                if let Some(new_wce) = dkioc::set_wce(&self.fp, enabled).ok() {
                     state.current = new_wce;
                 }
             }
@@ -141,7 +154,7 @@ impl Drop for WorkerState {
         // initially opened it.
         if let Some(state) = self.wce_state.get_mut().unwrap().as_mut() {
             if state.current != state.initial {
-                let _ = set_wce(&self.fp, state.initial);
+                let _ = dkioc::set_wce(&self.fp, state.initial);
             }
         }
     }
@@ -174,17 +187,34 @@ impl FileBackend {
 
         let fp = OpenOptions::new().read(true).write(!read_only).open(p)?;
         let len = fp.metadata().unwrap().len();
-        // TODO: attempt to query blocksize from underlying file/zvol
+        let disk_info = dkioc::disk_info(&fp);
+
+        // Do not use the device-queried block size for now. Guests get upset if
+        // this changes, and it is likely differen than the old default of 512B
         let block_size = opts.block_size.unwrap_or(block::DEFAULT_BLOCK_SIZE);
 
         let info = block::DeviceInfo {
             block_size,
             total_size: len / u64::from(block_size),
             read_only,
+            supports_discard: disk_info.discard_mech.is_some(),
         };
         let skip_flush = opts.skip_flush.unwrap_or(false);
+        let wce_state = if !read_only {
+            disk_info
+                .wce_state
+                .map(|initial| WceState { initial, current: initial })
+        } else {
+            None
+        };
         Ok(Arc::new(Self {
-            state: WorkerState::new(fp, info, skip_flush),
+            state: WorkerState::new(
+                fp,
+                info,
+                skip_flush,
+                wce_state,
+                disk_info.discard_mech,
+            ),
             worker_count,
             workers: ThreadGroup::new(),
         }))
@@ -238,30 +268,200 @@ impl block::Backend for FileBackend {
     }
 }
 
-/// Attempt to query the Write-Cache-Enable state for a given open device
-///
-/// Block devices (including "real" disks and zvols) will regard all writes as
-/// synchronous when performed via the /dev/rdsk endpoint when WCE is not
-/// enabled.  With WCE enabled, writes can be cached on the device, to be
-/// flushed later via fsync().
-fn get_wce(fp: &File) -> Option<bool> {
-    let ft = fp.metadata().ok()?.file_type();
-    if !ft.is_char_device() {
-        return None;
+mod dkioc {
+    #![allow(non_camel_case_types)]
+
+    use std::fs::File;
+    use std::io::Result;
+    use std::os::raw::{c_int, c_longlong, c_uint};
+    use std::os::unix::fs::FileTypeExt;
+    use std::os::unix::io::AsRawFd;
+
+    use crate::block::DEFAULT_BLOCK_SIZE;
+    use crate::util::ioctl;
+
+    const DKIOC: i32 = 0x04 << 8;
+    const DKIOCGETWCE: i32 = DKIOC | 36;
+    const DKIOCSETWCE: i32 = DKIOC | 37;
+    const DKIOCGMEDIAINFOEXT: i32 = DKIOC | 48;
+    const DKIOCFREE: i32 = DKIOC | 50;
+    const DKIOC_CANFREE: i32 = DKIOC | 60;
+
+    #[derive(Copy, Clone)]
+    pub(crate) enum DiscardMech {
+        /// Discard via `ioctl(DKIOCFREE)`
+        DkiocFree,
+        /// Discard via `fcntl(F_FREESP)`
+        FnctlFreesp,
     }
 
-    let mut res: c_int = 0;
-    let _ = unsafe {
-        ioctl(fp.as_raw_fd(), DKIOCGETWCE, &mut res as *mut c_int as _).ok()?
-    };
-    Some(res != 0)
-}
+    #[derive(Copy, Clone)]
+    #[allow(unused, dead_code)]
+    pub(crate) struct DiskInfo {
+        /// WCE state (if any) for disk
+        ///
+        /// Block devices (including "real" disks and zvols) will regard all writes as
+        /// synchronous when performed via the /dev/rdsk endpoint when WCE is not
+        /// enabled.  With WCE enabled, writes can be cached on the device, to be
+        /// flushed later via fsync().
+        pub wce_state: Option<bool>,
+        /// Block size of disk
+        pub block_size: u32,
+        /// Does the disk support use of DKIOCFREE or F_FREESP?
+        pub discard_mech: Option<DiscardMech>,
+    }
+    impl Default for DiskInfo {
+        fn default() -> Self {
+            Self {
+                wce_state: None,
+                block_size: DEFAULT_BLOCK_SIZE,
+                discard_mech: None,
+            }
+        }
+    }
 
-/// Attempt to set the Write-Cache-Enable state for a given open device
-fn set_wce(fp: &File, enabled: bool) -> Result<bool> {
-    let mut flag: c_int = enabled.into();
-    unsafe {
-        ioctl(fp.as_raw_fd(), DKIOCSETWCE, &mut flag as *mut c_int as _)
-            .map(|_| enabled)
+    pub(crate) fn disk_info(fp: &File) -> DiskInfo {
+        match fp.metadata() {
+            Ok(ft) if ft.file_type().is_char_device() => {
+                // Continue on to attempt DKIOC lookups on raw disk devices
+            }
+            Ok(ft) if ft.file_type().is_file() => {
+                // Assume fcntl(F_FREESP) support for files
+                return DiskInfo {
+                    discard_mech: Some(DiscardMech::FnctlFreesp),
+                    ..Default::default()
+                };
+            }
+            _ => {
+                return DiskInfo::default();
+            }
+        }
+
+        let wce_state = unsafe {
+            let mut res: c_int = 0;
+
+            ioctl(fp.as_raw_fd(), DKIOCGETWCE, &mut res as *mut c_int as _)
+                .ok()
+                .map(|_| res != 0)
+        };
+
+        let can_free = unsafe {
+            let mut res: c_int = 0;
+            ioctl(fp.as_raw_fd(), DKIOC_CANFREE, &mut res as *mut c_int as _)
+                .ok()
+                .map(|_| res != 0)
+                .unwrap_or(false)
+        };
+
+        let block_size = unsafe {
+            let mut info = dk_minfo_ext::default();
+            ioctl(
+                fp.as_raw_fd(),
+                DKIOCGMEDIAINFOEXT,
+                &mut info as *mut dk_minfo_ext as _,
+            )
+            .ok()
+            .map(|_| info.dki_pbsize)
+            .unwrap_or(DEFAULT_BLOCK_SIZE)
+        };
+
+        DiskInfo {
+            wce_state,
+            block_size,
+            discard_mech: can_free.then_some(DiscardMech::DkiocFree),
+        }
+    }
+
+    /// Attempt to set the Write-Cache-Enable state for a given open device
+    pub(crate) fn set_wce(fp: &File, enabled: bool) -> Result<bool> {
+        let mut flag: c_int = enabled.into();
+        unsafe {
+            ioctl(fp.as_raw_fd(), DKIOCSETWCE, &mut flag as *mut c_int as _)
+                .map(|_| enabled)
+        }
+    }
+
+    pub(crate) fn do_discard(
+        fp: &File,
+        mech: DiscardMech,
+        off: u64,
+        len: u64,
+    ) -> Result<()> {
+        match mech {
+            DiscardMech::DkiocFree => {
+                let mut req = dkioc_free_list {
+                    dfl_flags: 0,
+                    dfl_num_exts: 1,
+                    dfl_offset: 0,
+                    dfl_exts: [dkioc_free_list_ext {
+                        dfle_start: off,
+                        dfle_length: len,
+                    }],
+                };
+                unsafe {
+                    ioctl(
+                        fp.as_raw_fd(),
+                        DKIOCFREE,
+                        &mut req as *mut dkioc_free_list as _,
+                    )?;
+                };
+                Ok(())
+            }
+            DiscardMech::FnctlFreesp => {
+                let mut fl = libc::flock {
+                    l_type: libc::F_WRLCK as i16,
+                    l_whence: 0,
+                    l_start: off as i64,
+                    l_len: len as i64,
+                    // Ugly hack to zero out struct members we do not care about
+                    ..unsafe { std::mem::MaybeUninit::zeroed().assume_init() }
+                };
+
+                // Make this buildable on non-illumos, despite the F_FREESP
+                // fnctl command being unavailable elsewhere.
+                #[cfg(target_os = "illumos")]
+                let fcntl_cmd = libc::F_FREESP;
+                #[cfg(not(target_os = "illumos"))]
+                let fcntl_cmd = -1;
+
+                let res = unsafe {
+                    libc::fcntl(
+                        fp.as_raw_fd(),
+                        fcntl_cmd,
+                        &mut fl as *mut libc::flock as *mut libc::c_void,
+                    )
+                };
+                if res != 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    #[derive(Copy, Clone, Default)]
+    #[repr(C)]
+    struct dkioc_free_list_ext {
+        dfle_start: u64,
+        dfle_length: u64,
+    }
+
+    #[derive(Copy, Clone, Default)]
+    #[repr(C)]
+    struct dkioc_free_list {
+        dfl_flags: u64,
+        dfl_num_exts: u64,
+        dfl_offset: u64,
+        dfl_exts: [dkioc_free_list_ext; 1],
+    }
+
+    #[derive(Copy, Clone, Default)]
+    #[repr(C)]
+    struct dk_minfo_ext {
+        dki_media_type: c_uint,
+        dki_lbsize: c_uint,
+        dki_capacity: c_longlong,
+        dki_pbsize: c_uint,
     }
 }

@@ -36,6 +36,11 @@ impl WorkingState {
                 req.complete(block::Result::ReadOnly);
                 continue;
             }
+            if req.op.is_discard() {
+                // Punt on discard support
+                req.complete(block::Result::Unsupported);
+                continue;
+            }
 
             let mem = match acc_mem.access() {
                 Some(m) => m,
@@ -84,6 +89,9 @@ impl WorkingState {
             block::Operation::Flush => {
                 // nothing to do
             }
+            block::Operation::Discard(..) => {
+                unreachable!("handled in processing_loop()");
+            }
         }
 
         Ok(())
@@ -119,6 +127,7 @@ impl InMemoryBackend {
                     block_size,
                     total_size: len as u64 / u64::from(block_size),
                     read_only: opts.read_only.unwrap_or(false),
+                    supports_discard: false,
                 },
             }),
             worker_count,
