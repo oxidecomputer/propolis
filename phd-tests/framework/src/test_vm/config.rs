@@ -387,14 +387,14 @@ impl<'dr> VmConfig<'dr> {
             sled_serial: sled_id.to_string(),
         };
 
-        Ok(VmSpec {
-            vm_name: vm_name.clone(),
-            instance_spec: spec,
+        Ok(VmSpec::new(
+            vm_name.clone(),
+            spec,
             disk_handles,
             guest_os_kind,
             bootrom_path,
             metadata,
-        })
+        ))
     }
 }
 

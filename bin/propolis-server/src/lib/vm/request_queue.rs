@@ -88,10 +88,6 @@ impl std::fmt::Debug for StateChangeRequest {
 pub enum ComponentChangeRequest {
     /// Attempts to update the volume construction request for the supplied
     /// Crucible volume.
-    ///
-    /// TODO: Due to https://github.com/oxidecomputer/crucible/issues/871, this
-    /// is only allowed once the VM is started and the volume has activated, but
-    /// it should be allowed even before the VM has started.
     ReconfigureCrucibleVolume {
         /// The ID of the Crucible backend in the VM's Crucible backend map.
         backend_id: SpecKey,
@@ -356,7 +352,6 @@ impl ExternalRequestQueue {
                     "request" => ?request,
                     "reason" => %reason
                 );
-
                 return Err(reason);
             }
         }
@@ -795,7 +790,6 @@ mod test {
     fn mutation_disallowed_after_stopped() {
         let mut queue =
             ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
-
         queue.notify_request_completed(CompletedRequest::Start {
             succeeded: true,
         });

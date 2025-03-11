@@ -155,8 +155,8 @@ enum Command {
     /// Call the VolumeConstructionRequest replace endpoint
     Vcr {
         /// Uuid for the disk
-        #[clap(short = 'u', action)]
-        uuid: Uuid,
+        #[clap(short = 'd', action)]
+        disk_id: String,
 
         /// File with a JSON InstanceVcrReplace struct
         #[clap(long, action)]
@@ -510,7 +510,7 @@ async fn new_instance(
 
 async fn replace_vcr(
     client: &Client,
-    id: Uuid,
+    id: String,
     vcr_replace: InstanceVcrReplace,
 ) -> anyhow::Result<()> {
     // Try to call the endpoint
@@ -941,9 +941,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Monitor => monitor(addr).await?,
         Command::InjectNmi => inject_nmi(&client).await?,
-        Command::Vcr { uuid, vcr_replace } => {
+        Command::Vcr { disk_id, vcr_replace } => {
             let replace: InstanceVcrReplace = parse_json_file(&vcr_replace)?;
-            replace_vcr(&client, uuid, replace).await?
+            replace_vcr(&client, disk_id, replace).await?
         }
     }
 
