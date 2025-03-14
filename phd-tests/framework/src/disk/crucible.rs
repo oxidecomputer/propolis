@@ -5,7 +5,7 @@
 //! Abstractions for Crucible-backed disks.
 
 use std::{
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     path::{Path, PathBuf},
     process::Stdio,
     sync::Mutex,
@@ -47,8 +47,22 @@ impl Drop for DataDirectory {
 #[derive(Debug)]
 struct Downstairs {
     process_handle: std::process::Child,
+
+    /// The address on which this downstairs is serving its API.
     address: SocketAddr,
+
+    /// The address to insert as a connection target when constructing a VCR
+    /// that refers to this downstairs. If `None`, the downstairs's API address
+    /// is used instead.
+    vcr_address_override: Option<SocketAddr>,
+
     data_dir: DataDirectory,
+}
+
+impl Downstairs {
+    fn vcr_address(&self) -> SocketAddr {
+        self.vcr_address_override.unwrap_or(self.address)
+    }
 }
 
 impl Drop for Downstairs {
@@ -106,6 +120,39 @@ impl CrucibleDisk {
     /// backend spec for this disk.
     pub fn set_generation(&self, generation: u64) {
         self.inner.lock().unwrap().generation = generation;
+    }
+
+    /// Changes this disk's downstairs configuration so that the returned IP
+    /// address of the first downstairs is an IPv6 black hole instead of its
+    /// actual address. This will prevent VMs from activating this disk until
+    /// the VCR is replaced with one bearing the correct IP address.
+    pub fn enable_vcr_black_hole(&self) {
+        info!(disk = self.device_name.as_str(), "enabling vcr black hole");
+
+        // 100::/64 is the IPv6 discard prefix (per RFC 6666).
+        let address = SocketAddr::V6(SocketAddrV6::new(
+            Ipv6Addr::new(0x100, 0, 0, 0, 0, 0, 0, 0),
+            9000,
+            0,
+            0,
+        ));
+
+        let mut inner = self.inner.lock().unwrap();
+
+        // Crucible rejects VCR replacement requests that change more than one
+        // downstairs address, so just invalidate the first downstairs address.
+        // This ensures that if the black hole is disabled, subsequent VCRs are
+        // valid replacements for the ones produced while the black hole was
+        // enabled.
+        inner.downstairs_instances[0].vcr_address_override = Some(address);
+    }
+
+    /// Ensures that this disk's downstairs configuration will return the
+    /// correct addresses for all its downstairs instances.
+    pub fn disable_vcr_black_hole(&self) {
+        info!(disk = self.device_name.as_str(), "disabling vcr black hole");
+        let mut inner = self.inner.lock().unwrap();
+        inner.downstairs_instances[0].vcr_address_override = None;
     }
 }
 
@@ -302,6 +349,7 @@ impl Inner {
                     stderr,
                 )?,
                 address: SocketAddr::V4(addr),
+                vcr_address_override: None,
                 data_dir: dir,
             };
 
@@ -338,8 +386,11 @@ impl Inner {
     }
 
     fn vcr(&self, disk_id: Uuid) -> VolumeConstructionRequest {
-        let downstairs_addrs =
-            self.downstairs_instances.iter().map(|ds| ds.address).collect();
+        let downstairs_addrs = self
+            .downstairs_instances
+            .iter()
+            .map(Downstairs::vcr_address)
+            .collect();
 
         VolumeConstructionRequest::Volume {
             id: disk_id,
