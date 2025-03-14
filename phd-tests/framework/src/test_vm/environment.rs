@@ -16,15 +16,31 @@ pub enum VmLocation {
     // TODO: Support remote VMs.
 }
 
+/// Specifies where test VMs should report metrics to, if anywhere.
+#[derive(Clone, Copy, Debug)]
+pub enum MetricsLocation {
+    /// Oximeter metrics should be reported to a server colocated with the test
+    /// VM to be started.
+    Local,
+    // When the time comes to support remote VMs, it will presumably be useful
+    // to have local and (perhaps multiple) remote VMs report metrics to the
+    // same server. But we don't support remote VMs yet.
+}
+
 #[derive(Clone, Debug)]
 pub struct EnvironmentSpec {
     pub(crate) location: VmLocation,
     pub(crate) propolis_artifact: String,
+    pub(crate) metrics: Option<MetricsLocation>,
 }
 
 impl EnvironmentSpec {
     pub(crate) fn new(location: VmLocation, propolis_artifact: &str) -> Self {
-        Self { location, propolis_artifact: propolis_artifact.to_owned() }
+        Self {
+            location,
+            propolis_artifact: propolis_artifact.to_owned(),
+            metrics: None,
+        }
     }
 
     pub fn location(&mut self, location: VmLocation) -> &mut Self {
@@ -34,6 +50,11 @@ impl EnvironmentSpec {
 
     pub fn propolis(&mut self, artifact_name: &str) -> &mut Self {
         artifact_name.clone_into(&mut self.propolis_artifact);
+        self
+    }
+
+    pub fn metrics(&mut self, metrics: Option<MetricsLocation>) -> &mut Self {
+        self.metrics = metrics;
         self
     }
 
@@ -75,6 +96,18 @@ impl<'a> Environment<'a> {
                     .port_allocator
                     .next()
                     .context("getting VNC server port")?;
+                let metrics_addr = builder.metrics.and_then(|m| match m {
+                    MetricsLocation::Local => {
+                        // If the test requests metrics are local, we'll start
+                        // an Oximeter stand-in for this VM when setting up this
+                        // environment later. `start_local_vm` will patch in the
+                        // actual server address when it has created one.
+                        //
+                        // If the VM is to be started remotely but requests
+                        // "Local" metrics, that's probably an error.
+                        None
+                    }
+                });
                 let params = ServerProcessParameters {
                     server_path: propolis_server,
                     data_dir: framework.tmp_directory.as_path(),
@@ -82,11 +115,12 @@ impl<'a> Environment<'a> {
                         Ipv4Addr::new(127, 0, 0, 1),
                         server_port,
                     ),
+                    metrics_addr,
                     vnc_addr: SocketAddrV4::new(
                         Ipv4Addr::new(127, 0, 0, 1),
                         vnc_port,
                     ),
-                    log_mode: framework.server_log_mode,
+                    log_config: framework.log_config,
                 };
                 Ok(Self::Local(params))
             }
