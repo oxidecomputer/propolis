@@ -72,7 +72,7 @@ if [ "$PHD_DEFAULT_ARTIFACT"x != "x" ]; then
     args=("${args[@]}" '--default-guest-artifact' $PHD_DEFAULT_ARTIFACT)
 
     echo "fetching artifact from Catacomb..."
-    curl -sS -o $artifactdir/$PHD_DEFAULT_ARTIFACT_FILENAME \
+    pfexec curl -sS -o $artifactdir/$PHD_DEFAULT_ARTIFACT_FILENAME \
         http://catacomb.eng.oxide.computer:12346/$PHD_DEFAULT_ARTIFACT_FILENAME
 fi
 
