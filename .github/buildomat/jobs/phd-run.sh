@@ -21,4 +21,5 @@
 
 cp /input/phd-build/out/phd-run-with-args.sh /tmp/phd-run-with-args.sh
 chmod a+x /tmp/phd-run-with-args.sh
+export PHD_DEFAULT_ARTIFACT="windows_server_2022"
 exec /tmp/phd-run-with-args.sh --exclude-filter "phd_tests::migrate::from_base"
