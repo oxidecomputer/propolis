@@ -114,12 +114,7 @@ pub(super) fn get_login_sequence_for<'a>(
             "Use any other key to view this channel.",
         ),
         CommandSequenceEntry::write_str(""),
-        CommandSequenceEntry::wait_for("Username:"),
-        CommandSequenceEntry::write_str("Administrator"),
-        CommandSequenceEntry::wait_for("Domain  :"),
-        CommandSequenceEntry::write_str(""),
-        CommandSequenceEntry::wait_for("Password:"),
-        CommandSequenceEntry::write_str("0xide#1Fan"),
+        CommandSequenceEntry::wait_for("C:\\Windows\\system32>"),
     ];
 
     // Earlier Windows Server versions' serial console-based command prompts
