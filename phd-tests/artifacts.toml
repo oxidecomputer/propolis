@@ -17,7 +17,7 @@ commit = "6d92acf0a22718dd4175d7c64dbcf7aaec3740bd"
 sha256 = "29813374b58e3b77fb665f2d95cb3bab37d44fdd2c4fce2a70de9d76a3512a4f"
 
 [artifacts.windows_server_2022]
-filename = "windows-server-2022-genericcloud-amd64-phd.raw"
+filename = "windows-server-2022-genericcloud-amd64.raw"
 [artifacts.windows_server_2022.kind]
 guest_os = "windowsserver2022"
 [artifacts.windows_server_2022.source.local_path]

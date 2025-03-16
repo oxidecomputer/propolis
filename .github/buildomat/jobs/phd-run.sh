@@ -22,6 +22,6 @@
 cp /input/phd-build/out/phd-run-with-args.sh /tmp/phd-run-with-args.sh
 chmod a+x /tmp/phd-run-with-args.sh
 export PHD_DEFAULT_ARTIFACT="windows_server_2022"
-export PHD_DEFAULT_ARTIFACT_FILENAME="windows-server-2022-genericcloud-amd64-phd.raw"
+export PHD_DEFAULT_ARTIFACT_FILENAME="windows-server-2022-genericcloud-amd64.raw"
 exec /tmp/phd-run-with-args.sh --default-guest-memory-mib 1024 \
     --exclude-filter "phd_tests::migrate::from_base"
