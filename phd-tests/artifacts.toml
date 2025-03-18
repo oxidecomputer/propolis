@@ -16,6 +16,8 @@ series = "image_debug"
 commit = "6d92acf0a22718dd4175d7c64dbcf7aaec3740bd"
 sha256 = "29813374b58e3b77fb665f2d95cb3bab37d44fdd2c4fce2a70de9d76a3512a4f"
 
+# This artifact likely will not be present for an ad-hoc local PHD run, but will
+# be fetched in service of PHD runs in CI when needed.
 [artifacts.windows_server_2022]
 filename = "windows-server-2022-genericcloud-amd64-phd.raw"
 [artifacts.windows_server_2022.kind]
