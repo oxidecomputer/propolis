@@ -21,6 +21,7 @@ use crate::spec::Spec;
 use crate::{server::MetricsEndpointConfig, vm::NetworkInterfaceIds};
 
 mod network_interface;
+mod process;
 mod pvpanic;
 mod virtual_disk;
 mod virtual_machine;
@@ -80,14 +81,32 @@ struct ServerStatsInner {
 
     /// The reset count for the relevant instance.
     run_count: virtual_machine::Reset,
+
+    /// The resident set size for the Propolis managing this instance, excluding
+    /// VM memory.
+    vmm_rss: virtual_machine::VmmMaxRss,
+
+    /// Process RSS is sampled in a standalone task. The `tokio::sync::watch`
+    /// here is to observe that sampling and update the `vmm_rss` tracked
+    /// here.
+    process_stats_rx: tokio::sync::watch::Receiver<process::ProcessStats>,
 }
 
 impl ServerStatsInner {
     pub fn new(virtual_machine: VirtualMachine) -> Self {
+        let rx = process::ProcessStats::new();
+
         ServerStatsInner {
             virtual_machine,
             run_count: virtual_machine::Reset { datum: Default::default() },
+            vmm_rss: virtual_machine::VmmMaxRss { datum: Default::default() },
+            process_stats_rx: rx,
         }
+    }
+
+    fn refresh_vmm_rss(&mut self) {
+        let last_process_stats = self.process_stats_rx.borrow();
+        self.vmm_rss.datum = last_process_stats.unshared_rss;
     }
 }
 
@@ -117,14 +136,20 @@ impl Producer for ServerStats {
     fn produce(
         &mut self,
     ) -> Result<Box<dyn Iterator<Item = Sample> + 'static>, MetricsError> {
-        let run_count = {
-            let inner = self.inner.lock().unwrap();
-            std::iter::once(Sample::new(
+        let samples = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.refresh_vmm_rss();
+            let run_count = std::iter::once(Sample::new(
                 &inner.virtual_machine,
                 &inner.run_count,
-            )?)
+            )?);
+            let rss = std::iter::once(Sample::new(
+                &inner.virtual_machine,
+                &inner.vmm_rss,
+            )?);
+            run_count.chain(rss)
         };
-        Ok(Box::new(run_count))
+        Ok(Box::new(samples))
     }
 }
 

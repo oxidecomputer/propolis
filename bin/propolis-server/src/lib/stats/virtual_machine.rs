@@ -29,6 +29,7 @@ use super::kstat_types::{KstatList, KstatTarget};
 // `./omicron/oximeter/oximeter/schema/virtual-machine.toml`.
 oximeter::use_timeseries!("virtual-machine.toml");
 pub use self::virtual_machine::Reset;
+pub use self::virtual_machine::VmmMaxRss;
 use self::virtual_machine::{
     VcpuUsage, VirtualMachine as VirtualMachineTarget,
 };

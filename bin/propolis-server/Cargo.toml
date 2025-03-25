@@ -67,6 +67,7 @@ uuid.workspace = true
 usdt.workspace = true
 base64.workspace = true
 schemars = { workspace = true, features = ["chrono", "uuid1"] }
+zerocopy.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
