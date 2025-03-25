@@ -32,8 +32,8 @@ use dropshot::{
     TypedBody, WebsocketConnection,
 };
 use futures::SinkExt;
-use internal_dns::resolver::{ResolveError, Resolver};
-use internal_dns::ServiceName;
+use internal_dns_resolver::{ResolveError, Resolver};
+use internal_dns_types::names::ServiceName;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types as api;
