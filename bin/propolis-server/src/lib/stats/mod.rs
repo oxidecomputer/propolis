@@ -176,7 +176,7 @@ pub fn start_oximeter_server(
     let config = Config {
         server_info,
         registration_address,
-        request_body_max_bytes: MAX_REQUEST_SIZE,
+        default_request_body_max_bytes: MAX_REQUEST_SIZE,
         log: producer_log,
     };
 

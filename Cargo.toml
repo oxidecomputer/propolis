@@ -75,7 +75,8 @@ p9ds = { git = "https://github.com/oxidecomputer/p9fs" }
 softnpu = { git = "https://github.com/oxidecomputer/softnpu" }
 
 # Omicron-related
-internal-dns = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+internal-dns-resolver = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+internal-dns-types = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 nexus-client = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 omicron-common = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 omicron-zone-package = "0.9.0"
@@ -85,12 +86,12 @@ oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 
 # Crucible
-crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "d2d8f8ad449df7e2befb7ee2723a442dd74b9b72" }
-crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "d2d8f8ad449df7e2befb7ee2723a442dd74b9b72" }
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "da3cf198a0e000bb89efc3a1c77d7ba09340a600" }
+crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "da3cf198a0e000bb89efc3a1c77d7ba09340a600" }
 
 # External dependencies
 anyhow = "1.0"
-async-trait = "0.1.53"
+async-trait = "0.1.88"
 atty = "0.2.14"
 backoff = "0.4.0"
 backtrace = "0.3.66"
