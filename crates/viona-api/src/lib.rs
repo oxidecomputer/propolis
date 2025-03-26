@@ -121,12 +121,7 @@ impl VionaFd {
     /// This is used for matching kernel statistic entries to the viona device.
     pub fn instance_id(&self) -> Result<u32> {
         let meta = self.0.metadata()?;
-        let rdev = meta.rdev();
-        #[cfg(not(target_os = "macos"))]
-        let minor = unsafe { libc::minor(rdev) };
-        #[cfg(target_os = "macos")]
-        let minor = unsafe { libc::minor(rdev as libc::dev_t) as u32 };
-        Ok(minor)
+        Ok(minor(&meta))
     }
 
     /// Check VMM ioctl command against those known to not require any
@@ -173,6 +168,21 @@ unsafe fn ioctl(
     _data: *mut libc::c_void,
 ) -> Result<i32> {
     Err(Error::new(ErrorKind::Other, "illumos required"))
+}
+
+#[cfg(target_os = "illumos")]
+fn minor(meta: &std::fs::Metadata) -> u32 {
+    // With #4208 backported into libc-0.2, minor() became a const-fn for
+    // practically all of the UNIX-y platforms, save for illumos.
+    //
+    // Until we address that, just paper over it with a wrapper here.
+    // Viona is not usable anywhere but illumos.
+    unsafe { libc::minor(meta.rdev()) }
+}
+#[cfg(not(target_os = "illumos"))]
+fn minor(meta: &std::fs::Metadata) -> u32 {
+    let _rdev = meta.rdev();
+    panic!("illumos required");
 }
 
 /// Convenience constants to provide some documentation on what changes have
