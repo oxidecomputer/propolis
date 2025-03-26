@@ -27,9 +27,9 @@ use crate::{
 };
 
 use dropshot::{
-    channel, endpoint, ApiDescription, HttpError, HttpResponseCreated,
-    HttpResponseOk, HttpResponseUpdatedNoContent, Path, Query, RequestContext,
-    TypedBody, WebsocketConnection,
+    channel, endpoint, ApiDescription, ClientErrorStatusCode, HttpError,
+    HttpResponseCreated, HttpResponseOk, HttpResponseUpdatedNoContent, Path,
+    Query, RequestContext, TypedBody, WebsocketConnection,
 };
 use futures::SinkExt;
 use internal_dns_resolver::{ResolveError, Resolver};
@@ -261,7 +261,7 @@ async fn instance_ensure(
             | VmError::AlreadyInitialized
             | VmError::RundownInProgress => HttpError::for_client_error(
                 Some(api::ErrorCode::AlreadyInitialized.to_string()),
-                hyper::StatusCode::CONFLICT,
+                ClientErrorStatusCode::CONFLICT,
                 "instance already initialized".to_string(),
             ),
             VmError::InitializationFailed(e) => HttpError::for_internal_error(
@@ -333,7 +333,7 @@ async fn instance_state_monitor(
         state_watcher.changed().await.map_err(|_| {
             HttpError::for_client_error(
                 Some(api::ErrorCode::NoInstance.to_string()),
-                hyper::StatusCode::GONE,
+                ClientErrorStatusCode::GONE,
                 format!(
                     "No instance present; will never reach generation {}",
                     gen
@@ -362,10 +362,15 @@ async fn instance_state_put(
                 None,
                 "instance is still initializing".to_string(),
             ),
-            VmError::ForbiddenStateChange(reason) => HttpError::for_status(
-                Some(format!("instance state change not allowed: {}", reason)),
-                hyper::StatusCode::FORBIDDEN,
-            ),
+            VmError::ForbiddenStateChange(reason) => {
+                HttpError::for_client_error_with_status(
+                    Some(format!(
+                        "instance state change not allowed: {}",
+                        reason
+                    )),
+                    ClientErrorStatusCode::FORBIDDEN,
+                )
+            }
             _ => HttpError::for_internal_error(format!(
                 "unexpected error from VM controller: {e}"
             )),
@@ -616,10 +621,12 @@ async fn instance_issue_crucible_vcr_request(
         tx,
     )
     .map_err(|e| match e {
-        VmError::ForbiddenStateChange(reason) => HttpError::for_status(
-            Some(format!("instance state change not allowed: {}", reason)),
-            hyper::StatusCode::FORBIDDEN,
-        ),
+        VmError::ForbiddenStateChange(reason) => {
+            HttpError::for_client_error_with_status(
+                Some(format!("instance state change not allowed: {}", reason)),
+                ClientErrorStatusCode::FORBIDDEN,
+            )
+        }
         _ => HttpError::for_internal_error(format!(
             "unexpected error from VM controller: {e}"
         )),
@@ -673,7 +680,7 @@ pub fn api() -> ApiDescription<Arc<DropshotEndpointContext>> {
 fn not_created_error() -> HttpError {
     HttpError::for_client_error(
         Some(api::ErrorCode::NoInstance.to_string()),
-        hyper::StatusCode::FAILED_DEPENDENCY,
+        ClientErrorStatusCode::FAILED_DEPENDENCY,
         "Server not initialized (no instance)".to_string(),
     )
 }
@@ -684,7 +691,7 @@ mod test {
     fn test_propolis_server_openapi() {
         let mut buf: Vec<u8> = vec![];
         super::api()
-            .openapi("Oxide Propolis Server API", "0.0.1")
+            .openapi("Oxide Propolis Server API", semver::Version::new(0, 0, 1))
             .description(
                 "API for interacting with the Propolis hypervisor frontend.",
             )

@@ -566,14 +566,15 @@ impl Drop for ExternalRequestQueue {
                     result_tx,
                     ..
                 } => {
-                    let _ =
-                        result_tx.send(Err(dropshot::HttpError::for_status(
+                    let _ = result_tx.send(Err(
+                        dropshot::HttpError::for_client_error_with_status(
                             Some(
                                 "VM destroyed before request could be handled"
                                     .to_string(),
                             ),
-                            hyper::StatusCode::GONE,
-                        )));
+                            dropshot::ClientErrorStatusCode::GONE,
+                        ),
+                    ));
                 }
             }
         }
@@ -820,7 +821,7 @@ mod test {
         assert!(queue.try_queue(req).is_ok());
         drop(queue);
         let err = rx.await.unwrap().unwrap_err();
-        assert_eq!(err.status_code, hyper::StatusCode::GONE);
+        assert_eq!(err.status_code, dropshot::ClientErrorStatusCode::GONE);
     }
 
     /// A helper for generating requests as part of a property testing strategy.

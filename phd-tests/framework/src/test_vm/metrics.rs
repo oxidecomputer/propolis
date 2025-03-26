@@ -195,7 +195,7 @@ pub fn spawn_fake_oximeter_server(log_config: LogConfig) -> FakeOximeterServer {
     let server = HttpServerStarter::new(
         &ConfigDropshot {
             bind_address: "[::1]:0".parse().unwrap(),
-            request_body_max_bytes: 2048,
+            default_request_body_max_bytes: 2048,
             ..Default::default()
         },
         api,

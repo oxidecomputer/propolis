@@ -66,7 +66,7 @@ fn build_logger() -> slog::Logger {
 
 pub fn run_openapi() -> Result<(), String> {
     propolis_mock_server::api()
-        .openapi("Oxide Propolis Server API", "0.0.1")
+        .openapi("Oxide Propolis Server API", semver::Version::new(0, 0, 1))
         .description(
             "API for interacting with the Propolis hypervisor frontend.",
         )
@@ -110,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
             // Dropshot configuration.
             let config_dropshot = ConfigDropshot {
                 bind_address: propolis_addr,
-                request_body_max_bytes: 1024 * 1024, // 1M for ISO bytes
+                default_request_body_max_bytes: 1024 * 1024, // 1M for ISO bytes
                 default_handler_task_mode: HandlerTaskMode::Detached,
                 log_headers: vec![],
             };

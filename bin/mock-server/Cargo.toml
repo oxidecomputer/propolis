@@ -28,6 +28,7 @@ futures.workspace = true
 hyper.workspace = true
 serde.workspace = true
 propolis_types.workspace = true
+semver.workspace = true
 serde_json.workspace = true
 slog.workspace = true
 slog-async.workspace = true
