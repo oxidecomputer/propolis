@@ -37,6 +37,7 @@ internal-dns-types.workspace = true
 itertools.workspace = true
 kstat-rs.workspace = true
 lazy_static.workspace = true
+libc.workspace = true
 nexus-client.workspace = true
 omicron-common.workspace = true
 oximeter-instruments.workspace = true
