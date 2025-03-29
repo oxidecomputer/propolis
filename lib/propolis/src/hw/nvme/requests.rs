@@ -173,6 +173,9 @@ impl PciNvme {
             Operation::Flush => {
                 probes::nvme_flush_complete!(|| (qid, cid, resnum));
             }
+            Operation::Discard(..) => {
+                unreachable!("discard not supported in NVMe for now");
+            }
         }
 
         let guard = self.mem_access();
