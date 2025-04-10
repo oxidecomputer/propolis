@@ -8,6 +8,15 @@
 #:   "/work/release/*",
 #: ]
 #:
+#: [[publish]]
+#: series = "falcon"
+#: name = "propolis-server"
+#: from_output = "/work/release/propolis-server"
+#:
+#: [[publish]]
+#: series = "falcon"
+#: name = "propolis-cli"
+#: from_output = "/work/release/propolis-cli"
 
 set -o errexit
 set -o pipefail
