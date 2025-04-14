@@ -9,7 +9,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
-#[serde(deny_unknown_fields, tag = "type", content = "component")]
+#[serde(
+    deny_unknown_fields,
+    tag = "type",
+    content = "component",
+    rename_all = "snake_case"
+)]
 pub enum ComponentV0 {
     VirtioDisk(components::devices::VirtioDisk),
     NvmeDisk(components::devices::NvmeDisk),

@@ -561,7 +561,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "VirtioDisk"
+                  "virtio_disk"
                 ]
               }
             },
@@ -580,7 +580,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "NvmeDisk"
+                  "nvme_disk"
                 ]
               }
             },
@@ -599,7 +599,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "VirtioNic"
+                  "virtio_nic"
                 ]
               }
             },
@@ -618,7 +618,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "SerialPort"
+                  "serial_port"
                 ]
               }
             },
@@ -637,7 +637,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "PciPciBridge"
+                  "pci_pci_bridge"
                 ]
               }
             },
@@ -656,7 +656,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "QemuPvpanic"
+                  "qemu_pvpanic"
                 ]
               }
             },
@@ -675,7 +675,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "BootSettings"
+                  "boot_settings"
                 ]
               }
             },
@@ -694,7 +694,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "SoftNpuPciPort"
+                  "soft_npu_pci_port"
                 ]
               }
             },
@@ -713,7 +713,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "SoftNpuPort"
+                  "soft_npu_port"
                 ]
               }
             },
@@ -732,7 +732,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "SoftNpuP9"
+                  "soft_npu_p9"
                 ]
               }
             },
@@ -751,7 +751,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "P9fs"
+                  "p9fs"
                 ]
               }
             },
@@ -770,7 +770,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "MigrationFailureInjector"
+                  "migration_failure_injector"
                 ]
               }
             },
@@ -789,7 +789,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "CrucibleStorageBackend"
+                  "crucible_storage_backend"
                 ]
               }
             },
@@ -808,7 +808,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "FileStorageBackend"
+                  "file_storage_backend"
                 ]
               }
             },
@@ -827,7 +827,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "BlobStorageBackend"
+                  "blob_storage_backend"
                 ]
               }
             },
@@ -846,7 +846,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "VirtioNetworkBackend"
+                  "virtio_network_backend"
                 ]
               }
             },
@@ -865,7 +865,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "DlpiNetworkBackend"
+                  "dlpi_network_backend"
                 ]
               }
             },
@@ -958,8 +958,8 @@
         "description": "A CPU vendor to use when interpreting the meanings of CPUID leaves in the extended ID range (0x80000000 to 0x8000FFFF).",
         "type": "string",
         "enum": [
-          "Amd",
-          "Intel"
+          "amd",
+          "intel"
         ]
       },
       "CrucibleStorageBackend": {
@@ -1043,7 +1043,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "Bhyve"
+                  "bhyve"
                 ]
               }
             },
@@ -1059,7 +1059,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "HyperV"
+                  "hyper_v"
                 ]
               },
               "value": {
@@ -1091,7 +1091,7 @@
         "description": "Flags that enable \"simple\" Hyper-V enlightenments that require no feature-specific configuration.",
         "type": "string",
         "enum": [
-          "ReferenceTsc"
+          "reference_tsc"
         ]
       },
       "I440Fx": {
@@ -1866,25 +1866,25 @@
           {
             "type": "object",
             "properties": {
-              "Uuid": {
+              "uuid": {
                 "type": "string",
                 "format": "uuid"
               }
             },
             "required": [
-              "Uuid"
+              "uuid"
             ],
             "additionalProperties": false
           },
           {
             "type": "object",
             "properties": {
-              "Name": {
+              "name": {
                 "type": "string"
               }
             },
             "required": [
-              "Name"
+              "name"
             ],
             "additionalProperties": false
           }

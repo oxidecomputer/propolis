@@ -114,14 +114,19 @@ pub struct CpuidEntry {
     Eq,
     PartialEq,
 )]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub enum HyperVFeatureFlag {
     ReferenceTsc,
 }
 
 /// A hypervisor interface to expose to the guest.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, Default)]
-#[serde(deny_unknown_fields, tag = "type", content = "value")]
+#[serde(
+    deny_unknown_fields,
+    rename_all = "snake_case",
+    tag = "type",
+    content = "value"
+)]
 pub enum GuestHypervisorInterface {
     /// Expose a bhyve-like interface ("bhyve bhyve " as the hypervisor ID in
     /// leaf 0x4000_0000 and no additional leaves or features).

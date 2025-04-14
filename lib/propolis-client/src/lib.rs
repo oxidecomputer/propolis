@@ -18,13 +18,13 @@ progenitor::generate_api!(
     spec = "../../openapi/propolis-server.json",
     interface = Builder,
     tags = Separate,
+    derives = [schemars::JsonSchema],
     replace = {
         PciPath = crate::PciPath,
         SpecKey = crate::SpecKey,
     },
     patch = {
-        BootOrderEntry = { derives = [schemars::JsonSchema] },
-        BootSettings = { derives = [Default, schemars::JsonSchema] },
+        BootSettings = { derives = [Default] },
         CpuidEntry = { derives = [PartialEq, Eq, Copy] },
         InstanceMetadata = { derives = [ PartialEq ] },
     }

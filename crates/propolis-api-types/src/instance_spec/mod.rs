@@ -191,6 +191,13 @@ pub mod v0;
 // This type derives `SerializeDisplay` and `DeserializeFromStr` so that it can
 // be used as a map key when serializing to JSON, which requires strings (and
 // not objects) as keys.
+//
+// WARNING: Progenitor-generated versions of this type will use serde's default
+// derived Serialize and Deserialize implementations, not the serde_with
+// implementations. This can cause clients to serialize spec keys in a form that
+// the server can't deserialize. To get around this, Progenitor clients that
+// use spec keys should use a `replace` directive to replace the generated
+// type with this type.
 #[derive(
     Clone,
     Debug,
@@ -202,6 +209,7 @@ pub mod v0;
     PartialOrd,
     JsonSchema,
 )]
+#[serde(rename_all = "snake_case")]
 pub enum SpecKey {
     Uuid(Uuid),
     Name(String),
