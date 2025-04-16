@@ -10,6 +10,8 @@ doctest = false
 
 [dependencies]
 anyhow.workspace = true
-indicatif.workspace = true
+camino.workspace = true
 omicron-zone-package.workspace = true
+slog.workspace = true
+slog-term.workspace = true
 tokio.workspace = true

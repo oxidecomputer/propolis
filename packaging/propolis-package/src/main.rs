@@ -2,141 +2,56 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use anyhow::anyhow;
-use anyhow::Context;
-use anyhow::Result;
-use indicatif::MultiProgress;
-use indicatif::ProgressBar;
-use indicatif::ProgressStyle;
-use omicron_zone_package::progress::Progress;
-use omicron_zone_package::target::Target;
-use std::collections::BTreeMap;
+use anyhow::{anyhow, Context, Result};
+use camino::Utf8Path;
+use omicron_zone_package::config::{self, PackageName};
+use omicron_zone_package::package::BuildConfig;
+use omicron_zone_package::progress;
+use slog::{o, Drain, Logger};
 use std::fs::create_dir_all;
-use std::path::Path;
-use std::time::Duration;
 
-const PKG_NAME: &str = "propolis-server";
+const PKG_NAME: PackageName = PackageName::new_const("propolis-server");
 
-fn in_progress_style() -> ProgressStyle {
-    ProgressStyle::default_bar()
-        .template(
-            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
-        )
-        .expect("Invalid template")
-        .progress_chars("#>.")
-}
-
-fn completed_progress_style() -> ProgressStyle {
-    ProgressStyle::default_bar()
-        .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg:.green}")
-        .expect("Invalid template")
-        .progress_chars("#>.")
-}
-
-/// Progress UI for the package creation.
-struct ProgressUI {
-    /// Shared handle for managing all progress bars.
-    multi: MultiProgress,
-
-    /// Progress bar for the overall package creation.
-    pkg_pb: ProgressBar,
-}
-
-impl ProgressUI {
-    fn new(total: u64) -> Self {
-        // Create overall handle for managing all progress bars.
-        let multi = MultiProgress::new();
-
-        // We start off with one main progress bar for the overall package
-        // creation. Sub-tasks (e.g. blob download) will dynamically create
-        // their own progress bars via `Progress::sub_progress()`.
-        let pkg_pb = multi.add(ProgressBar::new(total));
-        pkg_pb.set_style(in_progress_style());
-
-        // Don't want to appear stuck while copying large files (e.g. blobs)
-        // so enable steady ticks to keep the elapsed time moving.
-        pkg_pb.enable_steady_tick(Duration::from_millis(500));
-
-        Self { multi, pkg_pb }
+struct PrintProgress(slog::Logger);
+impl Default for PrintProgress {
+    fn default() -> Self {
+        let deco = slog_term::PlainDecorator::new(std::io::stdout());
+        let drain = slog_term::CompactFormat::new(deco).build();
+        Self(Logger::root(std::sync::Mutex::new(drain).fuse(), o!()))
     }
 }
+impl progress::Progress for PrintProgress {
+    fn get_log(&self) -> &Logger {
+        &self.0
+    }
 
-impl Progress for ProgressUI {
     fn set_message(&self, msg: std::borrow::Cow<'static, str>) {
-        self.pkg_pb.set_message(msg);
-    }
-
-    fn increment(&self, delta: u64) {
-        self.pkg_pb.inc(delta);
-    }
-
-    fn sub_progress(&self, total: u64) -> Box<dyn Progress> {
-        let sub_pb = self.multi.add(ProgressBar::new(total));
-        sub_pb.set_style(in_progress_style());
-
-        Box::new(SubProgress::new(self.multi.clone(), sub_pb))
-    }
-}
-
-/// Progress UI for a sub-task (e.g. downloading blobs).
-struct SubProgress {
-    /// Shared handle for managing all progress bars.
-    multi: MultiProgress,
-
-    /// Progress bar for this specific sub-task.
-    pb: ProgressBar,
-}
-
-impl SubProgress {
-    fn new(multi: MultiProgress, pb: ProgressBar) -> Self {
-        Self { multi, pb }
-    }
-}
-
-impl Progress for SubProgress {
-    fn set_message(&self, msg: std::borrow::Cow<'static, str>) {
-        self.pb.set_message(msg);
-    }
-
-    fn increment(&self, delta: u64) {
-        self.pb.inc(delta);
-    }
-}
-
-impl Drop for SubProgress {
-    fn drop(&mut self) {
-        // Sub-task has completed, so remove the progress bar.
-        self.multi.remove(&self.pb);
+        slog::info!(self.0, "package progress"; "msg" => msg.as_ref());
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cfg =
-        omicron_zone_package::config::parse("packaging/package-manifest.toml")?;
+    let cfg = config::parse("packaging/package-manifest.toml")?;
 
-    let output_dir = Path::new("out");
+    let output_dir = Utf8Path::new("out");
     create_dir_all(output_dir)?;
 
     // We only expect a single package so just look it directly
     let pkg = cfg
         .packages
-        .get(PKG_NAME)
+        .get(&PKG_NAME)
         .with_context(|| anyhow!("missing propolis-server package"))?;
 
-    let target = Target(BTreeMap::new());
-    let progress = ProgressUI::new(pkg.get_total_work_for_target(&target)?);
-
-    pkg.create_with_progress_for_target(
-        &progress, &target, PKG_NAME, output_dir,
+    let progress = PrintProgress::default();
+    println!("Building {PKG_NAME} package...");
+    pkg.create(
+        &PKG_NAME,
+        output_dir,
+        &BuildConfig { progress: &progress, ..Default::default() },
     )
     .await?;
 
-    progress.pkg_pb.set_style(completed_progress_style());
-    progress.pkg_pb.finish_with_message(format!(
-        "done: {}",
-        pkg.get_output_file(PKG_NAME)
-    ));
-
+    println!("Done!");
     Ok(())
 }
