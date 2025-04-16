@@ -21,6 +21,7 @@ use crate::spec::Spec;
 use crate::{server::MetricsEndpointConfig, vm::NetworkInterfaceIds};
 
 mod network_interface;
+mod process;
 mod pvpanic;
 mod virtual_disk;
 mod virtual_machine;
@@ -78,16 +79,47 @@ struct ServerStatsInner {
     /// data.
     virtual_machine: VirtualMachine,
 
+    /// The total amount of virtual address space reserved in support of this
+    /// virtual machine. This is retained to correct the process-wide virtual
+    /// address space size down to the "non-VM" amount; mappings not derived
+    /// from a virtual machine explicitly asking for some fixed size of memory.
+    vm_va_size: usize,
+
     /// The reset count for the relevant instance.
     run_count: virtual_machine::Reset,
+
+    /// Mapped virtual memory for the Propolis managing this instance, excluding
+    /// VM memory.
+    vmm_vss: virtual_machine::VmmVss,
+
+    /// Process RSS is sampled in a standalone task. The `tokio::sync::watch`
+    /// here is to observe that sampling and update the `vmm_vss` tracked
+    /// here.
+    process_stats_rx: tokio::sync::watch::Receiver<process::ProcessStats>,
 }
 
 impl ServerStatsInner {
-    pub fn new(virtual_machine: VirtualMachine) -> Self {
+    pub fn new(virtual_machine: VirtualMachine, vm_va_size: usize) -> Self {
+        let rx = process::ProcessStats::new();
+
         ServerStatsInner {
             virtual_machine,
+            vm_va_size,
             run_count: virtual_machine::Reset { datum: Default::default() },
+            vmm_vss: virtual_machine::VmmVss { datum: Default::default() },
+            process_stats_rx: rx,
         }
+    }
+
+    fn refresh_vmm_vss(&mut self) {
+        let last_process_stats = self.process_stats_rx.borrow();
+        if last_process_stats.vss < self.vm_va_size {
+            eprintln!("process VSS is smaller than expected; is the VMM being torn down or already stopped?");
+            return;
+        }
+
+        self.vmm_vss.datum = (last_process_stats.vss - self.vm_va_size) as u64;
+        eprintln!("reporting vmm_vss of {}", self.vmm_vss.datum);
     }
 }
 
@@ -103,8 +135,8 @@ pub struct ServerStats {
 
 impl ServerStats {
     /// Create new server stats, representing the provided instance.
-    pub fn new(vm: VirtualMachine) -> Self {
-        Self { inner: Arc::new(Mutex::new(ServerStatsInner::new(vm))) }
+    pub fn new(vm: VirtualMachine, vm_va_size: usize) -> Self {
+        Self { inner: Arc::new(Mutex::new(ServerStatsInner::new(vm, vm_va_size))) }
     }
 
     /// Increments the number of times the managed instance was reset.
@@ -117,14 +149,20 @@ impl Producer for ServerStats {
     fn produce(
         &mut self,
     ) -> Result<Box<dyn Iterator<Item = Sample> + 'static>, MetricsError> {
-        let run_count = {
-            let inner = self.inner.lock().unwrap();
-            std::iter::once(Sample::new(
+        let samples = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.refresh_vmm_vss();
+            let run_count = std::iter::once(Sample::new(
                 &inner.virtual_machine,
                 &inner.run_count,
-            )?)
+            )?);
+            let vss = std::iter::once(Sample::new(
+                &inner.virtual_machine,
+                &inner.vmm_vss,
+            )?);
+            run_count.chain(vss)
         };
-        Ok(Box::new(run_count))
+        Ok(Box::new(samples))
     }
 }
 

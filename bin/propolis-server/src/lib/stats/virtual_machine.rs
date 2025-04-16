@@ -29,6 +29,9 @@ use super::kstat_types::{KstatList, KstatTarget};
 // `./omicron/oximeter/oximeter/schema/virtual-machine.toml`.
 oximeter::use_timeseries!("virtual-machine.toml");
 pub use self::virtual_machine::Reset;
+// [this won't exist in CI until the oximeter schema is updated. hacked on this
+// locally with Cargo.toml patching.]
+pub use self::virtual_machine::VmmVss;
 use self::virtual_machine::{
     VcpuUsage, VirtualMachine as VirtualMachineTarget,
 };

@@ -184,9 +184,9 @@ fn safe_end(start: usize, len: usize) -> Option<usize> {
 // Flatten the K/V nested tuple
 fn kv_flatten<'a, T>(i: (&'a usize, &'a (usize, T))) -> SpaceItem<'a, T> {
     let start = *i.0;
-    let end = (i.1).0;
+    let size = (i.1).0;
     let item = &(i.1).1;
-    (start, end, item)
+    (start, size, item)
 }
 
 /// Iterator for all items in an [ASpace], constructed by [ASpace::iter].

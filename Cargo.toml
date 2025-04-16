@@ -180,13 +180,16 @@ zerocopy = "0.7.34"
 # It's common during development to use a local copy of various complex
 # dependencies.  If you want to use those, uncomment one of these blocks.
 #
-# [patch."https://github.com/oxidecomputer/omicron"]
-# internal-dns = { path = "../omicron/internal-dns" }
-# nexus-client = { path = "../omicron/clients/nexus-client" }
-# omicron-common = { path = "../omicron/common" }
-# oximeter-instruments = { path = "../omicron/oximeter/instruments" }
-# oximeter-producer = { path = "../omicron/oximeter/producer" }
-# oximeter = { path = "../omicron/oximeter/oximeter" }
+[patch."https://github.com/oxidecomputer/omicron"]
+#internal-dns = { path = "../omicron/internal-dns" }
+nexus-client = { path = "../omicron/clients/nexus-client" }
+omicron-uuid-kinds = { path = "../omicron/uuid-kinds" }
+nexus-types = { path = "../omicron/nexus/types" }
+illumos-utils = { path = "../omicron/illumos-utils" }
+omicron-common = { path = "../omicron/common" }
+oximeter-instruments = { path = "../omicron/oximeter/instruments" }
+oximeter-producer = { path = "../omicron/oximeter/producer" }
+oximeter = { path = "../omicron/oximeter/oximeter" }
 # [patch."https://github.com/oxidecomputer/crucible"]
 # crucible = { path = "../crucible/upstairs" }
 # crucible-client-types = { path = "../crucible/crucible-client-types" }

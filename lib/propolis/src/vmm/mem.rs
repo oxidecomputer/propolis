@@ -197,6 +197,19 @@ impl PhysMap {
         let mut guard = self.map.lock().unwrap();
         guard.clear();
     }
+
+    /// Sum the sizes of virtual address ranges supporting segments of memory
+    /// for this VM.
+    pub fn virtual_address_size(&self) -> usize {
+        let guard = self.map.lock().unwrap();
+        let mut va_size = 0usize;
+
+        for (_start, size, _item) in guard.iter() {
+            va_size += size;
+        }
+
+        va_size
+    }
 }
 
 #[cfg(test)]

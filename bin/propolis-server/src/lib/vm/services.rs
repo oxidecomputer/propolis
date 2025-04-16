@@ -67,6 +67,7 @@ impl VmServices {
                 cfg,
                 registry,
                 vm_objects.instance_spec(),
+                vm_objects.machine().map_physmem.virtual_address_size(),
                 vm_properties,
             )
             .await
@@ -119,6 +120,7 @@ async fn register_oximeter_producer(
     cfg: &MetricsEndpointConfig,
     registry: &ProducerRegistry,
     spec: &Spec,
+    vm_va_size: usize,
     vm_properties: &InstanceProperties,
 ) -> OximeterState {
     let mut oximeter_state = OximeterState::default();
@@ -152,7 +154,7 @@ async fn register_oximeter_producer(
     // Assign our own metrics production for this VM instance to the
     // registry, letting the server actually return them to oximeter when
     // polled.
-    let stats = ServerStats::new(virtual_machine);
+    let stats = ServerStats::new(virtual_machine, vm_va_size);
     if let Err(e) = registry.register_producer(stats.clone()) {
         error!(
             log,
