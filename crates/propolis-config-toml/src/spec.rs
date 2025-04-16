@@ -5,7 +5,7 @@
 //! Functions for converting a [`super::Config`] into instance spec elements.
 
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     str::{FromStr, ParseBoolError},
 };
 
@@ -71,7 +71,7 @@ pub enum TomlToSpecError {
 #[derive(Clone, Debug, Default)]
 pub struct SpecConfig {
     pub enable_pcie: bool,
-    pub components: HashMap<SpecKey, ComponentV0>,
+    pub components: BTreeMap<SpecKey, ComponentV0>,
 }
 
 // Inspired by `api_spec_v0.rs`'s `insert_component` and

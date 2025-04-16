@@ -215,7 +215,7 @@ impl std::fmt::Display for SpecKey {
 }
 
 impl std::str::FromStr for SpecKey {
-    type Err = ();
+    type Err = core::convert::Infallible;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match Uuid::parse_str(s) {
             Ok(uuid) => Self::Uuid(uuid),
@@ -239,8 +239,8 @@ impl From<Uuid> for SpecKey {
     }
 }
 
-// Manually derive JsonSchema to help Progenitor generate the expected enum type
-// for spec keys.
+// Manually implement JsonSchema to help Progenitor generate the expected enum
+// type for spec keys.
 impl JsonSchema for SpecKey {
     fn schema_name() -> String {
         "SpecKey".to_owned()
