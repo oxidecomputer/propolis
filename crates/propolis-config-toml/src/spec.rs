@@ -5,7 +5,7 @@
 //! Functions for converting a [`super::Config`] into instance spec elements.
 
 use std::{
-    collections::BTreeMap,
+    collections::HashMap,
     str::{FromStr, ParseBoolError},
 };
 
@@ -14,10 +14,10 @@ use propolis_client::{
     types::{
         ComponentV0, DlpiNetworkBackend, FileStorageBackend,
         MigrationFailureInjector, NvmeDisk, P9fs, PciPciBridge, SoftNpuP9,
-        SoftNpuPciPort, SoftNpuPort, VirtioDisk, VirtioNetworkBackend,
+        SoftNpuPciPort, SoftNpuPort, SpecKey, VirtioDisk, VirtioNetworkBackend,
         VirtioNic,
     },
-    PciPath, SpecKey,
+    PciPath,
 };
 use thiserror::Error;
 
@@ -71,7 +71,7 @@ pub enum TomlToSpecError {
 #[derive(Clone, Debug, Default)]
 pub struct SpecConfig {
     pub enable_pcie: bool,
-    pub components: BTreeMap<SpecKey, ComponentV0>,
+    pub components: HashMap<SpecKey, ComponentV0>,
 }
 
 // Inspired by `api_spec_v0.rs`'s `insert_component` and
@@ -115,7 +115,7 @@ impl TryFrom<&super::Config> for SpecConfig {
         };
 
         for (device_name, device) in config.devices.iter() {
-            let device_id = SpecKey::from(device_name.clone());
+            let device_id = SpecKey::Name(device_name.clone());
             let driver = device.driver.as_str();
             if device_name == MIGRATION_FAILURE_DEVICE_NAME {
                 const FAIL_EXPORTS: &str = "fail_exports";

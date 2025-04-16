@@ -155,7 +155,6 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_with::{DeserializeFromStr, SerializeDisplay};
 
 pub use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor, PciPath};
 use uuid::Uuid;
@@ -187,29 +186,20 @@ pub mod v0;
 // names if they have no UUIDs available or the most obvious UUID is in use
 // elsewhere. The key type's From impls will try to parse strings into UUIDs
 // before storing keys as strings.
-//
-// This type derives `SerializeDisplay` and `DeserializeFromStr` so that it can
-// be used as a map key when serializing to JSON, which requires strings (and
-// not objects) as keys.
-//
-// WARNING: Progenitor-generated versions of this type will use serde's default
-// derived Serialize and Deserialize implementations, not the serde_with
-// implementations. This can cause clients to serialize spec keys in a form that
-// the server can't deserialize. To get around this, Progenitor clients that
-// use spec keys should use a `replace` directive to replace the generated
-// type with this type.
 #[derive(
-    Clone,
-    Debug,
-    SerializeDisplay,
-    DeserializeFromStr,
-    Eq,
-    PartialEq,
-    Ord,
-    PartialOrd,
-    JsonSchema,
+    Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd,
 )]
-#[serde(rename_all = "snake_case")]
+// Direct serde to use an untagged enum representation for this type. Since both
+// Uuid and String serialize to strings, this allows other types that contain a
+// Map<K = SpecKey> to derive Serialize and successfully serialize to JSON.
+// (This doesn't work with a tagged representation because JSON doesn't allow
+// maps to be used as map keys.)
+//
+// Note that this makes the order of variants matter: serde will pick the first
+// variant into which it can successfully deserialize an untagged enum value,
+// and the point is to use the UUID representation for any value that can be
+// interpreted as a UUID.
+#[serde(untagged)]
 pub enum SpecKey {
     Uuid(Uuid),
     Name(String),
@@ -225,10 +215,7 @@ impl std::fmt::Display for SpecKey {
 }
 
 impl std::str::FromStr for SpecKey {
-    // This conversion is infallible, but the error type needs to implement
-    // `Display` for `SpecKey` to derive `DeserializeFromStr`.
-    type Err = &'static str;
-
+    type Err = ();
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match Uuid::parse_str(s) {
             Ok(uuid) => Self::Uuid(uuid),
@@ -249,6 +236,62 @@ impl From<String> for SpecKey {
 impl From<Uuid> for SpecKey {
     fn from(value: Uuid) -> Self {
         Self::Uuid(value)
+    }
+}
+
+// Manually derive JsonSchema to help Progenitor generate the expected enum type
+// for spec keys.
+impl JsonSchema for SpecKey {
+    fn schema_name() -> String {
+        "SpecKey".to_owned()
+    }
+
+    fn json_schema(
+        generator: &mut schemars::gen::SchemaGenerator,
+    ) -> schemars::schema::Schema {
+        use schemars::schema::*;
+        fn label_schema(label: &str, schema: Schema) -> Schema {
+            SchemaObject {
+                metadata: Some(
+                    Metadata {
+                        title: Some(label.to_string()),
+                        ..Default::default()
+                    }
+                    .into(),
+                ),
+                subschemas: Some(
+                    SubschemaValidation {
+                        all_of: Some(vec![schema]),
+                        ..Default::default()
+                    }
+                    .into(),
+                ),
+                ..Default::default()
+            }
+            .into()
+        }
+
+        SchemaObject {
+            metadata: Some(
+                Metadata {
+                    description: Some(
+                        "A key identifying a component in an instance spec."
+                            .to_string(),
+                    ),
+                    ..Default::default()
+                }
+                .into(),
+            ),
+            subschemas: Some(Box::new(SubschemaValidation {
+                one_of: Some(vec![
+                    label_schema("uuid", generator.subschema_for::<Uuid>()),
+                    label_schema("name", generator.subschema_for::<String>()),
+                ]),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .into()
     }
 }
 

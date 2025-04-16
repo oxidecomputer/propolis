@@ -1864,29 +1864,21 @@
         "description": "A key identifying a component in an instance spec.",
         "oneOf": [
           {
-            "type": "object",
-            "properties": {
-              "uuid": {
+            "title": "uuid",
+            "allOf": [
+              {
                 "type": "string",
                 "format": "uuid"
               }
-            },
-            "required": [
-              "uuid"
-            ],
-            "additionalProperties": false
+            ]
           },
           {
-            "type": "object",
-            "properties": {
-              "name": {
+            "title": "name",
+            "allOf": [
+              {
                 "type": "string"
               }
-            },
-            "required": [
-              "name"
-            ],
-            "additionalProperties": false
+            ]
           }
         ]
       },
