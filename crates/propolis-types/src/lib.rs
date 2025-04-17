@@ -314,6 +314,7 @@ impl From<[u32; 4]> for CpuidValues {
 #[derive(
     Clone, Copy, PartialEq, Eq, Debug, JsonSchema, Serialize, Deserialize,
 )]
+#[serde(rename_all = "snake_case")]
 pub enum CpuidVendor {
     Amd,
     Intel,

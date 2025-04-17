@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 progenitor::generate_api!(
     spec = "../../openapi/propolis-server.json",
     derives = [schemars::JsonSchema],
+    replace = {
+        SpecKey = propolis_api_types::instance_spec::SpecKey,
+    },
     patch = {
         InstanceMetadata = { derives = [Clone, Eq, PartialEq] },
         InstanceProperties = { derives = [ Clone, Eq, PartialEq ] },

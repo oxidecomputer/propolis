@@ -22,9 +22,9 @@ use propolis_client::types::{
     GuestHypervisorInterface, HyperVFeatureFlag, I440Fx, InstanceEnsureRequest,
     InstanceInitializationMethod, InstanceMetadata, InstanceSpecGetResponse,
     InstanceSpecV0, NvmeDisk, QemuPvpanic, ReplacementComponent, SerialPort,
-    SerialPortNumber, VirtioDisk,
+    SerialPortNumber, SpecKey, VirtioDisk,
 };
-use propolis_client::{PciPath, SpecKey};
+use propolis_client::PciPath;
 use propolis_config_toml::spec::SpecConfig;
 use serde::{Deserialize, Serialize};
 use slog::{o, Drain, Level, Logger};
