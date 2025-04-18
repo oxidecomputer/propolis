@@ -13,7 +13,7 @@ use std::{
 
 use anyhow::Context;
 use propolis_client::{
-    types::{ComponentV0, CrucibleStorageBackend},
+    instance_spec::{ComponentV0, CrucibleStorageBackend},
     CrucibleOpts, VolumeConstructionRequest,
 };
 use rand::{rngs::StdRng, RngCore, SeedableRng};

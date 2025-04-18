@@ -13,7 +13,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
 use in_memory::InMemoryDisk;
-use propolis_client::types::ComponentV0;
+use propolis_client::instance_spec::ComponentV0;
 use thiserror::Error;
 
 use crate::{

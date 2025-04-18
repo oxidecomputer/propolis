@@ -16,15 +16,17 @@ use anyhow::{anyhow, Context};
 use clap::{Args, Parser, Subcommand};
 use futures::{future, SinkExt};
 use newtype_uuid::{GenericUuid, TypedUuid, TypedUuidKind, TypedUuidTag};
-use propolis_client::support::nvme_serial_from_str;
-use propolis_client::types::{
+use propolis_client::instance_spec::{
     BlobStorageBackend, Board, Chipset, ComponentV0, CrucibleStorageBackend,
-    GuestHypervisorInterface, HyperVFeatureFlag, I440Fx, InstanceEnsureRequest,
-    InstanceInitializationMethod, InstanceMetadata, InstanceSpecGetResponse,
-    InstanceSpecV0, NvmeDisk, QemuPvpanic, ReplacementComponent, SerialPort,
+    GuestHypervisorInterface, HyperVFeatureFlag, I440Fx, InstanceSpecV0,
+    NvmeDisk, PciPath, QemuPvpanic, ReplacementComponent, SerialPort,
     SerialPortNumber, SpecKey, VirtioDisk,
 };
-use propolis_client::PciPath;
+use propolis_client::support::nvme_serial_from_str;
+use propolis_client::types::{
+    InstanceEnsureRequest, InstanceInitializationMethod, InstanceMetadata,
+    InstanceSpecGetResponse,
+};
 use propolis_config_toml::spec::SpecConfig;
 use serde::{Deserialize, Serialize};
 use slog::{o, Drain, Level, Logger};
@@ -200,10 +202,17 @@ fn add_component_to_spec(
     id: SpecKey,
     component: ComponentV0,
 ) -> anyhow::Result<()> {
-    if spec.components.insert(id.to_string(), component).is_some() {
-        anyhow::bail!("duplicate component ID {id:?}");
+    use std::collections::btree_map::Entry;
+    match spec.components.entry(id) {
+        Entry::Vacant(vacant_entry) => {
+            vacant_entry.insert(component);
+            Ok(())
+        }
+        Entry::Occupied(occupied_entry) => Err(anyhow::anyhow!(
+            "duplicate component ID {:?}",
+            occupied_entry.key()
+        )),
     }
-    Ok(())
 }
 
 /// A legacy Propolis API disk request, preserved here for compatibility with
@@ -298,11 +307,13 @@ impl VmConfig {
                 cpus: self.vcpus,
                 memory_mb: self.memory,
                 guest_hv_interface: if self.hyperv {
-                    Some(GuestHypervisorInterface::HyperV {
-                        features: vec![HyperVFeatureFlag::ReferenceTsc],
-                    })
+                    GuestHypervisorInterface::HyperV {
+                        features: [HyperVFeatureFlag::ReferenceTsc]
+                            .into_iter()
+                            .collect(),
+                    }
                 } else {
-                    None
+                    Default::default()
                 },
             },
             components: Default::default(),

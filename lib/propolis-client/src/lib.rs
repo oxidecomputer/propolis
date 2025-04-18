@@ -4,9 +4,28 @@
 
 //! A client for the Propolis hypervisor frontend's server API.
 
-// Re-export types from propolis_api_types where callers may want to use
-// constructors or From impls.
-pub use propolis_api_types::instance_spec::{PciPath, SpecKey};
+/// Re-exports of types related to instance specs.
+///
+/// These types are re-exported for the convenience of components like
+/// sled-agent that may wish to expose instance specs in their own APIs.
+/// Defining the sled-agent API in terms of these "native" types allows
+/// sled-agent to reuse their trait implementations (and in particular use
+/// "manual" impls of things that Progenitor would otherwise derive).
+///
+/// In the generated client, the native "top-level" instance spec and component
+/// types ([`VersionedInstanceSpec`], [`InstanceSpecV0`], and
+/// [`ReplacementComponent`]) replace their generated counterparts. This
+/// obviates the need to maintain `From` impls to convert between native and
+/// generated types.
+pub mod instance_spec {
+    pub use propolis_api_types::instance_spec::{
+        components::{backends::*, board::*, devices::*},
+        v0::*,
+        *,
+    };
+
+    pub use propolis_api_types::ReplacementComponent;
+}
 
 // Re-export Crucible client types that appear in their serialized forms in
 // instance specs. This allows clients to ensure they serialize/deserialize
@@ -19,7 +38,10 @@ progenitor::generate_api!(
     interface = Builder,
     tags = Separate,
     replace = {
-        PciPath = crate::PciPath,
+        PciPath = crate::instance_spec::PciPath,
+        ReplacementComponent = crate::instance_spec::ReplacementComponent,
+        InstanceSpecV0 = crate::instance_spec::InstanceSpecV0,
+        VersionedInstanceSpec = crate::instance_spec::VersionedInstanceSpec,
     },
     // Automatically derive JsonSchema for instance spec-related types so that
     // they can be reused in sled-agent's API. This can't be done with a

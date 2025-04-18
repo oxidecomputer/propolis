@@ -27,13 +27,14 @@ use anyhow::{anyhow, Context, Result};
 use camino::Utf8PathBuf;
 use core::result::Result as StdResult;
 use propolis_client::{
+    instance_spec::{ComponentV0, ReplacementComponent},
     support::{InstanceSerialConsoleHelper, WSClientOffset},
     types::{
-        ComponentV0, InstanceEnsureRequest, InstanceGetResponse,
+        InstanceEnsureRequest, InstanceGetResponse,
         InstanceInitializationMethod, InstanceMigrateStatusResponse,
         InstanceProperties, InstanceSerialConsoleHistoryResponse,
         InstanceSpecGetResponse, InstanceState, InstanceStateRequested,
-        MigrationState, ReplacementComponent,
+        MigrationState,
     },
 };
 use propolis_client::{Client, ResponseValue};
@@ -601,7 +602,7 @@ impl TestVm {
             match comp {
                 ComponentV0::MigrationFailureInjector(inj) => {
                     map.insert(
-                        id.clone(),
+                        id.to_string(),
                         ReplacementComponent::MigrationFailureInjector(
                             inj.clone(),
                         ),
@@ -609,7 +610,7 @@ impl TestVm {
                 }
                 ComponentV0::CrucibleStorageBackend(be) => {
                     map.insert(
-                        id.clone(),
+                        id.to_string(),
                         ReplacementComponent::CrucibleStorageBackend(
                             be.clone(),
                         ),

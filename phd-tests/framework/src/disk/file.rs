@@ -5,7 +5,7 @@
 //! Abstractions for disks with a raw file backend.
 
 use camino::{Utf8Path, Utf8PathBuf};
-use propolis_client::types::{ComponentV0, FileStorageBackend};
+use propolis_client::instance_spec::{ComponentV0, FileStorageBackend};
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 

@@ -38,6 +38,12 @@ pub enum Chipset {
     I440Fx(I440Fx),
 }
 
+impl Default for Chipset {
+    fn default() -> Self {
+        Self::I440Fx(I440Fx { enable_pcie: false })
+    }
+}
+
 /// A set of CPUID values to expose to a guest.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
