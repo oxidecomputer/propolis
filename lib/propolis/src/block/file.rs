@@ -409,7 +409,7 @@ mod dkioc {
             }
             DiscardMech::FnctlFreesp => {
                 let mut fl = libc::flock {
-                    l_type: libc::F_WRLCK,
+                    l_type: libc::F_WRLCK as i16,
                     l_whence: 0,
                     l_start: off as i64,
                     l_len: len as i64,
