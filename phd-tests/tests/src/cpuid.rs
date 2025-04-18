@@ -5,8 +5,9 @@
 use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
 use phd_framework::{test_vm::MigrationTimeout, TestVm};
 use phd_testcase::*;
-use propolis_client::types::{
-    CpuidEntry, InstanceSpecStatus, VersionedInstanceSpec,
+use propolis_client::{
+    instance_spec::{CpuidEntry, VersionedInstanceSpec},
+    types::InstanceSpecStatus,
 };
 use tracing::info;
 use uuid::Uuid;

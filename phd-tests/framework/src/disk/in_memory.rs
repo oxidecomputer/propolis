@@ -4,7 +4,7 @@
 
 //! Abstractions for disks with an in-memory backend.
 
-use propolis_client::types::{BlobStorageBackend, ComponentV0};
+use propolis_client::instance_spec::{BlobStorageBackend, ComponentV0};
 
 use super::DiskConfig;
 use crate::disk::DeviceName;

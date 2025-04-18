@@ -9,7 +9,10 @@ use crate::{
     guest_os::GuestOsKind,
 };
 use camino::Utf8PathBuf;
-use propolis_client::types::{ComponentV0, InstanceMetadata, InstanceSpecV0};
+use propolis_client::{
+    instance_spec::{ComponentV0, InstanceSpecV0},
+    types::InstanceMetadata,
+};
 use uuid::Uuid;
 
 /// The set of objects needed to start and run a guest in a `TestVm`.
@@ -82,8 +85,12 @@ impl VmSpec {
             };
 
             let backend_spec = disk.backend_spec();
-            let backend_name =
-                disk.device_name().clone().into_backend_name().into_string();
+            let backend_name = disk
+                .device_name()
+                .clone()
+                .into_backend_name()
+                .into_string()
+                .into();
             if let Some(ComponentV0::CrucibleStorageBackend(_)) =
                 spec.components.get(&backend_name)
             {
