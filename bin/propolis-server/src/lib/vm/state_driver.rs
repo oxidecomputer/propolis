@@ -1014,7 +1014,7 @@ impl StateDriver {
         backend_id: &SpecKey,
         new_vcr_json: String,
     ) -> super::CrucibleReplaceResult {
-        info!(self.log, "request to replace Crucible VCR";
+        info!(self.log, "request to replace Crucible VCR {:?}", new_vcr_json;
               "backend_id" => %backend_id);
 
         let mut objects = self.objects.lock_exclusive().await;
