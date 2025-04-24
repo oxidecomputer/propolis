@@ -27,6 +27,7 @@ dropshot = { workspace = true }
 futures.workspace = true
 hyper.workspace = true
 serde.workspace = true
+propolis_api_types.workspace = true
 propolis_types.workspace = true
 semver.workspace = true
 serde_json.workspace = true

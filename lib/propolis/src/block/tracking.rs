@@ -131,6 +131,11 @@ impl<T> Tracking<T> {
             Operation::Flush => {
                 probes::block_begin_flush!(|| { (devid, id) });
             }
+            Operation::Discard(off, len) => {
+                probes::block_begin_discard!(|| {
+                    (devid, id, off as u64, len as u64)
+                });
+            }
         }
 
         req
@@ -166,6 +171,11 @@ impl<T> Tracking<T> {
             }
             Operation::Flush => {
                 probes::block_complete_flush!(|| {
+                    (devid, id, rescode, proc_ns, queue_ns)
+                });
+            }
+            Operation::Discard(..) => {
+                probes::block_complete_discard!(|| {
                     (devid, id, rescode, proc_ns, queue_ns)
                 });
             }

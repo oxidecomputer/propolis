@@ -12,9 +12,9 @@ use propolis_client::{
         Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
         CpuidEntry, CpuidVendor, GuestHypervisorInterface, InstanceMetadata,
         InstanceSpecV0, MigrationFailureInjector, NvmeDisk, SerialPort,
-        SerialPortNumber, VirtioDisk,
+        SerialPortNumber, SpecKey, VirtioDisk,
     },
-    PciPath, SpecKey,
+    PciPath,
 };
 use uuid::Uuid;
 
@@ -316,13 +316,13 @@ impl<'dr> VmConfig<'dr> {
             let backend_name = device_name.clone().into_backend_name();
             let device_spec = match req.interface {
                 DiskInterface::Virtio => ComponentV0::VirtioDisk(VirtioDisk {
-                    backend_id: SpecKey::from(
+                    backend_id: SpecKey::Name(
                         backend_name.clone().into_string(),
                     ),
                     pci_path,
                 }),
                 DiskInterface::Nvme => ComponentV0::NvmeDisk(NvmeDisk {
-                    backend_id: SpecKey::from(
+                    backend_id: SpecKey::Name(
                         backend_name.clone().into_string(),
                     ),
                     pci_path,
@@ -360,7 +360,7 @@ impl<'dr> VmConfig<'dr> {
                     order: boot_order
                         .iter()
                         .map(|item| BootOrderEntry {
-                            id: SpecKey::from(item.to_string()),
+                            id: SpecKey::Name(item.to_string()),
                         })
                         .collect(),
                 }),
