@@ -4,7 +4,7 @@
 
 use std::convert::TryInto;
 use std::fs::File;
-use std::num::{NonZeroU8, NonZeroUsize};
+use std::num::NonZeroUsize;
 use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -50,7 +50,6 @@ use propolis_api_types::instance_spec::{self, SpecKey};
 use propolis_api_types::InstanceProperties;
 use propolis_types::{CpuidIdent, CpuidVendor};
 use slog::info;
-use strum::IntoEnumIterator;
 use thiserror::Error;
 
 /// An error that can arise while initializing a new machine.
@@ -95,9 +94,8 @@ pub enum MachineInitError {
     #[error("failed to insert {0} fwcfg entry")]
     FwcfgInsertFailed(&'static str, #[source] fwcfg::InsertError),
 
-    #[error("failed to specialize CPUID for vcpu {0}")]
-    CpuidSpecializationFailed(i32, #[source] propolis::cpuid::SpecializeError),
-
+    // #[error("failed to specialize CPUID for vcpu {0}")]
+    // CpuidSpecializationFailed(i32, #[source] propolis::cpuid::SpecializeError),
     #[cfg(feature = "falcon")]
     #[error("softnpu p9 device missing")]
     SoftNpuP9Missing,
@@ -1246,26 +1244,26 @@ impl MachineInitializer<'_> {
                     requests to set hypervisor leaves",
             );
 
-            let specialized = propolis::cpuid::Specializer::new()
-                .with_vcpu_count(
-                    NonZeroU8::new(self.spec.board.cpus).unwrap(),
-                    true,
-                )
-                .with_vcpuid(vcpu.id)
-                .with_cache_topo()
-                .clear_cpu_topo(propolis::cpuid::TopoKind::iter())
-                .execute(set)
-                .map_err(|e| {
-                    MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
-                })?;
-
-            info!(self.log, "setting CPUID for vCPU";
-                    "vcpu" => vcpu.id,
-                    "cpuid" => ?specialized);
-
-            vcpu.set_cpuid(specialized).with_context(|| {
-                format!("setting CPUID for vcpu {}", vcpu.id)
-            })?;
+            // let specialized = propolis::cpuid::Specializer::new()
+            //     .with_vcpu_count(
+            //         NonZeroU8::new(self.spec.board.cpus).unwrap(),
+            //         true,
+            //     )
+            //     .with_vcpuid(vcpu.id)
+            //     .with_cache_topo()
+            //     .clear_cpu_topo(propolis::cpuid::TopoKind::iter())
+            //     .execute(set)
+            //     .map_err(|e| {
+            //         MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
+            //     })?;
+            //
+            // info!(self.log, "setting CPUID for vCPU";
+            //         "vcpu" => vcpu.id,
+            //         "cpuid" => ?specialized);
+            //
+            // vcpu.set_cpuid(specialized).with_context(|| {
+            //     format!("setting CPUID for vcpu {}", vcpu.id)
+            // })?;
 
             vcpu.set_default_capabs()
                 .context("failed to set vcpu capabilities")?;
