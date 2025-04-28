@@ -48,8 +48,8 @@ progenitor::generate_api!(
     // `derives = [schemars::JsonSchema]` directive because the `SpecKey` type
     // needs to implement that trait manually (see below).
     patch = {
-        BootSettings = { derives = [ Default] },
-        CpuidEntry = { derives = [ PartialEq, Eq, Copy ]},
+        BootSettings = { derives = [ Default ] },
+        CpuidEntry = { derives = [ PartialEq, Eq, Copy ] },
         InstanceMetadata = { derives = [ PartialEq ] },
         SpecKey = { derives = [ PartialEq, Eq, Ord, PartialOrd, Hash ] },
     }
