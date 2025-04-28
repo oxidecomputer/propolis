@@ -79,7 +79,7 @@ internal-dns-resolver = { git = "https://github.com/oxidecomputer/omicron", bran
 internal-dns-types = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 nexus-client = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 omicron-common = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
-omicron-zone-package = "0.12.1"
+omicron-zone-package = "0.12.2"
 oximeter-instruments = { git = "https://github.com/oxidecomputer/omicron", branch = "main", default-features = false, features = ["kstat"] }
 oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
