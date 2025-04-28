@@ -8,7 +8,9 @@ use phd_framework::{
     artifacts, lifecycle::Action, test_vm::MigrationTimeout, TestVm,
 };
 use phd_testcase::*;
-use propolis_client::types::HyperVFeatureFlag;
+use propolis_client::instance_spec::{
+    GuestHypervisorInterface, HyperVFeatureFlag,
+};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -51,11 +53,9 @@ async fn guest_detect_hyperv(vm: &TestVm) -> anyhow::Result<()> {
 #[phd_testcase]
 async fn hyperv_smoke_test(ctx: &Framework) {
     let mut cfg = ctx.vm_config_builder("hyperv_smoke_test");
-    cfg.guest_hv_interface(
-        propolis_client::types::GuestHypervisorInterface::HyperV {
-            features: vec![],
-        },
-    );
+    cfg.guest_hv_interface(GuestHypervisorInterface::HyperV {
+        features: Default::default(),
+    });
     let mut vm = ctx.spawn_vm(&cfg, None).await?;
     vm.launch().await?;
     vm.wait_to_boot().await?;
@@ -66,11 +66,9 @@ async fn hyperv_smoke_test(ctx: &Framework) {
 #[phd_testcase]
 async fn hyperv_lifecycle_test(ctx: &Framework) {
     let mut cfg = ctx.vm_config_builder("hyperv_lifecycle_test");
-    cfg.guest_hv_interface(
-        propolis_client::types::GuestHypervisorInterface::HyperV {
-            features: vec![],
-        },
-    );
+    cfg.guest_hv_interface(GuestHypervisorInterface::HyperV {
+        features: Default::default(),
+    });
     let mut vm = ctx.spawn_vm(&cfg, None).await?;
     vm.launch().await?;
     vm.wait_to_boot().await?;
@@ -93,11 +91,9 @@ async fn hyperv_lifecycle_test(ctx: &Framework) {
 #[phd_testcase]
 async fn hyperv_reference_tsc_clocksource_test(ctx: &Framework) {
     let mut cfg = ctx.vm_config_builder("hyperv_reference_tsc_test");
-    cfg.guest_hv_interface(
-        propolis_client::types::GuestHypervisorInterface::HyperV {
-            features: vec![HyperVFeatureFlag::ReferenceTsc],
-        },
-    );
+    cfg.guest_hv_interface(GuestHypervisorInterface::HyperV {
+        features: [HyperVFeatureFlag::ReferenceTsc].into_iter().collect(),
+    });
     let mut vm = ctx.spawn_vm(&cfg, None).await?;
     vm.launch().await?;
     vm.wait_to_boot().await?;
@@ -281,11 +277,9 @@ async fn hyperv_reference_tsc_elapsed_time_test(ctx: &Framework) {
     }
 
     let mut cfg = ctx.vm_config_builder("hyperv_reference_tsc_elapsed_test");
-    cfg.guest_hv_interface(
-        propolis_client::types::GuestHypervisorInterface::HyperV {
-            features: vec![HyperVFeatureFlag::ReferenceTsc],
-        },
-    );
+    cfg.guest_hv_interface(GuestHypervisorInterface::HyperV {
+        features: [HyperVFeatureFlag::ReferenceTsc].into_iter().collect(),
+    });
     let mut vm = ctx.spawn_vm(&cfg, None).await?;
     vm.launch().await?;
     vm.wait_to_boot().await?;

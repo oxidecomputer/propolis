@@ -217,10 +217,16 @@ impl std::fmt::Display for SpecKey {
 impl std::str::FromStr for SpecKey {
     type Err = core::convert::Infallible;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match Uuid::parse_str(s) {
+        Ok(s.into())
+    }
+}
+
+impl From<&str> for SpecKey {
+    fn from(s: &str) -> Self {
+        match Uuid::parse_str(s) {
             Ok(uuid) => Self::Uuid(uuid),
             Err(_) => Self::Name(s.to_owned()),
-        })
+        }
     }
 }
 

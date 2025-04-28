@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use phd_framework::test_vm::{FakeOximeterSampler, MetricsLocation};
-use propolis_client::types::HyperVFeatureFlag;
+use propolis_client::instance_spec::HyperVFeatureFlag;
 
 use chrono::{DateTime, Utc};
 use oximeter::types::{ProducerResults, ProducerResultsItem, Sample};
@@ -217,8 +217,8 @@ async fn instance_vcpu_stats(ctx: &Framework) {
 
     let mut vm_config = ctx.vm_config_builder("instance_vcpu_stats");
     vm_config.guest_hv_interface(
-        propolis_client::types::GuestHypervisorInterface::HyperV {
-            features: vec![HyperVFeatureFlag::ReferenceTsc],
+        propolis_client::instance_spec::GuestHypervisorInterface::HyperV {
+            features: [HyperVFeatureFlag::ReferenceTsc].into_iter().collect(),
         },
     );
     // Having one CPU simplifies the math for time expectations later in the

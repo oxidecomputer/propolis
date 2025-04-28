@@ -10,14 +10,13 @@ use std::{
 };
 
 use propolis_client::{
-    support::nvme_serial_from_str,
-    types::{
+    instance_spec::{
         ComponentV0, DlpiNetworkBackend, FileStorageBackend,
-        MigrationFailureInjector, NvmeDisk, P9fs, PciPciBridge, SoftNpuP9,
-        SoftNpuPciPort, SoftNpuPort, SpecKey, VirtioDisk, VirtioNetworkBackend,
-        VirtioNic,
+        MigrationFailureInjector, NvmeDisk, P9fs, PciPath, PciPciBridge,
+        SoftNpuP9, SoftNpuPciPort, SoftNpuPort, SpecKey, VirtioDisk,
+        VirtioNetworkBackend, VirtioNic,
     },
-    PciPath,
+    support::nvme_serial_from_str,
 };
 use thiserror::Error;
 

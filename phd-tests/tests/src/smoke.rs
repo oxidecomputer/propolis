@@ -3,7 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use phd_testcase::*;
-use propolis_client::types::{InstanceSpecStatus, VersionedInstanceSpec};
+use propolis_client::{
+    instance_spec::VersionedInstanceSpec, types::InstanceSpecStatus,
+};
 
 #[phd_testcase]
 async fn nproc_test(ctx: &Framework) {
