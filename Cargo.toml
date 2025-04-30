@@ -182,14 +182,17 @@ zerocopy = "0.7.34"
 #
 [patch."https://github.com/oxidecomputer/omicron"]
 #internal-dns = { path = "../omicron/internal-dns" }
-nexus-client = { path = "../omicron/clients/nexus-client" }
-omicron-uuid-kinds = { path = "../omicron/uuid-kinds" }
-nexus-types = { path = "../omicron/nexus/types" }
-illumos-utils = { path = "../omicron/illumos-utils" }
-omicron-common = { path = "../omicron/common" }
-oximeter-instruments = { path = "../omicron/oximeter/instruments" }
-oximeter-producer = { path = "../omicron/oximeter/producer" }
-oximeter = { path = "../omicron/oximeter/oximeter" }
+nexus-client = { git = "https://github.com/oxidecomputer//omicron.git", rev = "3950a44ba51c1696b19392d20fd2cbb9457a000d" }
+omicron-uuid-kinds = { git = "https://github.com/oxidecomputer//omicron.git", rev = "3950a44ba51c1696b19392d20fd2cbb9457a000d" }
+nexus-types = { git = "https://github.com/oxidecomputer//omicron.git", rev = "3950a44ba51c1696b19392d20fd2cbb9457a000d" }
+illumos-utils = { git = "https://github.com/oxidecomputer//omicron.git", rev = "3950a44ba51c1696b19392d20fd2cbb9457a000d" }
+omicron-common = { git = "https://github.com/oxidecomputer//omicron.git", rev = "3950a44ba51c1696b19392d20fd2cbb9457a000d" }
+oximeter-instruments = { git = "https://github.com/oxidecomputer//omicron.git", rev = "3950a44ba51c1696b19392d20fd2cbb9457a000d" }
+oximeter-producer = { git = "https://github.com/oxidecomputer//omicron.git", rev = "3950a44ba51c1696b19392d20fd2cbb9457a000d" }
+oximeter = { git = "https://github.com/oxidecomputer//omicron.git", rev = "3950a44ba51c1696b19392d20fd2cbb9457a000d" }
+
+# i've just picked what Omicron happens to currently point to.
+tufaceous-artifact = { git = "https://github.com/oxidecomputer//tufaceous.git", rev = "04681f26ba09e144e5467dd6bd22c4887692a670" }
 # [patch."https://github.com/oxidecomputer/crucible"]
 # crucible = { path = "../crucible/upstairs" }
 # crucible-client-types = { path = "../crucible/crucible-client-types" }
