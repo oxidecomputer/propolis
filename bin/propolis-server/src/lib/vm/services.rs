@@ -5,7 +5,7 @@
 //! Services visible to consumers outside this Propolis that depend on
 //! functionality supplied by an extant VM.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use oximeter::types::ProducerRegistry;
 use propolis_api_types::InstanceProperties;
@@ -53,10 +53,15 @@ impl VmServices {
     /// configuration.
     pub(super) async fn new(
         log: &slog::Logger,
-        vm_objects: &VmObjects,
+        vm_objects: &Arc<VmObjects>,
         vm_properties: &InstanceProperties,
         ensure_options: &super::EnsureOptions,
     ) -> Self {
+        // While we only need this if there's a metrics config present, it's
+        // simpler plumbing to create this before locking `vm_objects`, which we
+        // need to do regardless of metrics config.
+        let vm_objects_weak = Arc::downgrade(vm_objects);
+
         let vm_objects = vm_objects.lock_shared().await;
         let oximeter_state = if let Some(cfg) = &ensure_options.metrics_config {
             let registry = ensure_options.oximeter_registry.as_ref().expect(
@@ -67,7 +72,7 @@ impl VmServices {
                 cfg,
                 registry,
                 vm_objects.instance_spec(),
-                vm_objects.machine().map_physmem.virtual_address_size(),
+                vm_objects_weak,
                 vm_properties,
             )
             .await
@@ -120,7 +125,7 @@ async fn register_oximeter_producer(
     cfg: &MetricsEndpointConfig,
     registry: &ProducerRegistry,
     spec: &Spec,
-    vm_va_size: usize,
+    vm_objects_weak: Weak<VmObjects>,
     vm_properties: &InstanceProperties,
 ) -> OximeterState {
     let mut oximeter_state = OximeterState::default();
@@ -154,7 +159,7 @@ async fn register_oximeter_producer(
     // Assign our own metrics production for this VM instance to the
     // registry, letting the server actually return them to oximeter when
     // polled.
-    let stats = ServerStats::new(virtual_machine, vm_va_size);
+    let stats = ServerStats::new(virtual_machine, vm_objects_weak);
     if let Err(e) = registry.register_producer(stats.clone()) {
         error!(
             log,

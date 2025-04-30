@@ -89,17 +89,15 @@ struct psinfo {
 pub fn process_stats() -> anyhow::Result<ProcessStats> {
     let mut psinfo_file = std::fs::File::open("/proc/self/psinfo")?;
 
-    let mut stats = ProcessStats {
-        measurement_time: Duration::ZERO,
-        vss: 0,
-        rss: 0,
-    };
+    let mut stats =
+        ProcessStats { measurement_time: Duration::ZERO, vss: 0, rss: 0 };
 
     let mut info: psinfo = FromZeroes::new_zeroed();
 
     let stats_read_start = Instant::now();
 
-    psinfo_file.read(info.as_bytes_mut())
+    psinfo_file
+        .read(info.as_bytes_mut())
         .context("reading struct psinfo from file")?;
 
     stats.measurement_time = stats_read_start.elapsed();

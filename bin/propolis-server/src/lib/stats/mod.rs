@@ -5,7 +5,7 @@
 //! Methods for starting an Oximeter endpoint and gathering server-level stats.
 
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use omicron_common::api::internal::nexus::{ProducerEndpoint, ProducerKind};
 use oximeter::{
@@ -18,7 +18,10 @@ use slog::Logger;
 use uuid::Uuid;
 
 use crate::spec::Spec;
-use crate::{server::MetricsEndpointConfig, vm::NetworkInterfaceIds};
+use crate::{
+    server::MetricsEndpointConfig, vm::objects::VmObjects,
+    vm::NetworkInterfaceIds,
+};
 
 mod network_interface;
 mod process;
@@ -79,11 +82,12 @@ struct ServerStatsInner {
     /// data.
     virtual_machine: VirtualMachine,
 
-    /// The total amount of virtual address space reserved in support of this
-    /// virtual machine. This is retained to correct the process-wide virtual
-    /// address space size down to the "non-VM" amount; mappings not derived
-    /// from a virtual machine explicitly asking for some fixed size of memory.
-    vm_va_size: usize,
+    /// A weak reference to the objects implementing the VM this Propolis server
+    /// is responsible for. It is critical this is a weak reference: we do not
+    /// want to prohibit `VmObjects` from being dropped when unneeded. The
+    /// referece is, however, necessary to measure "Propolis overhead" -
+    /// measurements of the Propolis process minus the VM it is managing.
+    vm_objects: Weak<VmObjects>,
 
     /// The reset count for the relevant instance.
     run_count: virtual_machine::Reset,
@@ -99,12 +103,15 @@ struct ServerStatsInner {
 }
 
 impl ServerStatsInner {
-    pub fn new(virtual_machine: VirtualMachine, vm_va_size: usize) -> Self {
+    pub fn new(
+        virtual_machine: VirtualMachine,
+        vm_objects: Weak<VmObjects>,
+    ) -> Self {
         let rx = process::ProcessStats::new();
 
         ServerStatsInner {
             virtual_machine,
-            vm_va_size,
+            vm_objects,
             run_count: virtual_machine::Reset { datum: Default::default() },
             vmm_vss: virtual_machine::VmmVss { datum: Default::default() },
             process_stats_rx: rx,
@@ -113,13 +120,43 @@ impl ServerStatsInner {
 
     fn refresh_vmm_vss(&mut self) {
         let last_process_stats = self.process_stats_rx.borrow();
-        if last_process_stats.vss < self.vm_va_size {
-            eprintln!("process VSS is smaller than expected; is the VMM being torn down or already stopped?");
-            return;
-        }
 
-        self.vmm_vss.datum = (last_process_stats.vss - self.vm_va_size) as u64;
-        eprintln!("reporting vmm_vss of {}", self.vmm_vss.datum);
+        if let Some(vm_objects) = self.vm_objects.upgrade() {
+            // The mutex guarding VmObjects is async. Since we're not in an
+            // async context, we have to be a bit more explicit with the future.
+            // It's possible both for us to block acquiring this lock (if the
+            // state driver had an exclusive lock to make some change) and for
+            // us to block the state driver by acquiring the lock (but we
+            // *should* drop the lock very quickly, here).
+            let vm_objects = tokio::runtime::Handle::current()
+                .block_on(vm_objects.lock_shared());
+
+            let vm_va_size =
+                vm_objects.machine().map_physmem.virtual_address_size();
+
+            // We have a ref of `VmObjects`, so we know this `propolis-server`'s
+            // VM is still mapped.
+            //
+            // In theory at some point we'd want to handle the VM dimensions
+            // changing here. Imagine PCIe hotplug (via MMIO mappings), memory
+            // hotplug, or perhaps a balloon device. In that case we'd probably
+            // want to collect this information closer to reading `psinfo`, so
+            // that we can be sure that VM didn't change between reading
+            // `psinfo` and correcting for VM-specific usage.
+            self.vmm_vss.datum = (last_process_stats.vss - vm_va_size) as u64;
+        } else {
+            // We don't have a `VmObjects`, so the VM has been unmapped. The
+            // process' VSS is already everything-but-the-guest-VM, so report
+            // that directly.
+            //
+            // This is really just a race as `propolis-server` is shutting down.
+            // The `ServerStats` that manages this producer will be shut down
+            // imminently too, we're just measuring right as that's happening.
+            // We may even be in a cancelled future that hasn't observed it yet,
+            // with this datapoint never to be sent. But if do get one last
+            // datapoint out, this is at least the current state of the process.
+            self.vmm_vss.datum = last_process_stats.vss as u64;
+        }
     }
 }
 
@@ -135,8 +172,10 @@ pub struct ServerStats {
 
 impl ServerStats {
     /// Create new server stats, representing the provided instance.
-    pub fn new(vm: VirtualMachine, vm_va_size: usize) -> Self {
-        Self { inner: Arc::new(Mutex::new(ServerStatsInner::new(vm, vm_va_size))) }
+    pub fn new(vm: VirtualMachine, vm_objects: Weak<VmObjects>) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(ServerStatsInner::new(vm, vm_objects))),
+        }
     }
 
     /// Increments the number of times the managed instance was reset.
