@@ -94,10 +94,10 @@ struct ServerStatsInner {
 
     /// Mapped virtual memory for the Propolis managing this instance, excluding
     /// VM memory.
-    vmm_vss: virtual_machine::VmmVss,
+    vmm_vsz: virtual_machine::VmmVsz,
 
     /// Process RSS is sampled in a standalone task. The `tokio::sync::watch`
-    /// here is to observe that sampling and update the `vmm_vss` tracked
+    /// here is to observe that sampling and update the `vmm_vsz` tracked
     /// here.
     process_stats_rx: tokio::sync::watch::Receiver<process::ProcessStats>,
 }
@@ -113,12 +113,12 @@ impl ServerStatsInner {
             virtual_machine,
             vm_objects,
             run_count: virtual_machine::Reset { datum: Default::default() },
-            vmm_vss: virtual_machine::VmmVss { datum: Default::default() },
+            vmm_vsz: virtual_machine::VmmVsz { datum: Default::default() },
             process_stats_rx: rx,
         }
     }
 
-    fn refresh_vmm_vss(&mut self) {
+    fn refresh_vmm_vsz(&mut self) {
         let last_process_stats = self.process_stats_rx.borrow();
 
         if let Some(vm_objects) = self.vm_objects.upgrade() {
@@ -143,10 +143,10 @@ impl ServerStatsInner {
             // want to collect this information closer to reading `psinfo`, so
             // that we can be sure that VM didn't change between reading
             // `psinfo` and correcting for VM-specific usage.
-            self.vmm_vss.datum = (last_process_stats.vss - vm_va_size) as u64;
+            self.vmm_vsz.datum = (last_process_stats.vsz - vm_va_size) as u64;
         } else {
             // We don't have a `VmObjects`, so the VM has been unmapped. The
-            // process' VSS is already everything-but-the-guest-VM, so report
+            // process' VSZ is already everything-but-the-guest-VM, so report
             // that directly.
             //
             // This is really just a race as `propolis-server` is shutting down.
@@ -155,7 +155,7 @@ impl ServerStatsInner {
             // We may even be in a cancelled future that hasn't observed it yet,
             // with this datapoint never to be sent. But if do get one last
             // datapoint out, this is at least the current state of the process.
-            self.vmm_vss.datum = last_process_stats.vss as u64;
+            self.vmm_vsz.datum = last_process_stats.vsz as u64;
         }
     }
 }
@@ -190,16 +190,16 @@ impl Producer for ServerStats {
     ) -> Result<Box<dyn Iterator<Item = Sample> + 'static>, MetricsError> {
         let samples = {
             let mut inner = self.inner.lock().unwrap();
-            inner.refresh_vmm_vss();
+            inner.refresh_vmm_vsz();
             let run_count = std::iter::once(Sample::new(
                 &inner.virtual_machine,
                 &inner.run_count,
             )?);
-            let vss = std::iter::once(Sample::new(
+            let vsz = std::iter::once(Sample::new(
                 &inner.virtual_machine,
-                &inner.vmm_vss,
+                &inner.vmm_vsz,
             )?);
-            run_count.chain(vss)
+            run_count.chain(vsz)
         };
         Ok(Box::new(samples))
     }

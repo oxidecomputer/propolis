@@ -13,7 +13,7 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 pub(crate) struct ProcessStats {
     pub(crate) measurement_time: Duration,
     pub(crate) rss: usize,
-    pub(crate) vss: usize,
+    pub(crate) vsz: usize,
 }
 
 impl ProcessStats {
@@ -90,7 +90,7 @@ pub fn process_stats() -> anyhow::Result<ProcessStats> {
     let mut psinfo_file = std::fs::File::open("/proc/self/psinfo")?;
 
     let mut stats =
-        ProcessStats { measurement_time: Duration::ZERO, vss: 0, rss: 0 };
+        ProcessStats { measurement_time: Duration::ZERO, vsz: 0, rss: 0 };
 
     let mut info: psinfo = FromZeroes::new_zeroed();
 
@@ -102,7 +102,7 @@ pub fn process_stats() -> anyhow::Result<ProcessStats> {
 
     stats.measurement_time = stats_read_start.elapsed();
 
-    stats.vss = info.pr_size;
+    stats.vsz = info.pr_size;
     stats.rss = info.pr_rssize;
 
     Ok(stats)
