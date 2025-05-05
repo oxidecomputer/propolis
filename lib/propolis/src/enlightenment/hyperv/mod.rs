@@ -8,11 +8,11 @@
 //! implement the hypervisor described in Microsoft's Hypervisor Top-Level
 //! Functional Specification (TLFS). The behavior in this module is based on
 //! version 6.0b of the TLFS, which is available on GitHub:
-//! https://github.com/MicrosoftDocs/Virtualization-Documentation/blob/main/tlfs/Hypervisor%20Top%20Level%20Functional%20Specification%20v6.0b.pdf
+//! <https://github.com/MicrosoftDocs/Virtualization-Documentation/blob/main/tlfs/Hypervisor%20Top%20Level%20Functional%20Specification%20v6.0b.pdf>
 //!
 //! Microsoft also maintains a list of minimum requirements for any hypervisor
 //! that intends to implement a Hyper-V-compatible interface:
-//! https://github.com/MicrosoftDocs/Virtualization-Documentation/blob/main/tlfs/Requirements%20for%20Implementing%20the%20Microsoft%20Hypervisor%20Interface.pdf
+//! <https://github.com/MicrosoftDocs/Virtualization-Documentation/blob/main/tlfs/Requirements%20for%20Implementing%20the%20Microsoft%20Hypervisor%20Interface.pdf>
 
 use std::sync::{Arc, Mutex, OnceLock};
 

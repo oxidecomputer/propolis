@@ -13,10 +13,11 @@
 /// "manual" impls of things that Progenitor would otherwise derive).
 ///
 /// In the generated client, the native "top-level" instance spec and component
-/// types ([`VersionedInstanceSpec`], [`InstanceSpecV0`], and
-/// [`ReplacementComponent`]) replace their generated counterparts. This
-/// obviates the need to maintain `From` impls to convert between native and
-/// generated types.
+/// types ([`crate::instance_spec::VersionedInstanceSpec`],
+/// [`crate::instance_spec::InstanceSpecV0`], and
+/// [`crate::instance_spec::ReplacementComponent`]) replace their generated
+/// counterparts. This obviates the need to maintain `From` impls to convert
+/// between native and generated types.
 pub mod instance_spec {
     pub use propolis_api_types::instance_spec::{
         components::{backends::*, board::*, devices::*},

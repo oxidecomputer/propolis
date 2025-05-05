@@ -279,9 +279,9 @@ pub trait Backend: Send + Sync + 'static {
     /// requests while paused and resume issuing them when they are resumed.
     ///
     /// WARNING: The caller may abort VM startup and cancel the future created
-    /// by this routine. In this case the caller may not call [`stop`] prior to
-    /// dropping the backend. This routine is, however, guaranteed to be called
-    /// before the VM's vCPUs are started.
+    /// by this routine. In this case the caller may not call [`Self::stop()`]
+    /// prior to dropping the backend. This routine is, however, guaranteed to
+    /// be called before the VM's vCPUs are started.
     async fn start(&self) -> anyhow::Result<()>;
 
     /// Stop attempting to process new [Request]s from [Device] (if attached)

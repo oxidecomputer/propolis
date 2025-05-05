@@ -39,8 +39,7 @@ impl<T> CompletionCallback for T where
 /// use will be missing calls into those probes.
 ///
 /// Each [`Tracking`] also allows one optional callback that it will call
-/// whenever an I/O is completed. This can be set in the
-/// [`Tracking::with_completion_callback()`] constructor, or with
+/// whenever an I/O is completed. This can be set via
 /// [`Tracking::set_completion_callback()`].
 pub struct Tracking<T> {
     inner: Mutex<TrackingInner<T>>,

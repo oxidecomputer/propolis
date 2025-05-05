@@ -475,7 +475,7 @@ impl CpuidSet {
     }
 
     /// Returns `Ok` if `self` is equivalent to `other`; if not, returns a
-    /// [`CpuidMapMismatch`] describing the first observed difference between
+    /// [`CpuidSetMismatch`] describing the first observed difference between
     /// the two sets.
     pub fn is_equivalent_to(
         &self,
