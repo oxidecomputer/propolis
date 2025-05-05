@@ -20,10 +20,11 @@ use crate::vmm::{create_vm, CreateOpts, PhysMap, VmmHdl};
 ///
 /// For now it corresponds to the top address described by the DSDT in the
 /// static tables shipped in the "blessed" OVMF ROM shipping with propolis.
+/// That DSDT entry describes the 64-bit MMIO region.
 ///
 /// When MMIO and the physmap in general is made more robust, this should be
 /// eliminated completely.
-pub const MAX_PHYSMEM: usize = 0x100_0000_0000;
+pub const MAX_PHYSMEM: usize = 0x1000_0000_0000;
 
 /// The aggregate representation of a virtual machine.
 pub struct Machine {
