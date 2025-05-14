@@ -5,7 +5,7 @@
 //! Conversions from version-0 instance specs in the [`propolis_api_types`]
 //! crate to the internal [`super::Spec`] representation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use propolis_api_types::instance_spec::{
     components::{
@@ -44,6 +44,9 @@ pub(crate) enum ApiSpecError {
     #[error("network backend {backend} not found for device {device}")]
     NetworkBackendNotFound { backend: SpecKey, device: SpecKey },
 
+    #[error("USB host controller {xhc} not found for device {device}")]
+    HostControllerNotFound { xhc: SpecKey, device: SpecKey },
+
     #[allow(dead_code)]
     #[error("support for component {component} compiled out via {feature}")]
     FeatureCompiledOut { component: SpecKey, feature: &'static str },
@@ -61,6 +64,8 @@ impl From<Spec> for InstanceSpecV0 {
             cpuid,
             disks,
             nics,
+            xhcs,
+            usbdevs,
             boot_settings,
             serial,
             pci_pci_bridges,
@@ -119,6 +124,14 @@ impl From<Spec> for InstanceSpecV0 {
                 backend_id,
                 ComponentV0::VirtioNetworkBackend(nic.backend_spec),
             );
+        }
+
+        for (id, xhc) in xhcs {
+            insert_component(&mut spec, id, ComponentV0::Xhci(xhc));
+        }
+
+        for (id, usb) in usbdevs {
+            insert_component(&mut spec, id, ComponentV0::UsbPlaceholder(usb));
         }
 
         for (name, desc) in serial {
@@ -230,6 +243,7 @@ impl TryFrom<InstanceSpecV0> for Spec {
             BTreeMap::new();
         let mut dlpi_backends: BTreeMap<SpecKey, DlpiNetworkBackend> =
             BTreeMap::new();
+        let mut xhci_controllers: BTreeSet<SpecKey> = BTreeSet::new();
 
         for (id, component) in value.components.into_iter() {
             match component {
@@ -248,6 +262,10 @@ impl TryFrom<InstanceSpecV0> for Spec {
                 }
                 ComponentV0::DlpiNetworkBackend(dlpi) => {
                     dlpi_backends.insert(id, dlpi);
+                }
+                ComponentV0::Xhci(xhc) => {
+                    xhci_controllers.insert(id.to_owned());
+                    builder.add_xhci_controller(id, xhc)?;
                 }
                 device => {
                     devices.push((id, device));
@@ -364,6 +382,19 @@ impl TryFrom<InstanceSpecV0> for Spec {
                 #[cfg(feature = "falcon")]
                 ComponentV0::P9fs(p9fs) => {
                     builder.set_p9fs(p9fs)?;
+                }
+                ComponentV0::Xhci(xhci) => {
+                    builder.add_xhci_controller(device_id, xhci)?;
+                }
+                ComponentV0::UsbPlaceholder(usbdev) => {
+                    if xhci_controllers.contains(&usbdev.xhc_device) {
+                        builder.add_usb_device(device_id, usbdev)?;
+                    } else {
+                        return Err(ApiSpecError::HostControllerNotFound {
+                            xhc: usbdev.xhc_device.to_owned(),
+                            device: device_id,
+                        });
+                    }
                 }
                 ComponentV0::CrucibleStorageBackend(_)
                 | ComponentV0::FileStorageBackend(_)
