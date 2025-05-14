@@ -9,6 +9,7 @@ rust-version = "1.70"
 libc.workspace = true
 bitflags.workspace = true
 bitstruct.workspace = true
+bitvec.workspace = true
 byteorder.workspace = true
 lazy_static.workspace = true
 thiserror.workspace = true

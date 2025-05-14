@@ -53,6 +53,7 @@ pub const CLASS_DISPLAY: u8 = 3;
 pub const CLASS_MULTIMEDIA: u8 = 4;
 pub const CLASS_MEMORY: u8 = 5;
 pub const CLASS_BRIDGE: u8 = 6;
+pub const CLASS_SERIAL_BUS: u8 = 0xC;
 
 // Sub-classes under CLASS_STORAGE
 pub const SUBCLASS_STORAGE_NVM: u8 = 8;
@@ -66,8 +67,12 @@ pub const HEADER_TYPE_DEVICE: u8 = 0b0;
 pub const HEADER_TYPE_BRIDGE: u8 = 0b1;
 pub const HEADER_TYPE_MULTIFUNC: u8 = 0b1000_0000;
 
+pub const SUBCLASS_USB: u8 = 3;
+pub const SUBCLASS_NVM: u8 = 8;
+
 // Programming Interfaces for SUBCLASS_STORAGE_NVM
 pub const PROGIF_ENTERPRISE_NVME: u8 = 2;
+pub const PROGIF_USB3: u8 = 0x30;
 
 pub(super) const MASK_FUNC: u8 = 0x07;
 pub(super) const MASK_DEV: u8 = 0x1f;
