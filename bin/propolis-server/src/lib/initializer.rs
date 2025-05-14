@@ -6,7 +6,7 @@ use std::convert::TryInto;
 use std::fs::File;
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::os::unix::fs::FileTypeExt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::serial::Serial;
@@ -46,6 +46,8 @@ use propolis::hw::qemu::{
     ramfb,
 };
 use propolis::hw::uart::{LpcUart, LpcUartMetadata};
+use propolis::hw::usb::usbdev::vnc_tablet::HIDTabletReport;
+use propolis::hw::usb::{usbdev, xhci};
 use propolis::hw::{nvme, virtio};
 use propolis::intr_pins;
 use propolis::vmm::{self, Builder, Machine};
@@ -118,6 +120,9 @@ pub enum MachineInitError {
 
     #[error("failed to start attestation server")]
     AttestationServer(#[source] std::io::Error),
+
+    #[error("xHC USB root hub port number invalid: {0}")]
+    UsbRootHubPortNumberInvalid(String),
 
     #[cfg(feature = "falcon")]
     #[error("softnpu p9 device missing")]
@@ -1068,6 +1073,53 @@ impl MachineInitializer<'_> {
                 interface_ids.unwrap(),
             )
             .await
+        }
+
+        Ok(())
+    }
+
+    /// Initialize xHCI controllers, connect any USB devices given in the spec,
+    /// add them to the device map, and attach them to the chipset.
+    pub fn initialize_xhc_usb(
+        &mut self,
+        chipset: &RegisteredChipset,
+        hid_report: &Arc<Mutex<HIDTabletReport>>,
+    ) -> Result<(), MachineInitError> {
+        for (xhc_id, xhc_spec) in &self.spec.xhcs {
+            info!(
+                self.log,
+                "Creating xHCI controller";
+                "pci_path" => %xhc_spec.pci_path,
+            );
+
+            let log = self.log.new(slog::o!("dev" => "xhci"));
+            let bdf: pci::Bdf = xhc_spec.pci_path.into();
+            let xhc = xhci::PciXhci::create(self.machine.hdl.clone(), log);
+
+            for (usb_id, usb) in &self.spec.usbdevs {
+                if *xhc_id == usb.xhc_device {
+                    info!(
+                        self.log,
+                        "Attaching USB device";
+                        "usb_id" => %usb_id,
+                        "xhc_pci_path" => %xhc_spec.pci_path,
+                        "usb_port" => %usb.root_hub_port_num,
+                    );
+                    let device_type = match usb.usb_device_type {
+                        instance_spec::components::devices::UsbDeviceType::Null => usbdev::UsbDeviceType::Null,
+                        instance_spec::components::devices::UsbDeviceType::HidTablet => usbdev::UsbDeviceType::HidTablet,
+                    };
+                    xhc.add_usb_device(
+                        usb.root_hub_port_num,
+                        device_type,
+                        hid_report,
+                    )
+                    .map_err(MachineInitError::UsbRootHubPortNumberInvalid)?;
+                }
+            }
+
+            self.devices.insert(xhc_id.clone(), xhc.clone());
+            chipset.pci_attach(bdf, xhc);
         }
 
         Ok(())

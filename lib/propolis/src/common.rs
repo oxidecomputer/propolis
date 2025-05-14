@@ -10,6 +10,8 @@ use std::slice::SliceIndex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use zerocopy::{FromBytes, Immutable, IntoBytes};
+
 use crate::vmm::SubMapping;
 
 /// A vCPU number.
@@ -470,7 +472,19 @@ impl RWOp<'_, '_> {
 }
 
 /// An address within a guest VM.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    FromBytes,
+    IntoBytes,
+    Immutable,
+)]
 pub struct GuestAddr(pub u64);
 
 impl GuestAddr {

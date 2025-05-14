@@ -541,8 +541,10 @@ impl<T: MigrateConn> RonV0<T> {
 
         {
             let vm_objects = ensure_ctx.vm_objects().lock_shared().await;
-            let migrate_ctx =
-                MigrateCtx { mem: &vm_objects.access_mem().unwrap() };
+            let migrate_ctx = MigrateCtx {
+                mem: &vm_objects.access_mem().unwrap(),
+                hid_report: vm_objects.hid_report(),
+            };
             for device in devices {
                 let key = SpecKey::from(device.instance_name.clone());
                 info!(self.log(), "Applying state to device {key}");

@@ -76,7 +76,11 @@ impl VmServices {
 
         let vnc_server = ensure_options.vnc_server.clone();
         if let Some(ramfb) = vm_objects.framebuffer() {
-            vnc_server.attach(vm_objects.ps2ctrl().clone(), ramfb.clone());
+            vnc_server.attach(
+                vm_objects.ps2ctrl().clone(),
+                vm_objects.hid_report().clone(),
+                ramfb.clone(),
+            );
         }
 
         let serial_task = start_serial_task(log, &vm_objects).await;

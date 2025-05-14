@@ -14,7 +14,7 @@
 //! [`Spec`] and its component types to take forms that might otherwise be hard
 //! to change in a backward-compatible way.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::spec::api_spec_v0::ApiSpecError;
 use cpuid_utils::CpuidSet;
@@ -27,8 +27,8 @@ use propolis_api_types::instance_spec::{
         board::{Chipset, GuestHypervisorInterface, I440Fx},
         devices::{
             NvmeDisk, PciPciBridge, QemuPvpanic as QemuPvpanicDesc,
-            SerialPortNumber, VirtioDisk, VirtioNic,
-            VirtioSocket as VirtioSocketDesc,
+            SerialPortNumber, UsbDevice, VirtioDisk, VirtioNic,
+            VirtioSocket as VirtioSocketDesc, XhciController,
         },
     },
     PciPath, SpecKey,
@@ -36,7 +36,7 @@ use propolis_api_types::instance_spec::{
 use propolis_api_types::instance_spec::{
     Component, InstanceSpec, SmbiosType1Input,
 };
-use propolis_api_types_versions::{v1, v2};
+use propolis_api_types_versions::{v1, v2, v3};
 use thiserror::Error;
 
 #[cfg(feature = "failure-injection")]
@@ -62,7 +62,8 @@ impl From<Spec> for InstanceSpec {
         let v1_spec: v1::instance_spec::InstanceSpec = val.into();
         let v2_spec =
             v2::instance_spec::InstanceSpec { smbios, ..v1_spec.into() };
-        let mut spec: InstanceSpec = v2_spec.into();
+        let v3_spec: v3::instance_spec::InstanceSpec = v2_spec.into();
+        let mut spec: InstanceSpec = v3_spec.into();
 
         if let Some(vsock) = vsock {
             spec.components
@@ -80,20 +81,49 @@ impl TryFrom<InstanceSpec> for Spec {
         // Extract vsock before conversion since it's v3-only and will be
         // filtered out during the v3→v2→v1 chain.
         let mut vsock_entry = None;
+        // Ditto with xHC/USB, which are v6-only
+        let mut xhc_ids: BTreeSet<SpecKey> = BTreeSet::new();
+        let mut xhcs = vec![];
+        let mut usbdevs = vec![];
         for (id, component) in &value.components {
-            if let Component::VirtioSocket(v) = component {
-                vsock_entry = Some(VirtioSocket { id: id.clone(), spec: *v });
-                break;
+            match component {
+                Component::VirtioSocket(v) => {
+                    vsock_entry =
+                        Some(VirtioSocket { id: id.clone(), spec: *v });
+                }
+                Component::XhciController(xhc) => {
+                    xhc_ids.insert(id.clone());
+                    xhcs.push((id.clone(), xhc.clone()));
+                }
+                Component::UsbDevice(usb) => {
+                    usbdevs.push((id.clone(), usb.clone()));
+                }
+                _ => {}
             }
         }
 
-        let v2_spec: v2::instance_spec::InstanceSpec = value.into();
+        // v4 and v5 didn't change InstanceSpec
+        let v3_spec: v3::instance_spec::InstanceSpec = value.into();
+        let v2_spec: v2::instance_spec::InstanceSpec = v3_spec.into();
         let smbios = v2_spec.smbios.clone();
         let v1_spec: v1::instance_spec::InstanceSpec = v2_spec.into();
 
         let mut builder = api_spec_v0::v1_to_spec_builder(v1_spec)?;
         if let Some(vsock) = vsock_entry {
             builder.add_vsock_device(vsock)?;
+        }
+        for (dev_id, xhc) in xhcs {
+            builder.add_xhci_controller(dev_id, xhc)?;
+        }
+        for (dev_id, usbdev) in usbdevs {
+            if xhc_ids.contains(&usbdev.xhc_device) {
+                builder.add_usb_device(dev_id, usbdev)?;
+            } else {
+                return Err(ApiSpecError::HostControllerNotFound {
+                    xhc: usbdev.xhc_device,
+                    device: dev_id,
+                });
+            }
         }
         let mut spec = builder.finish();
         spec.smbios_type1_input = smbios;
@@ -120,6 +150,8 @@ pub(crate) struct Spec {
     pub cpuid: CpuidSet,
     pub disks: BTreeMap<SpecKey, Disk>,
     pub nics: BTreeMap<SpecKey, Nic>,
+    pub xhcs: BTreeMap<SpecKey, XhciController>,
+    pub usbdevs: BTreeMap<SpecKey, UsbDevice>,
     pub boot_settings: Option<BootSettings>,
 
     pub serial: BTreeMap<SpecKey, SerialPort>,

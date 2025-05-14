@@ -86,7 +86,8 @@ pub(crate) fn save(
     let machine = guard.machine.as_ref().unwrap();
     let hdl = machine.hdl.clone();
     let memctx = machine.acc_mem.access().unwrap();
-    let migratectx = MigrateCtx { mem: &memctx };
+    let dummy_hid_report = Arc::default();
+    let migratectx = MigrateCtx { mem: &memctx, hid_report: &dummy_hid_report };
 
     info!(log, "Serializing global VM state");
     {
@@ -338,7 +339,8 @@ pub(crate) fn restore(
     }
 
     // Finally, let's restore the device state
-    let migratectx = MigrateCtx { mem: &memctx };
+    let dummy_hid_report = Arc::default();
+    let migratectx = MigrateCtx { mem: &memctx, hid_report: &dummy_hid_report };
     for snap_dev in device_data {
         let name = &snap_dev.instance_name;
         let dev = guard.inventory.devs.get(name).ok_or_else(|| {

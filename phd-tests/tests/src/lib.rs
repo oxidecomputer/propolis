@@ -17,3 +17,4 @@ mod server_state_machine;
 mod smoke;
 mod stats;
 mod vsock;
+mod xhci;

@@ -1950,7 +1950,9 @@ mod test {
             let mut dev_payloads = PayloadOutputs::new();
             let acc_mem =
                 self.machine.acc_mem.access().expect("machine has memory");
-            let ctx = MigrateCtx { mem: &acc_mem };
+            let dummy_hid_report = Arc::default();
+            let ctx =
+                MigrateCtx { mem: &acc_mem, hid_report: &dummy_hid_report };
             <PciVirtioViona>::export(&self.dev, &mut dev_payloads, &ctx)
                 .expect("can export PciVirtioViona");
             let mut payloads = Vec::new();
@@ -1999,7 +2001,8 @@ mod test {
                 .acc_mem
                 .access()
                 .expect("new machine has memory");
-            let new_migrate = MigrateCtx { mem: &acc_mem };
+            let new_migrate =
+                MigrateCtx { mem: &acc_mem, hid_report: &dummy_hid_report };
             <PciVirtioViona>::import(&new_ctx.dev, &mut offers, &new_migrate)
                 .expect("can import PciVirtioViona");
             Lifecycle::start(new_ctx.dev.as_ref())

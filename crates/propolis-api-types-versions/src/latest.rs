@@ -43,6 +43,10 @@ pub mod components {
         pub use crate::v1::components::devices::VirtioNic;
 
         pub use crate::v3::components::devices::VirtioSocket;
+
+        pub use crate::v6::components::devices::UsbDevice;
+        pub use crate::v6::components::devices::UsbDeviceType;
+        pub use crate::v6::components::devices::XhciController;
     }
 }
 
@@ -70,8 +74,8 @@ pub mod instance {
     pub use crate::v1::instance::InstanceStateRequested;
     pub use crate::v1::instance::ReplacementComponent;
 
-    pub use crate::v3::api::InstanceEnsureRequest;
-    pub use crate::v3::api::InstanceInitializationMethod;
+    pub use crate::v6::api::InstanceEnsureRequest;
+    pub use crate::v6::api::InstanceInitializationMethod;
 }
 
 pub mod instance_spec {
@@ -84,10 +88,10 @@ pub mod instance_spec {
 
     pub use crate::v2::instance_spec::SmbiosType1Input;
 
-    pub use crate::v3::instance_spec::Component;
-    pub use crate::v3::instance_spec::InstanceSpec;
-    pub use crate::v3::instance_spec::InstanceSpecGetResponse;
-    pub use crate::v3::instance_spec::InstanceSpecStatus;
+    pub use crate::v6::instance_spec::Component;
+    pub use crate::v6::instance_spec::InstanceSpec;
+    pub use crate::v6::instance_spec::InstanceSpecGetResponse;
+    pub use crate::v6::instance_spec::InstanceSpecStatus;
 }
 
 pub mod migration {

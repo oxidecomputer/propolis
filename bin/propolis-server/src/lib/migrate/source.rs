@@ -683,8 +683,10 @@ impl<T: MigrateConn> RonV0Runner<'_, T> {
         let mut device_states = vec![];
         {
             let objects = self.vm.lock_shared().await;
-            let migrate_ctx =
-                MigrateCtx { mem: &objects.access_mem().unwrap() };
+            let migrate_ctx = MigrateCtx {
+                mem: &objects.access_mem().unwrap(),
+                hid_report: objects.hid_report(),
+            };
 
             // Collect together the serialized state for all the devices
             objects.for_each_device_fallible(|name, devop| {

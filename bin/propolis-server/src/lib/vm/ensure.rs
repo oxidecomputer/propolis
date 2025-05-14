@@ -568,6 +568,9 @@ async fn initialize_vm_objects(
     let mut attest_handle =
         init.initialize_vsock(&chipset, options.attest_config).await?;
 
+    let hid_report = Arc::default();
+    init.initialize_xhc_usb(&chipset, &hid_report)?;
+
     #[cfg(feature = "failure-injection")]
     init.initialize_test_devices();
 
@@ -657,6 +660,7 @@ async fn initialize_vm_objects(
         framebuffer: Some(ramfb),
         ps2ctrl,
         attest_handle,
+        hid_report,
     };
 
     // Another really terrible hack. As we've found in Propolis#1008, brk()

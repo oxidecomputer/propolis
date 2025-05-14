@@ -44,6 +44,9 @@ pub(crate) enum ApiSpecError {
     #[error("network backend {backend} not found for device {device}")]
     NetworkBackendNotFound { backend: SpecKey, device: SpecKey },
 
+    #[error("USB host controller {xhc} not found for device {device}")]
+    HostControllerNotFound { xhc: SpecKey, device: SpecKey },
+
     #[allow(dead_code)]
     #[error("support for component {component} compiled out via {feature}")]
     FeatureCompiledOut { component: SpecKey, feature: &'static str },
@@ -77,6 +80,11 @@ impl From<Spec> for v1::instance_spec::InstanceSpec {
             // Not part of `v1::instance_spec::InstanceSpec`. Added in
             // `InstanceSpec` in API Version 3.0.0.
             vsock: _,
+
+            // Not part of `v1::instance_spec::InstanceSpec`. Added in
+            // `InstanceSpec` in API Version 4.0.0.
+            xhcs: _,
+            usbdevs: _,
         } = val;
 
         // Inserts a component entry into the supplied map, asserting first that

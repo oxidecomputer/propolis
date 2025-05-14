@@ -44,7 +44,8 @@ pub struct ServerProcessParameters<'a> {
 
 pub struct PropolisServer {
     server: Option<std::process::Child>,
-    address: SocketAddrV4,
+    server_addr: SocketAddrV4,
+    vnc_addr: SocketAddrV4,
     output_dir: Utf8PathBuf,
 }
 
@@ -118,7 +119,8 @@ impl PropolisServer {
 
         let server = PropolisServer {
             server: Some(server_cmd.spawn()?),
-            address: server_addr,
+            server_addr,
+            vnc_addr,
             // Stash the same output directory in case the framework has to
             // write any files on behalf of the test run.
             output_dir: output_dir.to_owned(),
@@ -132,7 +134,11 @@ impl PropolisServer {
     }
 
     pub(crate) fn server_addr(&self) -> SocketAddrV4 {
-        self.address
+        self.server_addr
+    }
+
+    pub(crate) fn vnc_addr(&self) -> SocketAddrV4 {
+        self.vnc_addr
     }
 
     /// Collect a core of this server process, placing it in the same output
@@ -176,7 +182,7 @@ impl PropolisServer {
         let pid = server.id();
         debug!(
             pid,
-            %self.address,
+            %self.server_addr,
             "Killing Propolis server process"
         );
 

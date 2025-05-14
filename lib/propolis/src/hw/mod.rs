@@ -12,4 +12,5 @@ pub mod ps2;
 pub mod qemu;
 pub mod testdev;
 pub mod uart;
+pub mod usb;
 pub mod virtio;
