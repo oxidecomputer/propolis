@@ -229,9 +229,16 @@ impl<ID: Copy + Eq> RegMap<ID> {
         regdef: &[(ID, usize)],
         resv_reg: Option<ID>,
     ) -> Self {
+        RegMap::create_packed_iter(size, regdef.iter().copied(), resv_reg)
+    }
+    pub fn create_packed_iter(
+        size: usize,
+        regdef: impl IntoIterator<Item = (ID, usize)>,
+        resv_reg: Option<ID>,
+    ) -> Self {
         let mut map = RegMap::new(size);
         let mut off = 0;
-        for reg in regdef.iter() {
+        for reg in regdef {
             let (id, reg_size) = (reg.0, reg.1);
             let flags = match resv_reg.as_ref() {
                 Some(resv) if *resv == id => {

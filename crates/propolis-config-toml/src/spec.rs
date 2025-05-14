@@ -13,8 +13,8 @@ use propolis_client::{
     instance_spec::{
         ComponentV0, DlpiNetworkBackend, FileStorageBackend,
         MigrationFailureInjector, NvmeDisk, P9fs, PciPath, PciPciBridge,
-        SoftNpuP9, SoftNpuPciPort, SoftNpuPort, SpecKey, VirtioDisk,
-        VirtioNetworkBackend, VirtioNic,
+        SoftNpuP9, SoftNpuPciPort, SoftNpuPort, SpecKey, UsbDevice, VirtioDisk,
+        VirtioNetworkBackend, VirtioNic, XhciController,
     },
     support::nvme_serial_from_str,
 };
@@ -32,6 +32,12 @@ pub enum TomlToSpecError {
 
     #[error("failed to get PCI path for device {0:?}")]
     InvalidPciPath(String),
+
+    #[error("failed to get USB root hub port for device {0:?}")]
+    InvalidUsbPort(String),
+
+    #[error("no xHC name for USB device {0:?}")]
+    NoHostControllerNameForUsbDevice(String),
 
     #[error("failed to parse PCI path string {0:?}")]
     PciPathParseFailed(String, #[source] std::io::Error),
@@ -248,6 +254,44 @@ impl TryFrom<&super::Config> for SpecConfig {
                             device,
                         )?),
                     )?;
+                }
+                "pci-xhci" => {
+                    let pci_path: PciPath =
+                        device.get("pci-path").ok_or_else(|| {
+                            TomlToSpecError::InvalidPciPath(
+                                device_name.to_owned(),
+                            )
+                        })?;
+
+                    spec.components.insert(
+                        device_id,
+                        ComponentV0::Xhci(XhciController { pci_path }),
+                    );
+                }
+                "usb-dummy" => {
+                    let root_hub_port_num = device
+                        .get_integer("root-hub-port")
+                        .filter(|x| (1..=8).contains(x))
+                        .ok_or_else(|| {
+                            TomlToSpecError::InvalidUsbPort(
+                                device_name.to_owned(),
+                            )
+                        })? as u8;
+
+                    let xhc_device: SpecKey =
+                        device.get("xhc-device").ok_or_else(|| {
+                            TomlToSpecError::NoHostControllerNameForUsbDevice(
+                                device_name.to_owned(),
+                            )
+                        })?;
+
+                    spec.components.insert(
+                        device_id,
+                        ComponentV0::UsbPlaceholder(UsbDevice {
+                            root_hub_port_num,
+                            xhc_device,
+                        }),
+                    );
                 }
                 _ => {
                     return Err(TomlToSpecError::UnrecognizedDeviceType(

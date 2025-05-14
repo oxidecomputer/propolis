@@ -7,6 +7,8 @@ use std::ops::{Bound::*, RangeBounds};
 use std::slice::SliceIndex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use zerocopy::{FromBytes, Immutable};
+
 use crate::vmm::SubMapping;
 
 /// A vCPU number.
@@ -170,6 +172,7 @@ fn numeric_bounds(
     }
 }
 
+#[derive(Debug)]
 enum ROInner<'a> {
     Buf(&'a mut [u8]),
     Map(SubMapping<'a>),
@@ -178,6 +181,7 @@ enum ROInner<'a> {
 /// Represents an abstract requested read operation.
 ///
 /// Exposes an API with various "write" methods, which fulfill the request.
+#[derive(Debug)]
 pub struct ReadOp<'a> {
     inner: ROInner<'a>,
     offset: usize,
@@ -310,6 +314,7 @@ impl<'a> ReadOp<'a> {
     }
 }
 
+#[derive(Debug)]
 enum WOInner<'a> {
     Buf(&'a [u8]),
     Map(SubMapping<'a>),
@@ -318,6 +323,7 @@ enum WOInner<'a> {
 /// Represents an abstract requested write operation.
 ///
 /// Exposes an API with various "read" methods, which fulfill the request.
+#[derive(Debug)]
 pub struct WriteOp<'a> {
     inner: WOInner<'a>,
     offset: usize,
@@ -467,7 +473,18 @@ impl RWOp<'_, '_> {
 }
 
 /// An address within a guest VM.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    FromBytes,
+    Immutable,
+)]
 pub struct GuestAddr(pub u64);
 
 impl GuestAddr {

@@ -97,6 +97,10 @@ impl Device {
     pub fn get<T: FromStr, S: AsRef<str>>(&self, key: S) -> Option<T> {
         self.get_string(key)?.parse().ok()
     }
+
+    pub fn get_integer<S: AsRef<str>>(&self, key: S) -> Option<i64> {
+        self.options.get(key.as_ref())?.as_integer()
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
