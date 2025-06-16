@@ -143,7 +143,7 @@ use crate::{
     vmm::Pfn,
 };
 
-use zerocopy::AsBytes;
+use zerocopy::{Immutable, IntoBytes};
 
 const ENABLED_BIT: u64 = 0;
 const ENABLED_MASK: u64 = 1 << ENABLED_BIT;
@@ -184,7 +184,7 @@ impl MsrReferenceTscValue {
 }
 
 /// The contents of a reference TSC page, defined in TLFS section 12.7.2.
-#[derive(Clone, Copy, Debug, Default, AsBytes)]
+#[derive(Clone, Copy, Debug, Default, IntoBytes, Immutable)]
 #[repr(packed, C)]
 pub(super) struct ReferenceTscPage {
     /// Incremented whenever the `scale` or `offset` fields of this page are
