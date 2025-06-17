@@ -1057,6 +1057,158 @@ mod test {
 pub mod formats {
     use super::Entry;
     use crate::hw::pci;
+    use zerocopy::{Immutable, IntoBytes};
+
+    /// A type for a range described in an E820 map entry.
+    ///
+    /// This is canonically defined as the ACPI "Address Range Types", though we
+    /// only define the types we use, which are a subset of the types that EDK2
+    /// is known to care about, which itself is a subset of types that ACPI and
+    /// OEMs define or guest OSes may care about.
+    #[derive(IntoBytes, Immutable)]
+    #[repr(u32)]
+    enum EfiAcpiMemoryType {
+        Memory = 1,
+        Reserved = 2,
+        // For reference, though these types are unused.
+        // Acpi = 3,
+        // Nvs = 4,
+    }
+
+    /// One address/length/type entry in the E820 map.
+    ///
+    /// This is... almost defined by ACPI's "Address Range Descriptor Structure"
+    /// table, under "INT 15H, E820". Critically, ACPI defines this structure
+    /// with an additional "Extended Attributes" field which EDK2 does not know
+    /// about and so we do not provide. Consequently the size of this struct is
+    /// 20 bytes as defined in `OvmfPkg/Include/IndustryStandard/E820.h` rather
+    /// than the ACPI definition's 24 bytes.
+    #[derive(IntoBytes, Immutable)]
+    #[repr(C, packed)]
+    struct E820Entry64 {
+        base_addr: u64,
+        length: u64,
+        ty: EfiAcpiMemoryType,
+    }
+
+    /// A list of E820 memory map entries.
+    ///
+    /// This is not defined by ACPI, but is an EDK2 implementation of a QMEU
+    /// construct to communicate an E820 map to the firmware. This table is not
+    /// directly presented to guest OSes; it is parsed by EDK2 and added to its
+    /// EFI memory map. It is not required to be sorted, and EDK2 ignores
+    /// entries starting below 4 GiB. Adding additional low-memory entries is
+    /// not harmful, but not valuable to EDK2 either.
+    pub struct E820Table(Vec<E820Entry64>);
+    impl E820Table {
+        pub fn new() -> Self {
+            Self(Vec::new())
+        }
+
+        /// Add an address range corresponding to usable memory.
+        pub fn add_mem(&mut self, base_addr: u64, length: u64) {
+            self.0.push(E820Entry64 {
+                base_addr,
+                length,
+                ty: EfiAcpiMemoryType::Memory,
+            });
+        }
+
+        /// Add a reserved address, not to be used by the guest OS.
+        pub fn add_reserved(&mut self, base_addr: u64, length: u64) {
+            self.0.push(E820Entry64 {
+                base_addr,
+                length,
+                ty: EfiAcpiMemoryType::Reserved,
+            });
+        }
+
+        pub fn finish(self) -> Entry {
+            Entry::Bytes(self.0.as_bytes().to_vec())
+        }
+    }
+
+    #[cfg(test)]
+    mod test_e820 {
+        use super::{E820Entry64, E820Table};
+        use crate::hw::qemu::fwcfg::Entry;
+
+        #[test]
+        fn entry_size_is_correct() {
+            // Compare the size of our definition of an E820 to EDK2's
+            // definition. EDK2 interprets our provided bytes by its definition,
+            // so they must match.
+            assert_eq!(std::mem::size_of::<E820Entry64>(), 20);
+        }
+
+        #[test]
+        fn basic() {
+            let mut e820_table = E820Table::new();
+
+            // Arbitrary bit patterns here, just to make eyeballing the layout
+            // more straightforward.
+            //
+            // Also note the E820 table itself does not check if ranges overlap.
+            // In practice it is directly constructed from an ASpace, which does
+            // perform those checks.
+            e820_table.add_mem(0x0102_0304_0506_0010, 0x1122_3344_5566_7788);
+            e820_table
+                .add_reserved(0x0102_0304_0506_fff0, 0xffee_ddcc_bbaa_9988);
+
+            // We also don't require the E820 map to be ordered. ACPI does not
+            // imply that it should be, nor do EDK2 or guest OSes, even though
+            // entries are often enumerated in address order.
+            e820_table.add_mem(0x0102_0304_0506_0000, 0x1122_3344_5566_7799);
+
+            // rustfmt::skip here and below because eight bytes per line helps
+            // eyeball with the entries as written above. rustfmt would try to
+            // fit ten bytes per row to pack the 80-column width and that's just
+            // annoying here.
+            #[rustfmt::skip]
+            const FIRST_ENTRY: [u8; 20] = [
+                0x10, 0x00, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01,
+                0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
+                0x01, 0x00, 0x00, 0x00,
+            ];
+
+            #[rustfmt::skip]
+            const SECOND_ENTRY: [u8; 20] = [
+                0xf0, 0xff, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01,
+                0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+                0x02, 0x00, 0x00, 0x00,
+            ];
+
+            #[rustfmt::skip]
+            const THIRD_ENTRY: [u8; 20] = [
+                0x00, 0x00, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01,
+                0x99, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
+                0x01, 0x00, 0x00, 0x00,
+            ];
+
+            let entry = e820_table.finish();
+            let Entry::Bytes(bytes) = entry else {
+                panic!("entry did not produce bytes, but instead {:?}", entry);
+            };
+
+            let expected_size =
+                FIRST_ENTRY.len() + SECOND_ENTRY.len() + THIRD_ENTRY.len();
+            assert_eq!(bytes.len(), expected_size);
+
+            let tests = [
+                (&bytes[0..20], &FIRST_ENTRY, "First E820 entry"),
+                (&bytes[20..40], &SECOND_ENTRY, "Second E820 entry"),
+                (&bytes[40..60], &THIRD_ENTRY, "Third E820 entry"),
+            ];
+
+            for (actual, expected, entry_name) in tests.iter() {
+                assert_eq!(
+                    actual, expected,
+                    "{} contents are incorrect",
+                    entry_name
+                );
+            }
+        }
+    }
 
     /// Collect one or more device elections for use in generating a boot order
     /// `fw_cfg` entry, suitable for consumption by OVMF bootrom.
@@ -1117,7 +1269,7 @@ pub mod formats {
     }
 
     #[cfg(test)]
-    mod test {
+    mod test_bootorder {
         use super::BootOrder;
         use crate::hw::pci::BusLocation;
         use crate::hw::qemu::fwcfg;
