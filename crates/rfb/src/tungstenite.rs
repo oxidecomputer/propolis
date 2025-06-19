@@ -20,7 +20,7 @@ use tokio_tungstenite::WebSocketStream;
 fn tung_err_to_io(err: TungError) -> io::Error {
     match err {
         TungError::Io(io_err) => io_err,
-        err => io::Error::new(io::ErrorKind::Other, err),
+        err => io::Error::other(err),
     }
 }
 
@@ -101,10 +101,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> AsyncRead for BinaryWs<T> {
                         return Poll::Ready(Err(ioe));
                     }
                     _ => {
-                        return Poll::Ready(Err(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            e,
-                        )));
+                        return Poll::Ready(Err(std::io::Error::other(e)));
                     }
                 },
                 Poll::Ready(Some(Ok(rmsg))) => {

@@ -129,7 +129,7 @@ use super::{
 };
 
 pub(crate) enum VmInitializationMethod {
-    Spec(Spec),
+    Spec(Box<Spec>),
     Migration(MigrationTargetInfo),
 }
 

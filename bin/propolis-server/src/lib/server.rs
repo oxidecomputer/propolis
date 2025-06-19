@@ -221,15 +221,16 @@ async fn instance_ensure(
     };
 
     let vm_init = match init {
-        InstanceInitializationMethod::Spec { spec } => {
-            spec.try_into().map(VmInitializationMethod::Spec).map_err(|e| {
+        InstanceInitializationMethod::Spec { spec } => spec
+            .try_into()
+            .map(|s| VmInitializationMethod::Spec(Box::new(s)))
+            .map_err(|e| {
                 if let Some(s) = e.source() {
                     format!("{e}: {s}")
                 } else {
                     e.to_string()
                 }
-            })
-        }
+            }),
         InstanceInitializationMethod::MigrationTarget {
             migration_id,
             src_addr,

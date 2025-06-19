@@ -169,7 +169,7 @@ impl TryFrom<Vec<u8>> for SmbString {
     type Error = SmbStringNulError;
 
     fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-        if value.iter().any(|b| *b == 0) {
+        if value.contains(&0) {
             Err(SmbStringNulError())
         } else {
             Ok(Self(value))

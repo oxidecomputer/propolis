@@ -79,14 +79,14 @@ impl Handle {
             .stdout(Stdio::piped())
             .output()?;
         if !output.status.success() {
-            return Err(Error::new(ErrorKind::Other, "failed dladm"));
+            return Err(Error::other("failed dladm"));
         }
         BufReader::new(&output.stdout[..])
             .lines()
             .next()
             .and_then(Result::ok)
             .and_then(|line| line.parse::<u16>().ok())
-            .ok_or_else(|| Error::new(ErrorKind::Other, "invalid mtu"))
+            .ok_or_else(|| Error::other("invalid mtu"))
     }
     fn get_vnic_mac(name: &str, mac: &mut [u8]) -> Result<()> {
         // dladm show-vnic -p -o macaddress <VNIC_NAME>
@@ -99,7 +99,7 @@ impl Handle {
             .stdout(Stdio::piped())
             .output()?;
         if !output.status.success() {
-            return Err(Error::new(ErrorKind::Other, "failed dladm"));
+            return Err(Error::other("failed dladm"));
         }
         let addr = BufReader::new(&output.stdout[..])
             .lines()
@@ -115,9 +115,7 @@ impl Handle {
                     _ => None,
                 }
             })
-            .ok_or_else(|| {
-                Error::new(ErrorKind::Other, "cannot query mac addr")
-            })?;
+            .ok_or_else(|| Error::other("cannot query mac addr"))?;
         mac.copy_from_slice(&addr[..]);
         Ok(())
     }
@@ -171,13 +169,9 @@ impl Handle {
         })?;
 
         if state.n_seen == 0 {
-            return Err(Error::new(
-                ErrorKind::Other,
-                "no mac addrs found on link",
-            ));
+            return Err(Error::other("no mac addrs found on link"));
         } else if !state.written {
-            return Err(Error::new(
-                ErrorKind::Other,
+            return Err(Error::other(
                 "no mac addrs on link had correct length (6B)",
             ));
         }
@@ -190,7 +184,7 @@ impl Handle {
             .unwrap_or(dladm_status::DLADM_STATUS_FAILED)
         {
             dladm_status::DLADM_STATUS_OK => Ok(()),
-            e => Err(Error::new(ErrorKind::Other, format!("{:?}", e))),
+            e => Err(Error::other(format!("{:?}", e))),
         }
     }
 }
