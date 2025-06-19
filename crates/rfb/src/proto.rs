@@ -437,7 +437,7 @@ fn read_data<T: FromBytes>(buf: &mut BytesMut) -> Option<T> {
     // It'd be kind of nice to return the error here instead of an Option, but
     // because the error borrows the buf we're going to try parsing from, rustc
     // believes the buffer to be immutably borrowed when we advance it below.
-    // As an option the Err and its borrow are discarded so we avoid the issue.
+    // As an Option, the Err and its borrow are discarded so we avoid the issue.
     let data = T::read_from_prefix(buf).ok()?.0;
     buf.advance(sz);
     Some(data)
