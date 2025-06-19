@@ -17,10 +17,10 @@ use crate::common::*;
 use crate::migrate::MigrateStateError;
 use crate::vmm::MemCtx;
 
-use zerocopy::{FromBytes, FromZeroes};
+use zerocopy::FromBytes;
 
 #[repr(C)]
-#[derive(Copy, Clone, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, FromBytes)]
 struct VqdDesc {
     addr: u64,
     len: u32,

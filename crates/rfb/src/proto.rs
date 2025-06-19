@@ -13,7 +13,7 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::bytes::{Buf, BytesMut};
 use tokio_util::codec::Decoder;
-use zerocopy::{AsBytes, FromBytes};
+use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::encodings::{Encoding, EncodingType};
 use crate::keysym::KeySym;
@@ -262,7 +262,7 @@ impl Rectangle {
 }
 
 // Section 7.4
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Immutable)]
 pub struct PixelFormat {
     pub bits_per_pixel: u8, // TODO: must be 8, 16, or 32
     pub depth: u8,          // TODO: must be < bits_per_pixel
@@ -388,13 +388,13 @@ impl TryInto<FourCC> for &PixelFormat {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Immutable)]
 pub enum ColorSpecification {
     ColorFormat(ColorFormat),
     // Not covered: colormap support
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Immutable)]
 pub struct ColorFormat {
     // TODO: maxes must be 2^N - 1 for N bits per color
     pub red_max: u16,
@@ -434,7 +434,11 @@ enum ClientMessageType {
 
 fn read_data<T: FromBytes>(buf: &mut BytesMut) -> Option<T> {
     let sz = size_of::<T>();
-    let data = T::read_from_prefix(buf)?;
+    // It'd be kind of nice to return the error here instead of an Option, but
+    // because the error borrows the buf we're going to try parsing from, rustc
+    // believes the buffer to be immutably borrowed when we advance it below.
+    // As an Option, the Err and its borrow are discarded so we avoid the issue.
+    let data = T::read_from_prefix(buf).ok()?.0;
     buf.advance(sz);
     Some(data)
 }
@@ -633,10 +637,10 @@ impl From<raw::PointerEvent> for PointerEvent {
 
 mod raw {
     use zerocopy::big_endian::{U16, U32};
-    use zerocopy::{AsBytes, FromBytes, FromZeroes};
+    use zerocopy::{FromBytes, Immutable, IntoBytes};
 
     #[allow(dead_code)]
-    #[derive(Copy, Clone, FromBytes, FromZeroes, AsBytes)]
+    #[derive(Copy, Clone, FromBytes, IntoBytes, Immutable)]
     #[repr(C, packed)]
     pub(crate) struct PixelFormat {
         pub bits_per_pixel: u8,
@@ -652,7 +656,7 @@ mod raw {
         pub _padding: [u8; 3],
     }
 
-    #[derive(Copy, Clone, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, FromBytes, Immutable)]
     #[repr(C, packed)]
     pub(crate) struct FramebufferUpdateRequest {
         pub incremental: u8,
@@ -660,7 +664,7 @@ mod raw {
         pub resolution: Resolution,
     }
 
-    #[derive(Copy, Clone, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, FromBytes)]
     #[repr(C, packed)]
     pub(crate) struct KeyEvent {
         pub down_flag: u8,
@@ -668,14 +672,14 @@ mod raw {
         pub key: U32,
     }
 
-    #[derive(Copy, Clone, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, FromBytes)]
     #[repr(C, packed)]
     pub(crate) struct PointerEvent {
         pub button_mask: u8,
         pub position: Position,
     }
 
-    #[derive(Copy, Clone, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, FromBytes, Immutable)]
     #[repr(C, packed)]
     pub(crate) struct Position {
         pub x: U16,
@@ -687,7 +691,7 @@ mod raw {
         }
     }
 
-    #[derive(Copy, Clone, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, FromBytes, Immutable)]
     #[repr(C, packed)]
     pub(crate) struct Resolution {
         width: U16,
@@ -699,7 +703,7 @@ mod raw {
         }
     }
 
-    #[derive(Copy, Clone, AsBytes)]
+    #[derive(Copy, Clone, IntoBytes, Immutable)]
     #[repr(C, packed)]
     #[allow(dead_code)]
     pub(crate) struct FramebufferUpdateHeader {

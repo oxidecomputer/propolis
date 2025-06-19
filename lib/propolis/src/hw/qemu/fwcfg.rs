@@ -17,7 +17,7 @@ use crate::vmm::MemCtx;
 use bits::*;
 
 use thiserror::Error;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 const SIGNATURE_VALUE: &[u8; 4] = b"QEMU";
 
@@ -815,7 +815,7 @@ mod bits {
     use zerocopy::byteorder::big_endian::{
         U16 as BE16, U32 as BE32, U64 as BE64,
     };
-    use zerocopy::{AsBytes, FromBytes, FromZeroes};
+    use zerocopy::{FromBytes, Immutable, IntoBytes};
 
     pub const FW_CFG_IOP_SELECTOR: u16 = 0x0510;
     pub const FW_CFG_IOP_DATA: u16 = 0x0511;
@@ -843,7 +843,7 @@ mod bits {
 
     pub const FWCFG_FILENAME_LEN: usize = 56;
 
-    #[derive(AsBytes)]
+    #[derive(IntoBytes, Immutable)]
     #[repr(C)]
     pub struct FwCfgFile {
         size: BE32,
@@ -867,7 +867,7 @@ mod bits {
         }
     }
 
-    #[derive(AsBytes, Default, Copy, Clone, Debug, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Default, Copy, Clone, Debug, FromBytes)]
     #[repr(C)]
     pub struct FwCfgDmaAccess {
         pub ctrl: BE32,
@@ -884,28 +884,28 @@ mod test {
     use crate::common::GuestAddr;
     use crate::vmm::Machine;
 
-    use zerocopy::{AsBytes, FromBytes};
+    use zerocopy::{FromBytes, Immutable, IntoBytes};
 
-    fn pio_write<T: AsBytes>(dev: &FwCfg, port: u16, data: T) {
+    fn pio_write<T: IntoBytes + Immutable>(dev: &FwCfg, port: u16, data: T) {
         let buf = data.as_bytes();
         let mut wo = WriteOp::from_buf(0, buf);
         dev.pio_write(port, &mut wo);
     }
-    fn pio_read<T: AsBytes + FromBytes + Copy + Default>(
+    fn pio_read<T: IntoBytes + Immutable + FromBytes + Copy + Default>(
         dev: &FwCfg,
         port: u16,
     ) -> T {
         let mut val = T::default();
-        let mut ro = ReadOp::from_buf(0, val.as_bytes_mut());
+        let mut ro = ReadOp::from_buf(0, val.as_mut_bytes());
         dev.pio_read(port, &mut ro);
         drop(ro);
         val
     }
-    fn pio_read_data<T: AsBytes + FromBytes + Copy + Default>(
+    fn pio_read_data<T: IntoBytes + FromBytes + Copy + Default>(
         dev: &FwCfg,
     ) -> T {
         let mut val = T::default();
-        for c in val.as_bytes_mut().iter_mut() {
+        for c in val.as_mut_bytes().iter_mut() {
             *c = pio_read(dev, FW_CFG_IOP_DATA);
         }
         val
