@@ -167,7 +167,7 @@ unsafe fn ioctl(
     _cmd: i32,
     _data: *mut libc::c_void,
 ) -> Result<i32> {
-    Err(Error::new(ErrorKind::Other, "illumos required"))
+    Err(Error::other("illumos required"))
 }
 
 #[cfg(target_os = "illumos")]

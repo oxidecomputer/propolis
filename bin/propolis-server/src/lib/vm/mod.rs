@@ -208,7 +208,7 @@ struct VmInner {
 /// Stores a possibly-absent instance spec with a reason for its absence.
 #[derive(Clone, Debug)]
 enum MaybeSpec {
-    Present(Spec),
+    Present(Box<Spec>),
 
     /// The spec is not known yet because the VM is initializing via live
     /// migration, and the source's spec is not available yet.
@@ -222,7 +222,7 @@ impl From<MaybeSpec> for InstanceSpecStatus {
                 Self::WaitingForMigrationSource
             }
             MaybeSpec::Present(spec) => {
-                Self::Present(VersionedInstanceSpec::V0(spec.into()))
+                Self::Present(VersionedInstanceSpec::V0((*spec).into()))
             }
         }
     }
@@ -256,7 +256,7 @@ enum VmState {
 
     /// The previous VM is shutting down, but its objects have not been fully
     /// destroyed yet.
-    Rundown { vm: VmDescription, spec: Spec },
+    Rundown { vm: VmDescription, spec: Box<Spec> },
 
     /// The previous VM and its objects have been cleaned up.
     RundownComplete { vm: VmDescription, spec: MaybeSpec },
@@ -371,7 +371,7 @@ impl Vm {
                 properties: vm.properties.clone(),
                 state: vm.external_state_rx.borrow().state,
                 spec: InstanceSpecStatus::Present(VersionedInstanceSpec::V0(
-                    spec.clone().into(),
+                    spec.as_ref().to_owned().into(),
                 )),
             }),
         }
@@ -485,7 +485,7 @@ impl Vm {
                     properties,
                     tokio_rt: Some(tokio_rt),
                 },
-                spec,
+                spec: Box::new(spec),
             };
             vm.services
         };

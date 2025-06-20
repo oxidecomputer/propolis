@@ -408,8 +408,17 @@ mod dkioc {
                 Ok(())
             }
             DiscardMech::FnctlFreesp => {
+                // If the target platform doesn't define F_WRLCK to be a type
+                // quivalent to i16, we have to cast it. But if it's already an
+                // i16 the cast is linted for being pointless. cfg() it to only
+                // exist when needed.
+                #[cfg(target_os = "linux")]
+                let l_type = libc::F_WRLCK as i16;
+                #[cfg(not(target_os = "linux"))]
+                let l_type = libc::F_WRLCK;
+
                 let mut fl = libc::flock {
-                    l_type: libc::F_WRLCK as i16,
+                    l_type,
                     l_whence: 0,
                     l_start: off as i64,
                     l_len: len as i64,

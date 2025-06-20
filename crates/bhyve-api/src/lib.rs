@@ -467,10 +467,7 @@ impl From<VmmDataError> for Error {
             VmmDataError::SpaceNeeded(c) => {
                 // ErrorKind::StorageFull would more accurately match the underlying ENOSPC
                 // but that variant is unstable still
-                Error::new(
-                    ErrorKind::Other,
-                    format!("operation requires {} bytes", c),
-                )
+                Error::other(format!("operation requires {} bytes", c))
             }
         }
     }
@@ -534,7 +531,7 @@ unsafe fn ioctl(
     _cmd: i32,
     _data: *mut libc::c_void,
 ) -> Result<i32> {
-    Err(Error::new(ErrorKind::Other, "illumos required"))
+    Err(Error::other("illumos required"))
 }
 
 /// Convenience constants to provide some documentation on what changes have
