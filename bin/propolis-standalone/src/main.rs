@@ -964,6 +964,32 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
     Ok(smb_tables.commit())
 }
 
+fn generate_e820(
+    machine: &Machine,
+    log: &slog::Logger,
+) -> anyhow::Result<fwcfg::Entry> {
+    slog::info!(log, "Generating E820 map for guest address space",);
+
+    let mut e820_table = fwcfg::formats::E820Table::new();
+
+    use propolis::vmm::MapType;
+
+    for (addr, len, kind) in machine.map_physmem.mappings().into_iter() {
+        let addr = addr.try_into().context("usize should fit into u64")?;
+        let len = len.try_into().context("usize should fit into u64")?;
+        match kind {
+            MapType::Dram => {
+                e820_table.add_mem(addr, len);
+            }
+            _ => {
+                e820_table.add_reserved(addr, len);
+            }
+        }
+    }
+
+    Ok(e820_table.finish())
+}
+
 fn generate_bootorder(
     config: &config::Config,
     log: &slog::Logger,
@@ -1350,6 +1376,8 @@ fn setup_instance(
     {
         fwcfg.insert_named("bootorder", boot_config).unwrap();
     }
+    let e820_entry = generate_e820(machine, log).expect("can build E820 table");
+    fwcfg.insert_named("etc/e820", e820_entry).unwrap();
 
     fwcfg.attach(pio, &machine.acc_mem);
 
