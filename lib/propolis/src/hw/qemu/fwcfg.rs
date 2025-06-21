@@ -1094,11 +1094,11 @@ pub mod formats {
     /// A list of E820 memory map entries.
     ///
     /// This is not defined by ACPI, but is an EDK2 implementation of a QMEU
-    /// construct to communicate an E820 map to the firmware. This table is not
-    /// directly presented to guest OSes; it is parsed by EDK2 and added to its
-    /// EFI memory map. It is not required to be sorted, and EDK2 ignores
-    /// entries starting below 4 GiB. Adding additional low-memory entries is
-    /// not harmful, but not valuable to EDK2 either.
+    /// construct to communicate an E820 map to the firmware. It is parsed by
+    /// EDK2 and added to its EFI memory map; it is not, itself, the memory map
+    /// that OVMF presents via UEFI services. It is not required to be sorted,
+    /// and EDK2 ignores entries starting below 4 GiB. Adding additional
+    /// low-memory entries is not harmful, but not valuable to EDK2 either.
     pub struct E820Table(Vec<E820Entry64>);
     impl E820Table {
         pub fn new() -> Self {
