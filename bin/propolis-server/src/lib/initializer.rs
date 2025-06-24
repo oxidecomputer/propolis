@@ -1112,6 +1112,28 @@ impl MachineInitializer<'_> {
         smb_tables.commit()
     }
 
+    fn generate_e820(&self) -> Result<Entry, MachineInitError> {
+        info!(self.log, "Generating E820 map for guest address space");
+
+        let mut e820_table = fwcfg::formats::E820Table::new();
+
+        for (addr, len, kind) in self.machine.map_physmem.mappings().into_iter()
+        {
+            let addr = addr.try_into().expect("usize should fit into u64");
+            let len = len.try_into().expect("usize should fit into u64");
+            match kind {
+                propolis::vmm::MapType::Dram => {
+                    e820_table.add_mem(addr, len);
+                }
+                _ => {
+                    e820_table.add_reserved(addr, len);
+                }
+            }
+        }
+
+        Ok(e820_table.finish())
+    }
+
     fn generate_bootorder(&self) -> Result<Option<Entry>, MachineInitError> {
         info!(
             self.log,
@@ -1212,6 +1234,10 @@ impl MachineInitializer<'_> {
                 MachineInitError::FwcfgInsertFailed("bootorder", e)
             })?;
         }
+        let e820_entry = self.generate_e820()?;
+        fwcfg
+            .insert_named("etc/e820", e820_entry)
+            .map_err(|e| MachineInitError::FwcfgInsertFailed("e820", e))?;
 
         let ramfb = ramfb::RamFb::create(
             self.log.new(slog::o!("component" => "ramfb")),

@@ -61,6 +61,22 @@ pub(crate) struct MapEnt {
     kind: MapKind,
 }
 
+impl MapEnt {
+    fn map_type(&self) -> MapType {
+        match &self.kind {
+            MapKind::Dram(_) => MapType::Dram,
+            MapKind::Rom(_) => MapType::Rom,
+            MapKind::MmioReserve => MapType::Mmio,
+        }
+    }
+}
+
+pub enum MapType {
+    Dram,
+    Rom,
+    Mmio,
+}
+
 pub struct PhysMap {
     map: Arc<Mutex<ASpace<MapEnt>>>,
     hdl: Arc<VmmHdl>,
@@ -160,6 +176,17 @@ impl PhysMap {
             }
         }
         Ok(())
+    }
+
+    pub fn mappings(&self) -> Vec<(usize, usize, MapType)> {
+        let guard = self.map.lock().unwrap();
+        let mut mappings = Vec::new();
+
+        for (addr, len, ent) in guard.iter() {
+            mappings.push((addr, len, ent.map_type()));
+        }
+
+        mappings
     }
 
     pub(crate) fn memctx(&mut self) -> Arc<MemCtx> {
