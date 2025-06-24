@@ -1119,8 +1119,8 @@ impl MachineInitializer<'_> {
 
         for (addr, len, kind) in self.machine.map_physmem.mappings().into_iter()
         {
-            let addr = addr.try_into().context("usize should fit into u64")?;
-            let len = len.try_into().context("usize should fit into u64")?;
+            let addr = addr.try_into().expect("usize should fit into u64");
+            let len = len.try_into().expect("usize should fit into u64");
             match kind {
                 propolis::vmm::MapType::Dram => {
                     e820_table.add_mem(addr, len);
