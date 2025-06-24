@@ -100,7 +100,8 @@ impl BhyveRtc {
             // to arbitrary wrapping. OVMF is told about the highmem layout via
             // E820 table anyway, so the only thing that might care about these
             // bytes are guest OSes that check the RTC CMOS bytes directly.
-            let chunks = std::cmp::min(high_mem / CHUNK, usize::MAX) as u32;
+            let chunks =
+                std::cmp::min(high_mem / CHUNK, u32::MAX as usize) as u32;
             let high = chunks.to_le_bytes();
 
             hdl.rtc_write(CMOS_OFF_MEM_HIGH, high[0])?;
