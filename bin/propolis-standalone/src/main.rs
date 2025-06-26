@@ -1490,11 +1490,11 @@ fn main() -> anyhow::Result<ExitCode> {
     // since we'll block in main when we call `Instance::wait_for_state`
     let rt_threads =
         MIN_RT_THREADS.max(BASE_RT_THREADS + config.main.cpus as usize);
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(rt_threads)
-        .enable_all()
-        .thread_name("vmm-tokio")
-        .build()?;
+    let rt = {
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        builder.worker_threads(rt_threads).thread_name("vmm-tokio");
+        oxide_tokio_rt::build(&mut builder)?
+    };
     let _rt_guard = rt.enter();
 
     // Create the VM afresh or restore it from a snapshot

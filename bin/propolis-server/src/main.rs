@@ -162,10 +162,7 @@ fn run_server(
     // emulation and other VM-related work will be spawned.
     let api_runtime = {
         let mut builder = tokio::runtime::Builder::new_multi_thread();
-        builder
-            .worker_threads(API_RT_THREADS)
-            .enable_all()
-            .thread_name("tokio-rt-api");
+        builder.worker_threads(API_RT_THREADS).thread_name("tokio-rt-api");
         oxide_tokio_rt::build(&mut builder)?
     };
     let _guard = api_runtime.enter();

@@ -7,4 +7,9 @@ xtask = "run --package xtask --quiet --"
 CARGO_WORKSPACE_DIR = { value = "", relative = true }
 
 [build]
+# Tokio's unstable features are required by `tokio-dtrace` probes, and for
+# disabling the LIFO slot optimization.
+#
+# See here for details:
+# https://rfd.shared.oxide.computer/rfd/0579#_enabling_tokio_unstable_features
 rustflags = ["--cfg", "tokio_unstable"]
