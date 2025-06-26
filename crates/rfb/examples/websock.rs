@@ -152,7 +152,7 @@ async fn main() -> Result<(), String> {
         ..Default::default()
     };
     let server = HttpServerStarter::new(&config_dropshot, api, app, &log)
-        .map_err(|error| format!("failed to create server: {}", error))?
+        .map_err(|error| format!("failed to create server: {error}"))?
         .start();
 
     server.await

@@ -224,7 +224,7 @@ impl MachineInitializer<'_> {
         }
 
         let (romfp, rom_len) = open_bootrom(path)
-            .unwrap_or_else(|e| panic!("Cannot open bootrom: {}", e));
+            .unwrap_or_else(|e| panic!("Cannot open bootrom: {e}"));
 
         let mem = self.machine.acc_mem.access().unwrap();
         let mapping = mem
@@ -649,7 +649,7 @@ impl MachineInitializer<'_> {
 
                     // Limit data transfers to 1MiB (2^8 * 4k) in size
                     let mdts = Some(8);
-                    let component = format!("nvme-{}", device_id);
+                    let component = format!("nvme-{device_id}");
                     let nvme = nvme::PciNvme::create(
                         &nvme_spec.serial_number,
                         mdts,

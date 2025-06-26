@@ -58,13 +58,12 @@ async fn load_test(ctx: &Framework) {
     let ddout = source
         .run_shell_command(
             format!(
-                "dd if=/dev/random of=./rand.txt bs=5M count={}",
-                block_count
+                "dd if=/dev/random of=./rand.txt bs=5M count={block_count}"
             )
             .as_str(),
         )
         .await?;
-    assert!(ddout.contains(format!("{}+0 records in", block_count).as_str()));
+    assert!(ddout.contains(format!("{block_count}+0 records in").as_str()));
 
     // Compute the data's hash.
     let sha256sum_out = source.run_shell_command("sha256sum rand.txt").await?;

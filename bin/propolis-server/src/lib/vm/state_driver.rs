@@ -321,11 +321,11 @@ impl guest_event::VcpuEventHandler for InputQueue {
         vcpu_id: i32,
         exit: propolis::exits::VmExitKind,
     ) {
-        panic!("vCPU {}: Unhandled VM exit: {:?}", vcpu_id, exit);
+        panic!("vCPU {vcpu_id}: Unhandled VM exit: {exit:?}");
     }
 
     fn io_error_event(&self, vcpu_id: i32, error: std::io::Error) {
-        panic!("vCPU {}: Unhandled vCPU error: {}", vcpu_id, error);
+        panic!("vCPU {vcpu_id}: Unhandled vCPU error: {error}");
     }
 }
 

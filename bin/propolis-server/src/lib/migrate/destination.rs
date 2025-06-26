@@ -552,8 +552,7 @@ impl<T: MigrateConn> RonV0<T> {
         let time_data_src: vmm::time::VmTimeData = ron::from_str(&raw)
             .map_err(|e| {
                 MigrateError::TimeData(format!(
-                    "VMM Time Data deserialization error: {}",
-                    e
+                    "VMM Time Data deserialization error: {e}"
                 ))
             })?;
         probes::migrate_time_data_before!(|| {
@@ -572,16 +571,14 @@ impl<T: MigrateConn> RonV0<T> {
         let (dst_hrt, dst_wc) = vmm::time::host_time_snapshot(vmm_hdl)
             .map_err(|e| {
                 MigrateError::TimeData(format!(
-                    "could not read host time: {}",
-                    e
+                    "could not read host time: {e}"
                 ))
             })?;
         let (time_data_dst, adjust) =
             vmm::time::adjust_time_data(time_data_src, dst_hrt, dst_wc)
                 .map_err(|e| {
                     MigrateError::TimeData(format!(
-                        "could not adjust VMM Time Data: {}",
-                        e
+                        "could not adjust VMM Time Data: {e}"
                     ))
                 })?;
 
@@ -635,7 +632,7 @@ impl<T: MigrateConn> RonV0<T> {
 
         // Import the adjusted time data
         vmm::time::import_time_data(vmm_hdl, time_data_dst).map_err(|e| {
-            MigrateError::TimeData(format!("VMM Time Data import error: {}", e))
+            MigrateError::TimeData(format!("VMM Time Data import error: {e}"))
         })?;
 
         self.send_msg(codec::Message::Okay).await

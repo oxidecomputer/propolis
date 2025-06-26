@@ -96,7 +96,7 @@ impl SerialConsoleStreamBuilder for PropolisSerialBuilder {
         address: SocketAddr,
         offset: WSClientOffset,
     ) -> Result<Box<dyn SerialConsoleStream>, WSError> {
-        let client = PropolisClient::new(&format!("http://{}", address));
+        let client = PropolisClient::new(&format!("http://{address}"));
         let mut req = client.instance_serial();
 
         match offset {

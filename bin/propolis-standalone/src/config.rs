@@ -168,7 +168,7 @@ pub fn block_backend(
 ) -> (Arc<dyn block::Backend>, String) {
     let backend_name = dev.options.get("block_dev").unwrap().as_str().unwrap();
     let Some(be) = config.block_devs.get(backend_name) else {
-        panic!("No configured block device named \"{}\"", backend_name);
+        panic!("No configured block device named \"{backend_name}\"");
     };
     let opts = block::BackendOpts {
         block_size: be.block_opts.block_size,
@@ -184,8 +184,8 @@ pub fn block_backend(
             let meta = std::fs::metadata(&parsed.path)
                 .with_context(|| {
                     format!(
-                        "opening {} for block device \"{}\"",
-                        parsed.path, backend_name
+                        "opening {} for block device \"{backend_name}\"",
+                        parsed.path,
                     )
                 })
                 .expect("file device path is valid");

@@ -150,7 +150,7 @@ impl LazyNexusClient {
         let address = self.get_ip().await?;
 
         Ok(NexusClient::new(
-            &format!("http://{}", address),
+            &format!("http://{address}"),
             self.inner.log.clone(),
         ))
     }
@@ -336,8 +336,7 @@ async fn instance_state_monitor(
                 Some(api::ErrorCode::NoInstance.to_string()),
                 ClientErrorStatusCode::GONE,
                 format!(
-                    "No instance present; will never reach generation {}",
-                    gen
+                    "No instance present; will never reach generation {gen}",
                 ),
             )
         })?;
@@ -366,8 +365,7 @@ async fn instance_state_put(
             VmError::ForbiddenStateChange(reason) => {
                 HttpError::for_client_error_with_status(
                     Some(format!(
-                        "instance state change not allowed: {}",
-                        reason
+                        "instance state change not allowed: {reason}"
                     )),
                     ClientErrorStatusCode::FORBIDDEN,
                 )
@@ -469,7 +467,7 @@ async fn instance_serial(
         .websocks_ch
         .send(ws_stream)
         .await
-        .map_err(|e| format!("Serial socket hand-off failed: {}", e).into())
+        .map_err(|e| format!("Serial socket hand-off failed: {e}").into())
 }
 
 #[channel {
@@ -624,7 +622,7 @@ async fn instance_issue_crucible_vcr_request(
     .map_err(|e| match e {
         VmError::ForbiddenStateChange(reason) => {
             HttpError::for_client_error_with_status(
-                Some(format!("instance state change not allowed: {}", reason)),
+                Some(format!("instance state change not allowed: {reason}")),
                 ClientErrorStatusCode::FORBIDDEN,
             )
         }

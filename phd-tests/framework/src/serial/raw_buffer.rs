@@ -31,7 +31,7 @@ impl RawBuffer {
     /// Constructs a new buffer.
     pub(super) fn new(log_path: Utf8PathBuf) -> Result<Self> {
         let log_file = std::fs::File::create(&log_path).with_context(|| {
-            format!("opening serial console log file {}", log_path)
+            format!("opening serial console log file {log_path}")
         })?;
         let writer = BufWriter::new(log_file);
         Ok(Self {

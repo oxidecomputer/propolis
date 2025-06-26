@@ -356,8 +356,7 @@ async fn instance_state_put(
     instance.set_target_state(&rqctx.log, requested_state).await.map_err(
         |err| {
             HttpError::for_internal_error(format!(
-                "Failed to transition: {}",
-                err
+                "Failed to transition: {err}"
             ))
         },
     )?;
@@ -758,8 +757,7 @@ mod serial {
             let mut entropy = hasher.finish();
             buf.extend(
                 format!(
-                    "This is simulated serial console output for {}.\r\n",
-                    name
+                    "This is simulated serial console output for {name}.\r\n"
                 )
                 .as_bytes(),
             );
@@ -780,8 +778,7 @@ mod serial {
             }
             buf.extend(
                 format!(
-                    "\x1b[2J\x1b[HOS/478 ({name}) (ttyl)\r\n\r\n{name} login: ",
-                    name = name
+                    "\x1b[2J\x1b[HOS/478 ({name}) (ttyl)\r\n\r\n{name} login: "
                 )
                 .as_bytes(),
             );

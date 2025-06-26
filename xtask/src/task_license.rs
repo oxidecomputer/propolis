@@ -27,7 +27,7 @@ struct LicenseEnt {
 }
 
 fn commentify(raw: String) -> Vec<String> {
-    raw.lines().map(|l| format!("// {}", l)).collect::<Vec<String>>()
+    raw.lines().map(|l| format!("// {l}")).collect::<Vec<String>>()
 }
 
 fn check_file(fp: File, needle: &[String]) -> Result<Option<String>> {
@@ -67,8 +67,7 @@ pub(crate) fn cmd_license() -> Result<()> {
             let mut builder = globset::GlobSetBuilder::new();
             for path in paths.iter() {
                 builder.add(globset::Glob::new(path).context(format!(
-                    "'{}' is not valid path-ignore glob",
-                    path
+                    "'{path}' is not valid path-ignore glob"
                 ))?);
             }
             Some(builder.build()?)

@@ -64,11 +64,11 @@ pub(crate) const BOOT_ORDER_VAR: &str =
     "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c";
 
 pub(crate) fn bootvar(num: u16) -> String {
-    format!("Boot{:04X}-8be4df61-93ca-11d2-aa0d-00e098032b8c", num)
+    format!("Boot{num:04X}-8be4df61-93ca-11d2-aa0d-00e098032b8c")
 }
 
 pub(crate) fn efipath(varname: &str) -> String {
-    format!("/sys/firmware/efi/efivars/{}", varname)
+    format!("/sys/firmware/efi/efivars/{varname}")
 }
 
 /// A (very limited) parse of an `EFI_LOAD_OPTION` descriptor.
@@ -377,7 +377,7 @@ pub(crate) async fn write_efivar(
     // as invalid UEFI variable data.
     let escaped: String =
         new_value.into_iter().fold(String::new(), |mut out, b| {
-            write!(out, "\\x{:02x}", b).expect("can append to String");
+            write!(out, "\\x{b:02x}").expect("can append to String");
             out
         });
 

@@ -679,7 +679,7 @@ async fn serial(
                                 stdout.flush().await?;
                             }
                             Ok(Message::Close(Some(CloseFrame {code, reason}))) => {
-                                eprint!("\r\nConnection closed: {:?}\r\n", code);
+                                eprint!("\r\nConnection closed: {code:?}\r\n");
                                 match code {
                                     CloseCode::Abnormal
                                     | CloseCode::Error
@@ -826,7 +826,7 @@ async fn migrate_instance(
                 }
 
                 let state = migration.state;
-                println!("{}({}) migration state={:?}", role, id, state);
+                println!("{role}({id}) migration state={state:?}");
                 if state == MigrationState::Finish {
                     return Ok::<_, anyhow::Error>(());
                 } else if state == MigrationState::Error {

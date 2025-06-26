@@ -63,10 +63,10 @@ impl OutputMode {
         match self {
             OutputMode::TmpFile => {
                 let mut stdout_path = directory.as_ref().to_path_buf();
-                stdout_path.push(format!("{}.stdout.log", file_prefix));
+                stdout_path.push(format!("{file_prefix}.stdout.log"));
 
                 let mut stderr_path = directory.as_ref().to_path_buf();
-                stderr_path.push(format!("{}.stderr.log", file_prefix));
+                stderr_path.push(format!("{file_prefix}.stderr.log"));
 
                 info!(?stdout_path, ?stderr_path, "Opening server log files");
                 Ok((
