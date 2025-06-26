@@ -4816,6 +4816,7 @@ dependencies = [
  "fatfs",
  "futures",
  "libc",
+ "oxide-tokio-rt",
  "propolis",
  "propolis_types",
  "serde",
