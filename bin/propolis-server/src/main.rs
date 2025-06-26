@@ -160,11 +160,14 @@ fn run_server(
     // Spawn the runtime for handling API processing
     // If/when a VM instance is created, a separate runtime for handling device
     // emulation and other VM-related work will be spawned.
-    let api_runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(API_RT_THREADS)
-        .enable_all()
-        .thread_name("tokio-rt-api")
-        .build()?;
+    let api_runtime = {
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        builder
+            .worker_threads(API_RT_THREADS)
+            .enable_all()
+            .thread_name("tokio-rt-api");
+        oxide_tokio_rt::build(&mut builder)?
+    };
     let _guard = api_runtime.enter();
 
     // Start TCP listener for VNC, if requested

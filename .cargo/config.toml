@@ -5,3 +5,6 @@ xtask = "run --package xtask --quiet --"
 # Currently required by Falcon due to
 # https://github.com/rust-lang/cargo/issues/3946#issuecomment-973132993
 CARGO_WORKSPACE_DIR = { value = "", relative = true }
+
+[build]
+rustflags = ["--cfg", "tokio_unstable"]

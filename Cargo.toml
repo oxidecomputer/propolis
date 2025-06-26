@@ -132,6 +132,7 @@ mockall = "0.12"
 newtype_derive = "0.1.6"
 newtype-uuid = { version = "1.0.1", features = [ "v4" ] }
 owo-colors = "4"
+oxide-tokio-rt = "0.1.2"
 pin-project-lite = "0.2.13"
 proc-macro2 = "1.0"
 proc-macro-error = "1"
