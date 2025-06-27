@@ -570,9 +570,7 @@ impl<T: MigrateConn> RonV0<T> {
 
         let (dst_hrt, dst_wc) = vmm::time::host_time_snapshot(vmm_hdl)
             .map_err(|e| {
-                MigrateError::TimeData(format!(
-                    "could not read host time: {e}"
-                ))
+                MigrateError::TimeData(format!("could not read host time: {e}"))
             })?;
         let (time_data_dst, adjust) =
             vmm::time::adjust_time_data(time_data_src, dst_hrt, dst_wc)
