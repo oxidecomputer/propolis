@@ -42,8 +42,7 @@ impl PciPath {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
                 format!(
-                    "PCI device {} outside range of 0-{}",
-                    device,
+                    "PCI device {device} outside range of 0-{}",
                     PCI_DEVICES_PER_BUS - 1
                 ),
             ));
@@ -53,8 +52,7 @@ impl PciPath {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
                 format!(
-                    "PCI function {} outside range of 0-{}",
-                    function,
+                    "PCI function {function} outside range of 0-{}",
                     PCI_FUNCTIONS_PER_DEVICE - 1
                 ),
             ));
@@ -87,7 +85,7 @@ impl FromStr for PciPath {
             fields.push(u8::from_str(f).map_err(|e| {
                 Self::Err::new(
                     ErrorKind::InvalidInput,
-                    format!("Failed to parse PCI path {}: {}", s, e),
+                    format!("Failed to parse PCI path {s}: {e}"),
                 )
             })?);
         }
@@ -96,8 +94,7 @@ impl FromStr for PciPath {
             return Err(Self::Err::new(
                 ErrorKind::InvalidInput,
                 format!(
-                    "Expected 3 fields in PCI path {}, got {}",
-                    s,
+                    "Expected 3 fields in PCI path {s}, got {}",
                     fields.len()
                 ),
             ));
@@ -109,7 +106,8 @@ impl FromStr for PciPath {
 
 impl Display for PciPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{}.{}", self.bus, self.device, self.function)
+        let Self { bus, device, function } = self;
+        write!(f, "{bus}.{device}.{function}")
     }
 }
 
@@ -160,8 +158,7 @@ mod test {
                 Ok(path) => assert_eq!(path, expected.unwrap()),
                 Err(_) => assert!(
                     expected.is_err(),
-                    "Expected error parsing PCI path {}",
-                    input
+                    "Expected error parsing PCI path {input}"
                 ),
             }
         }

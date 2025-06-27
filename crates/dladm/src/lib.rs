@@ -5,6 +5,7 @@
 use std::ffi::CString;
 use std::io::{BufRead, BufReader, Error, ErrorKind, Result};
 use std::process::{Command, Stdio};
+use std::slice;
 
 #[allow(non_camel_case_types)]
 mod sys;
@@ -53,13 +54,13 @@ impl Handle {
             Some(c) => {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
-                    format!("{} is not vnic/misc class, but {:?}", name, c),
+                    format!("{name} is not vnic/misc class, but {c:?}"),
                 ));
             }
             None => {
                 return Err(Error::new(
                     ErrorKind::InvalidInput,
-                    format!("{} is of invalid class {:x}", name, class),
+                    format!("{name} is of invalid class {class:x}"),
                 ));
             }
         }
@@ -140,7 +141,11 @@ impl Handle {
             state.n_seen += 1;
 
             if (*macaddr).ma_addrlen == (ETHERADDRL as u32) {
-                state.mac.copy_from_slice(&(*macaddr).ma_addr[..ETHERADDRL]);
+                let ma_addr = slice::from_raw_parts(
+                    &raw const (*macaddr).ma_addr as *const u8,
+                    ETHERADDRL,
+                );
+                state.mac.copy_from_slice(ma_addr);
                 state.written = true;
                 sys::boolean_t::B_FALSE
             } else {
@@ -184,7 +189,7 @@ impl Handle {
             .unwrap_or(dladm_status::DLADM_STATUS_FAILED)
         {
             dladm_status::DLADM_STATUS_OK => Ok(()),
-            e => Err(Error::other(format!("{:?}", e))),
+            e => Err(Error::other(format!("{e:?}"))),
         }
     }
 }

@@ -267,7 +267,7 @@ impl Inner {
         let disk_uuid = Uuid::new_v4();
         for port in downstairs_ports {
             let mut data_dir_path = data_dir_root.as_ref().to_path_buf();
-            data_dir_path.push(format!("{}_{}", disk_uuid, port));
+            data_dir_path.push(format!("{disk_uuid}_{port}"));
             std::fs::create_dir_all(&data_dir_path)?;
             data_dirs.push(DataDirectory { path: data_dir_path });
         }
@@ -340,7 +340,7 @@ impl Inner {
             // by the test runner.
             let (stdout, stderr) = log_config.output_mode.get_handles(
                 data_dir_root,
-                &format!("crucible_{}_{}", disk_uuid, port),
+                &format!("crucible_{disk_uuid}_{port}"),
             )?;
 
             info!(?crucible_args, "Launching Crucible downstairs server");

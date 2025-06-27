@@ -144,7 +144,7 @@ impl FromStr for GuestOsKind {
             "windowsserver2022" => Ok(Self::WindowsServer2022),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("Unrecognized guest OS kind {}", s),
+                format!("Unrecognized guest OS kind {s}"),
             )),
         }
     }

@@ -153,7 +153,7 @@ pub(crate) fn save(
         header.set_size(device_bytes.len() as u64);
         builder.append_data(
             &mut header,
-            format!("{}/{}.json", DEVICE_DIR, name),
+            format!("{DEVICE_DIR}/{name}.json"),
             &device_bytes[..],
         )?;
     }
@@ -196,7 +196,7 @@ pub(crate) fn save(
         let end = start + hi as u64;
         let off = builder.append_space(
             &mut header,
-            format!("{}/{:08x}-{:08x}.bin", MEMORY_DIR, start, end),
+            format!("{MEMORY_DIR}/{start:08x}-{end:08x}.bin"),
         )?;
         hi_mapping.pwrite(&builder.rawfd(), hi_mapping.len(), off as i64)?;
     }

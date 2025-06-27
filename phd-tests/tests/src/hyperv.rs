@@ -261,10 +261,8 @@ async fn hyperv_reference_tsc_elapsed_time_test(ctx: &Framework) {
 
         assert!(
             bad_diffs < good_diffs,
-            "more out-of-tolerance time diffs ({}) than in-tolerance diffs \
-            ({}); see test log for details",
-            bad_diffs,
-            good_diffs,
+            "more out-of-tolerance time diffs ({bad_diffs}) than in-tolerance \
+            diffs ({good_diffs}); see test log for details",
         );
 
         info!(good_diffs, bad_diffs, "TSC test results");
