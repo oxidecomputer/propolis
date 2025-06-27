@@ -495,9 +495,9 @@ mod test {
                 )
                 .unwrap_or_else(|| {
                     panic!(
-                        "kstat state '{kstat_state}' did not map to an oximeter state, \
-                        which it should have done. Did that state get \
-                        mapped to a new oximeter-level state?"
+                        "kstat state '{kstat_state}' did not map to an \
+                        oximeter state, which it should have done. Did that \
+                        state get mapped to a new oximeter-level state?"
                     )
                 });
                 *observed_states.entry(oximeter_state).or_default() += count;
