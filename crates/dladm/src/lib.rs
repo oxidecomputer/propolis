@@ -143,7 +143,7 @@ impl Handle {
 
             if (*macaddr).ma_addrlen == (ETHERADDRL as u32) {
                 let ma_addr = slice::from_raw_parts(
-                    ptr::addr_of!((*macaddr).ma_addr).cast::<u8>(),
+                    &raw const (*macaddr).ma_addr as *const u8,
                     ETHERADDRL,
                 );
                 state.mac.copy_from_slice(ma_addr);
