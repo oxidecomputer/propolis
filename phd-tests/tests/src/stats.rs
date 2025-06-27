@@ -92,7 +92,7 @@ fn producer_results_as_vm_metrics(
                 metrics.add_producer_result(&samples);
             }
             ProducerResultsItem::Err(e) => {
-                panic!("ProducerResultsItem error: {}", e);
+                panic!("ProducerResultsItem error: {e}");
             }
         }
     }
@@ -147,7 +147,7 @@ impl VirtualMachineMetrics {
                 let amount = if let Datum::CumulativeU64(amount) = datum {
                     amount.value()
                 } else {
-                    panic!("unexpected reset datum type: {:?}", datum);
+                    panic!("unexpected reset datum type: {datum:?}");
                 };
                 self.reset = Some(amount);
                 self.update_metric_times(last_sample.measurement.timestamp());
@@ -156,29 +156,29 @@ impl VirtualMachineMetrics {
                 let amount = if let Datum::CumulativeU64(amount) = datum {
                     amount.value()
                 } else {
-                    panic!("unexpected vcpu_usage datum type: {:?}", datum);
+                    panic!("unexpected vcpu_usage datum type: {datum:?}");
                 };
                 let field = &fields["state"];
                 let state: VcpuState = if let FieldValue::String(state) =
                     &field.value
                 {
                     VcpuState::from_str(state.as_ref()).unwrap_or_else(|_| {
-                        panic!("unknown Oximeter vpcu state name: {}", state);
+                        panic!("unknown Oximeter vpcu state name: {state}");
                     })
                 } else {
-                    panic!("unknown vcpu state datum type: {:?}", field);
+                    panic!("unknown vcpu state datum type: {field:?}");
                 };
                 let field = &fields["vcpu_id"];
                 let vcpu_id = if let FieldValue::U32(vcpu_id) = field.value {
                     vcpu_id
                 } else {
-                    panic!("unknown vcpu id datum type: {:?}", field);
+                    panic!("unknown vcpu id datum type: {field:?}");
                 };
                 let vcpu_metrics = self.vcpus.entry(vcpu_id).or_default();
                 if vcpu_metrics.metrics.contains_key(&state) {
                     panic!(
-                        "vcpu {} state {:?} has duplicate metric {:?}",
-                        vcpu_id, state, last_sample
+                        "vcpu {vcpu_id} state {state:?} has duplicate metric \
+                         {last_sample:?}"
                     );
                 }
                 trace!(
@@ -402,9 +402,8 @@ async fn instance_vcpu_stats(ctx: &Framework) {
         // busier test systems, or reasonable implementation changes.
         assert!(
             full_emul_delta < EMUL_LIMIT,
-            "full emul delta was above threshold: {} > {}",
-            full_emul_delta,
-            EMUL_LIMIT
+            "full emul delta was above threshold: \
+             {full_emul_delta} > {EMUL_LIMIT}"
         );
     } else {
         warn!(

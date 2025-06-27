@@ -125,7 +125,7 @@ fn list_tests(list_opts: &ListOptions) {
         count += 1
     }
 
-    println!("\n{} test(s) selected", count);
+    println!("\n{count} test(s) selected");
 }
 
 fn set_tracing_subscriber(args: &ProcessArgs) {

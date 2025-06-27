@@ -333,7 +333,7 @@ mod test {
         let unser: TestMap = serde_json::from_str(&ser).unwrap();
         let key = unser.keys().next().expect("one key in the map");
         let SpecKey::Uuid(got_id) = key else {
-            panic!("expected SpecKey::Uuid, got {}", key);
+            panic!("expected SpecKey::Uuid, got {key}");
         };
 
         assert_eq!(*got_id, id);
@@ -355,7 +355,7 @@ mod test {
         let unser: TestMap = serde_json::from_str(&ser).unwrap();
         let key = unser.keys().next().expect("one key in the map");
         let SpecKey::Uuid(got_id) = key else {
-            panic!("expected SpecKey::Uuid, got {}", key);
+            panic!("expected SpecKey::Uuid, got {key}");
         };
 
         assert_eq!(*got_id, id);

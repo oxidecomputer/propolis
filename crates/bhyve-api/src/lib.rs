@@ -467,7 +467,7 @@ impl From<VmmDataError> for Error {
             VmmDataError::SpaceNeeded(c) => {
                 // ErrorKind::StorageFull would more accurately match the underlying ENOSPC
                 // but that variant is unstable still
-                Error::other(format!("operation requires {} bytes", c))
+                Error::other(format!("operation requires {c} bytes"))
             }
         }
     }

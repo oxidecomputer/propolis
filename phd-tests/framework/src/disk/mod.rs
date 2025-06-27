@@ -221,7 +221,7 @@ impl DiskFactory {
             .get_guest_os_image(artifact_name)
             .await
             .with_context(|| {
-                format!("failed to get guest OS artifact '{}'", artifact_name)
+                format!("failed to get guest OS artifact '{artifact_name}'")
             })
             .map_err(Into::into)
     }
@@ -341,7 +341,7 @@ impl DiskFactory {
             DiskSource::Artifact(name) => {
                 let (path, _) = self.get_guest_artifact_info(name).await?;
                 std::fs::read(&path).with_context(|| {
-                    format!("reading source artifact {} from {}", name, path)
+                    format!("reading source artifact {name} from {path}")
                 })?
             }
             DiskSource::Blank(size) => vec![0; *size],

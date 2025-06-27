@@ -256,7 +256,7 @@ impl TestVm {
             &vm_spec.bootrom_path,
         )?;
 
-        let client = Client::new(&format!("http://{}", server_addr));
+        let client = Client::new(&format!("http://{server_addr}"));
         let guest_os = guest_os::get_guest_os_adapter(vm_spec.guest_os_kind);
         Ok(Self {
             id: vm_id,

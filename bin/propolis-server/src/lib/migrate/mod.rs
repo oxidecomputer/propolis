@@ -61,7 +61,7 @@ impl std::fmt::Display for MigratePhase {
             MigratePhase::Finish => "Finish",
         };
 
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -173,7 +173,7 @@ impl From<MigrateStateError> for MigrateError {
 
 impl From<MigrateError> for HttpError {
     fn from(err: MigrateError) -> Self {
-        let msg = format!("migration failed: {}", err);
+        let msg = format!("migration failed: {err}");
         match &err {
             MigrateError::Websocket(_)
             | MigrateError::Initiate

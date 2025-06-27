@@ -621,7 +621,7 @@ impl std::fmt::Debug for PrettyCmd<'_> {
             if f.alternate() && arg.starts_with("--") {
                 write!(f, " \\\n\t{arg}")?;
             } else {
-                write!(f, " {}", arg)?;
+                write!(f, " {arg}")?;
             }
         }
 

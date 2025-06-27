@@ -328,7 +328,7 @@ impl Instance {
                 State::Run => {
                     if first_boot {
                         device.start().unwrap_or_else(|_| {
-                            panic!("device {} failed to start", name)
+                            panic!("device {name} failed to start")
                         });
                     } else {
                         device.resume();
@@ -337,7 +337,7 @@ impl Instance {
                 State::Quiesce => device.pause(),
                 State::Halt => device.halt(),
                 State::Reset => device.reset(),
-                _ => panic!("invalid device state transition {:?}", state),
+                _ => panic!("invalid device state transition {state:?}"),
             }
         }
         if matches!(state, State::Quiesce) {

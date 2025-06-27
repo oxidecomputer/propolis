@@ -59,7 +59,7 @@ impl Framework {
                         "stopping and starting VM for lifecycle test"
                     );
                     let new_vm_name =
-                        format!("{}_lifecycle_{}", original_name, idx);
+                        format!("{original_name}_lifecycle_{idx}");
                     vm.stop().await?;
                     let mut new_vm = self
                         .spawn_successor_vm(&new_vm_name, &vm, None)
@@ -77,7 +77,7 @@ impl Framework {
                     );
 
                     let new_vm_name =
-                        format!("{}_lifecycle_{}", original_name, idx);
+                        format!("{original_name}_lifecycle_{idx}");
 
                     let mut env = self.environment_builder();
                     env.propolis(propolis);
