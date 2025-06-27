@@ -5,7 +5,6 @@
 use std::ffi::CString;
 use std::io::{BufRead, BufReader, Error, ErrorKind, Result};
 use std::process::{Command, Stdio};
-use std::ptr;
 use std::slice;
 
 #[allow(non_camel_case_types)]
