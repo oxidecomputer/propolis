@@ -5,6 +5,8 @@
 use std::ffi::CString;
 use std::io::{BufRead, BufReader, Error, ErrorKind, Result};
 use std::process::{Command, Stdio};
+use std::ptr;
+use std::slice;
 
 #[allow(non_camel_case_types)]
 mod sys;
@@ -140,7 +142,11 @@ impl Handle {
             state.n_seen += 1;
 
             if (*macaddr).ma_addrlen == (ETHERADDRL as u32) {
-                state.mac.copy_from_slice(&(&((*macaddr).ma_addr))[..ETHERADDRL]);
+                let ma_addr = slice::from_raw_parts(
+                    ptr::addr_of!((*macaddr).ma_addr).cast::<u8>(),
+                    ETHERADDRL,
+                );
+                state.mac.copy_from_slice(ma_addr);
                 state.written = true;
                 sys::boolean_t::B_FALSE
             } else {
