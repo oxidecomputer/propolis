@@ -11,5 +11,5 @@ CARGO_WORKSPACE_DIR = { value = "", relative = true }
 # disabling the LIFO slot optimization.
 #
 # See here for details:
-# https://rfd.shared.oxide.computer/rfd/0579#_enabling_tokio_unstable_features
+# https://github.com/oxidecomputer/oxide-tokio-rt/blob/main/README.md#enabling-tokio_unstable-features
 rustflags = ["--cfg", "tokio_unstable"]
