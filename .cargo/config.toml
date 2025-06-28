@@ -5,3 +5,11 @@ xtask = "run --package xtask --quiet --"
 # Currently required by Falcon due to
 # https://github.com/rust-lang/cargo/issues/3946#issuecomment-973132993
 CARGO_WORKSPACE_DIR = { value = "", relative = true }
+
+[build]
+# Tokio's unstable features are required by `tokio-dtrace` probes, and for
+# disabling the LIFO slot optimization.
+#
+# See here for details:
+# https://github.com/oxidecomputer/oxide-tokio-rt/blob/main/README.md#enabling-tokio_unstable-features
+rustflags = ["--cfg", "tokio_unstable"]

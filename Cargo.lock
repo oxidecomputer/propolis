@@ -3681,6 +3681,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxide-tokio-rt"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84bd87abf37c68d414e4df90a545857542140e07206f75039b8f63b244da87b8"
+dependencies = [
+ "anyhow",
+ "tokio",
+ "tokio-dtrace",
+]
+
+[[package]]
 name = "oxide-vpc"
 version = "0.1.0"
 source = "git+https://github.com/oxidecomputer/opte?rev=cd9aa6467c5e62c6d97f6aafa2150d6930e3a0fa#cd9aa6467c5e62c6d97f6aafa2150d6930e3a0fa"
@@ -4756,6 +4767,7 @@ dependencies = [
  "mockall",
  "nexus-client",
  "omicron-common",
+ "oxide-tokio-rt",
  "oximeter",
  "oximeter-instruments",
  "oximeter-producer",
@@ -4804,6 +4816,7 @@ dependencies = [
  "fatfs",
  "futures",
  "libc",
+ "oxide-tokio-rt",
  "propolis",
  "propolis_types",
  "serde",
@@ -6558,9 +6571,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.44.2"
+version = "1.45.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6b88822cbe49de4185e3a4cbf8321dd487cf5fe0c5c65695fef6346371e9c48"
+checksum = "75ef51a33ef1da925cea3e4eb122833cb377c61439ca401b770f54902b806779"
 dependencies = [
  "backtrace",
  "bytes",
@@ -6572,6 +6585,17 @@ dependencies = [
  "socket2",
  "tokio-macros",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "tokio-dtrace"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db739893a356b146ee6a4535693ff90274ef305cb2b6cdd40f9576b1b34b01fe"
+dependencies = [
+ "thiserror 2.0.12",
+ "tokio",
+ "usdt 0.5.0",
 ]
 
 [[package]]

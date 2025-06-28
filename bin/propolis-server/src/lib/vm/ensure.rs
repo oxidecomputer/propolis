@@ -263,14 +263,14 @@ impl<'a> VmEnsureNotStarted<'a> {
         let result: InitResult = tokio::task::spawn_blocking(move || {
             // Create the runtime that will host tasks created by
             // VMM components (e.g. block device runtime tasks).
-            let vmm_rt = tokio::runtime::Builder::new_multi_thread()
-                .thread_name("tokio-rt-vmm")
-                .worker_threads(usize::max(
+            let vmm_rt = {
+                let mut builder = tokio::runtime::Builder::new_multi_thread();
+                builder.thread_name("tokio-rt-vmm").worker_threads(usize::max(
                     VMM_MIN_RT_THREADS,
                     VMM_BASE_RT_THREADS + spec.board.cpus as usize,
-                ))
-                .enable_all()
-                .build()?;
+                ));
+                oxide_tokio_rt::build(&mut builder)?
+            };
 
             let init_result = vmm_rt
                 .block_on(async move {

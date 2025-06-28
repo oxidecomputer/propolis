@@ -39,6 +39,7 @@ kstat-rs.workspace = true
 lazy_static.workspace = true
 nexus-client.workspace = true
 omicron-common.workspace = true
+oxide-tokio-rt.workspace = true
 oximeter-instruments.workspace = true
 oximeter-producer.workspace = true
 oximeter.workspace = true
