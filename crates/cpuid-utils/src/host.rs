@@ -114,14 +114,14 @@ fn collect_cpuid(
                     != 0;
                 set.insert(CpuidIdent::leaf(leaf), data)?;
             }
-            // Leaf 7 subleaf 0 eax indicates the total number of leaf-7
+            // Leaf 0x7 subleaf 0 eax indicates the total number of leaf-7
             // subleaves.
             0x7 => {
                 let mut data = query(leaf, 0)?;
 
-                // Leaf 7 EBX bits 12 and 15 indicate PQM and PQE support on AMD
-                // CPUs, and aspects of RDT support on Intel CPUs. In both
-                // cases, if the bits are set, leaves F and 10h are actually
+                // Leaf 0x7 EBX bits 12 and 15 indicate PQM and PQE support on
+                // AMD CPUs, and aspects of RDT support on Intel CPUs. In both
+                // cases, if the bits are set, leaves 0xF and 0x10 are actually
                 // subleaves with further capability information for the
                 // corresponding features. We don't support passing these
                 // features along, so mask out the bits.
@@ -133,15 +133,16 @@ fn collect_cpuid(
                     set.insert(CpuidIdent::subleaf(leaf, subleaf), sub_data)?;
                 }
             }
-            // Leaf B contains CPU topology information. Although this leaf can
-            // theoretically support many levels of information, bhyve supports
-            // only subleaves 0 and 1, so just query those without trying to
-            // reason about exactly how many topology nodes the host exposes.
+            // Leaf 0xB contains CPU topology information. Although this leaf
+            // can theoretically support many levels of information, bhyve
+            // supports only subleaves 0 and 1, so just query those without
+            // trying to reason about exactly how many topology nodes the host
+            // exposes.
             0xB => {
                 set.insert(CpuidIdent::subleaf(leaf, 0), query(leaf, 0)?)?;
                 set.insert(CpuidIdent::subleaf(leaf, 1), query(leaf, 1)?)?;
             }
-            // Leaf D contains information about extended processor state.
+            // Leaf 0xD contains information about extended processor state.
             0xD if xsave_supported => {
                 let data = query(leaf, 0)?;
                 set.insert(CpuidIdent::subleaf(leaf, 0), data)?;
@@ -174,12 +175,12 @@ fn collect_cpuid(
                     )?;
                 }
             }
-            // Leaf F describes Platform QoS Monitoring ("PQM").
+            // Leaf 0xF describes Platform QoS Monitoring ("PQM").
             0xF => {
                 // Since we're hiding PQM, provide an empty leaf here.
                 set.insert(CpuidIdent::leaf(leaf), CpuidValues::default())?;
             }
-            // Leaf 10h describes Platform QoS Enforcement ("PQE").
+            // Leaf 0x10 describes Platform QoS Enforcement ("PQE").
             0x10 => {
                 // Since we're hiding PQE, provide an empty leaf here.
                 set.insert(CpuidIdent::leaf(leaf), CpuidValues::default())?;
@@ -204,7 +205,7 @@ fn collect_cpuid(
                     set.insert(CpuidIdent::subleaf(leaf, subleaf), data)?;
                 }
             }
-            // Leaf 8000_0020h has extended AMD PQM/PQE feature information.
+            // Leaf 0x8000_0020 has extended AMD PQM/PQE feature information.
             0x8000_0020 => {
                 // Since we're hiding PQM and PQE, provide an empty leaf here.
                 // Features described in this leaf may relate to PQM or PQE, and
@@ -215,13 +216,19 @@ fn collect_cpuid(
                 // PQE.
                 set.insert(CpuidIdent::leaf(leaf), CpuidValues::default())?;
             }
-            // Leaf 8000_0026h has extended AMD CPU topology information.
+            // Leaf 0x8000_0026 has extended AMD CPU topology information.
             0x8000_0026 => {
                 // The vCPU topology is unrelated to the underlying hardware
-                // topology, so hide the real topology for the time being. If we
-                // reported only the first subleaf here, guest programs would
-                // spin trying to enumerate the extended topology - from the
-                // APM on "Extended CPU Topology":
+                // topology, so hide the real topology for the time being.
+                //
+                // Hidden or not, it would be erroneous to use the default
+                // querying behavior for this leaf. Querying the first host
+                // subleaf and reporting leaf 0x8000_0026 as a normal leaf with
+                // that data would result in that first topology subleaf being
+                // provided for a guest's query of any subleaf. The APM's
+                // guidance on how to query extended CPU topology would then
+                // lead software to loop over all values of ECX querying
+                // subleaves to enumerate a bogus topology:
                 //
                 // > The topology level is selected by the value passed to the
                 // > instruction in ECX. To discover the topology of a system,
@@ -229,9 +236,6 @@ fn collect_cpuid(
                 // > ECX values, starting with a value of zero, until the
                 // > returned hierarchy level type (CPUID
                 // > Fn8000_0026_ECX[LevelType]) is equal to zero
-                //
-                // but if the sole leaf has a non-zero ECX[LevelType], it will
-                // be the one value a guest sees for all "subleaves".
                 set.insert(CpuidIdent::leaf(leaf), CpuidValues::default())?;
             }
             _ => {
