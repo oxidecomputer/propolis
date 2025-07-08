@@ -455,6 +455,11 @@ impl VmmHdl {
         })
     }
 
+    /// Has 'destroy()' been called on this VMM
+    pub fn is_destroyed(&self) -> bool {
+        self.destroyed.load(Ordering::Acquire)
+    }
+
     /// Set whether instance should auto-destruct when closed
     pub fn set_autodestruct(&self, enable_autodestruct: bool) -> Result<()> {
         self.ioctl_usize(
