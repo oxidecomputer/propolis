@@ -27,6 +27,8 @@ outdir="/out"
 cargo --version
 rustc --version
 
+shasum $(which rustup)
+
 # Build the Propolis server binary with 'dev' profile to enable assertions that
 # should fire during tests.
 banner build-propolis
