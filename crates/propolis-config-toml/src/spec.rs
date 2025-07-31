@@ -6,7 +6,6 @@
 
 use std::{
     collections::BTreeMap,
-    num::ParseIntError,
     str::{FromStr, ParseBoolError},
 };
 
@@ -57,12 +56,6 @@ pub enum TomlToSpecError {
 
     #[error("failed to parse read-only option for file backend {0:?}")]
     FileBackendReadonlyParseFailed(String, #[source] ParseBoolError),
-
-    #[error("failed to parse block-size option for file backend {0:?}")]
-    FileBackendBlockSizeParseFailed(String, #[source] ParseIntError),
-
-    #[error("failed to parse workers option for file backend {0:?}")]
-    FileBackendWorkersParseFailed(String, #[source] ParseIntError),
 
     #[error("failed to get VNIC name for device {0:?}")]
     NoVnicName(String),

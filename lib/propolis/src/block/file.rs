@@ -10,14 +10,11 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::accessors::MemAccessor;
-use crate::block::{self, DeviceInfo};
+use crate::block::{self, DeviceInfo, MAX_FILE_WORKERS};
 use crate::tasks::ThreadGroup;
 use crate::vmm::{MappingExt, MemCtx};
 
 use anyhow::Context;
-
-// XXX: completely arb for now
-const MAX_WORKERS: usize = 32;
 
 pub struct FileBackend {
     state: Arc<WorkerState>,
@@ -167,7 +164,7 @@ impl FileBackend {
         opts: block::BackendOpts,
         worker_count: NonZeroUsize,
     ) -> Result<Arc<Self>> {
-        if worker_count.get() > MAX_WORKERS {
+        if worker_count.get() > MAX_FILE_WORKERS {
             return Err(Error::new(
                 ErrorKind::InvalidInput,
                 "too many workers",

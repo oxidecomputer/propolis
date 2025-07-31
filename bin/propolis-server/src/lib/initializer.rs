@@ -538,8 +538,19 @@ impl MachineInitializer<'_> {
                     );
                 }
 
-                let nworkers =
-                    NonZeroUsize::new(spec.workers as usize).unwrap();
+                let nworkers: NonZeroUsize = if spec.workers >= 1
+                    && spec.workers <= propolis::block::MAX_FILE_WORKERS
+                {
+                    NonZeroUsize::new(spec.workers).unwrap()
+                } else {
+                    slog::warn!(
+                        self.log,
+                        "workers must be between 1 and {} \
+                            Using default value of 8.",
+                        propolis::block::MAX_FILE_WORKERS
+                    );
+                    NonZeroUsize::new(8).unwrap()
+                };
                 let be = propolis::block::FileBackend::create(
                     &spec.path,
                     propolis::block::BackendOpts {
