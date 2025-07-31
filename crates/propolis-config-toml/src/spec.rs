@@ -367,7 +367,7 @@ fn parse_storage_backend_from_config(
             }
             .unwrap_or(false),
             block_size: backend.opts.block_size.unwrap_or(512),
-            workers: backend.opts.workers.unwrap_or(8),
+            workers: backend.opts.workers,
         }),
         _ => {
             return Err(TomlToSpecError::InvalidStorageBackendType {

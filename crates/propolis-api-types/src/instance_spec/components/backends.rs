@@ -51,8 +51,8 @@ pub struct FileStorageBackend {
     /// Block size of the backend
     pub block_size: u32,
 
-    /// Worker threads for the backend
-    pub workers: usize,
+    /// Optional worker threads for the file backend, exposed for testing only.
+    pub workers: Option<usize>,
 }
 
 /// A storage backend for a disk whose initial contents are given explicitly

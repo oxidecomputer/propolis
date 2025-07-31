@@ -1033,17 +1033,17 @@
             "type": "boolean"
           },
           "workers": {
-            "description": "Worker threads for the backend",
+            "nullable": true,
+            "description": "Optional worker threads for the file backend, exposed for testing only.",
             "type": "integer",
-            "format": "uint32",
+            "format": "uint",
             "minimum": 0
           }
         },
         "required": [
           "block_size",
           "path",
-          "readonly",
-          "workers"
+          "readonly"
         ],
         "additionalProperties": false
       },

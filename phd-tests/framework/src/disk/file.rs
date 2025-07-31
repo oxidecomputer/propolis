@@ -132,7 +132,7 @@ impl super::DiskConfig for FileBackedDisk {
             path: self.file.path().to_string(),
             readonly: false,
             block_size: 512,
-            workers: 8,
+            workers: Some(8),
         })
     }
 
