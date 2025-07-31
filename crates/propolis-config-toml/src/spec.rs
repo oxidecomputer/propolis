@@ -6,6 +6,7 @@
 
 use std::{
     collections::BTreeMap,
+    num::ParseIntError,
     str::{FromStr, ParseBoolError},
 };
 
@@ -56,6 +57,12 @@ pub enum TomlToSpecError {
 
     #[error("failed to parse read-only option for file backend {0:?}")]
     FileBackendReadonlyParseFailed(String, #[source] ParseBoolError),
+
+    #[error("failed to parse block-size option for file backend {0:?}")]
+    FileBackendBlockSizeParseFailed(String, #[source] ParseIntError),
+
+    #[error("failed to parse workers option for file backend {0:?}")]
+    FileBackendWorkersParseFailed(String, #[source] ParseIntError),
 
     #[error("failed to get VNIC name for device {0:?}")]
     NoVnicName(String),
@@ -159,11 +166,13 @@ impl TryFrom<&super::Config> for SpecConfig {
                             },
                         )?;
 
+                    println!("ZZZ try_from got config: {backend_config:?}");
                     let backend_spec = parse_storage_backend_from_config(
                         &backend_name,
                         backend_config,
                     )?;
 
+                    println!("ZZZ try_from got spec: {backend_spec:?}");
                     spec_component_add(&mut spec, device_id, device_spec)?;
                     spec_component_add(&mut spec, backend_id, backend_spec)?;
                 }
@@ -364,6 +373,8 @@ fn parse_storage_backend_from_config(
                 _ => None,
             }
             .unwrap_or(false),
+            block_size: backend.opts.block_size.unwrap_or(512),
+            workers: backend.opts.workers.unwrap_or(8),
         }),
         _ => {
             return Err(TomlToSpecError::InvalidStorageBackendType {

@@ -47,6 +47,12 @@ pub struct FileStorageBackend {
 
     /// Indicates whether the storage is read-only.
     pub readonly: bool,
+
+    /// Block size of the backend
+    pub block_size: u32,
+
+    /// Worker threads for the backend
+    pub workers: u32,
 }
 
 /// A storage backend for a disk whose initial contents are given explicitly

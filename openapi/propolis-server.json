@@ -1018,6 +1018,12 @@
         "description": "A storage backend backed by a file in the host system's file system.",
         "type": "object",
         "properties": {
+          "block_size": {
+            "description": "Block size of the backend",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
           "path": {
             "description": "A path to a file that backs a disk.",
             "type": "string"
@@ -1025,11 +1031,19 @@
           "readonly": {
             "description": "Indicates whether the storage is read-only.",
             "type": "boolean"
+          },
+          "workers": {
+            "description": "Worker threads for the backend",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
           }
         },
         "required": [
+          "block_size",
           "path",
-          "readonly"
+          "readonly",
+          "workers"
         ],
         "additionalProperties": false
       },

@@ -104,6 +104,7 @@ pub struct BlockOpts {
     pub block_size: Option<u32>,
     pub read_only: Option<bool>,
     pub skip_flush: Option<bool>,
+    pub workers: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]

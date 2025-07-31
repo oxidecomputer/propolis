@@ -538,11 +538,13 @@ impl MachineInitializer<'_> {
                     );
                 }
 
-                let nworkers = NonZeroUsize::new(8).unwrap();
+                let nworkers =
+                    NonZeroUsize::new(spec.workers as usize).unwrap();
                 let be = propolis::block::FileBackend::create(
                     &spec.path,
                     propolis::block::BackendOpts {
                         read_only: Some(spec.readonly),
+                        block_size: Some(spec.block_size),
                         ..Default::default()
                     },
                     nworkers,

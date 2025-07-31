@@ -131,6 +131,8 @@ impl super::DiskConfig for FileBackedDisk {
         ComponentV0::FileStorageBackend(FileStorageBackend {
             path: self.file.path().to_string(),
             readonly: false,
+            block_size: 512,
+            workers: 8,
         })
     }
 
