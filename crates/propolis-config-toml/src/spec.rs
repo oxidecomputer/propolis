@@ -159,13 +159,11 @@ impl TryFrom<&super::Config> for SpecConfig {
                             },
                         )?;
 
-                    println!("ZZZ try_from got config: {backend_config:?}");
                     let backend_spec = parse_storage_backend_from_config(
                         &backend_name,
                         backend_config,
                     )?;
 
-                    println!("ZZZ try_from got spec: {backend_spec:?}");
                     spec_component_add(&mut spec, device_id, device_spec)?;
                     spec_component_add(&mut spec, backend_id, backend_spec)?;
                 }
