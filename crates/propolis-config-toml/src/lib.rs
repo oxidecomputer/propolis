@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -104,7 +105,7 @@ pub struct BlockOpts {
     pub block_size: Option<u32>,
     pub read_only: Option<bool>,
     pub skip_flush: Option<bool>,
-    pub workers: Option<usize>,
+    pub workers: Option<NonZeroUsize>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]

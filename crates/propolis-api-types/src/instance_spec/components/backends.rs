@@ -8,6 +8,7 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::num::NonZeroUsize;
 
 /// A Crucible storage backend.
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
@@ -52,7 +53,7 @@ pub struct FileStorageBackend {
     pub block_size: u32,
 
     /// Optional worker threads for the file backend, exposed for testing only.
-    pub workers: Option<usize>,
+    pub workers: Option<NonZeroUsize>,
 }
 
 /// A storage backend for a disk whose initial contents are given explicitly

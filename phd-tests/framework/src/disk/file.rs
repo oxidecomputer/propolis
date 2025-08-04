@@ -6,6 +6,7 @@
 
 use camino::{Utf8Path, Utf8PathBuf};
 use propolis_client::instance_spec::{ComponentV0, FileStorageBackend};
+use std::num::NonZeroUsize;
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 
@@ -132,7 +133,7 @@ impl super::DiskConfig for FileBackedDisk {
             path: self.file.path().to_string(),
             readonly: false,
             block_size: 512,
-            workers: Some(8),
+            workers: Some(NonZeroUsize::new(8).unwrap()),
         })
     }
 

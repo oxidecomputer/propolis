@@ -544,8 +544,8 @@ impl MachineInitializer<'_> {
 
                 let nworkers: NonZeroUsize = match spec.workers {
                     Some(workers) => {
-                        if (1..=MAX_FILE_WORKERS).contains(&workers) {
-                            NonZeroUsize::new(workers).unwrap()
+                        if workers.get() <= MAX_FILE_WORKERS {
+                            workers
                         } else {
                             slog::warn!(
                                 self.log,

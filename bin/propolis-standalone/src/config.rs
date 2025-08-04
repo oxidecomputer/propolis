@@ -114,7 +114,7 @@ pub struct CloudInit {
 #[derive(Deserialize)]
 struct FileConfig {
     path: String,
-    workers: Option<usize>,
+    workers: Option<NonZeroUsize>,
 }
 #[derive(Deserialize)]
 struct MemAsyncConfig {
@@ -198,8 +198,8 @@ pub fn block_backend(
 
             let workers: NonZeroUsize = match parsed.workers {
                 Some(workers) => {
-                    if (1..=MAX_FILE_WORKERS).contains(&workers) {
-                        NonZeroUsize::new(workers).unwrap()
+                    if workers.get() <= MAX_FILE_WORKERS {
+                        workers
                     } else {
                         slog::warn!(
                             log,

@@ -1037,7 +1037,7 @@
             "description": "Optional worker threads for the file backend, exposed for testing only.",
             "type": "integer",
             "format": "uint",
-            "minimum": 0
+            "minimum": 1
           }
         },
         "required": [
