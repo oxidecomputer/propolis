@@ -38,9 +38,6 @@ pub type ByteLen = usize;
 /// is not choosing a block size, a default of 512B is used.
 pub const DEFAULT_BLOCK_SIZE: u32 = 512;
 
-// XXX: completely arb for now
-pub const MAX_FILE_WORKERS: usize = 32;
-
 #[usdt::provider(provider = "propolis")]
 mod probes {
     fn block_begin_read(dev_id: u64, req_id: u64, offset: u64, len: u64) {}

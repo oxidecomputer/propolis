@@ -53,6 +53,10 @@ use slog::info;
 use strum::IntoEnumIterator;
 use thiserror::Error;
 
+// XXX: completely arb for now
+const MAX_FILE_WORKERS: usize = 32;
+const DEFAULT_WORKER_COUNT: usize = 8;
+
 /// An error that can arise while initializing a new machine.
 #[derive(Debug, Error)]
 pub enum MachineInitError {
@@ -540,21 +544,20 @@ impl MachineInitializer<'_> {
 
                 let nworkers: NonZeroUsize = match spec.workers {
                     Some(workers) => {
-                        if (1..=propolis::block::MAX_FILE_WORKERS)
-                            .contains(&workers)
-                        {
+                        if (1..=MAX_FILE_WORKERS).contains(&workers) {
                             NonZeroUsize::new(workers).unwrap()
                         } else {
                             slog::warn!(
                                 self.log,
                                 "workers must be between 1 and {} \
-                                    Using default value of 8.",
-                                propolis::block::MAX_FILE_WORKERS
+                                    Using default value of {}.",
+                                MAX_FILE_WORKERS,
+                                DEFAULT_WORKER_COUNT
                             );
-                            NonZeroUsize::new(8).unwrap()
+                            NonZeroUsize::new(DEFAULT_WORKER_COUNT).unwrap()
                         }
                     }
-                    None => NonZeroUsize::new(8).unwrap(),
+                    None => NonZeroUsize::new(DEFAULT_WORKER_COUNT).unwrap(),
                 };
                 let be = propolis::block::FileBackend::create(
                     &spec.path,
