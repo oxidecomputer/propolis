@@ -269,7 +269,7 @@ pub(crate) async fn track_network_interface_kstats(
         let network_interface_ids = interface_ids
             .iter()
             .map(|(uuid, device_id)| {
-                format!("{} (kstat-instance: {})", uuid, device_id)
+                format!("{uuid} (kstat-instance: {device_id})")
             })
             .collect::<Vec<_>>()
             .join(", ");

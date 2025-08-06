@@ -16,9 +16,6 @@ use crate::vmm::{MappingExt, MemCtx};
 
 use anyhow::Context;
 
-// XXX: completely arb for now
-const MAX_WORKERS: usize = 32;
-
 pub struct FileBackend {
     state: Arc<WorkerState>,
 
@@ -167,12 +164,6 @@ impl FileBackend {
         opts: block::BackendOpts,
         worker_count: NonZeroUsize,
     ) -> Result<Arc<Self>> {
-        if worker_count.get() > MAX_WORKERS {
-            return Err(Error::new(
-                ErrorKind::InvalidInput,
-                "too many workers",
-            ));
-        }
         let p: &Path = path.as_ref();
 
         let meta = metadata(p)?;
