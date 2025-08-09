@@ -13,10 +13,7 @@ jobs:
   check-style:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
-    - uses: dtolnay/rust-toolchain@439cf607258077187679211f12aa6f19af4a0af7 # master @ 2023-10-08
-      with:
-        toolchain: stable
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
     - name: Report rustfmt version
       run: cargo fmt -- --version
     - name: Check style
@@ -26,10 +23,7 @@ jobs:
   check-clippy:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
-    - uses: dtolnay/rust-toolchain@439cf607258077187679211f12aa6f19af4a0af7 # master @ 2023-10-08
-      with:
-        toolchain: stable
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
     - name: Report clippy version
       run: cargo clippy -- --version
     - name: Check clippy
@@ -37,27 +31,19 @@ jobs:
   check-license:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
     - name: Check license headers
-      uses: apache/skywalking-eyes/header@6b2529214f6b1ccee3ec92bb0adfeabf6f66f538 # v0.5.0
+      uses: apache/skywalking-eyes/header@5c5b974209f0de5d905f37deb69369068ebfc15c # v0.7.0
   build-docs:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
-    - uses: dtolnay/rust-toolchain@439cf607258077187679211f12aa6f19af4a0af7 # master @ 2023-10-08
-      with:
-        toolchain: stable
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
     - name: Test build documentation
       run: cargo doc --workspace --no-deps
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@8ade135a41bc03ea155e62e844d188df1ea18608 # v4.1.0
-    - uses: dtolnay/rust-toolchain@439cf607258077187679211f12aa6f19af4a0af7 # master @ 2023-10-08
-      with:
-        toolchain: stable
-    - name: Install dependencies
-      run: sudo apt-get install libsqlite3-dev
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
     - name: Build
       run: cargo build --verbose
     - name: Build mock-only server
