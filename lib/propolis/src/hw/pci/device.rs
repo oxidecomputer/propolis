@@ -248,7 +248,7 @@ impl DeviceState {
         dev: &dyn Device,
         mut state: MutexGuard<State>,
         f: impl FnOnce(&mut State),
-    ) -> MutexGuard<State> {
+    ) -> MutexGuard<'_, State> {
         state = self.cond.wait_while(state, |s| s.update_in_progress).unwrap();
         f(&mut state);
         let next_mode = self.which_intr_mode(&state);

@@ -720,7 +720,7 @@ impl VirtQueues {
     pub fn get(&self, qid: u16) -> Option<&Arc<VirtQueue>> {
         self.queues.get(qid as usize)
     }
-    pub fn iter(&self) -> std::slice::Iter<Arc<VirtQueue>> {
+    pub fn iter(&self) -> std::slice::Iter<'_, Arc<VirtQueue>> {
         self.queues.iter()
     }
 }

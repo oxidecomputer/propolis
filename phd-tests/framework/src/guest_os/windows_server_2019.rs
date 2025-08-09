@@ -18,7 +18,7 @@ use super::{
 pub(super) struct WindowsServer2019;
 
 impl GuestOs for WindowsServer2019 {
-    fn get_login_sequence(&self) -> CommandSequence {
+    fn get_login_sequence(&self) -> CommandSequence<'_> {
         super::windows::get_login_sequence_for(GuestOsKind::WindowsServer2019)
     }
 
@@ -37,7 +37,7 @@ impl GuestOs for WindowsServer2019 {
         )
     }
 
-    fn graceful_reboot(&self) -> CommandSequence {
+    fn graceful_reboot(&self) -> CommandSequence<'_> {
         self.shell_command_sequence("shutdown /r /t 0 /d p:0:0")
     }
 }

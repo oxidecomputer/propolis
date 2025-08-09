@@ -947,7 +947,7 @@ impl PciNvme {
         Ok(())
     }
 
-    fn mem_access(&self) -> Option<Guard<MemCtx>> {
+    fn mem_access(&self) -> Option<Guard<'_, MemCtx>> {
         self.pci_state.acc_mem.access()
     }
 }
@@ -1047,7 +1047,7 @@ impl Lifecycle for PciNvme {
         Box::pin(self.block_tracking.none_outstanding())
     }
 
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         Migrator::Multi(self)
     }
 }

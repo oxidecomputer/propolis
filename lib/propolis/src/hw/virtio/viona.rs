@@ -541,7 +541,7 @@ impl Lifecycle for PciVirtioViona {
         self.queues_kill();
         let _ = self.hdl.delete();
     }
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         Migrator::Multi(self)
     }
 }

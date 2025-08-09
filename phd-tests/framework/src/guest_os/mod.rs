@@ -71,7 +71,7 @@ impl<'a> CommandSequence<'a> {
 pub(super) trait GuestOs: Send + Sync {
     /// Retrieves the command sequence used to wait for the OS to boot and log
     /// into it.
-    fn get_login_sequence(&self) -> CommandSequence;
+    fn get_login_sequence(&self) -> CommandSequence<'_>;
 
     /// Retrieves the default shell prompt for this OS.
     fn get_shell_prompt(&self) -> &'static str;
@@ -92,7 +92,7 @@ pub(super) trait GuestOs: Send + Sync {
     /// in order to perform a graceful (e.g. guest-initiated and expected)
     /// reboot. PHD's expectation following these commands will be to wait for
     /// the guest's login sequence.
-    fn graceful_reboot(&self) -> CommandSequence;
+    fn graceful_reboot(&self) -> CommandSequence<'_>;
 }
 
 #[allow(dead_code)]

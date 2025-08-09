@@ -19,7 +19,7 @@ use super::{CommandSequence, CommandSequenceEntry};
 pub(super) fn shell_command_sequence(
     cmd: Cow<'_, str>,
     buffer_kind: crate::serial::BufferKind,
-) -> CommandSequence {
+) -> CommandSequence<'_> {
     let echo = cmd.trim_end().replace('\n', "\n> ");
     match buffer_kind {
         crate::serial::BufferKind::Raw => CommandSequence(vec![

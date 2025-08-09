@@ -347,7 +347,7 @@ impl Lifecycle for Bridge {
     fn reset(&self) {
         self.inner.lock().unwrap().reset();
     }
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         // TODO Should be migratable in theory: copy all the register state,
         // then enumerate bridges on the target and reconstruct the routing
         // table from their bus registers' values.

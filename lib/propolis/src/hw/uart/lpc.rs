@@ -159,7 +159,7 @@ impl Lifecycle for LpcUart {
     fn reset(&self) {
         LpcUart::reset(self);
     }
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         Migrator::Single(self)
     }
 

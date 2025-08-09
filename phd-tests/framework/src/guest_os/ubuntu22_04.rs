@@ -10,7 +10,7 @@ use super::{CommandSequence, CommandSequenceEntry, GuestOs};
 pub(super) struct Ubuntu2204;
 
 impl GuestOs for Ubuntu2204 {
-    fn get_login_sequence(&self) -> CommandSequence {
+    fn get_login_sequence(&self) -> CommandSequence<'_> {
         CommandSequence(vec![
             CommandSequenceEntry::wait_for("ubuntu login: "),
             CommandSequenceEntry::write_str("ubuntu"),
@@ -33,7 +33,7 @@ impl GuestOs for Ubuntu2204 {
         false
     }
 
-    fn graceful_reboot(&self) -> CommandSequence {
+    fn graceful_reboot(&self) -> CommandSequence<'_> {
         // Ubuntu `reboot` seems to be mechanically similar to Alpine `reboot`,
         // except mediated by SystemD rather than OpenRC. We'll get a new shell
         // prompt, and then the system reboots shortly after. Just issuing

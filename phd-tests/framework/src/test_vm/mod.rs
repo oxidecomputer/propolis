@@ -416,7 +416,7 @@ impl TestVm {
 
     /// If this VM is running a Windows guest, returns a wrapper that provides
     /// Windows-specific VM functions.
-    pub fn get_windows_vm(&self) -> Option<WindowsVm> {
+    pub fn get_windows_vm(&self) -> Option<WindowsVm<'_>> {
         self.guest_os_kind().is_windows().then_some(WindowsVm { vm: self })
     }
 

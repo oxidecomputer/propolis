@@ -690,7 +690,7 @@ impl Lifecycle for FwCfg {
     fn type_name(&self) -> &'static str {
         "qemu-fwcfg"
     }
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         Migrator::Single(self)
     }
     fn reset(&self) {

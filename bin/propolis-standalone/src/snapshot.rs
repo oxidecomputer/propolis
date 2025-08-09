@@ -578,7 +578,7 @@ impl TarArchive {
         self.0.as_file().unwrap()
     }
 
-    fn named_entry(&mut self, name: &str) -> io::Result<tar::Entry<File>> {
+    fn named_entry(&mut self, name: &str) -> io::Result<tar::Entry<'_, File>> {
         let tar = self.reset_tar()?;
 
         let entry = tar
@@ -600,7 +600,7 @@ impl TarArchive {
         })
     }
 
-    fn entries(&mut self) -> io::Result<tar::Entries<File>> {
+    fn entries(&mut self) -> io::Result<tar::Entries<'_, File>> {
         let tar = self.reset_tar()?;
         tar.entries_with_seek()
     }

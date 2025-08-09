@@ -13,7 +13,7 @@ use super::{CommandSequence, GuestOs, GuestOsKind};
 pub(super) struct WindowsServer2022;
 
 impl GuestOs for WindowsServer2022 {
-    fn get_login_sequence(&self) -> CommandSequence {
+    fn get_login_sequence(&self) -> CommandSequence<'_> {
         super::windows::get_login_sequence_for(GuestOsKind::WindowsServer2022)
     }
 
@@ -25,7 +25,7 @@ impl GuestOs for WindowsServer2022 {
         false
     }
 
-    fn graceful_reboot(&self) -> CommandSequence {
+    fn graceful_reboot(&self) -> CommandSequence<'_> {
         self.shell_command_sequence("shutdown /r /t 0 /d p:0:0")
     }
 }

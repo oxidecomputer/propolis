@@ -22,7 +22,7 @@ impl Lifecycle for BhyveAtPic {
     fn type_name(&self) -> &'static str {
         "lpc-bhyve-atpic"
     }
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         Migrator::Multi(self)
     }
 }

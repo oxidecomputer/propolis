@@ -218,7 +218,7 @@ impl Framework {
 
     /// Creates a new VM configuration builder using the default configuration
     /// from this framework instance.
-    pub fn vm_config_builder(&self, vm_name: &str) -> VmConfig {
+    pub fn vm_config_builder(&self, vm_name: &str) -> VmConfig<'_> {
         VmConfig::new(
             vm_name,
             self.default_guest_cpus,

@@ -102,7 +102,7 @@ impl<QS: Debug> QueueState<QS> {
         assert!(size >= MIN_QUEUE_SIZE && size <= MAX_QUEUE_SIZE);
         Self { size, inner: Mutex::new(QueueInner { head: 0, tail: 0, inner }) }
     }
-    fn lock(&self) -> QueueGuard<QS> {
+    fn lock(&self) -> QueueGuard<'_, QS> {
         QueueGuard { size: &self.size, state: self.inner.lock().unwrap() }
     }
 }

@@ -535,7 +535,7 @@ impl Lifecycle for Vcpu {
     fn type_name(&self) -> &'static str {
         "bhyve-vcpu"
     }
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         Migrator::Multi(self)
     }
 

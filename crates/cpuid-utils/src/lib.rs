@@ -307,7 +307,7 @@ impl CpuidMap {
 
     /// Returns an iterator over the ([`CpuidIdent`], [`CpuidValues`]) pairs in
     /// the map.
-    pub fn iter(&self) -> CpuidMapIterator {
+    pub fn iter(&self) -> CpuidMapIterator<'_> {
         CpuidMapIterator::new(self)
     }
 }
@@ -470,7 +470,7 @@ impl CpuidSet {
     }
 
     /// See [`CpuidMap::iter`].
-    pub fn iter(&self) -> CpuidMapIterator {
+    pub fn iter(&self) -> CpuidMapIterator<'_> {
         self.map.iter()
     }
 
