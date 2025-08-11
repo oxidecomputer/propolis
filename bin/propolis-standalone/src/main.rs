@@ -678,6 +678,79 @@ impl Instance {
                         // expectation that it will be acted upon soon.
                         VmEntry::Run
                     }
+                    VmExitKind::InstEmul(inst) => {
+                        if &inst.inst_data[..2] == &[0xf3, 0x6c] {
+                            // rep ins dx, byte [rdi]
+                            let rcx = vcpu.get_reg(bhyve_api::vm_reg_name::VM_REG_GUEST_RCX).unwrap();
+                            let rdx = vcpu.get_reg(bhyve_api::vm_reg_name::VM_REG_GUEST_RDX).unwrap();
+                            let rdi = vcpu.get_reg(bhyve_api::vm_reg_name::VM_REG_GUEST_RDI).unwrap();
+
+                            let state = inner.state.lock().unwrap();
+                            let memctx = state
+                                .machine.as_ref().unwrap()
+                                .acc_mem.access().unwrap();
+                            // if you want to put more than 16k over serial at once what is wrong
+                            // with you.
+                            assert!(rcx < 0x4000);
+                            let mut buf = vec![0u8; rcx as usize];
+
+                            for i in 0..(rcx as usize) {
+                                buf[i] = state.machine.as_ref().unwrap()
+                                    .bus_pio.handle_in(rdx as u16, 1).expect("can port i/o") as u8;
+                            }
+
+                            use propolis::common::GuestAddr;
+                            use propolis::common::GuestData;
+                            memctx.write_from(
+                                GuestAddr(rdi),
+                                &mut GuestData::from(buf.as_mut_slice()),
+                                rcx as usize
+                            ).expect("ok");
+
+                            vcpu.set_reg(bhyve_api::vm_reg_name::VM_REG_GUEST_RDI, rdi + rcx).unwrap();
+                            vcpu.set_reg(bhyve_api::vm_reg_name::VM_REG_GUEST_RCX, 0).unwrap();
+
+                            VmEntry::Run
+                        } else if &inst.inst_data[..2] == &[0xf3, 0x6e] {
+                            // rep outs dl, byte [rsi]
+                            let rcx = vcpu.get_reg(bhyve_api::vm_reg_name::VM_REG_GUEST_RCX).unwrap();
+                            let rdx = vcpu.get_reg(bhyve_api::vm_reg_name::VM_REG_GUEST_RDX).unwrap();
+                            let rsi = vcpu.get_reg(bhyve_api::vm_reg_name::VM_REG_GUEST_RSI).unwrap();
+
+                            let state = inner.state.lock().unwrap();
+                            let memctx = state
+                                .machine.as_ref().unwrap()
+                                .acc_mem.access().unwrap();
+                            // if you want to put more than 16k over serial at once what is wrong
+                            // with you.
+                            assert!(rcx < 0x4000);
+                            let mut buf = vec![0u8; rcx as usize];
+                            use propolis::common::GuestAddr;
+                            use propolis::common::GuestData;
+                            memctx.read_into(
+                                GuestAddr(rsi),
+                                &mut GuestData::from(buf.as_mut_slice()),
+                                rcx as usize
+                            ).expect("ok");
+
+                            for i in 0..(rcx as usize) {
+                                state.machine.as_ref().unwrap()
+                                    .bus_pio.handle_out(rdx as u16, 1, buf[i] as u32).expect("can port i/o");
+                            }
+                            vcpu.set_reg(bhyve_api::vm_reg_name::VM_REG_GUEST_RSI, rsi + rcx).unwrap();
+                            vcpu.set_reg(bhyve_api::vm_reg_name::VM_REG_GUEST_RCX, 0).unwrap();
+
+                            VmEntry::Run
+                        } else {
+                            slog::error!(
+                                &log,
+                                "Unhandled exit @rip:{:08x} {:?}",
+                                exit.rip,
+                                exit.kind
+                            );
+                            todo!()
+                        }
+                    }
                     _ => {
                         slog::error!(
                             &log,
