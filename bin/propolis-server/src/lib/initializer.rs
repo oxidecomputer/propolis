@@ -779,9 +779,9 @@ impl MachineInitializer<'_> {
                 >= virtio::viona::ApiVersion::V3
             {
                 Some(virtio::viona::DeviceParams {
-                    // Allocate and copy entire packets, rather than loaning
-                    // guest data during transmission.
-                    copy_data: true,
+                    // Loan guest packet data, rather than allocating fresh
+                    // buffers and copying it.
+                    copy_data: false,
                     // Leave room for underlay encapsulation:
                     // - ethernet: 14
                     // - IPv6: 40
