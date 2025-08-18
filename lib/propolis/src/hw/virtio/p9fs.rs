@@ -32,7 +32,6 @@ use p9ds::proto::{
     self, Dirent, MessageType, P9Version, Qid, QidType, Rattach, Rclunk,
     Rgetattr, Rlerror, Rlopen, Rread, Rreaddir, Rstatfs, Rwalk, Tattach,
     Tgetattr, Tlopen, Tread, Treaddir, Tstatfs, Twalk, Version,
-    P9_GETATTR_BASIC,
 };
 use slog::{warn, Logger};
 
@@ -335,50 +334,46 @@ impl HostFSHandler {
         let file = match fid.file {
             Some(ref f) => f,
             None => {
-                // the file is not open
-                warn!(self.log, "read: file not open: {:?}", &fid.pathbuf,);
                 return write_error(EINVAL as u32, chain, mem);
             }
         };
+
         let metadata = match file.metadata() {
             Ok(m) => m,
             Err(e) => {
                 let ecode = e.raw_os_error().unwrap_or(0);
-                warn!(
-                    self.log,
-                    "read: metadata for {:?}: {:?}", &fid.pathbuf, e,
-                );
                 return write_error(ecode as u32, chain, mem);
             }
         };
 
         // bail with empty response if offset is greater than file size
         if metadata.len() < msg.offset {
-            warn!(
-                self.log,
-                "read: offset > file size: {} > {}",
-                msg.offset,
-                metadata.len(),
-            );
             let response = Rread::new(Vec::new());
             let mut out = ispf::to_bytes_le(&response).unwrap();
             let buf = out.as_mut_slice();
             return write_buf(buf, chain, mem);
         }
 
-        let read_count = u32::min(msize, msg.count);
+        let space_left = u64::from(msize)
+            - (size_of::<u32>()          // Rread.size
+        + size_of::<MessageType>()  // Rread.typ
+        + size_of::<u16>()          // Rread.tag
+        + size_of::<u32>()          // Rread.data.len
+        + P9FS_VIRTIO_READ_HEADROOM) as u64;
 
-        let space_left = read_count as usize
-            - size_of::<u32>()          // Rread.size
-            - size_of::<MessageType>()  // Rread.typ
-            - size_of::<u16>()          // Rread.tag
-            - size_of::<u32>()          // Rread.data.len
-            - P9FS_VIRTIO_READ_HEADROOM;
+        let msglen =
+            std::cmp::min(u64::from(msg.count), metadata.len() - msg.offset);
 
-        let buflen =
-            std::cmp::min(space_left, (metadata.len() - msg.offset) as usize);
+        let buflen = std::cmp::min(space_left, msglen);
 
-        p9_write_file(&file, chain, mem, buflen, msg.offset as i64);
+        p9_write_file(
+            &file,
+            chain,
+            msg.tag,
+            mem,
+            buflen as usize,
+            msg.offset as i64,
+        );
     }
 
     fn do_statfs(&self, fid: &mut Fid, chain: &mut Chain, mem: &MemCtx) {
@@ -428,7 +423,14 @@ impl HostFSHandler {
         write_buf(buf, chain, mem);
     }
 
-    fn do_getattr(&self, fid: &mut Fid, chain: &mut Chain, mem: &MemCtx) {
+    fn do_getattr(
+        &self,
+        fid: &mut Fid,
+        tag: u16,
+        valid: u64,
+        chain: &mut Chain,
+        mem: &MemCtx,
+    ) {
         let metadata = match fs::metadata(&fid.pathbuf) {
             Ok(m) => m,
             Err(e) => {
@@ -438,7 +440,7 @@ impl HostFSHandler {
         };
 
         // valid: u64,
-        let valid = P9_GETATTR_BASIC;
+        //XXX let valid = P9_GETATTR_BASIC;
         // qid: Qid,
         let qid = Qid {
             typ: {
@@ -464,7 +466,15 @@ impl HostFSHandler {
                      // nlink: u64,
         let nlink = metadata.nlink();
         // rdev: u64,
-        let rdev = metadata.rdev();
+        // rdev: u64,
+        let rdev =
+            if metadata.is_file() || metadata.is_dir() || metadata.is_symlink()
+            {
+                0 // Regular files, directories, and symlinks should have rdev = 0
+            } else {
+                metadata.rdev() // Only device files should have non-zero rdev
+            };
+
         // attrsize: u64,
         let attrsize = metadata.size();
         // blksize: u64,
@@ -492,7 +502,7 @@ impl HostFSHandler {
                      // data_version: u64,
         let data_version = 0; // reserved for future use in spec
 
-        let resp = Rgetattr::new(
+        let mut resp = Rgetattr::new(
             valid,
             qid,
             mode,
@@ -514,6 +524,7 @@ impl HostFSHandler {
             gen,
             data_version,
         );
+        resp.tag = tag;
 
         let mut out = ispf::to_bytes_le(&resp).unwrap();
         let buf = out.as_mut_slice();
@@ -915,7 +926,9 @@ impl P9Handler for HostFSHandler {
         let msg: Tgetattr = ispf::from_bytes_le(&msg_buf).unwrap();
         match self.fileserver.lock() {
             Ok(ref mut fs) => match fs.fids.get_mut(&msg.fid) {
-                Some(ref mut fid) => self.do_getattr(fid, chain, mem),
+                Some(ref mut fid) => {
+                    self.do_getattr(fid, msg.tag, msg.request_mask, chain, mem)
+                }
                 None => {
                     warn!(self.log, "getattr: fid {} not found", msg.fid);
                     return write_error(ENOENT as u32, chain, mem);
@@ -954,6 +967,7 @@ pub(crate) fn write_error(ecode: u32, chain: &mut Chain, mem: &MemCtx) {
 fn p9_write_file(
     file: &File,
     chain: &mut Chain,
+    tag: u16,
     mem: &MemCtx,
     count: usize,
     offset: i64,
@@ -976,7 +990,7 @@ fn p9_write_file(
     let h = Header {
         size: size as u32,
         typ: MessageType::Rread as u8,
-        tag: 0,
+        tag,
         count: count as u32,
     };
 

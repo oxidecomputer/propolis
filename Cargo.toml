@@ -71,7 +71,7 @@ propolis-client = { path = "lib/propolis-client" }
 dlpi = { git = "https://github.com/oxidecomputer/dlpi-sys", branch = "main" }
 ispf = { git = "https://github.com/oxidecomputer/ispf" }
 libloading = "0.7"
-p9ds = { git = "https://github.com/oxidecomputer/p9fs" }
+p9ds = { git = "https://github.com/oxidecomputer/p9fs", branch = "ry/fix-constructors" }
 softnpu = { git = "https://github.com/oxidecomputer/softnpu" }
 
 # Omicron-related
