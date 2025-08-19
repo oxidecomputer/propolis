@@ -43,6 +43,19 @@ use slog::{warn, Logger};
 /// RREAD header stated size.
 const P9FS_VIRTIO_READ_HEADROOM: usize = 20;
 
+// Form the rread header. Unfortunately we can't do this with the Rread
+// structure because the count is baked into the data field which is tied
+// to the length of the vector and filling that vector is what we're
+// explicitly trying to avoid here.
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+struct RreadHeader {
+    size: u32,
+    typ: u8,
+    tag: u16,
+    count: u32,
+}
+
 #[usdt::provider(provider = "propolis")]
 mod probes {
     fn p9fs_cfg_read() {}
@@ -366,18 +379,14 @@ impl HostFSHandler {
         }
 
         let space_left = u64::from(msize)
-            - (size_of::<u32>()          // Rread.size
-        + size_of::<MessageType>()  // Rread.typ
-        + size_of::<u16>()          // Rread.tag
-        + size_of::<u32>()          // Rread.data.len
-        + P9FS_VIRTIO_READ_HEADROOM) as u64;
+            - (size_of::<RreadHeader>() + P9FS_VIRTIO_READ_HEADROOM) as u64;
 
         let msglen =
             std::cmp::min(u64::from(msg.count), metadata.len() - msg.offset);
 
         let buflen = std::cmp::min(space_left, msglen);
 
-        p9_write_file(
+        p9_read_file(
             &file,
             chain,
             msg.tag,
@@ -469,7 +478,6 @@ impl HostFSHandler {
         // uid: u32,
         let uid = 0; //squash for now
                      // gid: u32,
-                     //let gid = metadata.gid();
         let gid = 0; //squash for now
                      // nlink: u64,
         let nlink = metadata.nlink();
@@ -971,7 +979,7 @@ pub(crate) fn write_error(ecode: u32, chain: &mut Chain, mem: &MemCtx) {
     write_buf(buf, chain, mem);
 }
 
-fn p9_write_file(
+fn p9_read_file(
     file: &File,
     chain: &mut Chain,
     tag: u16,
@@ -979,22 +987,9 @@ fn p9_write_file(
     count: usize,
     offset: i64,
 ) {
-    // Form the rread header. Unfortunately we can't do this with the Rread
-    // structure because the count is baked into the data field which is tied
-    // to the length of the vector and filling that vector is what we're
-    // explicitly trying to avoid here.
-    #[repr(C, packed)]
-    #[derive(Copy, Clone)]
-    struct Header {
-        size: u32,
-        typ: u8,
-        tag: u16,
-        count: u32,
-    }
+    let size = size_of::<RreadHeader>() + count;
 
-    let size = size_of::<Header>() + count;
-
-    let h = Header {
+    let h = RreadHeader {
         size: size as u32,
         typ: MessageType::Rread as u8,
         tag,
