@@ -334,6 +334,7 @@ impl HostFSHandler {
         let file = match fid.file {
             Some(ref f) => f,
             None => {
+                warn!(self.log, "read: file not open: {:?}", &fid.pathbuf,);
                 return write_error(EINVAL as u32, chain, mem);
             }
         };
@@ -342,12 +343,22 @@ impl HostFSHandler {
             Ok(m) => m,
             Err(e) => {
                 let ecode = e.raw_os_error().unwrap_or(0);
+                warn!(
+                    self.log,
+                    "read: metadata for {:?}: {:?}", &fid.pathbuf, e,
+                );
                 return write_error(ecode as u32, chain, mem);
             }
         };
 
         // bail with empty response if offset is greater than file size
         if metadata.len() < msg.offset {
+            warn!(
+                self.log,
+                "read: offset > file size: {} > {}",
+                msg.offset,
+                metadata.len(),
+            );
             let response = Rread::new(Vec::new());
             let mut out = ispf::to_bytes_le(&response).unwrap();
             let buf = out.as_mut_slice();
@@ -439,8 +450,6 @@ impl HostFSHandler {
             }
         };
 
-        // valid: u64,
-        //XXX let valid = P9_GETATTR_BASIC;
         // qid: Qid,
         let qid = Qid {
             typ: {
@@ -458,14 +467,12 @@ impl HostFSHandler {
         // mode: u32,
         let mode = metadata.mode();
         // uid: u32,
-        //let uid = metadata.uid();
         let uid = 0; //squash for now
                      // gid: u32,
                      //let gid = metadata.gid();
         let gid = 0; //squash for now
                      // nlink: u64,
         let nlink = metadata.nlink();
-        // rdev: u64,
         // rdev: u64,
         let rdev =
             if metadata.is_file() || metadata.is_dir() || metadata.is_symlink()
