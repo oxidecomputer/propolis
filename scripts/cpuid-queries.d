@@ -32,7 +32,6 @@ BEGIN {
 }
 
 fbt::vcpu_emulate_cpuid:entry / arg0 == target_vm / {
-	self->interested = 1;
 	self->rax = (uint64_t*)arg2;
 	self->rbx = (uint64_t*)arg3;
 	self->rcx = (uint64_t*)arg4;
@@ -41,7 +40,7 @@ fbt::vcpu_emulate_cpuid:entry / arg0 == target_vm / {
 	self->subleaf = (uint32_t)*self->rcx;
 }
 
-fbt::vcpu_emulate_cpuid:return / self->interested == 1 / {
+fbt::vcpu_emulate_cpuid:return / self->rax != NULL / {
 	printf("CPUID query: leaf/subleaf 0x%08x/0x%08x, returns rax = 0x%08x, rbx = 0x%08x, rcx = 0x%08x, rdx = 0x%08x\n",
 		self->leaf,
 	 	self->subleaf,
@@ -50,5 +49,5 @@ fbt::vcpu_emulate_cpuid:return / self->interested == 1 / {
 		*self->rcx,
 		*self->rdx
 	);
-	self->interested = 0;
+	self->rax = 0;
 }
