@@ -37,8 +37,8 @@ fbt::vcpu_emulate_cpuid:entry / arg0 == target_vm / {
 	self->rbx = (uint64_t*)arg3;
 	self->rcx = (uint64_t*)arg4;
 	self->rdx = (uint64_t*)arg5;
-	self->leaf = *self->rax;
-	self->subleaf = *self->rcx;
+	self->leaf = (uint32_t)*self->rax;
+	self->subleaf = (uint32_t)*self->rcx;
 }
 
 fbt::vcpu_emulate_cpuid:return / self->interested == 1 / {
