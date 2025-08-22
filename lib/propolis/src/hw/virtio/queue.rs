@@ -699,26 +699,53 @@ pub struct Info {
 
 pub struct VirtQueues {
     queues: Vec<Arc<VirtQueue>>,
-    size: NonZeroU16,
     num: NonZeroU16,
 }
 impl VirtQueues {
-    pub fn new(size: NonZeroU16, num: NonZeroU16) -> Self {
-        assert!(size.get().is_power_of_two());
-        let mut queues = Vec::with_capacity(size.get() as usize);
-        for id in 0..num.get() {
-            queues.push(Arc::new(VirtQueue::new(id, size.get())));
-        }
-        Self { queues, size, num }
+    pub fn new(
+        size: NonZeroU16,
+        num: NonZeroU16,
+    ) -> Result<Self, VirtQueuesError> {
+        let sizes = vec![size; usize::from(num.get())];
+        Self::new_from_sizes(&sizes)
     }
-    pub fn queue_size(&self) -> NonZeroU16 {
-        self.size
+    pub fn new_from_sizes(
+        sizes: &[NonZeroU16],
+    ) -> Result<Self, VirtQueuesError> {
+        let num = u16::try_from(sizes.len())
+            .and_then(NonZeroU16::try_from)
+            .map_err(|_| VirtQueuesError::BadQueueCount(sizes.len()))?;
+
+        let queues = sizes
+            .iter()
+            .enumerate()
+            .map(|(id, size)| {
+                if size.get().is_power_of_two() {
+                    Ok(Arc::new(VirtQueue::new(
+                        u16::try_from(id).expect(
+                            "proven to be drawn from a NonZeroU16 above",
+                        ),
+                        size.get(),
+                    )))
+                } else {
+                    Err(VirtQueuesError::NonPowerOfTwoQueueSize(
+                        id,
+                        usize::from(size.get()),
+                    ))
+                }
+            })
+            .collect::<Result<_, _>>()?;
+
+        Ok(Self { queues, num })
+    }
+    pub fn queue_size(&self, qid: u16) -> Option<u16> {
+        self.get(qid).map(|v| v.size)
     }
     pub fn count(&self) -> NonZeroU16 {
         self.num
     }
     pub fn get(&self, qid: u16) -> Option<&Arc<VirtQueue>> {
-        self.queues.get(qid as usize)
+        self.queues.get(usize::from(qid))
     }
     pub fn iter(&self) -> std::slice::Iter<'_, Arc<VirtQueue>> {
         self.queues.iter()
@@ -731,6 +758,14 @@ impl<S: SliceIndex<[Arc<VirtQueue>]>> Index<S> for VirtQueues {
     fn index(&self, index: S) -> &Self::Output {
         Index::index(&self.queues, index)
     }
+}
+
+#[derive(Copy, Clone, Debug, thiserror::Error)]
+pub enum VirtQueuesError {
+    #[error("queue {0}'s length ({1}) must be a power of two")]
+    NonPowerOfTwoQueueSize(usize, usize),
+    #[error("queue count {0} must be nonzero and less than 65535")]
+    BadQueueCount(usize),
 }
 
 pub mod migrate {

@@ -47,7 +47,8 @@ impl PciVirtioBlock {
         let queues = VirtQueues::new(
             NonZeroU16::new(queue_size).unwrap(),
             NonZeroU16::new(1).unwrap(),
-        );
+        )
+        .unwrap();
         // virtio-block only needs two MSI-X entries for its interrupt needs:
         // - device config changes
         // - queue 0 notification

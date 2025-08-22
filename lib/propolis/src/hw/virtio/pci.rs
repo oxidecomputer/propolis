@@ -271,7 +271,13 @@ impl PciVirtioState {
                 }
             }
             LegacyReg::QueueSize => {
-                ro.write_u16(self.queues.queue_size().get());
+                let state = self.state.lock().unwrap();
+                if let Some(size) = self.queues.queue_size(state.queue_sel) {
+                    ro.write_u16(size);
+                } else {
+                    // bogus queue
+                    ro.write_u16(0);
+                }
             }
             LegacyReg::QueueSelect => {
                 let state = self.state.lock().unwrap();
