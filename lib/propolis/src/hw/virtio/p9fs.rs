@@ -83,7 +83,8 @@ impl PciVirtio9pfs {
         let queues = VirtQueues::new(
             NonZeroU16::new(queue_size).unwrap(),
             NonZeroU16::new(1).unwrap(),
-        );
+        )
+        .unwrap();
         let msix_count = Some(2); //guess
         let (virtio_state, pci_state) = PciVirtioState::create(
             queues,
