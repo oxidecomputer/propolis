@@ -2,7 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::num::NonZeroU16;
 use std::sync::{Arc, Weak};
 
 use crate::accessors::MemAccessor;
@@ -44,11 +43,9 @@ pub struct PciVirtioBlock {
 }
 impl PciVirtioBlock {
     pub fn new(queue_size: u16) -> Arc<Self> {
-        let queues = VirtQueues::new(
-            NonZeroU16::new(queue_size).unwrap(),
-            NonZeroU16::new(1).unwrap(),
-        )
-        .unwrap();
+        let queues =
+            VirtQueues::new([VirtQueue::new(queue_size.try_into().unwrap())])
+                .unwrap();
         // virtio-block only needs two MSI-X entries for its interrupt needs:
         // - device config changes
         // - queue 0 notification

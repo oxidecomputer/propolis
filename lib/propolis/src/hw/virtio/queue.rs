@@ -145,9 +145,43 @@ impl VqUsed {
     }
 }
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub struct VqSize(NonZeroU16);
+impl TryFrom<NonZeroU16> for VqSize {
+    type Error = VqSizeError;
+
+    fn try_from(value: NonZeroU16) -> Result<Self, Self::Error> {
+        if !value.is_power_of_two() {
+            Err(VqSizeError::NotPow2)
+        } else {
+            Ok(Self(value))
+        }
+    }
+}
+impl TryFrom<u16> for VqSize {
+    type Error = VqSizeError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        NonZeroU16::try_from(value).or(Err(VqSizeError::IsZero))?.try_into()
+    }
+}
+impl Into<u16> for VqSize {
+    fn into(self) -> u16 {
+        self.0.get()
+    }
+}
+
+#[derive(Copy, Clone, Debug, thiserror::Error)]
+pub enum VqSizeError {
+    #[error("virtqueue size must be power of 2")]
+    NotPow2,
+    #[error("virtqueue size must not be 0")]
+    IsZero,
+}
+
 pub struct VirtQueue {
     pub id: u16,
-    pub size: u16,
+    pub size: VqSize,
     pub live: AtomicBool,
     avail: Mutex<VqAvail>,
     used: Mutex<VqUsed>,
@@ -161,10 +195,9 @@ const fn qalign(addr: u64, align: u64) -> u64 {
     (addr + mask) & !mask
 }
 impl VirtQueue {
-    pub fn new(id: u16, size: u16) -> Self {
-        assert!(size.is_power_of_two());
+    pub fn new(size: VqSize) -> Self {
         Self {
-            id,
+            id: 0, // to be populated when stashed in VirtQueues
             size,
             live: AtomicBool::new(false),
             avail: Mutex::new(VqAvail {
@@ -196,6 +229,11 @@ impl VirtQueue {
         self.live.store(false, Ordering::Release);
     }
 
+    #[inline(always)]
+    pub fn size(&self) -> u16 {
+        self.size.into()
+    }
+
     /// Attempt to establish ring mappings at a specified physical address,
     /// using legacy-style split virtqueue layout.
     ///
@@ -203,7 +241,7 @@ impl VirtQueue {
     pub fn map_legacy(&self, addr: u64) {
         assert_eq!(addr & (LEGACY_QALIGN - 1), 0);
 
-        let size = self.size as usize;
+        let size = self.size() as usize;
 
         let desc_addr = addr;
         let desc_len = mem::size_of::<VqdDesc>() * size;
@@ -254,9 +292,9 @@ impl VirtQueue {
     ) -> Option<(u16, u32)> {
         assert!(chain.idx.is_none());
         let mut avail = self.avail.lock().unwrap();
-        let req = avail.read_next_avail(self.size, mem)?;
+        let req = avail.read_next_avail(self.size(), mem)?;
 
-        let mut desc = avail.read_ring_descr(req.desc_idx, self.size, mem)?;
+        let mut desc = avail.read_ring_descr(req.desc_idx, self.size(), mem)?;
         let mut flags = DescFlag::from_bits_truncate(desc.flags);
         let mut count = 0;
         let mut len = 0;
@@ -278,13 +316,13 @@ impl VirtQueue {
             chain.push_buf(buf);
 
             if flags.intersects(DescFlag::NEXT | DescFlag::INDIRECT) {
-                if count == self.size {
+                if count == self.size() {
                     // XXX: signal error condition?
                     chain.idx = None;
                     return None;
                 }
                 if let Some(next) =
-                    avail.read_ring_descr(desc.next, self.size, mem)
+                    avail.read_ring_descr(desc.next, self.size(), mem)
                 {
                     desc = next;
                     flags = DescFlag::from_bits_truncate(desc.flags);
@@ -338,7 +376,7 @@ impl VirtQueue {
         // XXX: for now, just go off of the write stats
         let len = chain.write_stat.bytes - chain.write_stat.bytes_remain;
         probes::virtio_vq_push!(|| (self as *const VirtQueue as u64, id, len));
-        used.write_used(id, len, self.size, mem);
+        used.write_used(id, len, self.size(), mem);
         if !used.intr_supressed(mem) {
             if let Some(intr) = used.interrupt.as_ref() {
                 intr.notify();
@@ -375,7 +413,7 @@ impl VirtQueue {
 
         migrate::VirtQueueV1 {
             id: self.id,
-            size: self.size,
+            size: self.size(),
             descr_gpa: avail.gpa_desc.0,
             mapping_valid: avail.valid && used.valid,
             live: self.live.load(Ordering::Acquire),
@@ -402,10 +440,11 @@ impl VirtQueue {
                 self.id, state.id,
             )));
         }
-        if self.size != state.size {
+        if self.size() != state.size {
             return Err(MigrateStateError::ImportFailed(format!(
                 "VirtQueue: mismatched size {} vs {}",
-                self.size, state.size,
+                self.size(),
+                state.size,
             )));
         }
 
@@ -699,62 +738,28 @@ pub struct Info {
 
 pub struct VirtQueues {
     queues: Vec<Arc<VirtQueue>>,
-    num: NonZeroU16,
 }
 impl VirtQueues {
     pub fn new(
-        size: NonZeroU16,
-        num: NonZeroU16,
+        queues: impl IntoIterator<Item = VirtQueue>,
     ) -> Result<Self, VirtQueuesError> {
-        let queues = (0..num.get())
-            .map(|id| {
-                if size.get().is_power_of_two() {
-                    Ok(Arc::new(VirtQueue::new(id, size.get())))
-                } else {
-                    Err(VirtQueuesError::NonPowerOfTwoQueueSize(
-                        usize::from(id),
-                        usize::from(size.get()),
-                    ))
-                }
-            })
-            .collect::<Result<_, _>>()?;
-
-        Ok(Self { queues, num })
-    }
-    pub fn new_from_sizes(
-        sizes: &[NonZeroU16],
-    ) -> Result<Self, VirtQueuesError> {
-        let num = u16::try_from(sizes.len())
-            .and_then(NonZeroU16::try_from)
-            .map_err(|_| VirtQueuesError::BadQueueCount(sizes.len()))?;
-
-        let queues = sizes
-            .iter()
+        let queues = queues
+            .into_iter()
             .enumerate()
-            .map(|(id, size)| {
-                if size.get().is_power_of_two() {
-                    Ok(Arc::new(VirtQueue::new(
-                        u16::try_from(id).expect(
-                            "proven to be drawn from a NonZeroU16 above",
-                        ),
-                        size.get(),
-                    )))
-                } else {
-                    Err(VirtQueuesError::NonPowerOfTwoQueueSize(
-                        id,
-                        usize::from(size.get()),
-                    ))
-                }
+            .map(|(id, mut vq)| {
+                vq.id = id as u16;
+                Arc::new(vq)
             })
-            .collect::<Result<_, _>>()?;
+            .collect::<Vec<_>>();
+        if !(0..(u16::MAX as usize)).contains(&queues.len()) {
+            return Err(VirtQueuesError::BadQueueCount(queues.len()));
+        }
 
-        Ok(Self { queues, num })
-    }
-    pub fn queue_size(&self, qid: u16) -> Option<u16> {
-        self.get(qid).map(|v| v.size)
+        Ok(Self { queues })
     }
     pub fn count(&self) -> NonZeroU16 {
-        self.num
+        NonZeroU16::try_from(self.queues.len() as u16)
+            .expect("queue count already validated")
     }
     pub fn get(&self, qid: u16) -> Option<&Arc<VirtQueue>> {
         self.queues.get(usize::from(qid))
@@ -774,8 +779,6 @@ impl<S: SliceIndex<[Arc<VirtQueue>]>> Index<S> for VirtQueues {
 
 #[derive(Copy, Clone, Debug, thiserror::Error)]
 pub enum VirtQueuesError {
-    #[error("queue {0}'s length ({1}) must be a power of two")]
-    NonPowerOfTwoQueueSize(usize, usize),
     #[error("queue count {0} must be nonzero and less than 65535")]
     BadQueueCount(usize),
 }

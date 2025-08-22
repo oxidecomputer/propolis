@@ -6,7 +6,6 @@ use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{Result, Write},
-    num::NonZeroU16,
     sync::{Arc, Mutex},
     thread::{sleep, spawn},
     time::Duration,
@@ -145,9 +144,10 @@ pub struct PortVirtioState {
 
 impl PortVirtioState {
     fn new(queue_size: u16) -> Self {
+        let queue_size = queue_size.try_into().unwrap();
         let queues = VirtQueues::new(
-            NonZeroU16::new(queue_size).unwrap(),
-            NonZeroU16::new(2).unwrap(), //TX and RX
+            // RX and TX queues
+            [VirtQueue::new(queue_size), VirtQueue::new(queue_size)],
         )
         .unwrap();
         let msix_count = Some(2);

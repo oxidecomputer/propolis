@@ -196,9 +196,11 @@ impl PciVirtioViona {
             }
         }
 
-        let queues =
-            VirtQueues::new_from_sizes(&[rx_queue_size, tx_queue_size])
-                .unwrap();
+        let queues = VirtQueues::new(
+            [rx_queue_size, tx_queue_size]
+                .map(|sz| VirtQueue::new(sz.try_into().unwrap())),
+        )
+        .unwrap();
         let (virtio_state, pci_state) = PciVirtioState::create(
             queues,
             msix_count,
@@ -331,7 +333,7 @@ impl PciVirtioViona {
             *rs = VRingState::Init;
             let info = vq.get_state();
             if info.mapping.valid {
-                if self.hdl.ring_set_state(vq.id, vq.size, &info).is_err() {
+                if self.hdl.ring_set_state(vq.id, vq.size(), &info).is_err() {
                     *rs = VRingState::Error;
                     continue;
                 }
@@ -483,7 +485,7 @@ impl VirtioDevice for PciVirtioViona {
 
                 if self
                     .hdl
-                    .ring_init(vq.id, vq.size, info.mapping.desc_addr)
+                    .ring_init(vq.id, vq.size(), info.mapping.desc_addr)
                     .is_err()
                 {
                     // Bad virtqueue configuration is not fatal.  While the
