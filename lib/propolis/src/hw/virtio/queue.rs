@@ -706,8 +706,20 @@ impl VirtQueues {
         size: NonZeroU16,
         num: NonZeroU16,
     ) -> Result<Self, VirtQueuesError> {
-        let sizes = vec![size; usize::from(num.get())];
-        Self::new_from_sizes(&sizes)
+        let queues = (0..num.get())
+            .map(|id| {
+                if size.get().is_power_of_two() {
+                    Ok(Arc::new(VirtQueue::new(id, size.get())))
+                } else {
+                    Err(VirtQueuesError::NonPowerOfTwoQueueSize(
+                        usize::from(id),
+                        usize::from(size.get()),
+                    ))
+                }
+            })
+            .collect::<Result<_, _>>()?;
+
+        Ok(Self { queues, num })
     }
     pub fn new_from_sizes(
         sizes: &[NonZeroU16],
