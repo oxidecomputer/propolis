@@ -3905,7 +3905,7 @@ dependencies = [
 [[package]]
 name = "p9ds"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/p9fs#4b8362b894e8ecbb6da34e2e71d7a248918ecd8f"
+source = "git+https://github.com/oxidecomputer/p9fs#113f170aff6aa1d5add00c19b3a2f3241e16a763"
 dependencies = [
  "ispf",
  "num_enum 0.5.11",
