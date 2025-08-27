@@ -2,11 +2,12 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::sync::{Arc, Weak};
+use std::num::NonZeroUsize;
+use std::sync::Arc;
+use std::time::Instant;
 
 use crate::accessors::MemAccessor;
 use crate::block;
-use crate::block::tracking::CompletionCallback;
 use crate::common::*;
 use crate::hw::pci;
 use crate::migrate::*;
@@ -27,19 +28,10 @@ const SECTOR_SZ: usize = 512;
 /// Arbitrary limit to sectors permitted per discard request
 const MAX_DISCARD_SECTORS: u32 = ((1024 * 1024) / SECTOR_SZ) as u32;
 
-struct CompletionPayload {
-    /// ID of original request.
-    rid: u16,
-    /// VirtIO chain in which we indicate the result.
-    chain: Chain,
-}
-
 pub struct PciVirtioBlock {
     virtio_state: PciVirtioState,
     pci_state: pci::DeviceState,
-
-    block_attach: block::DeviceAttachment,
-    block_tracking: block::tracking::Tracking<CompletionPayload>,
+    pub block_attach: block::DeviceAttachment,
 }
 impl PciVirtioBlock {
     pub fn new(queue_size: u16) -> Arc<Self> {
@@ -59,14 +51,17 @@ impl PciVirtioBlock {
             VIRTIO_BLK_CFG_SIZE,
         );
 
-        Arc::new_cyclic(|weak| Self {
-            pci_state,
-            virtio_state,
-            block_attach: block::DeviceAttachment::new(),
-            block_tracking: block::tracking::Tracking::new(
-                weak.clone() as Weak<dyn block::Device>
-            ),
-        })
+        let block_attach = block::DeviceAttachment::new(
+            NonZeroUsize::new(1).unwrap(),
+            pci_state.acc_mem.child(Some("block backend".to_string())),
+        );
+        let bvq = BlockVq::new(
+            virtio_state.queues.get(0).unwrap().clone(),
+            pci_state.acc_mem.child(Some("block queue".to_string())),
+        );
+        block_attach.queue_associate(0usize.into(), bvq);
+
+        Arc::new(Self { pci_state, virtio_state, block_attach })
     }
 
     fn block_cfg_read(&self, id: &BlockReg, ro: &mut ReadOp) {
@@ -112,10 +107,29 @@ impl PciVirtioBlock {
             }
         }
     }
+}
 
-    fn next_req(&self) -> Option<block::Request> {
-        let vq = &self.virtio_state.queues[0];
-        let mem = self.pci_state.acc_mem.access()?;
+struct CompletionToken {
+    /// ID of original request.
+    rid: u16,
+    /// VirtIO chain in which we indicate the result.
+    chain: Chain,
+}
+
+struct BlockVq(Arc<VirtQueue>, MemAccessor);
+impl BlockVq {
+    fn new(vq: Arc<VirtQueue>, acc_mem: MemAccessor) -> Arc<Self> {
+        Arc::new(Self(vq, acc_mem))
+    }
+}
+impl block::DeviceQueue for BlockVq {
+    type Token = CompletionToken;
+
+    fn next_req(
+        &self,
+    ) -> Option<(block::Request, Self::Token, Option<Instant>)> {
+        let vq = &self.0;
+        let mem = self.1.access()?;
 
         let mut chain = Chain::with_capacity(4);
         // Pop a request off the queue if there's one available.
@@ -140,9 +154,10 @@ impl PciVirtioBlock {
                     probes::vioblk_read_enqueue!(|| (
                         rid, off as u64, sz as u64
                     ));
-                    Ok(self.block_tracking.track(
+                    Ok((
                         block::Request::new_read(off, sz, regions),
-                        CompletionPayload { rid, chain },
+                        CompletionToken { rid, chain },
+                        None,
                     ))
                 } else {
                     Err(chain)
@@ -157,9 +172,10 @@ impl PciVirtioBlock {
                     probes::vioblk_write_enqueue!(|| (
                         rid, off as u64, sz as u64
                     ));
-                    Ok(self.block_tracking.track(
+                    Ok((
                         block::Request::new_write(off, sz, regions),
-                        CompletionPayload { rid, chain },
+                        CompletionToken { rid, chain },
+                        None,
                     ))
                 } else {
                     Err(chain)
@@ -167,9 +183,10 @@ impl PciVirtioBlock {
             }
             VIRTIO_BLK_T_FLUSH => {
                 probes::vioblk_flush_enqueue!(|| rid);
-                Ok(self.block_tracking.track(
+                Ok((
                     block::Request::new_flush(),
-                    CompletionPayload { rid, chain },
+                    CompletionToken { rid, chain },
+                    None,
                 ))
             }
             VIRTIO_BLK_T_DISCARD => {
@@ -182,9 +199,10 @@ impl PciVirtioBlock {
                     probes::vioblk_discard_enqueue!(|| (
                         rid, off as u64, sz as u64,
                     ));
-                    Ok(self.block_tracking.track(
+                    Ok((
                         block::Request::new_discard(off, sz),
-                        CompletionPayload { rid, chain },
+                        CompletionToken { rid, chain },
+                        None,
                     ))
                 }
             }
@@ -205,16 +223,15 @@ impl PciVirtioBlock {
         }
     }
 
-    fn complete_req(
+    fn complete(
         &self,
-        rid: u16,
         op: block::Operation,
-        res: block::Result,
-        chain: &mut Chain,
+        result: block::Result,
+        mut token: Self::Token,
     ) {
-        let vq = self.virtio_state.queues.get(0).expect("vq must exist");
-        if let Some(mem) = vq.acc_mem.access() {
-            let resnum = match res {
+        let CompletionToken { rid, ref mut chain } = token;
+        if let Some(mem) = self.1.access() {
+            let resnum = match result {
                 block::Result::Success => VIRTIO_BLK_S_OK,
                 block::Result::Failure => VIRTIO_BLK_S_IOERR,
                 block::Result::ReadOnly => VIRTIO_BLK_S_IOERR,
@@ -235,7 +252,7 @@ impl PciVirtioBlock {
                 }
             }
             chain.write(&resnum, &mem);
-            vq.push_used(chain, &mem);
+            self.0.push_used(chain, &mem);
         }
     }
 }
@@ -269,7 +286,8 @@ impl VirtioDevice for PciVirtioBlock {
     }
 
     fn queue_notify(&self, _vq: &Arc<VirtQueue>) {
-        self.block_attach.notify()
+        // TODO: provide proper hint
+        self.block_attach.notify(0usize.into(), None);
     }
 }
 impl PciVirtio for PciVirtioBlock {
@@ -284,24 +302,6 @@ impl block::Device for PciVirtioBlock {
     fn attachment(&self) -> &block::DeviceAttachment {
         &self.block_attach
     }
-
-    fn next(&self) -> Option<block::Request> {
-        self.next_req()
-    }
-
-    fn complete(&self, res: block::Result, id: block::ReqId) {
-        let (op, mut payload) = self.block_tracking.complete(id, res);
-        let CompletionPayload { rid, ref mut chain } = payload;
-        self.complete_req(rid, op, res, chain);
-    }
-
-    fn on_completion(&self, cb: Box<dyn CompletionCallback>) -> bool {
-        self.block_tracking.set_completion_callback(cb)
-    }
-
-    fn accessor_mem(&self) -> MemAccessor {
-        self.pci_state.acc_mem.child(Some("block backend".to_string()))
-    }
 }
 impl Lifecycle for PciVirtioBlock {
     fn type_name(&self) -> &'static str {
@@ -311,13 +311,13 @@ impl Lifecycle for PciVirtioBlock {
         self.virtio_state.reset(self);
     }
     fn pause(&self) {
-        self.block_attach.pause();
+        self.block_attach.pause()
     }
     fn resume(&self) {
         self.block_attach.resume();
     }
     fn paused(&self) -> BoxFuture<'static, ()> {
-        Box::pin(self.block_tracking.none_outstanding())
+        Box::pin(self.block_attach.none_processing())
     }
     fn migrate(&self) -> Migrator<'_> {
         Migrator::Multi(self)

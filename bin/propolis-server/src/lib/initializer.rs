@@ -12,8 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::serial::Serial;
 use crate::spec::{self, Spec, StorageBackend, StorageDevice};
 use crate::stats::{
-    track_network_interface_kstats, track_vcpu_kstats, VirtualDiskProducer,
-    VirtualMachine,
+    track_network_interface_kstats, track_vcpu_kstats, BlockMetrics,
+    VirtualDisk, VirtualMachine,
 };
 use crate::vm::{
     BlockBackendMap, CrucibleBackendMap, DeviceMap, NetworkInterfaceIds,
@@ -658,7 +658,8 @@ impl MachineInitializer<'_> {
                     let vioblk = virtio::PciVirtioBlock::new(0x100);
 
                     self.devices.insert(device_id.clone(), vioblk.clone());
-                    block::attach(vioblk.clone(), backend).unwrap();
+                    block::attach(&vioblk.block_attach, backend.attachment())
+                        .unwrap();
                     chipset.pci_attach(bdf, vioblk.clone());
                     vioblk
                 }
@@ -678,7 +679,8 @@ impl MachineInitializer<'_> {
                         self.log.new(slog::o!("component" => component)),
                     );
                     self.devices.insert(device_id.clone(), nvme.clone());
-                    block::attach(nvme.clone(), backend).unwrap();
+                    block::attach(&nvme.block_attach, backend.attachment())
+                        .unwrap();
                     chipset.pci_attach(bdf, nvme.clone());
                     nvme
                 }
@@ -720,14 +722,20 @@ impl MachineInitializer<'_> {
                 };
 
                 if let Some(registry) = &self.producer_registry {
-                    let stats = VirtualDiskProducer::new(
-                        block_size,
-                        self.properties.id,
-                        volume_id,
-                        &self.properties.metadata,
+                    let block_metrics = BlockMetrics::new(
+                        VirtualDisk {
+                            attached_instance_id: self.properties.id,
+                            block_size,
+                            disk_id: volume_id,
+                            project_id: self.properties.metadata.project_id,
+                            silo_id: self.properties.metadata.silo_id,
+                        },
+                        block_dev.attachment().max_queues(),
                     );
 
-                    if let Err(e) = registry.register_producer(stats.clone()) {
+                    if let Err(e) =
+                        registry.register_producer(block_metrics.producer())
+                    {
                         slog::error!(
                             self.log,
                             "Could not register virtual disk producer, \
@@ -739,12 +747,7 @@ impl MachineInitializer<'_> {
                         continue;
                     };
 
-                    // Set the on-completion callback for the block device, to
-                    // update stats.
-                    let callback = move |op, result, duration| {
-                        stats.on_completion(op, result, duration);
-                    };
-                    block_dev.on_completion(Box::new(callback));
+                    block_dev.attachment().set_metric_consumer(block_metrics);
                 };
             }
         }
