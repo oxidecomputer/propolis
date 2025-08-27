@@ -8,8 +8,11 @@ use crate::common::{GuestAddr, GuestRegion, PAGE_SIZE};
 use crate::vmm::MemCtx;
 
 use super::bits::*;
-use super::queue::{QueueId, ADMIN_QUEUE_ID};
-use super::{cmds, NvmeCtrl, NvmeError, MAX_NUM_IO_QUEUES, MAX_NUM_QUEUES};
+use super::queue::{sqid_to_block_qid, QueueId, ADMIN_QUEUE_ID};
+use super::requests::NvmeBlockQueue;
+use super::{
+    cmds, NvmeCtrl, NvmeError, PciNvme, MAX_NUM_IO_QUEUES, MAX_NUM_QUEUES,
+};
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
@@ -44,6 +47,7 @@ impl NvmeCtrl {
     pub(super) fn acmd_create_io_cq(
         &mut self,
         cmd: &cmds::CreateIOCQCmd,
+        nvme: &PciNvme,
         mem: &MemCtx,
     ) -> cmds::Completion {
         // If the host hasn't specified an IOCQES, fail this request
@@ -68,10 +72,13 @@ impl NvmeCtrl {
 
         // Finally, create the Completion Queue
         match self.create_cq(
-            cmd.qid,
+            super::queue::CreateParams {
+                id: cmd.qid,
+                base: GuestAddr(cmd.prp),
+                size: cmd.qsize,
+            },
             cmd.intr_vector,
-            GuestAddr(cmd.prp),
-            cmd.qsize,
+            nvme,
             mem,
         ) {
             Ok(_) => cmds::Completion::success(),
@@ -93,6 +100,7 @@ impl NvmeCtrl {
     pub(super) fn acmd_create_io_sq(
         &mut self,
         cmd: &cmds::CreateIOSQCmd,
+        nvme: &PciNvme,
         mem: &MemCtx,
     ) -> cmds::Completion {
         // If the host hasn't specified an IOSQES, fail this request
@@ -110,13 +118,28 @@ impl NvmeCtrl {
 
         // Finally, create the Submission Queue
         match self.create_sq(
-            cmd.qid,
+            super::queue::CreateParams {
+                id: cmd.qid,
+                base: GuestAddr(cmd.prp),
+                size: cmd.qsize,
+            },
             cmd.cqid,
-            GuestAddr(cmd.prp),
-            cmd.qsize,
+            nvme,
             mem,
         ) {
-            Ok(_) => cmds::Completion::success(),
+            Ok(sq) => {
+                sq.update_params(self.transfer_params());
+                nvme.block_attach.queue_associate(
+                    sqid_to_block_qid(cmd.qid),
+                    NvmeBlockQueue::new(
+                        sq,
+                        nvme.pci_state
+                            .acc_mem
+                            .child(Some(format!("SubQueue-{}", cmd.qid))),
+                    ),
+                );
+                cmds::Completion::success()
+            }
             Err(NvmeError::InvalidCompQueue(_)) => {
                 cmds::Completion::specific_err(
                     StatusCodeType::CmdSpecific,
@@ -141,6 +164,7 @@ impl NvmeCtrl {
     pub(super) fn acmd_delete_io_cq(
         &mut self,
         cqid: QueueId,
+        nvme: &PciNvme,
     ) -> cmds::Completion {
         // Not allowed to delete the Admin Completion Queue
         if cqid == ADMIN_QUEUE_ID {
@@ -153,7 +177,7 @@ impl NvmeCtrl {
         // Remove the CQ from our list of active CQs.
         // At this point, all associated SQs should've been deleted
         // otherwise we'll return an error.
-        match self.delete_cq(cqid) {
+        match self.delete_cq(cqid, nvme) {
             Ok(()) => cmds::Completion::success(),
             Err(NvmeError::InvalidCompQueue(_)) => {
                 cmds::Completion::specific_err(
@@ -177,6 +201,7 @@ impl NvmeCtrl {
     pub(super) fn acmd_delete_io_sq(
         &mut self,
         sqid: QueueId,
+        nvme: &PciNvme,
     ) -> cmds::Completion {
         // Not allowed to delete the Admin Submission Queue
         if sqid == ADMIN_QUEUE_ID {
@@ -194,8 +219,12 @@ impl NvmeCtrl {
         // Note: The NVMe 1.0e spec says "The command causes all commands
         //       submitted to the indicated Submission Queue that are still in
         //       progress to be aborted."
-        match self.delete_sq(sqid) {
-            Ok(()) => cmds::Completion::success(),
+        match self.delete_sq(sqid, nvme) {
+            Ok(()) => {
+                nvme.block_attach.queue_dissociate(sqid_to_block_qid(sqid));
+                // TODO: wait until requests are done?
+                cmds::Completion::success()
+            }
             Err(NvmeError::InvalidSubQueue(_)) => {
                 cmds::Completion::specific_err(
                     StatusCodeType::CmdSpecific,
