@@ -6,7 +6,6 @@ use std::io::{Error, ErrorKind, Result};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
-use crate::accessors::MemAccessor;
 use crate::block;
 use crate::common::Lifecycle;
 use crate::migrate::{
@@ -19,41 +18,39 @@ use crate::vmm::{MemCtx, SubMapping};
 use anyhow::Context;
 
 pub struct InMemoryBackend {
-    state: Arc<WorkingState>,
+    shared_state: Arc<SharedState>,
+    block_attach: block::BackendAttachment,
 
-    worker_count: NonZeroUsize,
     workers: ThreadGroup,
 }
-struct WorkingState {
-    attachment: block::BackendAttachment,
+struct SharedState {
     bytes: Mutex<Vec<u8>>,
     info: block::DeviceInfo,
 }
-impl WorkingState {
-    fn processing_loop(&self, acc_mem: MemAccessor) {
-        while let Some(req) = self.attachment.block_for_req() {
-            if self.info.read_only && req.oper().is_write() {
-                req.complete(block::Result::ReadOnly);
+impl SharedState {
+    fn processing_loop(&self, wctx: block::SyncWorkerCtx) {
+        while let Some(dreq) = wctx.block_for_req() {
+            let req = dreq.req();
+            if self.info.read_only && req.op.is_write() {
+                dreq.complete(block::Result::ReadOnly);
                 continue;
             }
             if req.op.is_discard() {
                 // Punt on discard support
-                req.complete(block::Result::Unsupported);
+                dreq.complete(block::Result::Unsupported);
                 continue;
             }
 
-            let mem = match acc_mem.access() {
-                Some(m) => m,
-                None => {
-                    req.complete(block::Result::Failure);
-                    continue;
-                }
+            let res = match wctx
+                .acc_mem()
+                .access()
+                .and_then(|mem| self.process_request(&req, &mem).ok())
+            {
+                Some(_) => block::Result::Success,
+                None => block::Result::Failure,
             };
-            let res = match self.process_request(&req, &mem) {
-                Ok(_) => block::Result::Success,
-                Err(_) => block::Result::Failure,
-            };
-            req.complete(res);
+
+            dreq.complete(res);
         }
     }
 
@@ -62,7 +59,7 @@ impl WorkingState {
         req: &block::Request,
         mem: &MemCtx,
     ) -> Result<()> {
-        match req.oper() {
+        match req.op {
             block::Operation::Read(off, len) => {
                 let maps = req.mappings(mem).ok_or_else(|| {
                     Error::new(ErrorKind::Other, "bad guest region")
@@ -119,34 +116,34 @@ impl InMemoryBackend {
             ));
         }
 
+        let info = block::DeviceInfo {
+            block_size,
+            total_size: len as u64 / u64::from(block_size),
+            read_only: opts.read_only.unwrap_or(false),
+            supports_discard: false,
+        };
+        let bytes = Mutex::new(bytes);
+        let block_attach = block::BackendAttachment::new(worker_count, info);
+
         Ok(Arc::new(Self {
-            state: Arc::new(WorkingState {
-                attachment: block::BackendAttachment::new(),
-                bytes: Mutex::new(bytes),
-                info: block::DeviceInfo {
-                    block_size,
-                    total_size: len as u64 / u64::from(block_size),
-                    read_only: opts.read_only.unwrap_or(false),
-                    supports_discard: false,
-                },
-            }),
-            worker_count,
+            shared_state: Arc::new(SharedState { bytes, info }),
+            block_attach,
+
             workers: ThreadGroup::new(),
         }))
     }
     fn spawn_workers(&self) -> Result<()> {
-        let spawn_results = (0..self.worker_count.get()).map(|n| {
-            let worker_state = self.state.clone();
-            let worker_acc = self
-                .state
-                .attachment
-                .accessor_mem(|mem| mem.child(Some(format!("worker {n}"))))
-                .expect("backend is attached");
-
+        let count = self.block_attach.max_workers().get();
+        let spawn_results = (0..count).map(|n| {
+            let shared_state = self.shared_state.clone();
+            let wctx = self.block_attach.worker(n);
             std::thread::Builder::new()
                 .name(format!("in-memory worker {n}"))
                 .spawn(move || {
-                    worker_state.processing_loop(worker_acc);
+                    let wctx = wctx
+                        .activate_sync()
+                        .expect("worker slot is uncontended");
+                    shared_state.processing_loop(wctx);
                 })
         });
 
@@ -157,17 +154,13 @@ impl InMemoryBackend {
 #[async_trait::async_trait]
 impl block::Backend for InMemoryBackend {
     fn attachment(&self) -> &block::BackendAttachment {
-        &self.state.attachment
-    }
-
-    fn info(&self) -> block::DeviceInfo {
-        self.state.info
+        &self.block_attach
     }
 
     async fn start(&self) -> anyhow::Result<()> {
-        self.state.attachment.start();
+        self.block_attach.start();
         if let Err(e) = self.spawn_workers() {
-            self.state.attachment.stop();
+            self.block_attach.stop();
             self.workers.block_until_joined();
             Err(e).context("failure while spawning workers")
         } else {
@@ -176,7 +169,7 @@ impl block::Backend for InMemoryBackend {
     }
 
     async fn stop(&self) -> () {
-        self.state.attachment.stop();
+        self.block_attach.stop();
         self.workers.block_until_joined();
     }
 }
@@ -262,7 +255,7 @@ impl MigrateSingle for InMemoryBackend {
         &self,
         _ctx: &MigrateCtx,
     ) -> std::result::Result<PayloadOutput, MigrateStateError> {
-        let bytes = self.state.bytes.lock().unwrap();
+        let bytes = self.shared_state.bytes.lock().unwrap();
         Ok(migrate::InMemoryBlockBackendV1 { bytes: bytes.clone() }.into())
     }
 
@@ -272,7 +265,7 @@ impl MigrateSingle for InMemoryBackend {
         _ctx: &MigrateCtx,
     ) -> std::result::Result<(), MigrateStateError> {
         let data: migrate::InMemoryBlockBackendV1 = offer.parse()?;
-        let mut guard = self.state.bytes.lock().unwrap();
+        let mut guard = self.shared_state.bytes.lock().unwrap();
         if guard.len() != data.bytes.len() {
             return Err(MigrateStateError::ImportFailed(format!(
                 "imported in-memory block backend data has length {}, \

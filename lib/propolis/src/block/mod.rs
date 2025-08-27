@@ -4,16 +4,13 @@
 
 //! Implements an interface to virtualized block devices.
 
-use std::borrow::Borrow;
+use std::time::Duration;
 
-use crate::accessors::MemAccessor;
-use crate::attachment::DetachError;
 use crate::common::*;
 use crate::vmm::{MemCtx, SubMapping};
 
 mod file;
 pub use file::FileBackend;
-use tracking::CompletionCallback;
 
 #[cfg(feature = "crucible")]
 mod crucible;
@@ -27,9 +24,13 @@ mod mem_async;
 pub use mem_async::MemAsyncBackend;
 
 pub mod attachment;
-pub mod tracking;
+pub mod minder;
 
-pub use attachment::{attach, BackendAttachment, DeviceAttachment};
+pub use attachment::{
+    attach, AsyncWorkerCtx, AttachError, BackendAttachment, DeviceAttachment,
+    SyncWorkerCtx,
+};
+pub use minder::{DeviceQueue, DeviceRequest};
 
 pub type ByteOffset = usize;
 pub type ByteLen = usize;
@@ -40,13 +41,13 @@ pub const DEFAULT_BLOCK_SIZE: u32 = 512;
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
-    fn block_begin_read(dev_id: u64, req_id: u64, offset: u64, len: u64) {}
-    fn block_begin_write(dev_id: u64, req_id: u64, offset: u64, len: u64) {}
-    fn block_begin_flush(dev_id: u64, req_id: u64) {}
-    fn block_begin_discard(dev_id: u64, req_id: u64, offset: u64, len: u64) {}
+    fn block_begin_read(devq_id: u64, req_id: u64, offset: u64, len: u64) {}
+    fn block_begin_write(devq_id: u64, req_id: u64, offset: u64, len: u64) {}
+    fn block_begin_flush(devq_id: u64, req_id: u64) {}
+    fn block_begin_discard(devq_id: u64, req_id: u64, offset: u64, len: u64) {}
 
     fn block_complete_read(
-        dev_id: u64,
+        devq_id: u64,
         req_id: u64,
         result: u8,
         proc_ns: u64,
@@ -54,7 +55,7 @@ mod probes {
     ) {
     }
     fn block_complete_write(
-        dev_id: u64,
+        devq_id: u64,
         req_id: u64,
         result: u8,
         proc_ns: u64,
@@ -62,7 +63,7 @@ mod probes {
     ) {
     }
     fn block_complete_flush(
-        dev_id: u64,
+        devq_id: u64,
         req_id: u64,
         result: u8,
         proc_ns: u64,
@@ -70,13 +71,21 @@ mod probes {
     ) {
     }
     fn block_complete_discard(
-        dev_id: u64,
+        devq_id: u64,
         req_id: u64,
         result: u8,
         proc_ns: u64,
         queue_ns: u64,
     ) {
     }
+
+    fn block_completion_sent(devq_id: u64, req_id: u64, complete_ns: u64) {}
+
+    fn block_poll(devq_id: u64, worker_id: u64, emit_req: u8) {}
+    fn block_sleep(dev_id: u32, worker_id: u64) {}
+    fn block_wake(dev_id: u32, worker_id: u64) {}
+    fn block_notify(devq_id: u64) {}
+    fn block_strategy(dev_id: u32, strat: String, generation: u64) {}
 }
 
 /// Type of operations which may be issued to a virtual block device.
@@ -124,20 +133,68 @@ impl Result {
     }
 }
 
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
+pub struct QueueId(u8);
+impl QueueId {
+    /// Arbitrary limit for per-device queues.
+    /// Sized to match [attachment::Bitmap] capacity
+    pub const MAX_QUEUES: usize = 64;
+
+    pub const MAX: Self = Self(Self::MAX_QUEUES as u8);
+
+    /// Get the next sequential QueueId, wrapping around at a maximum
+    fn next(self, max: usize) -> Self {
+        let max: u8 = max.try_into().expect("max should be in-range");
+        assert!(max != 0 && max <= Self::MAX.0);
+
+        let next = self.0.wrapping_add(1);
+        if next >= max {
+            Self(0)
+        } else {
+            Self(next)
+        }
+    }
+}
+impl From<usize> for QueueId {
+    fn from(value: usize) -> Self {
+        assert!(value < Self::MAX_QUEUES);
+        Self(value as u8)
+    }
+}
+impl From<QueueId> for usize {
+    fn from(value: QueueId) -> Self {
+        value.0 as usize
+    }
+}
+impl From<u16> for QueueId {
+    fn from(value: u16) -> Self {
+        assert!(value < (Self::MAX_QUEUES as u16));
+        Self(value as u8)
+    }
+}
+impl From<QueueId> for u16 {
+    fn from(value: QueueId) -> Self {
+        value.0 as u16
+    }
+}
+
+pub type DeviceId = u32;
+pub type WorkerId = usize;
+
+/// Combine device and queue IDs into single u64 for probes
+pub(crate) fn devq_id(dev: DeviceId, queue: QueueId) -> u64 {
+    ((dev as u64) << 8) | (queue.0 as u64)
+}
+
 /// Block device operation request
+#[derive(Clone)]
 pub struct Request {
     /// The type of operation requested by the block device
-    op: Operation,
+    pub op: Operation,
 
     /// A list of regions of guest memory to read/write into as part of the I/O
     /// request
-    regions: Vec<GuestRegion>,
-
-    /// Store [`tracking::TrackingMarker`] when this request is tracked by a
-    /// [`tracking::Tracking`] for that device.  It is through this marker that
-    /// the result of the block request is communicated back to the device
-    /// emulation for processing.
-    marker: Option<tracking::TrackingMarker>,
+    pub regions: Vec<GuestRegion>,
 }
 impl Request {
     pub fn new_read(
@@ -145,7 +202,7 @@ impl Request {
         len: ByteLen,
         regions: Vec<GuestRegion>,
     ) -> Self {
-        Self { op: Operation::Read(off, len), regions, marker: None }
+        Self { op: Operation::Read(off, len), regions }
     }
 
     pub fn new_write(
@@ -153,27 +210,17 @@ impl Request {
         len: ByteLen,
         regions: Vec<GuestRegion>,
     ) -> Self {
-        Self { op: Operation::Write(off, len), regions, marker: None }
+        Self { op: Operation::Write(off, len), regions }
     }
 
     pub fn new_flush() -> Self {
         let op = Operation::Flush;
-        Self { op, regions: Vec::new(), marker: None }
+        Self { op, regions: Vec::new() }
     }
 
     pub fn new_discard(off: ByteOffset, len: ByteLen) -> Self {
         let op = Operation::Discard(off, len);
-        Self { op, regions: Vec::new(), marker: None }
-    }
-
-    /// Type of operation being issued.
-    pub fn oper(&self) -> Operation {
-        self.op
-    }
-
-    /// Guest memory regions underlying the request
-    pub fn regions(&self) -> &[GuestRegion] {
-        &self.regions[..]
+        Self { op, regions: Vec::new() }
     }
 
     pub fn mappings<'a>(&self, mem: &'a MemCtx) -> Option<Vec<SubMapping<'a>>> {
@@ -185,20 +232,6 @@ impl Request {
                 self.regions.iter().map(|r| mem.readable_region(r)).collect()
             }
             Operation::Flush | Operation::Discard(..) => None,
-        }
-    }
-
-    /// Indicate disposition of completed request
-    pub fn complete(mut self, res: Result) {
-        if let Some(marker) = self.marker.take() {
-            marker.complete(res);
-        }
-    }
-}
-impl Drop for Request {
-    fn drop(&mut self) {
-        if self.marker.is_some() {
-            panic!("request dropped prior to completion");
         }
     }
 }
@@ -239,23 +272,6 @@ pub struct BackendOpts {
 pub trait Device: Send + Sync + 'static {
     /// Access to the [DeviceAttachment] representing this device.
     fn attachment(&self) -> &DeviceAttachment;
-
-    /// Retrieve the next request (if any)
-    fn next(&self) -> Option<Request>;
-
-    /// Complete processing of result
-    fn complete(&self, res: Result, id: ReqId);
-
-    /// Attach a callback to be run on completion of I/Os.
-    ///
-    /// Returns whether there was a previously-registered callback.
-    fn on_completion(&self, _cb: Box<dyn CompletionCallback>) -> bool;
-
-    /// Get an accessor to guest memory via the underlying device
-    fn accessor_mem(&self) -> MemAccessor;
-
-    /// Optional on-attach handler to update device state with new `DeviceInfo`
-    fn on_attach(&self, _info: DeviceInfo) {}
 }
 
 /// Top-level trait for block backends which will attach to [Device]s in order
@@ -264,9 +280,6 @@ pub trait Device: Send + Sync + 'static {
 pub trait Backend: Send + Sync + 'static {
     /// Access to the [BackendAttachment] representing this backend.
     fn attachment(&self) -> &BackendAttachment;
-
-    /// Query [DeviceInfo] from the backend
-    fn info(&self) -> DeviceInfo;
 
     /// Start attempting to process [Request]s from [Device] (if attached)
     ///
@@ -282,6 +295,7 @@ pub trait Backend: Send + Sync + 'static {
     /// by this routine. In this case the caller may not call [`Self::stop()`]
     /// prior to dropping the backend. This routine is, however, guaranteed to
     /// be called before the VM's vCPUs are started.
+    ///
     async fn start(&self) -> anyhow::Result<()>;
 
     /// Stop attempting to process new [Request]s from [Device] (if attached)
@@ -297,41 +311,19 @@ pub trait Backend: Send + Sync + 'static {
     /// events; instead, their corresponding devices will stop issuing new
     /// requests when they are told to pause (and will only report they are
     /// fully paused when all their in-flight requests have completed).
-    async fn stop(&self) -> ();
-
-    /// Attempt to detach from associated [Device]
-    ///
-    /// Any attached backend should be [stopped](Backend::stop()) and detached
-    /// prior to its references being dropped.  An attached [Backend]/[Device]
-    /// pair holds mutual references and thus will not be reaped if all other
-    /// external references are dropped.
-    fn detach(&self) -> std::result::Result<(), DetachError> {
-        self.attachment().detach()
-    }
+    async fn stop(&self);
 }
 
-pub enum CacheMode {
-    Synchronous,
-    WriteBack,
-}
-
-/// Unique ID assigned (by [`tracking::Tracking`] to a given block [`Request`].
-#[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord)]
-pub struct ReqId(u64);
-impl ReqId {
-    const START: Self = ReqId(1);
-
-    fn advance(&mut self) {
-        self.0 += 1;
-    }
-}
-impl Borrow<u64> for ReqId {
-    fn borrow(&self) -> &u64 {
-        &self.0
-    }
-}
-impl From<ReqId> for u64 {
-    fn from(value: ReqId) -> Self {
-        value.0
-    }
+/// Consumer of per-[Request] metrics
+pub trait MetricConsumer: Send + Sync + 'static {
+    /// Called upon the completion of each block [Request] when a MetricConsumer
+    /// has been set for a given [DeviceAttachment].
+    fn request_completed(
+        &self,
+        queue_id: QueueId,
+        op: Operation,
+        result: Result,
+        time_queued: Duration,
+        time_processed: Duration,
+    );
 }

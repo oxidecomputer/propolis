@@ -7,7 +7,6 @@ use std::num::NonZeroUsize;
 use std::ptr::NonNull;
 use std::sync::Arc;
 
-use crate::accessors::MemAccessor;
 use crate::block;
 use crate::tasks::TaskGroup;
 use crate::vmm::MemCtx;
@@ -18,42 +17,37 @@ use crate::vmm::MemCtx;
 /// this backend can be used for measuring how other parts of the emulation
 /// stack perform.
 pub struct MemAsyncBackend {
-    work_state: Arc<WorkingState>,
+    shared_state: Arc<SharedState>,
+    block_attach: block::BackendAttachment,
 
-    worker_count: NonZeroUsize,
     workers: TaskGroup,
 }
-struct WorkingState {
-    attachment: block::BackendAttachment,
+struct SharedState {
     seg: MmapSeg,
     info: block::DeviceInfo,
 }
-impl WorkingState {
-    async fn processing_loop(&self, acc_mem: MemAccessor) {
-        let waiter = match self.attachment.waiter() {
-            None => {
-                // Backend was detached
-                return;
-            }
-            Some(w) => w,
-        };
-        while let Some(req) = waiter.for_req().await {
-            if self.info.read_only && req.oper().is_write() {
-                req.complete(block::Result::ReadOnly);
+impl SharedState {
+    async fn processing_loop(&self, wctx: block::AsyncWorkerCtx) {
+        while let Some(dreq) = wctx.wait_for_req().await {
+            let req = dreq.req();
+            if self.info.read_only && req.op.is_write() {
+                dreq.complete(block::Result::ReadOnly);
                 continue;
             }
-            if req.oper().is_discard() {
-                req.complete(block::Result::Unsupported);
+            if req.op.is_discard() {
+                dreq.complete(block::Result::Unsupported);
                 continue;
             }
-            let res = match acc_mem
+
+            let res = match wctx
+                .acc_mem()
                 .access()
                 .and_then(|mem| self.process_request(&req, &mem).ok())
             {
                 Some(_) => block::Result::Success,
                 None => block::Result::Failure,
             };
-            req.complete(res);
+            dreq.complete(res);
         }
     }
 
@@ -63,40 +57,34 @@ impl WorkingState {
         mem: &MemCtx,
     ) -> std::result::Result<(), &'static str> {
         let seg = &self.seg;
-        match req.oper() {
+        match req.op {
             block::Operation::Read(off, _len) => {
-                let maps = req.mappings(mem).ok_or("bad mapping")?;
-
-                let mut nread = 0;
-                for map in maps {
-                    unsafe {
-                        let len = map.len();
-                        let read_ptr = map
-                            .raw_writable()
-                            .ok_or("expected writable mapping")?;
-                        if !seg.read(off + nread, read_ptr, len) {
-                            return Err("failed mem read");
+                req.regions
+                    .iter()
+                    .try_fold(0usize, |nread, region| {
+                        let map = mem.writable_region(region)?;
+                        unsafe {
+                            let read_ptr = map.raw_writable()?;
+                            let len = map.len();
+                            seg.read(off + nread, read_ptr, len)
+                                .then_some(nread + len)
                         }
-                        nread += len;
-                    };
-                }
+                    })
+                    .ok_or("read failure")?;
             }
             block::Operation::Write(off, _len) => {
-                let maps = req.mappings(mem).ok_or("bad mapping")?;
-
-                let mut nwritten = 0;
-                for map in maps {
-                    unsafe {
-                        let len = map.len();
-                        let write_ptr = map
-                            .raw_readable()
-                            .ok_or("expected readable mapping")?;
-                        if !seg.write(off + nwritten, write_ptr, len) {
-                            return Err("failed mem write");
+                req.regions
+                    .iter()
+                    .try_fold(0usize, |nwritten, region| {
+                        let map = mem.readable_region(region)?;
+                        unsafe {
+                            let write_ptr = map.raw_readable()?;
+                            let len = map.len();
+                            seg.write(off + nwritten, write_ptr, len)
+                                .then_some(nwritten + len)
                         }
-                        nwritten += len;
-                    };
-                }
+                    })
+                    .ok_or("write failure")?;
             }
             block::Operation::Flush => {
                 // nothing to do
@@ -130,39 +118,50 @@ impl MemAsyncBackend {
             ));
         }
 
+        let info = block::DeviceInfo {
+            block_size,
+            total_size: size / u64::from(block_size),
+            read_only: opts.read_only.unwrap_or(false),
+            supports_discard: false,
+        };
         let seg = MmapSeg::new(size as usize)?;
+        let block_attach = block::BackendAttachment::new(worker_count, info);
 
         Ok(Arc::new(Self {
-            work_state: Arc::new(WorkingState {
-                attachment: block::BackendAttachment::new(),
-                info: block::DeviceInfo {
-                    block_size,
-                    total_size: size / u64::from(block_size),
-                    read_only: opts.read_only.unwrap_or(false),
-                    supports_discard: false,
-                },
-                seg,
-            }),
+            shared_state: Arc::new(SharedState { info, seg }),
+            block_attach,
 
-            worker_count,
             workers: TaskGroup::new(),
         }))
     }
 
     fn spawn_workers(&self) {
-        self.workers.extend((0..self.worker_count.get()).map(|n| {
-            let worker_state = self.work_state.clone();
-            let worker_acc = self
-                .work_state
-                .attachment
-                .accessor_mem(|acc_mem| {
-                    acc_mem.child(Some(format!("worker {n}")))
-                })
-                .expect("backend is attached");
+        let count = self.block_attach.max_workers().get();
+        self.workers.extend((0..count).map(|n| {
+            let shared_state = self.shared_state.clone();
+            let wctx = self.block_attach.worker(n);
             tokio::spawn(async move {
-                worker_state.processing_loop(worker_acc).await
+                let wctx =
+                    wctx.activate_async().expect("worker slot is uncontended");
+                shared_state.processing_loop(wctx).await
             })
         }))
+    }
+}
+
+#[async_trait::async_trait]
+impl block::Backend for MemAsyncBackend {
+    fn attachment(&self) -> &block::BackendAttachment {
+        &self.block_attach
+    }
+    async fn start(&self) -> anyhow::Result<()> {
+        self.block_attach.start();
+        self.spawn_workers();
+        Ok(())
+    }
+    async fn stop(&self) -> () {
+        self.block_attach.stop();
+        self.workers.join_all().await;
     }
 }
 
@@ -212,25 +211,3 @@ impl Drop for MmapSeg {
 // Safety: The consumer is allowed to make their own pointer mistakes
 unsafe impl Send for MmapSeg {}
 unsafe impl Sync for MmapSeg {}
-
-#[async_trait::async_trait]
-impl block::Backend for MemAsyncBackend {
-    fn info(&self) -> block::DeviceInfo {
-        self.work_state.info
-    }
-
-    fn attachment(&self) -> &block::BackendAttachment {
-        &self.work_state.attachment
-    }
-
-    async fn start(&self) -> anyhow::Result<()> {
-        self.work_state.attachment.start();
-        self.spawn_workers();
-        Ok(())
-    }
-
-    async fn stop(&self) -> () {
-        self.work_state.attachment.stop();
-        self.workers.join_all().await;
-    }
-}

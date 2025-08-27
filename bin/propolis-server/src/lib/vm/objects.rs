@@ -18,7 +18,7 @@ use propolis::{
     Machine,
 };
 use propolis_api_types::instance_spec::SpecKey;
-use slog::{error, info};
+use slog::info;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::{serial::Serial, spec::Spec, vcpu_tasks::VcpuTaskController};
@@ -383,11 +383,7 @@ impl VmObjectsLocked {
         for (id, backend) in self.block_backends.iter() {
             info!(self.log, "stopping and detaching block backend {}", id);
             backend.stop().await;
-            if let Err(err) = backend.detach() {
-                error!(self.log, "error detaching block backend";
-                       "id" => %id,
-                       "error" => ?err);
-            }
+            backend.attachment().detach();
         }
     }
 

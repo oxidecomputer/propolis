@@ -9,21 +9,20 @@ use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use crate::accessors::MemAccessor;
-use crate::block::{self, DeviceInfo};
+use crate::block::{self, SyncWorkerCtx, WorkerId};
 use crate::tasks::ThreadGroup;
 use crate::vmm::{MappingExt, MemCtx};
 
 use anyhow::Context;
 
 pub struct FileBackend {
-    state: Arc<WorkerState>,
+    state: Arc<SharedState>,
+    block_attach: block::BackendAttachment,
 
     worker_count: NonZeroUsize,
     workers: ThreadGroup,
 }
-struct WorkerState {
-    attachment: block::BackendAttachment,
+struct SharedState {
     fp: File,
 
     /// Write-Cache-Enable state (if supported) of the underlying device
@@ -37,7 +36,7 @@ struct WceState {
     initial: bool,
     current: bool,
 }
-impl WorkerState {
+impl SharedState {
     fn new(
         fp: File,
         info: block::DeviceInfo,
@@ -45,8 +44,7 @@ impl WorkerState {
         wce_state: Option<WceState>,
         discard_mech: Option<dkioc::DiscardMech>,
     ) -> Arc<Self> {
-        let state = WorkerState {
-            attachment: block::BackendAttachment::new(),
+        let state = SharedState {
             fp,
             wce_state: Mutex::new(wce_state),
             discard_mech,
@@ -60,29 +58,27 @@ impl WorkerState {
         Arc::new(state)
     }
 
-    fn processing_loop(&self, acc_mem: MemAccessor) {
-        while let Some(req) = self.attachment.block_for_req() {
-            if self.info.read_only && req.oper().is_write() {
-                req.complete(block::Result::ReadOnly);
+    fn processing_loop(&self, wctx: SyncWorkerCtx) {
+        while let Some(dreq) = wctx.block_for_req() {
+            let req = dreq.req();
+            if self.info.read_only && req.op.is_write() {
+                dreq.complete(block::Result::ReadOnly);
                 continue;
             }
-            if self.discard_mech.is_none() && req.oper().is_discard() {
-                req.complete(block::Result::Unsupported);
+            if self.discard_mech.is_none() && req.op.is_discard() {
+                dreq.complete(block::Result::Unsupported);
                 continue;
             }
 
-            let mem = match acc_mem.access() {
-                Some(m) => m,
-                None => {
-                    req.complete(block::Result::Failure);
-                    continue;
-                }
+            let Some(mem) = wctx.acc_mem().access() else {
+                dreq.complete(block::Result::Failure);
+                continue;
             };
             let res = match self.process_request(&req, &mem) {
                 Ok(_) => block::Result::Success,
                 Err(_) => block::Result::Failure,
             };
-            req.complete(res);
+            dreq.complete(res);
         }
     }
 
@@ -91,7 +87,7 @@ impl WorkerState {
         req: &block::Request,
         mem: &MemCtx,
     ) -> std::result::Result<(), &'static str> {
-        match req.oper() {
+        match req.op {
             block::Operation::Read(off, len) => {
                 let maps = req.mappings(mem).ok_or("mapping unavailable")?;
 
@@ -145,7 +141,7 @@ impl WorkerState {
         }
     }
 }
-impl Drop for WorkerState {
+impl Drop for SharedState {
     fn drop(&mut self) {
         // Attempt to return WCE state on the device to how it was when we
         // initially opened it.
@@ -198,14 +194,16 @@ impl FileBackend {
         } else {
             None
         };
+        let block_attach = block::BackendAttachment::new(worker_count, info);
         Ok(Arc::new(Self {
-            state: WorkerState::new(
+            state: SharedState::new(
                 fp,
                 info,
                 skip_flush,
                 wce_state,
                 disk_info.discard_mech,
             ),
+            block_attach,
             worker_count,
             workers: ThreadGroup::new(),
         }))
@@ -213,17 +211,16 @@ impl FileBackend {
     fn spawn_workers(&self) -> std::io::Result<()> {
         let spawn_results = (0..self.worker_count.get())
             .map(|n| {
-                let worker_state = self.state.clone();
-                let worker_acc = self
-                    .state
-                    .attachment
-                    .accessor_mem(|mem| mem.child(Some(format!("worker {n}"))))
-                    .expect("backend is attached");
+                let shared_state = self.state.clone();
+                let wctx = self.block_attach.worker(n as WorkerId);
 
                 std::thread::Builder::new()
                     .name(format!("file worker {n}"))
                     .spawn(move || {
-                        worker_state.processing_loop(worker_acc);
+                        let wctx = wctx
+                            .activate_sync()
+                            .expect("worker slot is uncontended");
+                        shared_state.processing_loop(wctx);
                     })
             })
             .collect::<Vec<_>>();
@@ -235,17 +232,13 @@ impl FileBackend {
 #[async_trait::async_trait]
 impl block::Backend for FileBackend {
     fn attachment(&self) -> &block::BackendAttachment {
-        &self.state.attachment
-    }
-
-    fn info(&self) -> DeviceInfo {
-        self.state.info
+        &self.block_attach
     }
 
     async fn start(&self) -> anyhow::Result<()> {
-        self.state.attachment.start();
+        self.block_attach.start();
         if let Err(e) = self.spawn_workers() {
-            self.state.attachment.stop();
+            self.block_attach.stop();
             self.workers.block_until_joined();
             Err(e).context("failure while spawning workers")
         } else {
@@ -254,7 +247,7 @@ impl block::Backend for FileBackend {
     }
 
     async fn stop(&self) -> () {
-        self.state.attachment.stop();
+        self.block_attach.stop();
         self.workers.block_until_joined();
     }
 }
