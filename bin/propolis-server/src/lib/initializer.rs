@@ -786,9 +786,9 @@ impl MachineInitializer<'_> {
                     // - ethernet: 14
                     // - IPv6: 40
                     // - UDP: 8
-                    // - Geneve: 8
+                    // - Geneve: 8–16 (due to options)
                     // - (and then round up to nearest 8)
-                    header_pad: 72,
+                    header_pad: 80,
                 })
             } else {
                 None
