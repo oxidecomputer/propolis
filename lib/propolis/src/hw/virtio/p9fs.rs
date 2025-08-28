@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fs::{self, File};
 use std::mem::size_of;
-use std::num::NonZeroU16;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
@@ -80,10 +79,9 @@ pub struct PciVirtio9pfs {
 
 impl PciVirtio9pfs {
     pub fn new(queue_size: u16, handler: Arc<dyn P9Handler>) -> Arc<Self> {
-        let queues = VirtQueues::new(
-            NonZeroU16::new(queue_size).unwrap(),
-            NonZeroU16::new(1).unwrap(),
-        );
+        let queues =
+            VirtQueues::new([VirtQueue::new(queue_size.try_into().unwrap())])
+                .unwrap();
         let msix_count = Some(2); //guess
         let (virtio_state, pci_state) = PciVirtioState::create(
             queues,
