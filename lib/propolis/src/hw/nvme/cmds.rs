@@ -53,6 +53,8 @@ pub enum AdminCmd {
     GetFeatures(GetFeaturesCmd),
     /// Asynchronous Event Request Command
     AsyncEventReq,
+    /// Doorbell Buffer Config Command
+    DoorbellBufCfg(DoorbellBufCfgCmd),
     /// An unknown admin command
     Unknown(#[allow(dead_code)] GuestData<SubmissionQueueEntry>),
 }
@@ -130,6 +132,12 @@ impl AdminCmd {
                 })
             }
             bits::ADMIN_OPC_ASYNC_EVENT_REQ => AdminCmd::AsyncEventReq,
+            bits::ADMIN_OPC_DOORBELL_BUF_CFG => {
+                AdminCmd::DoorbellBufCfg(DoorbellBufCfgCmd {
+                    shadow_doorbell_buffer: raw.prp1,
+                    eventidx_buffer: raw.prp2,
+                })
+            }
             _ => AdminCmd::Unknown(raw),
         };
         let _fuse = match (raw.cdw0 >> 8) & 0b11 {
@@ -376,6 +384,13 @@ pub struct SetFeaturesCmd {
     pub fid: FeatureIdent,
 
     pub cdw11: u32,
+}
+
+/// Doorbell Buffer Config Comannd Parameters
+#[derive(Debug)]
+pub struct DoorbellBufCfgCmd {
+    pub shadow_doorbell_buffer: u64,
+    pub eventidx_buffer: u64,
 }
 
 /// Feature Identifiers
