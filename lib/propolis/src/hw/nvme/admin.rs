@@ -8,7 +8,9 @@ use crate::common::{GuestAddr, GuestRegion, PAGE_SIZE};
 use crate::vmm::MemCtx;
 
 use super::bits::*;
-use super::queue::{sqid_to_block_qid, QueueId, ADMIN_QUEUE_ID};
+use super::queue::{
+    sqid_to_block_qid, DoorbellBuffer, QueueId, ADMIN_QUEUE_ID,
+};
 use super::{
     cmds, NvmeCtrl, NvmeError, PciNvme, MAX_NUM_IO_QUEUES, MAX_NUM_QUEUES,
 };
@@ -47,7 +49,6 @@ impl NvmeCtrl {
         &mut self,
         cmd: &cmds::CreateIOCQCmd,
         nvme: &PciNvme,
-        mem: &MemCtx,
     ) -> cmds::Completion {
         // If the host hasn't specified an IOCQES, fail this request
         if self.ctrl.cc.iocqes() == 0 {
@@ -79,7 +80,6 @@ impl NvmeCtrl {
             false,
             cmd.intr_vector,
             nvme,
-            mem,
         ) {
             Ok(_) => cmds::Completion::success(),
             Err(
@@ -101,7 +101,6 @@ impl NvmeCtrl {
         &mut self,
         cmd: &cmds::CreateIOSQCmd,
         nvme: &PciNvme,
-        mem: &MemCtx,
     ) -> cmds::Completion {
         // If the host hasn't specified an IOSQES, fail this request
         if self.ctrl.cc.iosqes() == 0 {
@@ -126,7 +125,6 @@ impl NvmeCtrl {
             false,
             cmd.cqid,
             nvme,
-            mem,
         ) {
             Ok(sq) => {
                 self.io_sq_post_create(nvme, sq);
@@ -459,6 +457,35 @@ impl NvmeCtrl {
                 cmds::Completion::generic_err(STS_INVAL_FIELD).dnr()
             }
         }
+    }
+
+    pub(super) fn acmd_doorbell_buf_cfg(
+        &mut self,
+        cmd: &cmds::DoorbellBufCfgCmd,
+    ) -> cmds::Completion {
+        let mps_mask = self.get_mps() - 1;
+
+        if cmd.shadow_doorbell_buffer & mps_mask != 0
+            || cmd.eventidx_buffer & mps_mask != 0
+        {
+            return cmds::Completion::generic_err(STS_INVAL_FIELD);
+        }
+
+        let db_buf = DoorbellBuffer {
+            shadow: GuestAddr(cmd.shadow_doorbell_buffer),
+            eventidx: GuestAddr(cmd.eventidx_buffer),
+        };
+
+        self.doorbell_buf = Some(db_buf);
+
+        for cq in self.cqs.iter().flatten() {
+            cq.set_db_buf(Some(db_buf), false);
+        }
+        for sq in self.sqs.iter().flatten() {
+            sq.set_db_buf(Some(db_buf), false);
+        }
+
+        cmds::Completion::success()
     }
 
     /// Write result data from an admin command into host memory
