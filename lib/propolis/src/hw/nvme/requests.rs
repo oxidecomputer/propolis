@@ -9,7 +9,6 @@ use super::{cmds::NvmCmd, queue::Permit, PciNvme};
 use crate::accessors::MemAccessor;
 use crate::block::{self, Operation, Request};
 use crate::hw::nvme::{bits, cmds::Completion, queue::SubQueue};
-use crate::vmm::mem::MemCtx;
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
@@ -57,7 +56,7 @@ impl block::DeviceQueue for NvmeBlockQueue {
         let mem = self.acc_mem.access()?;
         let params = self.sq.params();
 
-        while let Some((sub, permit, idx)) = sq.pop(&mem) {
+        while let Some((sub, permit, idx)) = sq.pop() {
             let qid = sq.id();
             probes::nvme_raw_cmd!(|| {
                 (
@@ -71,20 +70,16 @@ impl block::DeviceQueue for NvmeBlockQueue {
             let cid = sub.cid();
             let cmd = NvmCmd::parse(sub);
 
-            fn fail_mdts(permit: Permit, mem: &MemCtx) {
-                permit.complete(
-                    Completion::generic_err(bits::STS_INVAL_FIELD).dnr(),
-                    Some(&mem),
-                );
-            }
-
             match cmd {
                 Ok(NvmCmd::Write(cmd)) => {
                     let off = params.lba_data_size * cmd.slba;
                     let size = params.lba_data_size * (cmd.nlb as u64);
 
                     if size > params.max_data_tranfser_size {
-                        fail_mdts(permit, &mem);
+                        permit.complete(
+                            Completion::generic_err(bits::STS_INVAL_FIELD)
+                                .dnr(),
+                        );
                         continue;
                     }
 
@@ -100,7 +95,10 @@ impl block::DeviceQueue for NvmeBlockQueue {
                     let size = params.lba_data_size * (cmd.nlb as u64);
 
                     if size > params.max_data_tranfser_size {
-                        fail_mdts(permit, &mem);
+                        permit.complete(
+                            Completion::generic_err(bits::STS_INVAL_FIELD)
+                                .dnr(),
+                        );
                         continue;
                     }
 
@@ -120,7 +118,7 @@ impl block::DeviceQueue for NvmeBlockQueue {
                     // For any other unrecognized or malformed command,
                     // just immediately complete it with an error
                     let comp = Completion::generic_err(bits::STS_INTERNAL_ERR);
-                    permit.complete(comp, Some(&mem));
+                    permit.complete(comp);
                 }
             }
         }
@@ -153,9 +151,6 @@ impl block::DeviceQueue for NvmeBlockQueue {
             }
         }
 
-        permit.complete(
-            Completion::from(result),
-            self.acc_mem.access().as_deref(),
-        );
+        permit.complete(Completion::from(result));
     }
 }

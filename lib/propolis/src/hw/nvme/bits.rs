@@ -527,6 +527,8 @@ pub const ADMIN_OPC_SET_FEATURES: u8 = 0x09;
 pub const ADMIN_OPC_GET_FEATURES: u8 = 0x0A;
 /// Asynchronous Event Request Command Opcode
 pub const ADMIN_OPC_ASYNC_EVENT_REQ: u8 = 0x0c;
+/// Doorbell Buffer Config
+pub const ADMIN_OPC_DOORBELL_BUF_CFG: u8 = 0x7c;
 
 // NVM Command Opcodes
 // See NVMe 1.0e Section 6, Figure 99 Opcodes for NVM Commands
