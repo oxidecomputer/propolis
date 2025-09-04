@@ -10,10 +10,11 @@ use std::mem::{size_of, size_of_val, MaybeUninit};
 use std::ops::RangeInclusive;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::ptr::{copy_nonoverlapping, NonNull};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use libc::iovec;
 
+use crate::accessors::MemAccessor;
 use crate::common::{
     GuestAddr, GuestData, GuestRegion, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE,
 };
@@ -78,19 +79,22 @@ pub enum MapType {
 }
 
 pub struct PhysMap {
-    map: Arc<Mutex<ASpace<MapEnt>>>,
+    map: Arc<ASpace<MapEnt>>,
     hdl: Arc<VmmHdl>,
     next_segid: i32,
-    memctx: Arc<MemCtx>,
 }
 impl PhysMap {
     pub(crate) fn new(size: usize, hdl: Arc<VmmHdl>) -> Self {
         assert!(size != 0);
         assert!(size & PAGE_SIZE == 0, "size must be page-aligned");
 
-        let map = Arc::new(Mutex::new(ASpace::new(0, size - 1)));
-        let memctx = Arc::new(MemCtx { map: map.clone() });
-        Self { map, hdl, next_segid: 0, memctx }
+        Self { map: Arc::new(ASpace::new(0, size - 1)), hdl, next_segid: 0 }
+    }
+
+    pub(crate) fn map_mut(&mut self) -> &mut ASpace<MapEnt> {
+        Arc::get_mut(&mut self.map).expect(
+            "map should not be accessed mutably after PhysMap finalization",
+        )
     }
 
     /// Create and map a memory region for the guest
@@ -103,8 +107,7 @@ impl PhysMap {
         let (segid, map_guest, map_seg) =
             self.seg_create_map(addr, size, None)?;
 
-        let mut guard = self.map.lock().unwrap();
-        guard
+        self.map_mut()
             .register(
                 addr,
                 size,
@@ -130,8 +133,7 @@ impl PhysMap {
         let (segid, map_guest, map_seg) =
             self.seg_create_map(addr, size, Some(&name))?;
 
-        let mut guard = self.map.lock().unwrap();
-        guard
+        self.map_mut()
             .register(
                 addr,
                 size,
@@ -154,8 +156,7 @@ impl PhysMap {
         addr: usize,
         size: usize,
     ) -> Result<()> {
-        let mut guard = self.map.lock().unwrap();
-        guard
+        self.map_mut()
             .register(addr, size, MapEnt { name, kind: MapKind::MmioReserve })
             .map_err(Error::from)
     }
@@ -163,8 +164,7 @@ impl PhysMap {
     pub(crate) fn post_reinit(&self) -> Result<()> {
         // Since VM_REINIT unmaps all non-sysmem segments from the address space
         // of the VM, we must reestablish the ROM mapping(s) now.
-        let guard = self.map.lock().unwrap();
-        for (addr, len, ent) in guard.iter() {
+        for (addr, len, ent) in self.map.iter() {
             if let MapKind::Rom(detail) = &ent.kind {
                 self.hdl.map_memseg(
                     detail.id,
@@ -179,18 +179,18 @@ impl PhysMap {
     }
 
     pub fn mappings(&self) -> Vec<(usize, usize, MapType)> {
-        let guard = self.map.lock().unwrap();
-        let mut mappings = Vec::new();
-
-        for (addr, len, ent) in guard.iter() {
-            mappings.push((addr, len, ent.map_type()));
-        }
-
-        mappings
+        self.map
+            .iter()
+            .map(|(addr, len, ent)| (addr, len, ent.map_type()))
+            .collect()
     }
 
-    pub(crate) fn memctx(&mut self) -> Arc<MemCtx> {
-        self.memctx.clone()
+    pub(crate) fn finalize(&mut self) -> MemAccessor {
+        assert!(
+            Arc::strong_count(&self.map) == 1,
+            "finalize should only be called once"
+        );
+        MemAccessor::new(Arc::new(MemCtx { map: self.map.clone() }))
     }
 
     /// Allocate a backing memseg, map it into the guest-physical space, and map
@@ -221,8 +221,10 @@ impl PhysMap {
     }
 
     pub(crate) fn destroy(&mut self) {
-        let mut guard = self.map.lock().unwrap();
-        guard.clear();
+        let map = Arc::get_mut(&mut self.map).expect(
+            "no refs should remain to Physmap contents when destroy() called",
+        );
+        map.clear();
     }
 }
 
@@ -242,8 +244,7 @@ impl PhysMap {
         size: usize,
     ) -> Result<()> {
         let (map_guest, map_seg) = self.seg_test_map(addr, size, false)?;
-        let mut guard = self.map.lock().unwrap();
-        guard
+        self.map_mut()
             .register(
                 addr,
                 size,
@@ -263,8 +264,7 @@ impl PhysMap {
         size: usize,
     ) -> Result<()> {
         let (map_guest, map_seg) = self.seg_test_map(addr, size, true)?;
-        let mut guard = self.map.lock().unwrap();
-        guard
+        self.map_mut()
             .register(
                 addr,
                 size,
@@ -820,7 +820,7 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
 
 /// Wrapper around an address space for a VM.
 pub struct MemCtx {
-    map: Arc<Mutex<ASpace<MapEnt>>>,
+    map: Arc<ASpace<MapEnt>>,
 }
 impl MemCtx {
     /// Reads a generic value from a specified guest address.
@@ -958,8 +958,8 @@ impl MemCtx {
         &self,
         name: &str,
     ) -> Result<SubMapping<'_>> {
-        let guard = self.map.lock().unwrap();
-        let ent = guard
+        let ent = self
+            .map
             .iter()
             .find_map(|(_addr, _len, ent)| match &ent.kind {
                 MapKind::Dram(seg) if ent.name == name => Some(&seg.map_seg),
@@ -1007,8 +1007,7 @@ impl MemCtx {
     ) -> Option<(SubMapping<'_>, SubMapping<'_>)> {
         let start = addr.0 as usize;
         let end = start + len;
-        let guard = self.map.lock().unwrap();
-        if let Ok((addr, rlen, ent)) = guard.region_at(start) {
+        if let Ok((addr, rlen, ent)) = self.map.region_at(start) {
             if addr + rlen < end {
                 return None;
             }
@@ -1056,14 +1055,29 @@ impl MemCtx {
     /// Returns the [lowest, highest] memory addresses in the space as an
     /// inclusive range.
     pub fn mem_bounds(&self) -> Option<RangeInclusive<GuestAddr>> {
-        let guard = self.map.lock().unwrap();
-        let lowest = guard
+        let lowest = self
+            .map
             .lowest_addr(|entry| matches!(entry.kind, MapKind::Dram(_)))?
             as u64;
-        let highest = guard
+        let highest = self
+            .map
             .highest_addr(|entry| matches!(entry.kind, MapKind::Dram(_)))?
             as u64;
         Some(GuestAddr(lowest)..=GuestAddr(highest))
+    }
+}
+
+pub enum MemAccessed {}
+impl crate::accessors::AccessedResource for MemAccessed {
+    type Root = Arc<MemCtx>;
+    type Leaf = Arc<MemCtx>;
+    type Target = MemCtx;
+
+    fn derive(root: &Self::Root) -> Self::Leaf {
+        root.clone()
+    }
+    fn deref(leaf: &Self::Leaf) -> &Self::Target {
+        leaf
     }
 }
 

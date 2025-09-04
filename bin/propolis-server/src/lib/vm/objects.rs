@@ -153,7 +153,8 @@ impl VmObjectsLocked {
     /// is not currently accessible.
     pub(crate) fn access_mem(
         &self,
-    ) -> Option<propolis::accessors::Guard<'_, propolis::vmm::MemCtx>> {
+    ) -> Option<propolis::accessors::Guard<'_, propolis::vmm::MemAccessed>>
+    {
         self.machine.acc_mem.access()
     }
 

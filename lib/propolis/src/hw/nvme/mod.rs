@@ -16,7 +16,7 @@ use crate::hw::ids::OXIDE_OUI;
 use crate::hw::pci;
 use crate::migrate::*;
 use crate::util::regmap::RegMap;
-use crate::vmm::MemCtx;
+use crate::vmm::MemAccessed;
 
 use futures::future::BoxFuture;
 use lazy_static::lazy_static;
@@ -1289,7 +1289,7 @@ impl PciNvme {
         Ok(())
     }
 
-    fn mem_access(&self) -> Option<Guard<'_, MemCtx>> {
+    fn mem_access(&self) -> Option<Guard<'_, MemAccessed>> {
         self.pci_state.acc_mem.access()
     }
 }
