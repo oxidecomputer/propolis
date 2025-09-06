@@ -114,6 +114,22 @@ fn collect_cpuid(
                     != 0;
                 set.insert(CpuidIdent::leaf(leaf), data)?;
             }
+            // Leaf 0x4 is a series of subleaves terminated by a subleaf with
+            // "type" (EAX bits 4-0) of 0. In practice there are typically four
+            // subleaves but we'll gather them until there an unreasonable
+            // number or we find an invalid leaf.
+            0x4 => {
+                const MAX_REASONABLE_LEAVES: u32 = 0x20;
+
+                for i in 0..MAX_REASONABLE_LEAVES {
+                    let data = query(leaf, i)?;
+                    if data.eax & 0x1f == 0 {
+                        break;
+                    }
+
+                    set.insert(CpuidIdent::subleaf(leaf, i), data)?;
+                }
+            }
             // Leaf 0x7 subleaf 0 eax indicates the total number of leaf-7
             // subleaves.
             0x7 => {

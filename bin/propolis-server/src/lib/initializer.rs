@@ -1301,6 +1301,7 @@ impl MachineInitializer<'_> {
                 .with_vcpuid(vcpu.id)
                 .with_cache_topo()
                 .clear_cpu_topo(propolis::cpuid::TopoKind::iter())
+                .with_cpu_topo(vec![propolis::cpuid::TopoKind::Std4].into_iter())
                 .execute(set)
                 .map_err(|e| {
                     MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
