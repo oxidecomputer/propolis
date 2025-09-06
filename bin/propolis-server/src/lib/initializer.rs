@@ -27,6 +27,7 @@ use oximeter_instruments::kstat::KstatSampler;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::{Lifecycle, GB, MB, PAGE_SIZE};
+use propolis::cpuid::TopoKind;
 use propolis::enlightenment::Enlightenment;
 use propolis::firmware::smbios;
 use propolis::hw::bhyve::BhyveHpet;
@@ -1293,6 +1294,26 @@ impl MachineInitializer<'_> {
                     requests to set hypervisor leaves",
             );
 
+            static UNSUPPORTED_TOPO: &'static [TopoKind] = &[
+                // `fix_cpu_topo` doesn't know how to produce specialized leaf
+                // 1Fh entries yet.
+                TopoKind::Std1F,
+                // `fix_cpu_topo` doesn't know how to produce specialized leaf
+                // 8000_001Eh entries yet.
+                TopoKind::Ext1E,
+            ];
+
+            let mut leaves_to_fix = Vec::new();
+            for kind in TopoKind::iter() {
+                let has_leaf = set.get(CpuidIdent::leaf(kind as u32)).is_some();
+                let has_subleaf =
+                    set.get(CpuidIdent::subleaf(kind as u32, 0)).is_some();
+                let any_present = has_leaf || has_subleaf;
+                if any_present && !UNSUPPORTED_TOPO.contains(&kind) {
+                    leaves_to_fix.push(kind);
+                }
+            }
+
             let specialized = propolis::cpuid::Specializer::new()
                 .with_vcpu_count(
                     NonZeroU8::new(self.spec.board.cpus).unwrap(),
@@ -1300,8 +1321,8 @@ impl MachineInitializer<'_> {
                 )
                 .with_vcpuid(vcpu.id)
                 .with_cache_topo()
-                .clear_cpu_topo(propolis::cpuid::TopoKind::iter())
-                .with_cpu_topo(vec![propolis::cpuid::TopoKind::Std4].into_iter())
+                .clear_cpu_topo(TopoKind::iter())
+                .with_cpu_topo(leaves_to_fix.into_iter())
                 .execute(set)
                 .map_err(|e| {
                     MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
