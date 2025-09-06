@@ -1294,7 +1294,7 @@ impl MachineInitializer<'_> {
                     requests to set hypervisor leaves",
             );
 
-            static UNSUPPORTED_TOPO: &'static [TopoKind] = &[
+            static UNSUPPORTED_TOPO: &[TopoKind] = &[
                 // `fix_cpu_topo` doesn't know how to produce specialized leaf
                 // 1Fh entries yet.
                 TopoKind::Std1F,
