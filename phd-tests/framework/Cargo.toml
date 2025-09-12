@@ -16,6 +16,7 @@ bhyve_api.workspace = true
 camino = { workspace = true, features = ["serde1"] }
 cfg-if.workspace = true
 cpuid_utils.workspace = true
+dropshot.workspace = true
 errno.workspace = true
 fatfs.workspace = true
 futures.workspace = true
@@ -23,8 +24,9 @@ flate2.workspace = true
 hex.workspace = true
 libc.workspace = true
 newtype_derive.workspace = true
+omicron-common.workspace = true
+oximeter.workspace = true
 propolis-client.workspace = true
-propolis-server-config.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 ring.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -32,6 +34,7 @@ serde_derive.workspace = true
 serde_json.workspace = true
 slog.workspace = true
 slog-async.workspace = true
+slog-bunyan.workspace = true
 slog-term.workspace = true
 tar.workspace = true
 termwiz.workspace = true

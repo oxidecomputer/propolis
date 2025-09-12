@@ -27,6 +27,7 @@ use oximeter_instruments::kstat::KstatSampler;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::{Lifecycle, GB, MB, PAGE_SIZE};
+use propolis::enlightenment::Enlightenment;
 use propolis::firmware::smbios;
 use propolis::hw::bhyve::BhyveHpet;
 use propolis::hw::chipset::{i440fx, Chipset};
@@ -44,14 +45,13 @@ use propolis::hw::uart::LpcUart;
 use propolis::hw::{nvme, virtio};
 use propolis::intr_pins;
 use propolis::vmm::{self, Builder, Machine};
-use propolis_api_types::instance_spec;
 use propolis_api_types::instance_spec::components::devices::SerialPortNumber;
+use propolis_api_types::instance_spec::{self, SpecKey};
 use propolis_api_types::InstanceProperties;
 use propolis_types::{CpuidIdent, CpuidVendor};
 use slog::info;
 use strum::IntoEnumIterator;
 use thiserror::Error;
-use uuid::Uuid;
 
 /// An error that can arise while initializing a new machine.
 #[derive(Debug, Error)]
@@ -83,14 +83,14 @@ pub enum MachineInitError {
     #[error("failed to decode in-memory storage backend contents")]
     InMemoryBackendDecodeFailed(#[from] base64::DecodeError),
 
-    #[error("multiple Crucible disks with ID {0}")]
-    DuplicateCrucibleBackendId(Uuid),
+    #[error("multiple Crucible disks with backend ID {0}")]
+    DuplicateCrucibleBackendId(SpecKey),
 
     #[error("boot order entry {0:?} does not refer to an attached disk")]
-    BootOrderEntryWithoutDevice(String),
+    BootOrderEntryWithoutDevice(SpecKey),
 
     #[error("boot entry {0:?} refers to a device on non-zero PCI bus {1}")]
-    BootDeviceOnDownstreamPciBus(String, u8),
+    BootDeviceOnDownstreamPciBus(SpecKey, u8),
 
     #[error("failed to insert {0} fwcfg entry")]
     FwcfgInsertFailed(&'static str, #[source] fwcfg::InsertError),
@@ -117,6 +117,7 @@ pub fn build_instance(
     name: &str,
     spec: &Spec,
     use_reservoir: bool,
+    guest_hv_interface: Arc<dyn Enlightenment>,
     _log: slog::Logger,
 ) -> Result<Machine, MachineInitError> {
     let (lowmem, highmem) = get_spec_guest_ram_limits(spec);
@@ -125,10 +126,12 @@ pub fn build_instance(
         use_reservoir,
         track_dirty: true,
     };
+
     let mut builder = Builder::new(name, create_opts)
         .context("failed to create kernel vmm builder")?
         .max_cpus(spec.board.cpus)
         .context("failed to set max cpus")?
+        .guest_hypervisor_interface(guest_hv_interface)
         .add_mem_region(0, lowmem, "lowmem")
         .context("failed to add low memory region")?
         .add_rom_region(0x1_0000_0000 - MAX_ROM_SIZE, MAX_ROM_SIZE, "bootrom")
@@ -171,7 +174,7 @@ impl RegisteredChipset {
 
 struct StorageBackendInstance {
     be: Arc<dyn block::Backend>,
-    crucible: Option<(uuid::Uuid, Arc<block::CrucibleBackend>)>,
+    crucible: Option<Arc<block::CrucibleBackend>>,
 }
 
 #[derive(Default)]
@@ -187,13 +190,13 @@ pub struct MachineInitializer<'a> {
     pub(crate) crucible_backends: CrucibleBackendMap,
     pub(crate) spec: &'a Spec,
     pub(crate) properties: &'a InstanceProperties,
-    pub(crate) toml_config: &'a crate::server::VmTomlConfig,
     pub(crate) producer_registry: Option<ProducerRegistry>,
     pub(crate) state: MachineInitializerState,
     pub(crate) kstat_sampler: Option<KstatSampler>,
+    pub(crate) stats_vm: crate::stats::VirtualMachine,
 }
 
-impl<'a> MachineInitializer<'a> {
+impl MachineInitializer<'_> {
     pub fn initialize_rom(
         &mut self,
         path: &std::path::Path,
@@ -221,7 +224,7 @@ impl<'a> MachineInitializer<'a> {
         }
 
         let (romfp, rom_len) = open_bootrom(path)
-            .unwrap_or_else(|e| panic!("Cannot open bootrom: {}", e));
+            .unwrap_or_else(|e| panic!("Cannot open bootrom: {e}"));
 
         let mem = self.machine.acc_mem.access().unwrap();
         let mapping = mem
@@ -266,7 +269,8 @@ impl<'a> MachineInitializer<'a> {
 
     pub fn initialize_hpet(&mut self) {
         let hpet = BhyveHpet::create(self.machine.hdl.clone());
-        self.devices.insert(hpet.type_name().into(), hpet.clone());
+        self.devices
+            .insert(SpecKey::Name(hpet.type_name().into()), hpet.clone());
     }
 
     pub fn initialize_chipset(
@@ -342,20 +346,31 @@ impl<'a> MachineInitializer<'a> {
                 do_pci_attach(i440fx::DEFAULT_PM_BDF, chipset_pm.clone());
                 chipset_pm.attach(&self.machine.bus_pio);
 
-                self.devices
-                    .insert(chipset_hb.type_name().into(), chipset_hb.clone());
                 self.devices.insert(
-                    chipset_lpc.type_name().into(),
+                    SpecKey::Name(chipset_hb.type_name().into()),
+                    chipset_hb.clone(),
+                );
+                self.devices.insert(
+                    SpecKey::Name(chipset_lpc.type_name().into()),
                     chipset_lpc.clone(),
                 );
-                self.devices.insert(chipset_pm.type_name().into(), chipset_pm);
+                self.devices.insert(
+                    SpecKey::Name(chipset_pm.type_name().into()),
+                    chipset_pm,
+                );
 
                 // Record attachment for any bridges in PCI topology too
                 for (bdf, bridge) in bridges {
-                    self.devices.insert(
-                        format!("{}-{bdf}", bridge.type_name()),
-                        bridge,
-                    );
+                    let spec_element = self
+                        .spec
+                        .pci_pci_bridges
+                        .iter()
+                        .find(|(_, spec_bridge)| {
+                            bdf == spec_bridge.pci_path.into()
+                        })
+                        .expect("all PCI bridges are in the topology");
+
+                    self.devices.insert(spec_element.0.clone(), bridge);
                 }
 
                 Ok(RegisteredChipset { chipset: chipset_hb, isa: chipset_lpc })
@@ -407,7 +422,10 @@ impl<'a> MachineInitializer<'a> {
             chipset.irq_pin(ibmpc::IRQ_PS2_AUX).unwrap(),
             chipset.reset_pin(),
         );
-        self.devices.insert(ps2_ctrl.type_name().into(), ps2_ctrl.clone());
+        self.devices.insert(
+            SpecKey::Name(ps2_ctrl.type_name().into()),
+            ps2_ctrl.clone(),
+        );
 
         ps2_ctrl
     }
@@ -421,7 +439,7 @@ impl<'a> MachineInitializer<'a> {
         let poller = chardev::BlockingFileOutput::new(debug_file);
 
         poller.attach(Arc::clone(&dbg) as Arc<dyn BlockingSource>);
-        self.devices.insert(dbg.type_name().into(), dbg);
+        self.devices.insert(SpecKey::Name(dbg.type_name().into()), dbg);
 
         Ok(())
     }
@@ -432,17 +450,16 @@ impl<'a> MachineInitializer<'a> {
     ) -> Result<(), MachineInitError> {
         if let Some(pvpanic) = &self.spec.pvpanic {
             if pvpanic.spec.enable_isa {
-                let pvpanic = QemuPvpanic::create(
+                let device = QemuPvpanic::create(
                     self.log.new(slog::o!("dev" => "qemu-pvpanic")),
                 );
-                pvpanic.attach_pio(&self.machine.bus_pio);
-                self.devices
-                    .insert(pvpanic.type_name().into(), pvpanic.clone());
+                device.attach_pio(&self.machine.bus_pio);
+                self.devices.insert(pvpanic.id.clone(), device.clone());
 
                 if let Some(ref registry) = self.producer_registry {
                     let producer = crate::stats::PvpanicProducer::new(
                         virtual_machine,
-                        pvpanic,
+                        device,
                     );
                     registry.register_producer(producer).context(
                         "failed to register PVPANIC Oximeter producer",
@@ -455,15 +472,15 @@ impl<'a> MachineInitializer<'a> {
     }
 
     async fn create_storage_backend_from_spec(
-        &self,
+        &mut self,
         backend_spec: &StorageBackend,
-        backend_name: &str,
+        backend_id: &SpecKey,
         nexus_client: &Option<NexusClient>,
     ) -> Result<StorageBackendInstance, MachineInitError> {
         match backend_spec {
             StorageBackend::Crucible(spec) => {
                 info!(self.log, "Creating Crucible disk";
-                      "backend_name" => backend_name);
+                      "backend_id" => %backend_id);
 
                 let vcr: VolumeConstructionRequest =
                     serde_json::from_str(&spec.request_json)
@@ -497,13 +514,7 @@ impl<'a> MachineInitializer<'a> {
                 .await
                 .context("failed to create Crucible backend")?;
 
-                let crucible = Some((
-                    be.get_uuid()
-                        .await
-                        .context("failed to get Crucible backend ID")?,
-                    be.clone(),
-                ));
-
+                let crucible = Some(be.clone());
                 Ok(StorageBackendInstance { be, crucible })
             }
             StorageBackend::File(spec) => {
@@ -566,6 +577,10 @@ impl<'a> MachineInitializer<'a> {
                 )
                 .context("failed to create in-memory storage backend")?;
 
+                // In-memory backends need to be registered for lifecycle
+                // notifications so that they can export/import changes to the
+                // backing disk across migrations.
+                self.devices.insert(backend_id.clone(), be.clone());
                 Ok(StorageBackendInstance { be, crucible: None })
             }
         }
@@ -586,22 +601,22 @@ impl<'a> MachineInitializer<'a> {
             Nvme,
         }
 
-        for (disk_name, disk) in &self.spec.disks {
+        for (device_id, disk) in &self.spec.disks {
             info!(
                 self.log,
                 "Creating storage device";
-                "name" => disk_name,
+                "device_id" => %device_id,
                 "spec" => ?disk.device_spec
             );
 
-            let (device_interface, backend_name, pci_path) = match &disk
+            let (device_interface, backend_id, pci_path) = match &disk
                 .device_spec
             {
                 spec::StorageDevice::Virtio(disk) => {
-                    (DeviceInterface::Virtio, &disk.backend_name, disk.pci_path)
+                    (DeviceInterface::Virtio, &disk.backend_id, disk.pci_path)
                 }
                 spec::StorageDevice::Nvme(disk) => {
-                    (DeviceInterface::Nvme, &disk.backend_name, disk.pci_path)
+                    (DeviceInterface::Nvme, &disk.backend_id, disk.pci_path)
                 }
             };
 
@@ -610,74 +625,93 @@ impl<'a> MachineInitializer<'a> {
             let StorageBackendInstance { be: backend, crucible } = self
                 .create_storage_backend_from_spec(
                     &disk.backend_spec,
-                    backend_name,
+                    backend_id,
                     &nexus_client,
                 )
                 .await?;
 
-            self.block_backends.insert(backend_name.clone(), backend.clone());
+            self.block_backends.insert(backend_id.clone(), backend.clone());
             let block_dev: Arc<dyn block::Device> = match device_interface {
                 DeviceInterface::Virtio => {
                     let vioblk = virtio::PciVirtioBlock::new(0x100);
 
-                    self.devices
-                        .insert(format!("pci-virtio-{}", bdf), vioblk.clone());
+                    self.devices.insert(device_id.clone(), vioblk.clone());
                     block::attach(vioblk.clone(), backend).unwrap();
                     chipset.pci_attach(bdf, vioblk.clone());
                     vioblk
                 }
                 DeviceInterface::Nvme => {
+                    let spec::StorageDevice::Nvme(nvme_spec) =
+                        &disk.device_spec
+                    else {
+                        unreachable!("disk is known to be an NVMe disk");
+                    };
+
                     // Limit data transfers to 1MiB (2^8 * 4k) in size
                     let mdts = Some(8);
-                    let component = format!("nvme-{}", disk_name);
+                    let component = format!("nvme-{device_id}");
                     let nvme = nvme::PciNvme::create(
-                        disk_name.to_owned(),
+                        &nvme_spec.serial_number,
                         mdts,
                         self.log.new(slog::o!("component" => component)),
                     );
-                    self.devices
-                        .insert(format!("pci-nvme-{bdf}"), nvme.clone());
+                    self.devices.insert(device_id.clone(), nvme.clone());
                     block::attach(nvme.clone(), backend).unwrap();
                     chipset.pci_attach(bdf, nvme.clone());
                     nvme
                 }
             };
 
-            if let Some((disk_id, backend)) = crucible {
-                let block_size = backend.block_size().await;
-                let prev = self.crucible_backends.insert(disk_id, backend);
-                if prev.is_some() {
-                    return Err(MachineInitError::DuplicateCrucibleBackendId(
-                        disk_id,
-                    ));
-                }
+            if let Some(crucible) = crucible {
+                let crucible =
+                    match self.crucible_backends.entry(backend_id.clone()) {
+                        std::collections::btree_map::Entry::Occupied(_) => {
+                            return Err(
+                                MachineInitError::DuplicateCrucibleBackendId(
+                                    backend_id.clone(),
+                                ),
+                            );
+                        }
+                        std::collections::btree_map::Entry::Vacant(e) => {
+                            e.insert(crucible)
+                        }
+                    };
 
-                let Some(block_size) = block_size else {
+                let Some(block_size) = crucible.block_size().await else {
                     slog::error!(
                         self.log,
                         "Could not get Crucible backend block size, \
                         virtual disk metrics can't be reported for it";
-                        "disk_id" => %disk_id,
+                        "disk_id" => %backend_id,
                     );
                     continue;
                 };
 
-                // Register the block device as a metric producer, if we've been
-                // setup to do so. Note we currently only do this for the Crucible
-                // backend, in which case we have the disk ID.
+                let Ok(volume_id) = crucible.get_uuid().await else {
+                    slog::error!(
+                        self.log,
+                        "Could not get Crucible volume ID, \
+                        virtual disk metrics can't be reported for it";
+                        "disk_id" => %backend_id,
+                    );
+                    continue;
+                };
+
                 if let Some(registry) = &self.producer_registry {
                     let stats = VirtualDiskProducer::new(
                         block_size,
                         self.properties.id,
-                        disk_id,
+                        volume_id,
                         &self.properties.metadata,
                     );
+
                     if let Err(e) = registry.register_producer(stats.clone()) {
                         slog::error!(
                             self.log,
                             "Could not register virtual disk producer, \
                             metrics will not be produced";
-                            "disk_id" => %disk_id,
+                            "disk_id" => %backend_id,
+                            "volume_id" => %volume_id,
                             "error" => ?e,
                         );
                         continue;
@@ -712,17 +746,44 @@ impl<'a> MachineInitializer<'a> {
             info!(self.log, "Creating vNIC {}", device_name);
             let bdf: pci::Bdf = nic.device_spec.pci_path.into();
 
+            // Set viona device parameters if possible.
+            //
+            // The values chosen here are tuned to maximize performance when
+            // Propolis is used with OPTE in a full Oxide rack deployment,
+            // although they should not negatively impact use outside those
+            // conditions.  These parameters and their effects (save for
+            // performance delta) are not guest-visible.
+            let params = if virtio::viona::api_version()
+                .expect("can query viona version")
+                >= virtio::viona::ApiVersion::V3
+            {
+                Some(virtio::viona::DeviceParams {
+                    // Allocate and copy entire packets, rather than loaning
+                    // guest data during transmission.
+                    copy_data: true,
+                    // Leave room for underlay encapsulation:
+                    // - ethernet: 14
+                    // - IPv6: 40
+                    // - UDP: 8
+                    // - Geneve: 8
+                    // - (and then round up to nearest 8)
+                    header_pad: 72,
+                })
+            } else {
+                None
+            };
+
             let viona = virtio::PciVirtioViona::new(
                 &nic.backend_spec.vnic_name,
                 0x100,
                 &self.machine.hdl,
+                params,
             )
             .with_context(|| {
                 format!("failed to create viona device {device_name:?}")
             })?;
 
-            self.devices
-                .insert(format!("pci-virtio-viona-{}", bdf), viona.clone());
+            self.devices.insert(device_name.clone(), viona.clone());
 
             // Only push to interface_ids if kstat_sampler exists
             if let Some(ref mut ids) = interface_ids {
@@ -744,7 +805,7 @@ impl<'a> MachineInitializer<'a> {
             track_network_interface_kstats(
                 &self.log,
                 sampler,
-                self.properties,
+                &self.stats_vm,
                 interface_ids.unwrap(),
             )
             .await
@@ -753,50 +814,30 @@ impl<'a> MachineInitializer<'a> {
         Ok(())
     }
 
-    #[cfg(not(feature = "omicron-build"))]
-    pub fn initialize_test_devices(
-        &mut self,
-        toml_cfg: &std::collections::BTreeMap<
-            String,
-            propolis_server_config::Device,
-        >,
-    ) {
+    #[cfg(feature = "failure-injection")]
+    pub fn initialize_test_devices(&mut self) {
         use propolis::hw::testdev::{
             MigrationFailureDevice, MigrationFailures,
         };
 
-        if let Some(dev) = toml_cfg.get(MigrationFailureDevice::NAME) {
-            const FAIL_EXPORTS: &str = "fail_exports";
-            const FAIL_IMPORTS: &str = "fail_imports";
-            let fail_exports = dev
-                .options
-                .get(FAIL_EXPORTS)
-                .and_then(|val| val.as_integer())
-                .unwrap_or(0);
-            let fail_imports = dev
-                .options
-                .get(FAIL_IMPORTS)
-                .and_then(|val| val.as_integer())
-                .unwrap_or(0);
-
-            if fail_exports <= 0 && fail_imports <= 0 {
+        if let Some(mig) = &self.spec.migration_failure {
+            if mig.spec.fail_exports == 0 && mig.spec.fail_imports == 0 {
                 info!(
                     self.log,
-                    "migration failure device will not fail, as both
-                    `{FAIL_EXPORTS}` and `{FAIL_IMPORTS}` are 0";
-                    FAIL_EXPORTS => ?fail_exports,
-                    FAIL_IMPORTS => ?fail_imports,
+                    "migration failure device's failure counts are both 0";
+                    "device_spec" => ?mig.spec
                 );
             }
 
             let dev = MigrationFailureDevice::create(
                 &self.log,
                 MigrationFailures {
-                    exports: fail_exports as usize,
-                    imports: fail_imports as usize,
+                    exports: mig.spec.fail_exports as usize,
+                    imports: mig.spec.fail_imports as usize,
                 },
             );
-            self.devices.insert(MigrationFailureDevice::NAME.into(), dev);
+
+            self.devices.insert(mig.id.clone(), dev);
         }
     }
 
@@ -823,7 +864,7 @@ impl<'a> MachineInitializer<'a> {
 
         // SoftNpu ports are named <topology>_<node>_vnic<N> by falcon, where
         // <N> indicates the intended order.
-        ports.sort_by_key(|p| p.0.as_str());
+        ports.sort_by_key(|p| p.0);
         let data_links = ports
             .iter()
             .map(|port| port.1.backend_spec.vnic_name.clone())
@@ -835,7 +876,8 @@ impl<'a> MachineInitializer<'a> {
         let uart = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM4).unwrap());
         uart.set_autodiscard(true);
         LpcUart::attach(&uart, &self.machine.bus_pio, ibmpc::PORT_COM4);
-        self.devices.insert("softnpu-uart".to_string(), uart.clone());
+        self.devices
+            .insert(SpecKey::Name("softnpu-uart".to_string()), uart.clone());
 
         // Start with no pipeline. The guest must load the initial P4 program.
         let pipeline = Arc::new(std::sync::Mutex::new(None));
@@ -851,7 +893,8 @@ impl<'a> MachineInitializer<'a> {
         );
         let vio9p =
             virtio::p9fs::PciVirtio9pfs::new(0x40, Arc::new(p9_handler));
-        self.devices.insert("softnpu-p9fs".to_string(), vio9p.clone());
+        self.devices
+            .insert(SpecKey::Name("softnpu-p9fs".to_string()), vio9p.clone());
         let bdf = softnpu
             .p9_device
             .as_ref()
@@ -872,11 +915,14 @@ impl<'a> MachineInitializer<'a> {
         )
         .context("failed to register softnpu")?;
 
-        self.devices.insert("softnpu-main".to_string(), softnpu.clone());
+        self.devices
+            .insert(SpecKey::Name("softnpu-main".to_string()), softnpu.clone());
 
         // Create the SoftNpu PCI port.
-        self.devices
-            .insert("softnpu-pciport".to_string(), softnpu.pci_port.clone());
+        self.devices.insert(
+            SpecKey::Name("softnpu-pciport".to_string()),
+            softnpu.pci_port.clone(),
+        );
         chipset.pci_attach(pci_port.pci_path.into(), softnpu.pci_port.clone());
 
         Ok(())
@@ -898,18 +944,20 @@ impl<'a> MachineInitializer<'a> {
             self.log.clone(),
         );
         let vio9p = virtio::p9fs::PciVirtio9pfs::new(0x40, Arc::new(handler));
-        self.devices.insert("falcon-p9fs".to_string(), vio9p.clone());
+        self.devices
+            .insert(SpecKey::Name("falcon-p9fs".to_string()), vio9p.clone());
         chipset.pci_attach(p9fs.pci_path.into(), vio9p);
     }
 
-    fn generate_smbios(&self) -> smbios::TableBytes {
+    fn generate_smbios(
+        &self,
+        bootrom_version: &Option<String>,
+    ) -> smbios::TableBytes {
         use smbios::table::{type0, type1, type16, type4};
 
         let rom_size =
             self.state.rom_size_bytes.expect("ROM is already populated");
-        let bios_version = self
-            .toml_config
-            .bootrom_version
+        let bios_version = bootrom_version
             .as_deref()
             .unwrap_or("v0.8")
             .try_into()
@@ -944,33 +992,19 @@ impl<'a> MachineInitializer<'a> {
             ..Default::default()
         };
 
-        fn get_spec_or_host_cpuid(
-            spec: &Spec,
-            leaf: u32,
-        ) -> Option<CpuidValues> {
-            let leaf = CpuidIdent::leaf(leaf);
-            let Some(cpuid) = &spec.cpuid else {
-                return Some(cpuid_utils::host_query(leaf));
-            };
-
-            cpuid.get(leaf).copied()
-        }
-
         // The processor vendor, family/model/stepping, and brand string should
-        // correspond to the values the guest will see if it queries CPUID. If
-        // the instance spec contains CPUID values, derive this information from
-        // those. Otherwise, derive them from the values on the host.
+        // correspond to the values the guest will see if it queries CPUID.
         //
         // Note that all these values are `Option`s, because the spec may
         // contain CPUID values that don't contain all of the input leaves.
-        let cpuid_vendor = get_spec_or_host_cpuid(self.spec, 0);
-        let cpuid_ident = get_spec_or_host_cpuid(self.spec, 1);
+        let cpuid_vendor = self.spec.cpuid.get(CpuidIdent::leaf(0)).copied();
+        let cpuid_ident = self.spec.cpuid.get(CpuidIdent::leaf(1)).copied();
 
         // Coerce the array-of-Options into an Option containing the array.
         let cpuid_procname: Option<[CpuidValues; 3]> = [
-            get_spec_or_host_cpuid(self.spec, 0x8000_0002),
-            get_spec_or_host_cpuid(self.spec, 0x8000_0003),
-            get_spec_or_host_cpuid(self.spec, 0x8000_0004),
+            self.spec.cpuid.get(CpuidIdent::leaf(0x8000_0002)).copied(),
+            self.spec.cpuid.get(CpuidIdent::leaf(0x8000_0003)).copied(),
+            self.spec.cpuid.get(CpuidIdent::leaf(0x8000_0004)).copied(),
         ]
         .into_iter()
         // This returns None if any of the input options were None (i.e. if any
@@ -986,7 +1020,7 @@ impl<'a> MachineInitializer<'a> {
             .map(|ident| {
                 match ident.eax & 0xf00 {
                     // If family ID is 0xf, extended family is added to it
-                    0xf00 => (ident.eax >> 20 & 0xff) + 0xf,
+                    0xf00 => ((ident.eax >> 20) & 0xff) + 0xf,
                     // ... otherwise base family ID is used
                     base => base >> 8,
                 }
@@ -1014,7 +1048,7 @@ impl<'a> MachineInitializer<'a> {
         };
 
         let proc_id = cpuid_ident
-            .map(|id| u64::from(id.eax) | u64::from(id.edx) << 32)
+            .map(|id| u64::from(id.eax) | (u64::from(id.edx) << 32))
             .unwrap_or(0);
 
         let proc_version = cpuid_procname
@@ -1031,15 +1065,15 @@ impl<'a> MachineInitializer<'a> {
             // unknown
             proc_upgrade: 0x2,
             // make core and thread counts equal for now
-            core_count: self.properties.vcpus,
-            core_enabled: self.properties.vcpus,
-            thread_count: self.properties.vcpus,
+            core_count: self.spec.board.cpus,
+            core_enabled: self.spec.board.cpus,
+            thread_count: self.spec.board.cpus,
             proc_characteristics: type4::Characteristics::IS_64_BIT
                 | type4::Characteristics::MULTI_CORE,
             ..Default::default()
         };
 
-        let memsize_bytes = (self.properties.memory as usize) * MB;
+        let memsize_bytes = (self.spec.board.memory_mb as usize) * MB;
         let mut smb_type16 = smbios::table::Type16 {
             location: type16::Location::SystemBoard,
             array_use: type16::ArrayUse::System,
@@ -1078,6 +1112,28 @@ impl<'a> MachineInitializer<'a> {
         smb_tables.commit()
     }
 
+    fn generate_e820(&self) -> Result<Entry, MachineInitError> {
+        info!(self.log, "Generating E820 map for guest address space");
+
+        let mut e820_table = fwcfg::formats::E820Table::new();
+
+        for (addr, len, kind) in self.machine.map_physmem.mappings().into_iter()
+        {
+            let addr = addr.try_into().expect("usize should fit into u64");
+            let len = len.try_into().expect("usize should fit into u64");
+            match kind {
+                propolis::vmm::MapType::Dram => {
+                    e820_table.add_mem(addr, len);
+                }
+                _ => {
+                    e820_table.add_reserved(addr, len);
+                }
+            }
+        }
+
+        Ok(e820_table.finish())
+    }
+
     fn generate_bootorder(&self) -> Result<Option<Entry>, MachineInitError> {
         info!(
             self.log,
@@ -1094,14 +1150,14 @@ impl<'a> MachineInitializer<'a> {
             // Theoretically we could support booting from network devices by
             // matching them here and adding their PCI paths, but exactly what
             // would happen is ill-understood. So, only check disks here.
-            if let Some(spec) = self.spec.disks.get(boot_entry.name.as_str()) {
+            if let Some(spec) = self.spec.disks.get(&boot_entry.device_id) {
                 match &spec.device_spec {
                     StorageDevice::Virtio(disk) => {
                         let bdf: pci::Bdf = disk.pci_path.into();
                         if bdf.bus.get() != 0 {
                             return Err(
                                 MachineInitError::BootDeviceOnDownstreamPciBus(
-                                    boot_entry.name.clone(),
+                                    boot_entry.device_id.clone(),
                                     bdf.bus.get(),
                                 ),
                             );
@@ -1114,7 +1170,7 @@ impl<'a> MachineInitializer<'a> {
                         if bdf.bus.get() != 0 {
                             return Err(
                                 MachineInitError::BootDeviceOnDownstreamPciBus(
-                                    boot_entry.name.clone(),
+                                    boot_entry.device_id.clone(),
                                     bdf.bus.get(),
                                 ),
                             );
@@ -1129,7 +1185,7 @@ impl<'a> MachineInitializer<'a> {
                 // This should be unreachable - we check that the boot disk is
                 // valid when constructing the spec we're initializing from.
                 return Err(MachineInitError::BootOrderEntryWithoutDevice(
-                    boot_entry.name.clone(),
+                    boot_entry.device_id.clone(),
                 ));
             }
         }
@@ -1144,6 +1200,7 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_fwcfg(
         &mut self,
         cpus: u8,
+        bootrom_version: &Option<String>,
     ) -> Result<Arc<ramfb::RamFb>, MachineInitError> {
         let fwcfg = fwcfg::FwCfg::new();
         fwcfg
@@ -1154,7 +1211,7 @@ impl<'a> MachineInitializer<'a> {
             .map_err(|e| MachineInitError::FwcfgInsertFailed("cpu count", e))?;
 
         let smbios::TableBytes { entry_point, structure_table } =
-            self.generate_smbios();
+            self.generate_smbios(bootrom_version);
         fwcfg
             .insert_named(
                 "etc/smbios/smbios-tables",
@@ -1177,6 +1234,10 @@ impl<'a> MachineInitializer<'a> {
                 MachineInitError::FwcfgInsertFailed("bootorder", e)
             })?;
         }
+        let e820_entry = self.generate_e820()?;
+        fwcfg
+            .insert_named("etc/e820", e820_entry)
+            .map_err(|e| MachineInitError::FwcfgInsertFailed("e820", e))?;
 
         let ramfb = ramfb::RamFb::create(
             self.log.new(slog::o!("component" => "ramfb")),
@@ -1189,8 +1250,9 @@ impl<'a> MachineInitializer<'a> {
 
         fwcfg.attach(&self.machine.bus_pio, &self.machine.acc_mem);
 
-        self.devices.insert(fwcfg.type_name().into(), fwcfg);
-        self.devices.insert(ramfb.type_name().into(), ramfb.clone());
+        self.devices.insert(SpecKey::Name(fwcfg.type_name().into()), fwcfg);
+        self.devices
+            .insert(SpecKey::Name(ramfb.type_name().into()), ramfb.clone());
         Ok(ramfb)
     }
 
@@ -1198,38 +1260,61 @@ impl<'a> MachineInitializer<'a> {
     /// them into the device map, and then, if a kstat sampler is provided,
     /// tracking their kstats.
     pub async fn initialize_cpus(&mut self) -> Result<(), MachineInitError> {
+        let hv_interface = self.machine.guest_hv_interface.as_ref();
         for vcpu in self.machine.vcpus.iter() {
-            if let Some(set) = &self.spec.cpuid {
-                let specialized = propolis::cpuid::Specializer::new()
-                    .with_vcpu_count(
-                        NonZeroU8::new(self.spec.board.cpus).unwrap(),
-                        true,
-                    )
-                    .with_vcpuid(vcpu.id)
-                    .with_cache_topo()
-                    .clear_cpu_topo(propolis::cpuid::TopoKind::iter())
-                    .execute(set.clone())
-                    .map_err(|e| {
-                        MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
-                    })?;
+            // Report that the guest is running on bhyve.
+            //
+            // The CPUID set in the spec is not allowed to contain any leaves in
+            // the hypervisor leaf region (enforced at spec generation time).
+            let mut set = self.spec.cpuid.clone();
+            hv_interface.add_cpuid(&mut set).expect(
+                "propolis_server::spec construction should deny direct \
+                    requests to set hypervisor leaves",
+            );
 
-                info!(self.log, "setting CPUID for vCPU";
-                      "vcpu" => vcpu.id,
-                      "cpuid" => ?specialized);
-
-                vcpu.set_cpuid(specialized).with_context(|| {
-                    format!("setting CPUID for vcpu {}", vcpu.id)
+            let specialized = propolis::cpuid::Specializer::new()
+                .with_vcpu_count(
+                    NonZeroU8::new(self.spec.board.cpus).unwrap(),
+                    true,
+                )
+                .with_vcpuid(vcpu.id)
+                .with_cache_topo()
+                .clear_cpu_topo(propolis::cpuid::TopoKind::iter())
+                .execute(set)
+                .map_err(|e| {
+                    MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
                 })?;
-            }
+
+            info!(self.log, "setting CPUID for vCPU";
+                    "vcpu" => vcpu.id,
+                    "cpuid" => ?specialized);
+
+            vcpu.set_cpuid(specialized).with_context(|| {
+                format!("setting CPUID for vcpu {}", vcpu.id)
+            })?;
+
             vcpu.set_default_capabs()
                 .context("failed to set vcpu capabilities")?;
 
             // The vCPUs behave like devices, so add them to the list as well
-            self.devices.insert(format!("vcpu-{}", vcpu.id), vcpu.clone());
+            self.devices.insert(
+                SpecKey::Name(format!("vcpu-{}", vcpu.id)),
+                vcpu.clone(),
+            );
         }
         if let Some(sampler) = self.kstat_sampler.as_ref() {
-            track_vcpu_kstats(&self.log, sampler, self.properties).await;
+            track_vcpu_kstats(&self.log, sampler, &self.stats_vm).await;
         }
         Ok(())
+    }
+
+    pub fn register_guest_hv_interface(
+        &mut self,
+        guest_hv_interface: Arc<dyn Lifecycle>,
+    ) {
+        self.devices.insert(
+            SpecKey::Name("guest-hv-interface".to_string()),
+            guest_hv_interface,
+        );
     }
 }

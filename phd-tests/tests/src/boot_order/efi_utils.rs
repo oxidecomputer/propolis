@@ -20,8 +20,6 @@ use std::fmt::Write;
 use std::io::{Cursor, Read};
 use tracing::{info, trace, warn};
 
-use super::run_long_command;
-
 // First, some GUIDs. These GUIDs come from EDK2, and OVMF reuses them. Notably
 // these are the raw bytes of the GUID: textual values will have slightly
 // different ordering of bytes.
@@ -66,11 +64,11 @@ pub(crate) const BOOT_ORDER_VAR: &str =
     "BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c";
 
 pub(crate) fn bootvar(num: u16) -> String {
-    format!("Boot{:04X}-8be4df61-93ca-11d2-aa0d-00e098032b8c", num)
+    format!("Boot{num:04X}-8be4df61-93ca-11d2-aa0d-00e098032b8c")
 }
 
 pub(crate) fn efipath(varname: &str) -> String {
-    format!("/sys/firmware/efi/efivars/{}", varname)
+    format!("/sys/firmware/efi/efivars/{varname}")
 }
 
 /// A (very limited) parse of an `EFI_LOAD_OPTION` descriptor.
@@ -326,7 +324,7 @@ pub(crate) async fn read_efivar(
         efipath(varname)
     );
 
-    let hex = run_long_command(vm, &cmd).await?;
+    let hex = vm.run_shell_command(&cmd).await?;
 
     Ok(unhex(&hex))
 }
@@ -345,7 +343,7 @@ pub(crate) async fn write_efivar(
         efipath(varname)
     );
 
-    let attr_read_bytes = run_long_command(vm, &attr_cmd).await?;
+    let attr_read_bytes = vm.run_shell_command(&attr_cmd).await?;
     let attrs = if attr_read_bytes.ends_with(": No such file or directory") {
         // Default attributes if the variable does not exist yet. We expect it
         // to be non-volatile because we are writing it, we expect it to be
@@ -379,7 +377,7 @@ pub(crate) async fn write_efivar(
     // as invalid UEFI variable data.
     let escaped: String =
         new_value.into_iter().fold(String::new(), |mut out, b| {
-            write!(out, "\\x{:02x}", b).expect("can append to String");
+            write!(out, "\\x{b:02x}").expect("can append to String");
             out
         });
 
@@ -390,7 +388,7 @@ pub(crate) async fn write_efivar(
         efipath(varname)
     );
 
-    let res = run_long_command(vm, &cmd).await?;
+    let res = vm.run_shell_command(&cmd).await?;
     // If something went sideways and the write failed with something like
     // `invalid argument`...
     if !res.is_empty() {

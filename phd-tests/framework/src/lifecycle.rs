@@ -15,8 +15,6 @@ pub enum Action<'a> {
     /// does not involve the guest OS. It can be used to verify that components'
     /// reset implementations don't change properties that shouldn't change
     /// without fully stopping and restarting a VM.
-    //
-    // N.B. This isn't used in any lifecycle tests yet.
     Reset,
 
     /// Stop the VM and restart it in a successor Propolis using the same
@@ -53,6 +51,7 @@ impl Framework {
                         "rebooting VM for lifecycle test"
                     );
                     vm.reset().await?;
+                    vm.wait_to_boot().await?;
                 }
                 Action::StopAndStart => {
                     info!(
@@ -60,7 +59,7 @@ impl Framework {
                         "stopping and starting VM for lifecycle test"
                     );
                     let new_vm_name =
-                        format!("{}_lifecycle_{}", original_name, idx);
+                        format!("{original_name}_lifecycle_{idx}");
                     vm.stop().await?;
                     let mut new_vm = self
                         .spawn_successor_vm(&new_vm_name, &vm, None)
@@ -78,7 +77,7 @@ impl Framework {
                     );
 
                     let new_vm_name =
-                        format!("{}_lifecycle_{}", original_name, idx);
+                        format!("{original_name}_lifecycle_{idx}");
 
                     let mut env = self.environment_builder();
                     env.propolis(propolis);

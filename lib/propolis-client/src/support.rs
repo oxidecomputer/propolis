@@ -18,32 +18,38 @@ use tokio_tungstenite::tungstenite::{Error as WSError, Message as WSMessage};
 // re-export as an escape hatch for crate-version-matching problems
 pub use tokio_tungstenite::{tungstenite, WebSocketStream};
 
-use crate::types::{Chipset, I440Fx, PciPath};
+use crate::types::{Chipset, I440Fx};
 use crate::Client as PropolisClient;
-
-const PCI_DEV_PER_BUS: u8 = 32;
-const PCI_FUNC_PER_DEV: u8 = 8;
-
-impl PciPath {
-    pub const fn new(
-        bus: u8,
-        device: u8,
-        function: u8,
-    ) -> Result<Self, &'static str> {
-        if device > PCI_DEV_PER_BUS {
-            Err("device outside possible range")
-        } else if function > PCI_FUNC_PER_DEV {
-            Err("function outside possible range")
-        } else {
-            Ok(Self { bus, device, function })
-        }
-    }
-}
 
 impl Default for Chipset {
     fn default() -> Self {
         Self::I440Fx(I440Fx { enable_pcie: false })
     }
+}
+
+/// Generates a 20-byte NVMe device serial number from the bytes in a string
+/// slice. If the slice is too short to populate the entire serial number, the
+/// remaining bytes are filled with `pad`.
+///
+/// NOTE: Version 1.2.1 of the NVMe specification (June 5, 2016) specifies in
+/// section 1.5 that ASCII data fields, including serial numbers, must be
+/// left-justified and must use 0x20 bytes (spaces) as the padding value. This
+/// function allows callers to choose a non-0x20 padding value to preserve the
+/// serial numbers for existing disks, which serial numbers may have been used
+/// previously and persisted into a VM's nonvolatile EFI variables (such as its
+/// boot order variables).
+//
+// TODO(#790): Ideally, this routine would have no `pad` parameter at all and
+// would always pad with spaces, but whether this is ultimately possible depends
+// on whether Omicron can start space-padding serial numbers for disks that were
+// attached to a Propolis VM that zero-padded their serial numbers.
+pub fn nvme_serial_from_str(s: &str, pad: u8) -> [u8; 20] {
+    let mut sn = [0u8; 20];
+
+    let bytes_from_slice = sn.len().min(s.len());
+    sn[..bytes_from_slice].copy_from_slice(&s.as_bytes()[..bytes_from_slice]);
+    sn[bytes_from_slice..].fill(pad);
+    sn
 }
 
 /// Clone of `InstanceSerialConsoleControlMessage` type defined in
@@ -90,7 +96,7 @@ impl SerialConsoleStreamBuilder for PropolisSerialBuilder {
         address: SocketAddr,
         offset: WSClientOffset,
     ) -> Result<Box<dyn SerialConsoleStream>, WSError> {
-        let client = PropolisClient::new(&format!("http://{}", address));
+        let client = PropolisClient::new(&format!("http://{address}"));
         let mut req = client.instance_serial();
 
         match offset {
@@ -322,7 +328,7 @@ pub struct InstanceSerialConsoleMessage<'a> {
     message: WSMessage,
 }
 
-impl<'a> InstanceSerialConsoleMessage<'a> {
+impl InstanceSerialConsoleMessage<'_> {
     /// Processes this [WSMessage].
     ///
     /// - [WSMessage::Binary] are character output from the serial console.
@@ -590,5 +596,25 @@ mod test {
         S: AsyncRead + AsyncWrite + Unpin,
     {
         WebSocketStream::from_raw_socket(conn, Role::Server, None).await
+    }
+
+    #[test]
+    fn test_nvme_serial_from_str() {
+        use super::nvme_serial_from_str;
+
+        let expected = b"hello world         ";
+        assert_eq!(nvme_serial_from_str("hello world", b' '), *expected);
+
+        let expected = b"enthusiasm!!!!!!!!!!";
+        assert_eq!(nvme_serial_from_str("enthusiasm", b'!'), *expected);
+
+        let expected = b"very_long_disk_name_";
+        assert_eq!(
+            nvme_serial_from_str("very_long_disk_name_goes_here", b'?'),
+            *expected
+        );
+
+        let expected = b"nonvolatile EFI\0\0\0\0\0";
+        assert_eq!(nvme_serial_from_str("nonvolatile EFI", 0), *expected);
     }
 }

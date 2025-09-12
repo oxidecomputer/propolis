@@ -12,7 +12,6 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 mod codec;
-mod compat;
 pub mod destination;
 mod memx;
 mod preamble;
@@ -62,7 +61,7 @@ impl std::fmt::Display for MigratePhase {
             MigratePhase::Finish => "Finish",
         };
 
-        write!(f, "{}", s)
+        write!(f, "{s}")
     }
 }
 
@@ -174,7 +173,7 @@ impl From<MigrateStateError> for MigrateError {
 
 impl From<MigrateError> for HttpError {
     fn from(err: MigrateError) -> Self {
-        let msg = format!("migration failed: {}", err);
+        let msg = format!("migration failed: {err}");
         match &err {
             MigrateError::Websocket(_)
             | MigrateError::Initiate
@@ -242,7 +241,7 @@ impl<'a> PageIter<'a> {
     }
 }
 
-impl<'a> Iterator for PageIter<'a> {
+impl Iterator for PageIter<'_> {
     type Item = u64;
     fn next(&mut self) -> Option<Self::Item> {
         while self.current < self.end {

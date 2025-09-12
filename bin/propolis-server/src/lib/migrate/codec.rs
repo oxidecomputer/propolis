@@ -57,7 +57,7 @@ pub enum ProtocolError {
 
     /// An error occurred in the underlying websocket transport
     #[error("error occurred in websocket layer: {0}")]
-    WebsocketError(tokio_tungstenite::tungstenite::Error),
+    WebsocketError(Box<tokio_tungstenite::tungstenite::Error>),
 
     /// All our codec's messages should be tungstenite::Message::Binary
     #[error("received empty message with no discriminant")]

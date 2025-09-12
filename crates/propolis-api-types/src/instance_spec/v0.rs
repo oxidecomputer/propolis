@@ -2,14 +2,19 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::instance_spec::{components, SpecKey};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
-#[serde(deny_unknown_fields, tag = "type", content = "component")]
+#[serde(
+    deny_unknown_fields,
+    tag = "type",
+    content = "component",
+    rename_all = "snake_case"
+)]
 pub enum ComponentV0 {
     VirtioDisk(components::devices::VirtioDisk),
     NvmeDisk(components::devices::NvmeDisk),
@@ -22,6 +27,7 @@ pub enum ComponentV0 {
     SoftNpuPort(components::devices::SoftNpuPort),
     SoftNpuP9(components::devices::SoftNpuP9),
     P9fs(components::devices::P9fs),
+    MigrationFailureInjector(components::devices::MigrationFailureInjector),
     CrucibleStorageBackend(components::backends::CrucibleStorageBackend),
     FileStorageBackend(components::backends::FileStorageBackend),
     BlobStorageBackend(components::backends::BlobStorageBackend),
@@ -33,5 +39,5 @@ pub enum ComponentV0 {
 #[serde(deny_unknown_fields)]
 pub struct InstanceSpecV0 {
     pub board: components::board::Board,
-    pub components: HashMap<SpecKey, ComponentV0>,
+    pub components: BTreeMap<SpecKey, ComponentV0>,
 }

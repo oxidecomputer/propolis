@@ -4,26 +4,55 @@
 
 //! A client for the Propolis hypervisor frontend's server API.
 
+/// Re-exports of types related to instance specs.
+///
+/// These types are re-exported for the convenience of components like
+/// sled-agent that may wish to expose instance specs in their own APIs.
+/// Defining the sled-agent API in terms of these "native" types allows
+/// sled-agent to reuse their trait implementations (and in particular use
+/// "manual" impls of things that Progenitor would otherwise derive).
+///
+/// In the generated client, the native "top-level" instance spec and component
+/// types ([`crate::instance_spec::VersionedInstanceSpec`],
+/// [`crate::instance_spec::InstanceSpecV0`], and
+/// [`crate::instance_spec::ReplacementComponent`]) replace their generated
+/// counterparts. This obviates the need to maintain `From` impls to convert
+/// between native and generated types.
+pub mod instance_spec {
+    pub use propolis_api_types::instance_spec::{
+        components::{backends::*, board::*, devices::*},
+        v0::*,
+        *,
+    };
+
+    pub use propolis_api_types::ReplacementComponent;
+}
+
+// Re-export Crucible client types that appear in their serialized forms in
+// instance specs. This allows clients to ensure they serialize/deserialize
+// these types using the same versions as the Propolis client associated with
+// the server they want to talk to.
+pub use crucible_client_types::{CrucibleOpts, VolumeConstructionRequest};
+
 progenitor::generate_api!(
     spec = "../../openapi/propolis-server.json",
     interface = Builder,
     tags = Separate,
+    replace = {
+        PciPath = crate::instance_spec::PciPath,
+        ReplacementComponent = crate::instance_spec::ReplacementComponent,
+        InstanceSpecV0 = crate::instance_spec::InstanceSpecV0,
+        VersionedInstanceSpec = crate::instance_spec::VersionedInstanceSpec,
+    },
+    // Automatically derive JsonSchema for instance spec-related types so that
+    // they can be reused in sled-agent's API. This can't be done with a
+    // `derives = [schemars::JsonSchema]` directive because the `SpecKey` type
+    // needs to implement that trait manually (see below).
     patch = {
-        // Some Crucible-related bits are re-exported through simulated
-        // sled-agent and thus require JsonSchema
-        BootOrderEntry = { derives = [schemars::JsonSchema] },
-        BootSettings = { derives = [Default, schemars::JsonSchema] },
-        CpuidEntry = { derives = [PartialEq, Eq, Copy] },
-        DiskRequest = { derives = [schemars::JsonSchema] },
-        VolumeConstructionRequest = { derives = [schemars::JsonSchema] },
-        CrucibleOpts = { derives = [schemars::JsonSchema] },
-        Slot = { derives = [schemars::JsonSchema] },
-
-        PciPath = { derives = [
-            Copy, Ord, Eq, PartialEq, PartialOrd
-        ] },
-
+        BootSettings = { derives = [ Default ] },
+        CpuidEntry = { derives = [ PartialEq, Eq, Copy ] },
         InstanceMetadata = { derives = [ PartialEq ] },
+        SpecKey = { derives = [ PartialEq, Eq, Ord, PartialOrd, Hash ] },
     }
 );
 

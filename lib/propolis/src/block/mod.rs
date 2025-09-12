@@ -43,6 +43,7 @@ mod probes {
     fn block_begin_read(dev_id: u64, req_id: u64, offset: u64, len: u64) {}
     fn block_begin_write(dev_id: u64, req_id: u64, offset: u64, len: u64) {}
     fn block_begin_flush(dev_id: u64, req_id: u64) {}
+    fn block_begin_discard(dev_id: u64, req_id: u64, offset: u64, len: u64) {}
 
     fn block_complete_read(
         dev_id: u64,
@@ -68,6 +69,14 @@ mod probes {
         queue_ns: u64,
     ) {
     }
+    fn block_complete_discard(
+        dev_id: u64,
+        req_id: u64,
+        result: u8,
+        proc_ns: u64,
+        queue_ns: u64,
+    ) {
+    }
 }
 
 /// Type of operations which may be issued to a virtual block device.
@@ -79,6 +88,8 @@ pub enum Operation {
     Write(ByteOffset, ByteLen),
     /// Flush buffer(s)
     Flush,
+    /// Discard/UNMAP/deallocate region
+    Discard(ByteOffset, ByteLen),
 }
 impl Operation {
     pub const fn is_read(&self) -> bool {
@@ -89,6 +100,9 @@ impl Operation {
     }
     pub const fn is_flush(&self) -> bool {
         matches!(self, Operation::Flush)
+    }
+    pub const fn is_discard(&self) -> bool {
+        matches!(self, Operation::Discard(..))
     }
 }
 
@@ -147,6 +161,11 @@ impl Request {
         Self { op, regions: Vec::new(), marker: None }
     }
 
+    pub fn new_discard(off: ByteOffset, len: ByteLen) -> Self {
+        let op = Operation::Discard(off, len);
+        Self { op, regions: Vec::new(), marker: None }
+    }
+
     /// Type of operation being issued.
     pub fn oper(&self) -> Operation {
         self.op
@@ -165,7 +184,7 @@ impl Request {
             Operation::Write(..) => {
                 self.regions.iter().map(|r| mem.readable_region(r)).collect()
             }
-            Operation::Flush => None,
+            Operation::Flush | Operation::Discard(..) => None,
         }
     }
 
@@ -193,6 +212,8 @@ pub struct DeviceInfo {
     pub total_size: u64,
     /// Is the device read-only
     pub read_only: bool,
+    /// Does the device support discard/UNMAP
+    pub supports_discard: bool,
 }
 
 /// Options to control behavior of block backend.
@@ -251,6 +272,16 @@ pub trait Backend: Send + Sync + 'static {
     ///
     /// Spawning of any tasks required to do such request processing can be done
     /// as part of this start-up.
+    ///
+    /// This operation will be invoked only once per backend (when its VM
+    /// starts). Block backends are not explicitly resumed during VM lifecycle
+    /// events; instead, their corresponding devices will stop issuing new
+    /// requests while paused and resume issuing them when they are resumed.
+    ///
+    /// WARNING: The caller may abort VM startup and cancel the future created
+    /// by this routine. In this case the caller may not call [`Self::stop()`]
+    /// prior to dropping the backend. This routine is, however, guaranteed to
+    /// be called before the VM's vCPUs are started.
     async fn start(&self) -> anyhow::Result<()>;
 
     /// Stop attempting to process new [Request]s from [Device] (if attached)
@@ -260,6 +291,12 @@ pub trait Backend: Send + Sync + 'static {
     ///
     /// If any tasks were spawned as part of [Backend::start()], they should be
     /// brought to rest as part of this call.
+    ///
+    /// This operation will be invoked only once per backend (when its VM
+    /// stops). Block backends are not explicitly paused during VM lifecycle
+    /// events; instead, their corresponding devices will stop issuing new
+    /// requests when they are told to pause (and will only report they are
+    /// fully paused when all their in-flight requests have completed).
     async fn stop(&self) -> ();
 
     /// Attempt to detach from associated [Device]

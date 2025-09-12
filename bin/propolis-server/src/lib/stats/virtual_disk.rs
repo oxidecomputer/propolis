@@ -81,6 +81,10 @@ impl VirtualDiskStats {
                 self.on_write_completion(result, len, duration)
             }
             Operation::Flush => self.on_flush_completion(result, duration),
+            Operation::Discard(..) => {
+                // Discard is not wired up in backends we care about for now, so
+                // it can safely be ignored.
+            }
         }
     }
 

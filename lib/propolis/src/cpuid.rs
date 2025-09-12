@@ -13,8 +13,8 @@ use std::ops::Bound;
 use bhyve_api::vcpu_cpuid_entry;
 use cpuid_utils::{CpuidIdent, CpuidMap, CpuidSet, CpuidValues, CpuidVendor};
 
-/// Convert a [vcpu_cpuid_entry] into an ([CpuidLeaf],
-/// [CpuidValues]) tuple, suitable for insertion into a [Set].
+/// Convert a [vcpu_cpuid_entry] into an ([CpuidIdent],
+/// [CpuidValues]) tuple, suitable for insertion into a [CpuidSet].
 ///
 /// This would be implemented as a [From] trait if rust let us.
 pub fn from_raw(
@@ -70,11 +70,11 @@ impl Specializer {
 
     /// Specify vCPU ID to specialize for
     pub fn with_vcpuid(self, vcpuid: i32) -> Self {
-        assert!((vcpuid as usize) < bhyve_api::VM_MAXCPU);
+        assert!((vcpuid as usize) < crate::vcpu::MAXCPU);
         Self { vcpuid: Some(vcpuid), ..self }
     }
 
-    /// Specify CPU topology types to render into the specialized [Set]
+    /// Specify CPU topology types to render into the specialized [CpuidSet]
     ///
     /// Without basic information such as the number of vCPUs (set by
     /// [`Self::with_vcpu_count()`]), population of the requested topology
@@ -92,7 +92,7 @@ impl Specializer {
         Self { cpu_topo_populate, ..self }
     }
 
-    /// Specify CPU topology types to clear from the specialized [Set]
+    /// Specify CPU topology types to clear from the specialized [CpuidSet]
     ///
     /// Some leafs in the provided set may not match expectations for the given
     /// CPU vendor.  Without populating it with generated data (via
@@ -113,7 +113,7 @@ impl Specializer {
     }
 
     /// Given the attributes and modifiers specified in this [Specializer],
-    /// render an updated [Set] reflecting those data.
+    /// render an updated [CpuidSet] reflecting those data.
     pub fn execute(
         self,
         mut set: CpuidSet,
@@ -165,7 +165,7 @@ impl Specializer {
                 None => break,
                 Some(vals) => {
                     // bits 7:5 hold the cache level
-                    let visible_count = match (vals.eax & 0b11100000 >> 5) {
+                    let visible_count = match ((vals.eax & 0b11100000) >> 5) {
                         0b001 | 0b010 => {
                             // L1/L2 shared by SMT siblings
                             if self.has_smt {

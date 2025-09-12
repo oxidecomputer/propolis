@@ -6,7 +6,9 @@
 
 use std::sync::Arc;
 
-use propolis_api_types::{InstanceProperties, InstanceStateRequested};
+use propolis_api_types::{
+    instance_spec::SpecKey, InstanceProperties, InstanceStateRequested,
+};
 use slog::info;
 use uuid::Uuid;
 
@@ -61,9 +63,9 @@ impl ActiveVm {
 
         self.state_driver_queue
             .queue_external_request(match requested {
-                InstanceStateRequested::Run => ExternalRequest::Start,
-                InstanceStateRequested::Stop => ExternalRequest::Stop,
-                InstanceStateRequested::Reboot => ExternalRequest::Reboot,
+                InstanceStateRequested::Run => ExternalRequest::start(),
+                InstanceStateRequested::Stop => ExternalRequest::stop(),
+                InstanceStateRequested::Reboot => ExternalRequest::reboot(),
             })
             .map_err(Into::into)
     }
@@ -77,10 +79,7 @@ impl ActiveVm {
         websock: dropshot::WebsocketConnection,
     ) -> Result<(), VmError> {
         Ok(self.state_driver_queue.queue_external_request(
-            ExternalRequest::MigrateAsSource {
-                migration_id,
-                websock: websock.into(),
-            },
+            ExternalRequest::migrate_as_source(migration_id, websock),
         )?)
     }
 
@@ -99,19 +98,17 @@ impl ActiveVm {
     ///   replacement result after it completes this operation.
     pub(crate) fn reconfigure_crucible_volume(
         &self,
-        disk_name: String,
-        backend_id: Uuid,
+        backend_id: SpecKey,
         new_vcr_json: String,
         result_tx: CrucibleReplaceResultTx,
     ) -> Result<(), VmError> {
         self.state_driver_queue
             .queue_external_request(
-                ExternalRequest::ReconfigureCrucibleVolume {
-                    disk_name,
+                ExternalRequest::reconfigure_crucible_volume(
                     backend_id,
                     new_vcr_json,
                     result_tx,
-                },
+                ),
             )
             .map_err(Into::into)
     }

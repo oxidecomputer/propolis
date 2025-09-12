@@ -4,7 +4,7 @@
 
 use bitvec::prelude::{BitSlice, Lsb0};
 use futures::{SinkExt, StreamExt};
-use propolis::common::{GuestAddr, PAGE_SIZE};
+use propolis::common::{GuestAddr, GuestData, PAGE_SIZE};
 use propolis::migrate::{
     MigrateCtx, MigrateStateError, Migrator, PayloadOutputs,
 };
@@ -347,7 +347,7 @@ struct RonV0Runner<'vm, T: MigrateConn> {
     paused: bool,
 }
 
-impl<'vm, T: MigrateConn> RonV0Runner<'vm, T> {
+impl<T: MigrateConn> RonV0Runner<'_, T> {
     fn log(&self) -> &slog::Logger {
         &self.log
     }
@@ -657,9 +657,12 @@ impl<'vm, T: MigrateConn> RonV0Runner<'vm, T> {
         info!(self.log(), "ram_push: xfer RAM between {start:#x} and {end:#x}",);
         self.send_msg(memx::make_mem_xfer(start, end, bits)).await?;
         for addr in PageIter::new(start, end, bits) {
-            let mut bytes = [0u8; PAGE_SIZE];
-            self.read_guest_mem(GuestAddr(addr), &mut bytes).await?;
-            self.send_msg(codec::Message::Page(bytes.into())).await?;
+            let mut byte_buffer = [0u8; PAGE_SIZE];
+            {
+                let mut bytes = GuestData::from(byte_buffer.as_mut_slice());
+                self.read_guest_mem(GuestAddr(addr), &mut bytes).await?;
+            }
+            self.send_msg(codec::Message::Page(byte_buffer.into())).await?;
             probes::migrate_xfer_ram_page!(|| (addr, PAGE_SIZE as u64));
         }
         Ok(())
@@ -745,8 +748,7 @@ impl<'vm, T: MigrateConn> RonV0Runner<'vm, T> {
         let vm_time_data =
             vmm::time::export_time_data(vmm_hdl).map_err(|e| {
                 MigrateError::TimeData(format!(
-                    "VMM Time Data export error: {}",
-                    e
+                    "VMM Time Data export error: {e}"
                 ))
             })?;
         info!(self.log(), "VMM Time Data: {:#?}", vm_time_data);
@@ -842,7 +844,7 @@ impl<'vm, T: MigrateConn> RonV0Runner<'vm, T> {
                     io::ErrorKind::BrokenPipe,
                 ))
             })?
-            .map_err(codec::ProtocolError::WebsocketError)
+            .map_err(|e| codec::ProtocolError::WebsocketError(Box::new(e)))
             // convert tungstenite::Message to codec::Message
             .and_then(std::convert::TryInto::try_into)
             // If this is an error message, lift that out
@@ -919,7 +921,7 @@ impl<'vm, T: MigrateConn> RonV0Runner<'vm, T> {
     async fn read_guest_mem(
         &mut self,
         addr: GuestAddr,
-        buf: &mut [u8],
+        buf: &mut GuestData<&mut [u8]>,
     ) -> Result<(), MigrateError> {
         let objects = self.vm.lock_shared().await;
         let memctx = objects.access_mem().unwrap();

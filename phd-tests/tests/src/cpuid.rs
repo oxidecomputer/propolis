@@ -2,10 +2,15 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use cpuid_utils::{CpuidIdent, CpuidValues, CpuidVendor};
+use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
+use phd_framework::{test_vm::MigrationTimeout, TestVm};
 use phd_testcase::*;
-use propolis_client::types::CpuidEntry;
+use propolis_client::{
+    instance_spec::{CpuidEntry, VersionedInstanceSpec},
+    types::InstanceSpecStatus,
+};
 use tracing::info;
+use uuid::Uuid;
 
 fn cpuid_entry(
     leaf: u32,
@@ -34,103 +39,43 @@ async fn cpuid_instance_spec_round_trip_test(ctx: &Framework) {
     vm.launch().await?;
 
     let spec_get_response = vm.get_spec().await?;
-    let propolis_client::types::VersionedInstanceSpec::V0(spec) =
-        spec_get_response.spec;
+    let InstanceSpecStatus::Present(VersionedInstanceSpec::V0(spec)) =
+        spec_get_response.spec
+    else {
+        panic!("instance spec should be present for a running VM");
+    };
 
     let cpuid = spec.board.cpuid.expect("board should have explicit CPUID");
     assert_eq!(cpuid.entries.len(), entries.len());
     itertools::assert_equal(cpuid.entries, entries);
 }
 
-#[phd_testcase]
-async fn cpuid_boot_test(ctx: &Framework) {
-    use cpuid_utils::bits::*;
+/// A synthetic brand string that can be injected into guest CPUID leaves
+/// 0x8000_0002-0x8000_0004.
+const BRAND_STRING: &[u8; 48] =
+    b"Oxide Cloud Computer Company Cloud Computer\0\0\0\0\0";
 
-    // This test verifies that plumbing a reasonably sensible-looking set of
-    // CPUID values into the guest produces a bootable guest.
-    //
-    // The definition of "reasonably sensible" is derived from the suggested
-    // virtual-Milan CPUID definitions in RFD 314. Those are in turn derived
-    // from reading AMD's manuals and bhyve's source code to figure out what
-    // host CPU features to hide from guests.
-    //
-    // To try to make this test at least somewhat host-agnostic, read all of the
-    // host's CPUID leaves, then filter to just a handful of leaves that
-    // advertise features to the guest (and that Linux guests will check for
-    // during boot).
-    let mut host_cpuid = cpuid_utils::host_query_all();
-    info!(?host_cpuid, "read host CPUID");
-    let leaf_0_values = *host_cpuid
-        .get(CpuidIdent::leaf(0))
-        .expect("host CPUID leaf 0 should always be present");
+/// Injects a fake CPU brand string into CPUID leaves 0x8000_0002-0x8000_0004.
+///
+/// # Panics
+///
+/// Panics if the input CPUID set does not include the brand string leaves.
+fn inject_brand_string(cpuid: &mut CpuidSet) {
+    // The brand string leaves have been defined for long enough that they
+    // should be present on virtually any host that's modern enough to run
+    // Propolis and PHD. Assert (instead of returning a "skipped" result) if
+    // they're missing, since that may indicate a latent bug in the
+    // `cpuid_utils` crate.
+    let ext_leaf_0 = cpuid
+        .get(CpuidIdent::leaf(cpuid_utils::bits::EXTENDED_BASE_LEAF))
+        .expect("PHD-capable processors should have some extended leaves");
 
-    // Linux guests expect to see at least a couple of leaves in the extended
-    // CPUID range. These have vendor-specific meanings. This test only encodes
-    // AMD's definitions, so skip the test if leaf 0 reports any other vendor.
-    let Ok(CpuidVendor::Amd) = CpuidVendor::try_from(leaf_0_values) else {
-        phd_skip!("cpuid_boot_test can only run on AMD hosts");
-    };
-
-    // Report up through leaf 7 to get the extended feature flags that are
-    // defined there.
-    if leaf_0_values.eax < 7 {
-        phd_skip!(
-            "cpuid_boot_test requires the host to report at least leaf 7"
-        );
-    }
-
-    // Keep only standard leaves up to 7 and the first two extended leaves.
-    // Extended leaves 2 through 4 will be overwritten with a fake brand string
-    // (see below).
-    host_cpuid.retain_by_leaf(|leaf| {
-        leaf <= 0x7 || (0x8000_0000..=0x8000_0001).contains(&leaf)
-    });
-
-    // Report that leaf 7 is the last available standard leaf.
-    host_cpuid.get_mut(CpuidIdent::leaf(0)).unwrap().eax = 7;
-
-    // Mask off bits that a minimum-viable Oxide platform doesn't support or
-    // can't (or won't) expose to guests. See RFD 314 for further discussion of
-    // how these masks were chosen.
-    //
-    // These are masks (and not assignments) so that, if the host processor
-    // doesn't support a feature contained in an `ALL_FLAGS` value, the
-    // feature will not be enabled in the guest.
-    let leaf_1 = host_cpuid.get_mut(CpuidIdent::leaf(1)).unwrap();
-    leaf_1.ecx &=
-        (Leaf1Ecx::ALL_FLAGS & !(Leaf1Ecx::OSXSAVE | Leaf1Ecx::MONITOR)).bits();
-    leaf_1.edx &= Leaf1Edx::ALL_FLAGS.bits();
-    let leaf_7 = host_cpuid.get_mut(CpuidIdent::leaf(7)).unwrap();
-    leaf_7.eax = 0;
-    leaf_7.ebx &= (Leaf7Sub0Ebx::ALL_FLAGS
-        & !(Leaf7Sub0Ebx::PQM
-            | Leaf7Sub0Ebx::PQE
-            | Leaf7Sub0Ebx::RDSEED
-            | Leaf7Sub0Ebx::INVPCID))
-        .bits();
-    leaf_7.ecx = 0;
-    leaf_7.edx = 0;
-
-    // Report that leaf 0x8000_0004 is the last extended leaf and clean up
-    // feature bits in leaf 0x8000_0001.
-    host_cpuid.get_mut(CpuidIdent::leaf(0x8000_0000)).unwrap().eax =
-        0x8000_0004;
-    let ext_leaf_1 = host_cpuid.get_mut(CpuidIdent::leaf(0x8000_0001)).unwrap();
-    ext_leaf_1.ecx &= (AmdExtLeaf1Ecx::ALT_MOV_CR8
-        | AmdExtLeaf1Ecx::ABM
-        | AmdExtLeaf1Ecx::SSE4A
-        | AmdExtLeaf1Ecx::MISALIGN_SSE
-        | AmdExtLeaf1Ecx::THREED_NOW_PREFETCH
-        | AmdExtLeaf1Ecx::DATA_ACCESS_BP
-        | AmdExtLeaf1Ecx::DATA_BP_ADDR_MASK_EXT)
-        .bits();
-    ext_leaf_1.edx &=
-        (AmdExtLeaf1Edx::ALL_FLAGS & !AmdExtLeaf1Edx::RDTSCP).bits();
-
-    // Test the plumbing by pumping a fake processor brand string into extended
-    // leaves 2-4 and seeing if the guest recognizes it.
-    const BRAND_STRING: &[u8; 48] =
-        b"Oxide Cloud Computer Company Cloud Computer\0\0\0\0\0";
+    assert!(
+        ext_leaf_0.eax >= 0x8000_0004,
+        "PHD-capable processors should support at least leaf 0x8000_0004 \
+        (reported {})",
+        ext_leaf_0.eax
+    );
 
     let chunks = BRAND_STRING.chunks_exact(4);
     let mut ext_leaf_2 = CpuidValues::default();
@@ -145,13 +90,38 @@ async fn cpuid_boot_test(ctx: &Framework) {
         *dst = u32::from_le_bytes(chunk.try_into().unwrap());
     }
 
-    host_cpuid.insert(CpuidIdent::leaf(0x8000_0002), ext_leaf_2).unwrap();
-    host_cpuid.insert(CpuidIdent::leaf(0x8000_0003), ext_leaf_3).unwrap();
-    host_cpuid.insert(CpuidIdent::leaf(0x8000_0004), ext_leaf_4).unwrap();
+    cpuid.insert(CpuidIdent::leaf(0x8000_0002), ext_leaf_2).unwrap();
+    cpuid.insert(CpuidIdent::leaf(0x8000_0003), ext_leaf_3).unwrap();
+    cpuid.insert(CpuidIdent::leaf(0x8000_0004), ext_leaf_4).unwrap();
+}
 
-    // Try to boot a guest with the computed CPUID values. The modified brand
-    // string should show up in /proc/cpuinfo.
-    let mut cfg = ctx.vm_config_builder("cpuid_boot_test");
+/// Asserts that `/proc/cpuinfo` in the guest returns output that contains
+/// [`BRAND_STRING`].
+async fn verify_guest_brand_string(vm: &TestVm) -> anyhow::Result<()> {
+    let cpuinfo = vm.run_shell_command("cat /proc/cpuinfo").await?;
+    info!(cpuinfo, "/proc/cpuinfo output");
+    assert!(cpuinfo.contains(
+        std::str::from_utf8(BRAND_STRING).unwrap().trim_matches('\0')
+    ));
+
+    Ok(())
+}
+
+/// Launches a test VM with a synthetic brand string injected into its CPUID
+/// leaves.
+async fn launch_cpuid_smoke_test_vm(
+    ctx: &Framework,
+    vm_name: &str,
+) -> anyhow::Result<TestVm> {
+    let mut host_cpuid = cpuid_utils::host::query_complete(
+        cpuid_utils::host::CpuidSource::BhyveDefault,
+    )?;
+
+    info!(?host_cpuid, "read bhyve default CPUID");
+
+    inject_brand_string(&mut host_cpuid);
+
+    let mut cfg = ctx.vm_config_builder(vm_name);
     cfg.cpuid(
         host_cpuid
             .iter()
@@ -169,9 +139,31 @@ async fn cpuid_boot_test(ctx: &Framework) {
     vm.launch().await?;
     vm.wait_to_boot().await?;
 
-    let cpuinfo = vm.run_shell_command("cat /proc/cpuinfo").await?;
-    info!(cpuinfo, "/proc/cpuinfo output");
-    assert!(cpuinfo.contains(
-        std::str::from_utf8(BRAND_STRING).unwrap().trim_matches('\0')
-    ));
+    Ok(vm)
+}
+
+#[phd_testcase]
+async fn cpuid_boot_test(ctx: &Framework) {
+    let vm = launch_cpuid_smoke_test_vm(ctx, "cpuid_boot_test").await?;
+    verify_guest_brand_string(&vm).await?;
+}
+
+#[phd_testcase]
+async fn cpuid_migrate_smoke_test(ctx: &Framework) {
+    let vm = launch_cpuid_smoke_test_vm(ctx, "cpuid_boot_test").await?;
+    verify_guest_brand_string(&vm).await?;
+
+    // Migrate the VM and make sure the brand string setting persists.
+    let mut target = ctx
+        .spawn_successor_vm("cpuid_boot_test_migration_target", &vm, None)
+        .await?;
+
+    target
+        .migrate_from(&vm, Uuid::new_v4(), MigrationTimeout::default())
+        .await?;
+
+    // Reset the target to force it to reread its CPU information.
+    target.reset().await?;
+    target.wait_to_boot().await?;
+    verify_guest_brand_string(&target).await?;
 }

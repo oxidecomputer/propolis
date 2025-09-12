@@ -90,6 +90,15 @@ impl UDSock {
         let _inner = self.cv.wait_while(inner, |i| i.client.is_none());
     }
 
+    #[cfg(test)]
+    pub fn wait_for_disconnect(&self) {
+        let inner = self.inner.lock().unwrap();
+        if inner.client.is_none() {
+            return;
+        }
+        let _inner = self.cv.wait_while(inner, |i| i.client.is_some());
+    }
+
     pub async fn run(
         &self,
         sink: Arc<dyn Sink>,
@@ -131,6 +140,10 @@ impl UDSock {
         let mut buf = [0u8; BUF_SIZE];
         loop {
             let num = readh.read(&mut buf).await?;
+            if num == 0 {
+                // If the client is gone, we're done here
+                return Ok(());
+            }
             sink_buf.write(&buf[..num], sink).await;
         }
     }
@@ -145,5 +158,100 @@ impl UDSock {
                 writeh.write_all(&buf[..n]).await?;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::chardev;
+
+    use tempfile::NamedTempFile;
+
+    struct TestChardev {
+        sink_notify: chardev::NotifierCell<dyn Sink>,
+        source_notify: chardev::NotifierCell<dyn Source>,
+    }
+    impl TestChardev {
+        fn new() -> Self {
+            Self {
+                sink_notify: chardev::NotifierCell::new(),
+                source_notify: chardev::NotifierCell::new(),
+            }
+        }
+    }
+
+    impl chardev::Sink for TestChardev {
+        fn write(&self, _data: u8) -> bool {
+            // Accept all writes
+            true
+        }
+
+        fn set_notifier(&self, f: Option<chardev::SinkNotifier>) {
+            self.sink_notify.set(f);
+        }
+    }
+    impl chardev::Source for TestChardev {
+        fn read(&self) -> Option<u8> {
+            None
+        }
+
+        fn discard(&self, count: usize) -> usize {
+            count
+        }
+
+        fn set_autodiscard(&self, _active: bool) {}
+
+        fn set_notifier(&self, f: Option<chardev::SourceNotifier>) {
+            self.source_notify.set(f);
+        }
+    }
+
+    async fn wait_connected(sock: &Arc<UDSock>) {
+        let wsock = sock.clone();
+        let _ = tokio::spawn(async move {
+            tokio::task::block_in_place(|| wsock.wait_for_connect())
+        })
+        .await;
+    }
+    async fn wait_disconnected(sock: &Arc<UDSock>) {
+        let wsock = sock.clone();
+        let _ = tokio::spawn(async move {
+            tokio::task::block_in_place(|| wsock.wait_for_disconnect())
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bail_on_shutdown_sock() {
+        let tempf = NamedTempFile::new().expect("can create tempfile");
+        let sockpath = tempf.into_temp_path();
+
+        let testdev = Arc::new(TestChardev::new());
+
+        std::fs::remove_file(&sockpath)
+            .expect("can unlink tempfile prior to sock bind");
+        let sock = UDSock::bind(&sockpath).expect("socket bind succeeds");
+
+        sock.spawn(testdev.clone(), testdev.clone());
+
+        // Make sure that a client can successfully connect and disconnect
+
+        let csock = UnixStream::connect(&sockpath)
+            .expect("can connect to chardev sock");
+        wait_connected(&sock).await;
+        drop(csock);
+
+        tokio::time::timeout(Duration::from_secs(1), wait_disconnected(&sock))
+            .await
+            .expect("socket transitions to disconnected within arb. timeout");
+
+        let csock = UnixStream::connect(&sockpath)
+            .expect("can connect to chardev sock");
+        wait_connected(&sock).await;
+        drop(csock);
     }
 }

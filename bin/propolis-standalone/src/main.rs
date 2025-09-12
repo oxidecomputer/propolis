@@ -328,7 +328,7 @@ impl Instance {
                 State::Run => {
                     if first_boot {
                         device.start().unwrap_or_else(|_| {
-                            panic!("device {} failed to start", name)
+                            panic!("device {name} failed to start")
                         });
                     } else {
                         device.resume();
@@ -337,7 +337,7 @@ impl Instance {
                 State::Quiesce => device.pause(),
                 State::Halt => device.halt(),
                 State::Reset => device.reset(),
-                _ => panic!("invalid device state transition {:?}", state),
+                _ => panic!("invalid device state transition {state:?}"),
             }
         }
         if matches!(state, State::Quiesce) {
@@ -460,7 +460,9 @@ impl Instance {
                     }
                 }
                 State::Quiesce => {
-                    // stop device emulation and vCPUs
+                    // Stop device emulation and vCPUs. Note that the device
+                    // lifecycle trait requires vCPUs to be paused before any
+                    // devices pause.
                     for vcpu_task in guard.vcpu_tasks.iter_mut() {
                         let _ = vcpu_task.hold();
                     }
@@ -867,13 +869,13 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
         ..Default::default()
     };
 
-    let cpuid_vendor = cpuid_utils::host_query(CpuidIdent::leaf(0));
+    let cpuid_vendor = cpuid_utils::host::query(CpuidIdent::leaf(0));
     let cpuid_ident = params
         .cpuid_ident
-        .unwrap_or_else(|| cpuid_utils::host_query(CpuidIdent::leaf(1)));
+        .unwrap_or_else(|| cpuid_utils::host::query(CpuidIdent::leaf(1)));
     let family = match cpuid_ident.eax & 0xf00 {
         // If family ID is 0xf, extended family is added to it
-        0xf00 => (cpuid_ident.eax >> 20 & 0xff) + 0xf,
+        0xf00 => ((cpuid_ident.eax >> 20) & 0xff) + 0xf,
         // ... otherwise base family ID is used
         base => base >> 8,
     };
@@ -892,15 +894,16 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
         //unknown
         _ => 0x2,
     };
-    let proc_id = u64::from(cpuid_ident.eax) | u64::from(cpuid_ident.edx) << 32;
+    let proc_id =
+        u64::from(cpuid_ident.eax) | (u64::from(cpuid_ident.edx) << 32);
     let procname_entries = params.cpuid_procname.or_else(|| {
-        if cpuid_utils::host_query(CpuidIdent::leaf(0x8000_0000)).eax
+        if cpuid_utils::host::query(CpuidIdent::leaf(0x8000_0000)).eax
             >= 0x8000_0004
         {
             Some([
-                cpuid_utils::host_query(CpuidIdent::leaf(0x8000_0002)),
-                cpuid_utils::host_query(CpuidIdent::leaf(0x8000_0003)),
-                cpuid_utils::host_query(CpuidIdent::leaf(0x8000_0004)),
+                cpuid_utils::host::query(CpuidIdent::leaf(0x8000_0002)),
+                cpuid_utils::host::query(CpuidIdent::leaf(0x8000_0003)),
+                cpuid_utils::host::query(CpuidIdent::leaf(0x8000_0004)),
             ])
         } else {
             None
@@ -959,6 +962,32 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
     smb_tables.add(0x3200.into(), &smb_type32).unwrap();
 
     Ok(smb_tables.commit())
+}
+
+fn generate_e820(
+    machine: &Machine,
+    log: &slog::Logger,
+) -> anyhow::Result<fwcfg::Entry> {
+    slog::info!(log, "Generating E820 map for guest address space",);
+
+    let mut e820_table = fwcfg::formats::E820Table::new();
+
+    use propolis::vmm::MapType;
+
+    for (addr, len, kind) in machine.map_physmem.mappings().into_iter() {
+        let addr = addr.try_into().context("usize should fit into u64")?;
+        let len = len.try_into().context("usize should fit into u64")?;
+        match kind {
+            MapType::Dram => {
+                e820_table.add_mem(addr, len);
+            }
+            _ => {
+                e820_table.add_reserved(addr, len);
+            }
+        }
+    }
+
+    Ok(e820_table.finish())
 }
 
 fn generate_bootorder(
@@ -1192,8 +1221,24 @@ fn setup_instance(
                         dev.options.get("vnic").unwrap().as_str().unwrap();
                     let bdf = bdf.unwrap();
 
+                    let viona_params =
+                        config::VionaDeviceParams::from_opts(&dev.options)
+                            .expect("viona params are valid");
+
+                    if viona_params.is_some()
+                        && hw::virtio::viona::api_version()
+                            .expect("can query viona version")
+                            < hw::virtio::viona::ApiVersion::V3
+                    {
+                        // lazy cop-out for now
+                        panic!("can't set viona params on too-old version");
+                    }
+
                     let viona = hw::virtio::PciVirtioViona::new(
-                        vnic_name, 0x100, &hdl,
+                        vnic_name,
+                        0x100,
+                        &hdl,
+                        viona_params,
                     )?;
                     guard.inventory.register_instance(&viona, &bdf.to_string());
                     chipset_pci_attach(bdf, viona);
@@ -1214,7 +1259,14 @@ fn setup_instance(
                         log.new(slog::o!("dev" => format!("nvme-{}", name)));
                     // Limit data transfers to 1MiB (2^8 * 4k) in size
                     let mdts = Some(8);
-                    let nvme = hw::nvme::PciNvme::create(dev_serial, mdts, log);
+
+                    let mut serial_number = [0u8; 20];
+                    let sz = dev_serial.len().min(20);
+                    serial_number[..sz]
+                        .clone_from_slice(&dev_serial.as_bytes()[..sz]);
+
+                    let nvme =
+                        hw::nvme::PciNvme::create(&serial_number, mdts, log);
 
                     guard.inventory.register_instance(&nvme, &bdf.to_string());
                     guard.inventory.register_block(&backend, name);
@@ -1324,6 +1376,8 @@ fn setup_instance(
     {
         fwcfg.insert_named("bootorder", boot_config).unwrap();
     }
+    let e820_entry = generate_e820(machine, log).expect("can build E820 table");
+    fwcfg.insert_named("etc/e820", e820_entry).unwrap();
 
     fwcfg.attach(pio, &machine.acc_mem);
 
@@ -1421,6 +1475,9 @@ fn main() -> anyhow::Result<ExitCode> {
     // Check that vmm and viona device version match what we expect
     api_version_checks(&log).context("API version checks")?;
 
+    propolis::common::DISPLAY_GUEST_DATA
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
     // Load/parse the config first, since it's required to size the tokio runtime
     // used to run the instance.
     let config = if restore {
@@ -1433,11 +1490,11 @@ fn main() -> anyhow::Result<ExitCode> {
     // since we'll block in main when we call `Instance::wait_for_state`
     let rt_threads =
         MIN_RT_THREADS.max(BASE_RT_THREADS + config.main.cpus as usize);
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(rt_threads)
-        .enable_all()
-        .thread_name("vmm-tokio")
-        .build()?;
+    let rt = {
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        builder.worker_threads(rt_threads).thread_name("vmm-tokio");
+        oxide_tokio_rt::build(&mut builder)?
+    };
     let _rt_guard = rt.enter();
 
     // Create the VM afresh or restore it from a snapshot

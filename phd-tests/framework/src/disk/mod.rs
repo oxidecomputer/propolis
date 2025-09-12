@@ -13,14 +13,14 @@ use std::sync::Arc;
 use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
 use in_memory::InMemoryDisk;
-use propolis_client::types::ComponentV0;
+use propolis_client::instance_spec::ComponentV0;
 use thiserror::Error;
 
 use crate::{
     artifacts::ArtifactStore,
     guest_os::GuestOsKind,
+    log_config::LogConfig,
     port_allocator::{PortAllocator, PortAllocatorError},
-    server_log_mode::ServerLogMode,
 };
 
 use self::{crucible::CrucibleDisk, file::FileBackedDisk};
@@ -94,6 +94,10 @@ impl DeviceName {
 
     pub fn into_string(self) -> String {
         self.0
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
     }
 }
 
@@ -186,7 +190,7 @@ pub(crate) struct DiskFactory {
     port_allocator: Arc<PortAllocator>,
 
     /// The logging discipline to use for Crucible server processes.
-    log_mode: ServerLogMode,
+    log_config: LogConfig,
 }
 
 impl DiskFactory {
@@ -197,13 +201,13 @@ impl DiskFactory {
         storage_dir: &impl AsRef<Utf8Path>,
         artifact_store: Arc<ArtifactStore>,
         port_allocator: Arc<PortAllocator>,
-        log_mode: ServerLogMode,
+        log_config: LogConfig,
     ) -> Self {
         Self {
             storage_dir: storage_dir.as_ref().to_path_buf(),
             artifact_store,
             port_allocator,
-            log_mode,
+            log_config,
         }
     }
 }
@@ -217,17 +221,17 @@ impl DiskFactory {
             .get_guest_os_image(artifact_name)
             .await
             .with_context(|| {
-                format!("failed to get guest OS artifact '{}'", artifact_name)
+                format!("failed to get guest OS artifact '{artifact_name}'")
             })
             .map_err(Into::into)
     }
 
     /// Creates a new disk backed by a file whose initial contents are specified
     /// by `source`.
-    pub(crate) async fn create_file_backed_disk<'d>(
+    pub(crate) async fn create_file_backed_disk(
         &self,
         name: DeviceName,
-        source: &DiskSource<'d>,
+        source: &DiskSource<'_>,
     ) -> Result<Arc<FileBackedDisk>, DiskError> {
         let artifact_name = match source {
             DiskSource::Artifact(name) => name,
@@ -268,13 +272,15 @@ impl DiskFactory {
     /// - min_disk_size_gib: The disk's minimum size in GiB. The disk's actual
     ///   size is the larger of this size and the source's size.
     /// - block_size: The disk's block size.
-    pub(crate) async fn create_crucible_disk<'d>(
+    pub(crate) async fn create_crucible_disk(
         &self,
         name: DeviceName,
-        source: &DiskSource<'d>,
+        source: &DiskSource<'_>,
         mut min_disk_size_gib: u64,
         block_size: BlockSize,
     ) -> Result<Arc<CrucibleDisk>, DiskError> {
+        const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
+
         let binary_path = self.artifact_store.get_crucible_downstairs().await?;
 
         let (artifact_path, guest_os) = match source {
@@ -283,8 +289,13 @@ impl DiskFactory {
                 (Some(path), Some(os))
             }
             DiskSource::Blank(size) => {
-                min_disk_size_gib = min_disk_size_gib
-                    .max(u64::try_from(*size).map_err(anyhow::Error::from)?);
+                let blank_size =
+                    u64::try_from(*size).map_err(anyhow::Error::from)?;
+
+                let min_disk_size_b =
+                    (min_disk_size_gib * BYTES_PER_GIB).max(blank_size);
+
+                min_disk_size_gib = min_disk_size_b.div_ceil(BYTES_PER_GIB);
                 (None, None)
             }
             // It's possible in theory to have a Crucible-backed disk with
@@ -314,23 +325,23 @@ impl DiskFactory {
             &self.storage_dir,
             artifact_path.as_ref(),
             guest_os,
-            self.log_mode,
+            self.log_config,
         )
         .map(Arc::new)
         .map_err(Into::into)
     }
 
-    pub(crate) async fn create_in_memory_disk<'d>(
+    pub(crate) async fn create_in_memory_disk(
         &self,
         name: DeviceName,
-        source: &DiskSource<'d>,
+        source: &DiskSource<'_>,
         readonly: bool,
     ) -> Result<Arc<InMemoryDisk>, DiskError> {
         let contents = match source {
             DiskSource::Artifact(name) => {
                 let (path, _) = self.get_guest_artifact_info(name).await?;
                 std::fs::read(&path).with_context(|| {
-                    format!("reading source artifact {} from {}", name, path)
+                    format!("reading source artifact {name} from {path}")
                 })?
             }
             DiskSource::Blank(size) => vec![0; *size],

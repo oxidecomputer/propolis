@@ -11,9 +11,10 @@ use serde::{Deserialize, Serialize};
 
 mod alpine;
 mod debian11_nocloud;
+mod linux;
 mod shell_commands;
 mod ubuntu22_04;
-mod windows;
+pub mod windows;
 mod windows_server_2016;
 mod windows_server_2019;
 mod windows_server_2022;
@@ -60,6 +61,13 @@ impl<'a> CommandSequenceEntry<'a> {
 
 pub(super) struct CommandSequence<'a>(pub Vec<CommandSequenceEntry<'a>>);
 
+impl<'a> CommandSequence<'a> {
+    fn extend(mut self, other: CommandSequence<'a>) -> CommandSequence<'a> {
+        self.0.extend(other.0);
+        self
+    }
+}
+
 pub(super) trait GuestOs: Send + Sync {
     /// Retrieves the command sequence used to wait for the OS to boot and log
     /// into it.
@@ -99,6 +107,30 @@ pub enum GuestOsKind {
     WindowsServer2022,
 }
 
+impl GuestOsKind {
+    pub fn is_linux(&self) -> bool {
+        match self {
+            GuestOsKind::Alpine
+            | GuestOsKind::Debian11NoCloud
+            | GuestOsKind::Ubuntu2204 => true,
+            GuestOsKind::WindowsServer2016
+            | GuestOsKind::WindowsServer2019
+            | GuestOsKind::WindowsServer2022 => false,
+        }
+    }
+
+    pub fn is_windows(&self) -> bool {
+        match self {
+            GuestOsKind::WindowsServer2016
+            | GuestOsKind::WindowsServer2019
+            | GuestOsKind::WindowsServer2022 => true,
+            GuestOsKind::Alpine
+            | GuestOsKind::Debian11NoCloud
+            | GuestOsKind::Ubuntu2204 => false,
+        }
+    }
+}
+
 impl FromStr for GuestOsKind {
     type Err = std::io::Error;
 
@@ -112,7 +144,7 @@ impl FromStr for GuestOsKind {
             "windowsserver2022" => Ok(Self::WindowsServer2022),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("Unrecognized guest OS kind {}", s),
+                format!("Unrecognized guest OS kind {s}"),
             )),
         }
     }

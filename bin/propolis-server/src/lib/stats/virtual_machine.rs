@@ -61,8 +61,11 @@ pub struct VirtualMachine {
     vm_name: String,
 }
 
-impl From<&propolis_api_types::InstanceProperties> for VirtualMachine {
-    fn from(properties: &propolis_api_types::InstanceProperties) -> Self {
+impl VirtualMachine {
+    pub fn new(
+        n_vcpus: u8,
+        properties: &propolis_api_types::InstanceProperties,
+    ) -> Self {
         Self {
             target: VirtualMachineTarget {
                 silo_id: properties.metadata.silo_id,
@@ -73,7 +76,7 @@ impl From<&propolis_api_types::InstanceProperties> for VirtualMachine {
                 sled_revision: properties.metadata.sled_revision,
                 sled_serial: properties.metadata.sled_serial.clone().into(),
             },
-            n_vcpus: properties.vcpus.into(),
+            n_vcpus: u32::from(n_vcpus),
             vm_name: properties.vm_name(),
         }
     }
@@ -187,7 +190,7 @@ impl KstatTarget for VirtualMachine {
             .find_map(|(_, kstat, data)| {
                 kstat_instance_from_instance_id(kstat, data, &self.vm_name)
             })
-            .ok_or_else(|| Error::NoSuchKstat)?;
+            .ok_or(Error::NoSuchKstat)?;
 
         // Armed with the kstat instance, find all relevant metrics related to
         // this particular VM. For now, we produce only vCPU usage metrics, but
@@ -492,10 +495,9 @@ mod test {
                 )
                 .unwrap_or_else(|| {
                     panic!(
-                        "kstat state '{}' did not map to an oximeter state, \
-                        which it should have done. Did that state get \
-                        mapped to a new oximeter-level state?",
-                        kstat_state
+                        "kstat state '{kstat_state}' did not map to an \
+                        oximeter state, which it should have done. Did that \
+                        state get mapped to a new oximeter-level state?"
                     )
                 });
                 *observed_states.entry(oximeter_state).or_default() += count;

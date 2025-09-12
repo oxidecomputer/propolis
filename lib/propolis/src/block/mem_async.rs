@@ -42,6 +42,10 @@ impl WorkingState {
                 req.complete(block::Result::ReadOnly);
                 continue;
             }
+            if req.oper().is_discard() {
+                req.complete(block::Result::Unsupported);
+                continue;
+            }
             let res = match acc_mem
                 .access()
                 .and_then(|mem| self.process_request(&req, &mem).ok())
@@ -97,6 +101,9 @@ impl WorkingState {
             block::Operation::Flush => {
                 // nothing to do
             }
+            block::Operation::Discard(..) => {
+                unreachable!("handled in processing_loop()")
+            }
         }
 
         Ok(())
@@ -132,6 +139,7 @@ impl MemAsyncBackend {
                     block_size,
                     total_size: size / u64::from(block_size),
                     read_only: opts.read_only.unwrap_or(false),
+                    supports_discard: false,
                 },
                 seg,
             }),

@@ -8,8 +8,10 @@ use crate::{
     disk::{self, DiskConfig},
     guest_os::GuestOsKind,
 };
-use propolis_client::types::{
-    ComponentV0, DiskRequest, InstanceMetadata, InstanceSpecV0, PciPath, Slot,
+use camino::Utf8PathBuf;
+use propolis_client::{
+    instance_spec::{ComponentV0, InstanceSpecV0},
+    types::InstanceMetadata,
 };
 use uuid::Uuid;
 
@@ -19,7 +21,7 @@ pub struct VmSpec {
     pub vm_name: String,
 
     /// The instance spec to pass to the VM when starting the guest.
-    pub instance_spec: InstanceSpecV0,
+    base_instance_spec: InstanceSpecV0,
 
     /// A set of handles to disk files that the VM's disk backends refer to.
     pub disk_handles: Vec<Arc<dyn disk::DiskConfig>>,
@@ -27,17 +29,54 @@ pub struct VmSpec {
     /// The guest OS adapter to use for the VM.
     pub guest_os_kind: GuestOsKind,
 
-    /// The contents of the config TOML to write to run this VM.
-    pub config_toml_contents: String,
+    /// The bootrom path to pass to this VM's Propolis server processes.
+    pub bootrom_path: Utf8PathBuf,
 
     /// Metadata used to track instance timeseries data.
     pub metadata: InstanceMetadata,
 }
 
 impl VmSpec {
+    pub fn get_disk_by_device_name(
+        &self,
+        name: &str,
+    ) -> Option<&Arc<dyn disk::DiskConfig>> {
+        self.disk_handles
+            .iter()
+            .find(|disk| disk.device_name().as_str() == name)
+    }
+
+    pub(crate) fn new(
+        vm_name: String,
+        instance_spec: InstanceSpecV0,
+        disk_handles: Vec<Arc<dyn disk::DiskConfig>>,
+        guest_os_kind: GuestOsKind,
+        bootrom_path: Utf8PathBuf,
+        metadata: InstanceMetadata,
+    ) -> Self {
+        Self {
+            vm_name,
+            base_instance_spec: instance_spec,
+            disk_handles,
+            guest_os_kind,
+            bootrom_path,
+            metadata,
+        }
+    }
+
+    pub(crate) fn set_vm_name(&mut self, name: String) {
+        self.vm_name = name
+    }
+
+    pub(crate) fn instance_spec(&self) -> InstanceSpecV0 {
+        let mut spec = self.base_instance_spec.clone();
+        self.set_crucible_backends(&mut spec);
+        spec
+    }
+
     /// Update the Crucible backend specs in the instance spec to match the
     /// current backend specs given by this specification's disk handles.
-    pub(crate) fn refresh_crucible_backends(&mut self) {
+    fn set_crucible_backends(&self, spec: &mut InstanceSpecV0) {
         for disk in &self.disk_handles {
             let disk = if let Some(disk) = disk.as_crucible() {
                 disk
@@ -46,14 +85,16 @@ impl VmSpec {
             };
 
             let backend_spec = disk.backend_spec();
-            let backend_name =
-                disk.device_name().clone().into_backend_name().into_string();
+            let backend_name = disk
+                .device_name()
+                .clone()
+                .into_backend_name()
+                .into_string()
+                .into();
             if let Some(ComponentV0::CrucibleStorageBackend(_)) =
-                self.instance_spec.components.get(&backend_name)
+                spec.components.get(&backend_name)
             {
-                self.instance_spec
-                    .components
-                    .insert(backend_name, backend_spec);
+                spec.components.insert(backend_name, backend_spec);
             }
         }
     }
@@ -73,81 +114,5 @@ impl VmSpec {
         let id = Uuid::new_v4();
         self.metadata.sled_id = id;
         self.metadata.sled_serial = id.to_string();
-    }
-
-    /// Generates a set of [`propolis_client::types::DiskRequest`] structures
-    /// corresponding to the disks in this VM spec.
-    ///
-    /// All of the disks in the spec must be Crucible disks. If one is not, this
-    /// routine returns an error.
-    pub(crate) fn make_disk_requests(
-        &self,
-    ) -> anyhow::Result<Vec<DiskRequest>> {
-        struct DeviceInfo<'a> {
-            backend_name: &'a str,
-            interface: &'static str,
-            slot: Slot,
-        }
-
-        fn convert_to_slot(pci_path: PciPath) -> anyhow::Result<Slot> {
-            match pci_path.device {
-                dev @ 0x10..=0x17 => Ok(Slot(dev - 0x10)),
-                _ => Err(anyhow::anyhow!(
-                    "PCI device number {} out of range",
-                    pci_path.device
-                )),
-            }
-        }
-
-        fn get_device_info(device: &ComponentV0) -> anyhow::Result<DeviceInfo> {
-            match device {
-                ComponentV0::VirtioDisk(d) => Ok(DeviceInfo {
-                    backend_name: &d.backend_name,
-                    interface: "virtio",
-                    slot: convert_to_slot(d.pci_path)?,
-                }),
-                ComponentV0::NvmeDisk(d) => Ok(DeviceInfo {
-                    backend_name: &d.backend_name,
-                    interface: "nvme",
-                    slot: convert_to_slot(d.pci_path)?,
-                }),
-                _ => {
-                    panic!("asked to get device info for a non-storage device")
-                }
-            }
-        }
-
-        let mut reqs = vec![];
-        for (name, device) in
-            self.instance_spec.components.iter().filter(|(_, c)| {
-                matches!(
-                    c,
-                    ComponentV0::VirtioDisk(_) | ComponentV0::NvmeDisk(_)
-                )
-            })
-        {
-            let info = get_device_info(device)?;
-            let backend = self
-                .instance_spec
-                .components
-                .get(info.backend_name)
-                .expect("storage device should have a matching backend");
-
-            let ComponentV0::CrucibleStorageBackend(backend) = backend else {
-                anyhow::bail!("disk {name} does not have a Crucible backend");
-            };
-
-            reqs.push(DiskRequest {
-                device: info.interface.to_owned(),
-                name: name.clone(),
-                read_only: backend.readonly,
-                slot: info.slot,
-                volume_construction_request: serde_json::from_str(
-                    &backend.request_json,
-                )?,
-            })
-        }
-
-        Ok(reqs)
     }
 }

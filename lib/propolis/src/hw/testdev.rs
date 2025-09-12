@@ -35,7 +35,7 @@ pub struct MigrationFailures {
 struct MigrationFailurePayloadV1 {}
 
 impl MigrationFailureDevice {
-    pub const NAME: &'static str = "test-migration-failure";
+    const NAME: &'static str = "test-migration-failure";
 
     pub fn create(log: &slog::Logger, fail: MigrationFailures) -> Arc<Self> {
         let log =

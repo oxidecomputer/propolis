@@ -5,11 +5,16 @@
 //! Routines for starting VMs, changing their states, and interacting with their
 //! guest OSes.
 
-use std::{fmt::Debug, io::Write, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap, fmt::Debug, net::SocketAddr, sync::Arc,
+    time::Duration,
+};
 
 use crate::{
+    disk::{crucible::CrucibleDisk, DiskConfig},
     guest_os::{
-        self, CommandSequence, CommandSequenceEntry, GuestOs, GuestOsKind,
+        self, windows::WindowsVm, CommandSequence, CommandSequenceEntry,
+        GuestOs, GuestOsKind,
     },
     serial::{BufferKind, SerialConsole},
     test_vm::{
@@ -22,13 +27,14 @@ use anyhow::{anyhow, bail, Context, Result};
 use camino::Utf8PathBuf;
 use core::result::Result as StdResult;
 use propolis_client::{
+    instance_spec::{ComponentV0, ReplacementComponent},
     support::{InstanceSerialConsoleHelper, WSClientOffset},
     types::{
         InstanceEnsureRequest, InstanceGetResponse,
-        InstanceMigrateInitiateRequest, InstanceMigrateStatusResponse,
+        InstanceInitializationMethod, InstanceMigrateStatusResponse,
         InstanceProperties, InstanceSerialConsoleHistoryResponse,
-        InstanceSpecEnsureRequest, InstanceSpecGetResponse, InstanceState,
-        InstanceStateRequested, MigrationState, VersionedInstanceSpec,
+        InstanceSpecGetResponse, InstanceState, InstanceStateRequested,
+        MigrationState,
     },
 };
 use propolis_client::{Client, ResponseValue};
@@ -47,11 +53,13 @@ type PropolisClientResult<T> = StdResult<ResponseValue<T>, PropolisClientError>;
 
 pub(crate) mod config;
 pub(crate) mod environment;
+pub(crate) mod metrics;
 mod server;
 pub(crate) mod spec;
 
 pub use config::*;
-pub use environment::VmLocation;
+pub use environment::{MetricsLocation, VmLocation};
+pub use metrics::FakeOximeterSampler;
 
 use self::environment::EnvironmentSpec;
 
@@ -64,6 +72,15 @@ pub enum VmStateError {
         "Operation can only be performed on a new VM that has not been ensured"
     )]
     InstanceAlreadyEnsured,
+}
+
+type ReplacementComponents = HashMap<String, ReplacementComponent>;
+
+#[derive(Clone, Debug)]
+struct MigrationInfo {
+    migration_id: Uuid,
+    src_addr: SocketAddr,
+    replace_components: ReplacementComponents,
 }
 
 /// Specifies the timeout to apply to an attempt to migrate.
@@ -126,15 +143,6 @@ enum InstanceConsoleSource<'a> {
 
     // Clone an existing console connection from the supplied VM.
     InheritFrom(&'a TestVm),
-}
-
-/// Specifies the propolis-server interface to use when starting a VM.
-enum InstanceEnsureApi {
-    /// Use the `instance_spec_ensure` interface.
-    SpecEnsure,
-
-    /// Use the `instance_ensure` interface.
-    Ensure,
 }
 
 enum VmState {
@@ -253,6 +261,7 @@ pub struct TestVm {
     id: Uuid,
     client: Client,
     server: Option<server::PropolisServer>,
+    metrics: Option<metrics::FakeOximeterServer>,
     spec: VmSpec,
     environment_spec: EnvironmentSpec,
     data_dir: Utf8PathBuf,
@@ -325,44 +334,36 @@ impl TestVm {
         vm_id: Uuid,
         vm_spec: VmSpec,
         environment_spec: EnvironmentSpec,
-        params: ServerProcessParameters,
+        mut params: ServerProcessParameters,
         cleanup_task_tx: UnboundedSender<JoinHandle<()>>,
     ) -> Result<Self> {
-        let config_filename = format!("{}.config.toml", &vm_spec.vm_name);
-        let mut config_toml_path = params.data_dir.to_path_buf();
-        config_toml_path.push(config_filename);
-        let mut config_file = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(&config_toml_path)
-            .with_context(|| {
-                format!("opening config file {} for writing", config_toml_path)
-            })?;
-
-        config_file
-            .write_all(vm_spec.config_toml_contents.as_bytes())
-            .with_context(|| {
-                format!(
-                    "writing config toml to config file {}",
-                    config_toml_path
-                )
-            })?;
+        let metrics = environment_spec.metrics.as_ref().map(|m| match m {
+            MetricsLocation::Local => {
+                // Our fake oximeter server should have the same logging
+                // discipline as any other subprocess we'd start in support of
+                // the test, so copy the config from `ServerProcessParameters`.
+                let metrics_server =
+                    metrics::spawn_fake_oximeter_server(params.log_config);
+                params.metrics_addr = Some(metrics_server.local_addr());
+                metrics_server
+            }
+        });
 
         let data_dir = params.data_dir.to_path_buf();
         let server_addr = params.server_addr;
         let server = server::PropolisServer::new(
             &vm_spec.vm_name,
             params,
-            &config_toml_path,
+            &vm_spec.bootrom_path,
         )?;
 
-        let client = Client::new(&format!("http://{}", server_addr));
+        let client = Client::new(&format!("http://{server_addr}"));
         let guest_os = guest_os::get_guest_os_adapter(vm_spec.guest_os_kind);
         Ok(Self {
             id: vm_id,
             client,
             server: Some(server),
+            metrics,
             spec: vm_spec,
             environment_spec,
             data_dir,
@@ -388,43 +389,44 @@ impl TestVm {
         self.environment_spec.clone()
     }
 
+    pub fn instance_properties(&self) -> InstanceProperties {
+        InstanceProperties {
+            id: self.id,
+            name: format!("phd-vm-{}", self.id),
+            metadata: self.spec.metadata.clone(),
+            description: "Pheidippides-managed VM".to_string(),
+        }
+    }
+
+    pub fn metrics_sampler(&self) -> Option<FakeOximeterSampler> {
+        self.metrics.as_ref().map(|m| m.sampler())
+    }
+
     /// Sends an instance ensure request to this VM's server, allowing it to
     /// transition into the running state.
     #[instrument(skip_all, fields(vm = self.spec.vm_name, vm_id = %self.id))]
     async fn instance_ensure_internal<'a>(
         &self,
-        api: InstanceEnsureApi,
-        migrate: Option<InstanceMigrateInitiateRequest>,
+        migrate: Option<MigrationInfo>,
         console_source: InstanceConsoleSource<'a>,
     ) -> Result<SerialConsole> {
-        let (vcpus, memory_mib) = match self.state {
-            VmState::New => (
-                self.spec.instance_spec.board.cpus,
-                self.spec.instance_spec.board.memory_mb,
-            ),
-            VmState::Ensured { .. } => {
-                return Err(VmStateError::InstanceAlreadyEnsured.into())
-            }
-        };
+        if let VmState::Ensured { .. } = self.state {
+            return Err(VmStateError::InstanceAlreadyEnsured.into());
+        }
 
-        let properties = InstanceProperties {
-            id: self.id,
-            name: format!("phd-vm-{}", self.id),
-            metadata: self.spec.metadata.clone(),
-            description: "Pheidippides-managed VM".to_string(),
-            image_id: Uuid::default(),
-            bootrom_id: Uuid::default(),
-            memory: memory_mib,
-            vcpus,
+        let init = match migrate {
+            None => InstanceInitializationMethod::Spec {
+                spec: self.spec.instance_spec(),
+            },
+            Some(info) => InstanceInitializationMethod::MigrationTarget {
+                migration_id: info.migration_id,
+                replace_components: info.replace_components,
+                src_addr: info.src_addr.to_string(),
+            },
         };
-
-        // The non-spec ensure interface requires a set of `DiskRequest`
-        // structures to specify disks. Create those once and clone them if the
-        // ensure call needs to be retried.
-        let disk_reqs = if let InstanceEnsureApi::Ensure = api {
-            Some(self.spec.make_disk_requests()?)
-        } else {
-            None
+        let ensure_req = InstanceEnsureRequest {
+            properties: self.instance_properties(),
+            init,
         };
 
         // There is a brief period where the Propolis server process has begun
@@ -436,37 +438,8 @@ impl TestVm {
         // it's possible to create a boxed future that abstracts over the
         // caller's chosen endpoint.
         let ensure_fn = || async {
-            let result = match api {
-                InstanceEnsureApi::SpecEnsure => {
-                    let versioned_spec = VersionedInstanceSpec::V0(
-                        self.spec.instance_spec.clone(),
-                    );
-
-                    let ensure_req = InstanceSpecEnsureRequest {
-                        properties: properties.clone(),
-                        instance_spec: versioned_spec,
-                        migrate: migrate.clone(),
-                    };
-
-                    self.client
-                        .instance_spec_ensure()
-                        .body(&ensure_req)
-                        .send()
-                        .await
-                }
-                InstanceEnsureApi::Ensure => {
-                    let ensure_req = InstanceEnsureRequest {
-                        cloud_init_bytes: None,
-                        disks: disk_reqs.clone().unwrap(),
-                        migrate: migrate.clone(),
-                        nics: vec![],
-                        boot_settings: None,
-                        properties: properties.clone(),
-                    };
-
-                    self.client.instance_ensure().body(&ensure_req).send().await
-                }
-            };
+            let result =
+                self.client.instance_ensure().body(&ensure_req).send().await;
             if let Err(e) = result {
                 match e {
                     propolis_client::Error::CommunicationError(_) => {
@@ -542,6 +515,12 @@ impl TestVm {
         self.spec.guest_os_kind
     }
 
+    /// If this VM is running a Windows guest, returns a wrapper that provides
+    /// Windows-specific VM functions.
+    pub fn get_windows_vm(&self) -> Option<WindowsVm> {
+        self.guest_os_kind().is_windows().then_some(WindowsVm { vm: self })
+    }
+
     /// Sets the VM to the running state. If the VM has not yet been launched
     /// (by sending a Propolis instance-ensure request to it), send that request
     /// first.
@@ -557,29 +536,7 @@ impl TestVm {
         match self.state {
             VmState::New => {
                 let console = self
-                    .instance_ensure_internal(
-                        InstanceEnsureApi::SpecEnsure,
-                        None,
-                        InstanceConsoleSource::New,
-                    )
-                    .await?;
-                self.state = VmState::Ensured { serial: console };
-            }
-            VmState::Ensured { .. } => {}
-        }
-
-        Ok(())
-    }
-
-    pub async fn instance_ensure_using_api_request(&mut self) -> Result<()> {
-        match self.state {
-            VmState::New => {
-                let console = self
-                    .instance_ensure_internal(
-                        InstanceEnsureApi::Ensure,
-                        None,
-                        InstanceConsoleSource::New,
-                    )
+                    .instance_ensure_internal(None, InstanceConsoleSource::New)
                     .await?;
                 self.state = VmState::Ensured { serial: console };
             }
@@ -658,7 +615,7 @@ impl TestVm {
         let timeout_duration = match Into::<MigrationTimeout>::into(timeout) {
             MigrationTimeout::Explicit(val) => val,
             MigrationTimeout::InferFromMemorySize => {
-                let mem_mib = self.spec.instance_spec.board.memory_mb;
+                let mem_mib = self.spec.instance_spec().board.memory_mb;
                 std::time::Duration::from_secs(
                     (MIGRATION_SECS_PER_GUEST_GIB * mem_mib) / 1024,
                 )
@@ -682,11 +639,11 @@ impl TestVm {
 
                 let serial = self
                     .instance_ensure_internal(
-                        InstanceEnsureApi::SpecEnsure,
-                        Some(InstanceMigrateInitiateRequest {
+                        Some(MigrationInfo {
                             migration_id,
-                            src_addr: server_addr.to_string(),
-                            src_uuid: Uuid::default(),
+                            src_addr: SocketAddr::V4(server_addr),
+                            replace_components: self
+                                .generate_replacement_components(),
                         }),
                         InstanceConsoleSource::InheritFrom(source),
                     )
@@ -740,10 +697,70 @@ impl TestVm {
         }
     }
 
+    fn generate_replacement_components(&self) -> ReplacementComponents {
+        let mut map = ReplacementComponents::new();
+        for (id, comp) in &self.spec.instance_spec().components {
+            match comp {
+                ComponentV0::MigrationFailureInjector(inj) => {
+                    map.insert(
+                        id.to_string(),
+                        ReplacementComponent::MigrationFailureInjector(
+                            inj.clone(),
+                        ),
+                    );
+                }
+                ComponentV0::CrucibleStorageBackend(be) => {
+                    map.insert(
+                        id.to_string(),
+                        ReplacementComponent::CrucibleStorageBackend(
+                            be.clone(),
+                        ),
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        map
+    }
+
     pub async fn get_migration_state(
         &self,
     ) -> Result<InstanceMigrateStatusResponse> {
         Ok(self.client.instance_migrate_status().send().await?.into_inner())
+    }
+
+    pub async fn replace_crucible_vcr(
+        &self,
+        disk: &CrucibleDisk,
+    ) -> anyhow::Result<()> {
+        let vcr = disk.vcr();
+        let body = propolis_client::types::InstanceVcrReplace {
+            vcr_json: serde_json::to_string(&vcr)
+                .with_context(|| format!("serializing VCR {vcr:?}"))?,
+        };
+
+        info!(
+            disk_name = disk.device_name().as_str(),
+            vcr = ?vcr,
+            "issuing Crucible VCR replacement request"
+        );
+
+        let response_value = self
+            .client
+            .instance_issue_crucible_vcr_request()
+            .id(disk.device_name().clone().into_backend_name().into_string())
+            .body(body)
+            .send()
+            .await?;
+
+        anyhow::ensure!(
+            response_value.status().is_success(),
+            "VCR replacement request returned an error value: \
+            {response_value:?}"
+        );
+
+        Ok(())
     }
 
     pub async fn get_serial_console_history(

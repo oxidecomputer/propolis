@@ -32,12 +32,14 @@ dropshot = { workspace = true, features = ["usdt-probes"] }
 erased-serde.workspace = true
 futures.workspace = true
 hyper.workspace = true
-internal-dns.workspace = true
+internal-dns-resolver.workspace = true
+internal-dns-types.workspace = true
 itertools.workspace = true
 kstat-rs.workspace = true
 lazy_static.workspace = true
 nexus-client.workspace = true
 omicron-common.workspace = true
+oxide-tokio-rt.workspace = true
 oximeter-instruments.workspace = true
 oximeter-producer.workspace = true
 oximeter.workspace = true
@@ -47,6 +49,7 @@ tokio = { workspace = true, features = ["full"] }
 tokio-tungstenite.workspace = true
 tokio-util = { workspace = true, features = ["codec"] }
 toml.workspace = true
+semver.workspace = true
 serde.workspace = true
 serde_derive.workspace = true
 serde_json.workspace = true
@@ -59,7 +62,6 @@ strum = { workspace = true, features = ["derive"] }
 propolis = { workspace = true, features = ["crucible-full", "oximeter"] }
 propolis_api_types = { workspace = true }
 propolis_types.workspace = true
-propolis-server-config.workspace = true
 rgb_frame.workspace = true
 rfb = { workspace = true, features = ["tungstenite"] }
 uuid.workspace = true
@@ -74,6 +76,7 @@ ring.workspace = true
 slog = { workspace = true, features = [ "max_level_trace", "release_max_level_debug" ] }
 expectorate.workspace = true
 mockall.workspace = true
+proptest.workspace = true
 
 [features]
 default = []
@@ -84,3 +87,8 @@ omicron-build = ["propolis/omicron-build"]
 
 # Falcon builds require corresponding bits turned on in the dependency libs
 falcon = ["propolis/falcon"]
+# Testing necessitates injecting failures which should hopefully be rare or even
+# never occur on real otherwise-unperturbed systems. We conditionally compile
+# code supporting failure injection to avoid the risk of somehow injecting
+# failures into a real system not under test.
+failure-injection = []

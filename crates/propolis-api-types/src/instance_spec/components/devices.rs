@@ -5,7 +5,7 @@
 //! Device configuration data: components that define VM properties that are
 //! visible to a VM's guest software.
 
-use crate::instance_spec::PciPath;
+use crate::instance_spec::{PciPath, SpecKey};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct VirtioDisk {
     /// The name of the disk's backend component.
-    pub backend_name: String,
+    pub backend_id: SpecKey,
 
     /// The PCI bus/device/function at which this disk should be attached.
     pub pci_path: PciPath,
@@ -25,10 +25,14 @@ pub struct VirtioDisk {
 #[serde(deny_unknown_fields)]
 pub struct NvmeDisk {
     /// The name of the disk's backend component.
-    pub backend_name: String,
+    pub backend_id: SpecKey,
 
     /// The PCI bus/device/function at which this disk should be attached.
     pub pci_path: PciPath,
+
+    /// The serial number to return in response to an NVMe Identify Controller
+    /// command.
+    pub serial_number: [u8; 20],
 }
 
 /// A network card that presents a virtio-net interface to the guest.
@@ -36,7 +40,7 @@ pub struct NvmeDisk {
 #[serde(deny_unknown_fields)]
 pub struct VirtioNic {
     /// The name of the device's backend.
-    pub backend_name: String,
+    pub backend_id: SpecKey,
 
     /// A caller-defined correlation identifier for this interface. If Propolis
     /// is configured to collect network interface kstats in its Oximeter
@@ -115,13 +119,13 @@ pub struct BootSettings {
 }
 
 /// An entry in the boot order stored in a [`BootSettings`] component.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, Default)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 pub struct BootOrderEntry {
-    /// The name of another component in the spec that Propolis should try to
+    /// The ID of another component in the spec that Propolis should try to
     /// boot from.
     ///
     /// Currently, only disk device components are supported.
-    pub name: String,
+    pub id: SpecKey,
 }
 
 //
@@ -139,18 +143,18 @@ pub struct SoftNpuPciPort {
     pub pci_path: PciPath,
 }
 
-/// Describes a SoftNPU network port.
+/// Describes a port in a SoftNPU emulated ASIC.
 ///
 /// This is only supported by Propolis servers compiled with the `falcon`
 /// feature.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuPort {
-    /// The name of the SoftNpu port.
-    pub name: String,
+    /// The data link name for this port.
+    pub link_name: String,
 
-    /// The name of the device's backend.
-    pub backend_name: String,
+    /// The name of the port's associated DLPI backend.
+    pub backend_id: SpecKey,
 }
 
 /// Describes a PCI device that shares host files with the guest using the P9
@@ -184,4 +188,19 @@ pub struct P9fs {
 
     /// The PCI path at which to attach the guest to this P9 filesystem.
     pub pci_path: PciPath,
+}
+
+/// Describes a synthetic device that registers for VM lifecycle notifications
+/// and returns errors during attempts to migrate.
+///
+/// This is only supported by Propolis servers compiled with the
+/// `failure-injection` feature.
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MigrationFailureInjector {
+    /// The number of times this device should fail requests to export state.
+    pub fail_exports: u32,
+
+    /// The number of times this device should fail requests to import state.
+    pub fail_imports: u32,
 }

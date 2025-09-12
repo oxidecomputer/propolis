@@ -9,13 +9,23 @@ doctest = false
 
 [dependencies]
 anyhow.workspace = true
+backoff.workspace = true
 byteorder.workspace = true
+chrono.workspace = true
 cpuid_utils.workspace = true
+dropshot.workspace = true
 futures.workspace = true
-itertools.workspace = true
 http.workspace = true
-propolis-client.workspace = true
+itertools.workspace = true
+omicron-common.workspace = true
+oximeter-producer.workspace = true
+oximeter.workspace = true
 phd-testcase.workspace = true
+propolis-client.workspace = true
 reqwest.workspace = true
+slog-term.workspace = true
+slog.workspace = true
+strum.workspace = true
+tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 uuid.workspace = true

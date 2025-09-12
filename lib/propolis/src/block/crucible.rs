@@ -5,6 +5,7 @@
 //! Implement a virtual block device backed by Crucible
 
 use std::io;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::accessors::MemAccessor;
@@ -14,6 +15,7 @@ use crate::vmm::MemCtx;
 
 use crucible::{
     BlockIO, Buffer, CrucibleError, ReplaceResult, SnapshotDetails, Volume,
+    VolumeBuilder,
 };
 use crucible_client_types::VolumeConstructionRequest;
 use oximeter::types::ProducerRegistry;
@@ -55,7 +57,7 @@ impl WorkerState {
             };
             let res = if let Some(memctx) = acc_mem.access() {
                 match process_request(
-                    &self.volume,
+                    self.volume.deref(),
                     &self.info,
                     self.skip_flush,
                     &req,
@@ -147,6 +149,7 @@ impl CrucibleBackend {
                     block_size: block_size as u32,
                     total_size: sectors,
                     read_only: opts.read_only.unwrap_or(false),
+                    supports_discard: false,
                 },
                 skip_flush: opts.skip_flush.unwrap_or(false),
             }),
@@ -182,8 +185,8 @@ impl CrucibleBackend {
             block_size,
             size as usize,
         ));
-        let mut volume = Volume::new(block_size, log);
-        volume
+        let mut builder = VolumeBuilder::new(block_size, log);
+        builder
             .add_subvolume(mem_disk)
             .await
             .map_err(|e| std::io::Error::from(e))?;
@@ -191,11 +194,12 @@ impl CrucibleBackend {
         Ok(Arc::new(CrucibleBackend {
             state: Arc::new(WorkerState {
                 attachment: block::BackendAttachment::new(),
-                volume,
+                volume: builder.into(),
                 info: block::DeviceInfo {
                     block_size: block_size as u32,
                     total_size: size / block_size,
                     read_only: opts.read_only.unwrap_or(false),
+                    supports_discard: false,
                 },
                 skip_flush: opts.skip_flush.unwrap_or(false),
             }),
@@ -310,6 +314,8 @@ pub enum Error {
     BadGuestRegion,
     #[error("backend is read-only")]
     ReadOnly,
+    #[error("operation not supported")]
+    Unsupported,
 
     #[error("offset or length not multiple of blocksize")]
     BlocksizeMismatch,
@@ -327,6 +333,7 @@ impl From<Error> for block::Result {
     fn from(value: Error) -> Self {
         match value {
             Error::ReadOnly => block::Result::ReadOnly,
+            Error::Unsupported => block::Result::Unsupported,
             _ => block::Result::Failure,
         }
     }
@@ -418,6 +425,10 @@ async fn process_request(
                 // Send flush to crucible
                 let _ = block.flush(None).await?;
             }
+        }
+        block::Operation::Discard(..) => {
+            // Crucible does not support discard operations for now
+            return Err(Error::Unsupported);
         }
     }
     Ok(())

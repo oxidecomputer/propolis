@@ -94,7 +94,15 @@ impl BhyveRtc {
 
         // High-mem
         if high_mem > 0 {
-            let high = ((high_mem / CHUNK) as u32).to_le_bytes();
+            // If high_mem is 1TiB or larger, the division below produces a
+            // number that overflows the 24 bits available at
+            // `CMOS_OFF_MEM_HIGH`. Clamp the value so guests aren't subjected
+            // to arbitrary wrapping. OVMF is told about the highmem layout via
+            // E820 table anyway, so the only thing that might care about these
+            // bytes are guest OSes that check the RTC CMOS bytes directly.
+            let chunks =
+                std::cmp::min(high_mem / CHUNK, u32::MAX as usize) as u32;
+            let high = chunks.to_le_bytes();
 
             hdl.rtc_write(CMOS_OFF_MEM_HIGH, high[0])?;
             hdl.rtc_write(CMOS_OFF_MEM_HIGH + 1, high[1])?;

@@ -37,6 +37,18 @@ if [ ! -d "$tmpdir" ]; then
 	mkdir $tmpdir
 fi
 
+# We'll be using the reservoir, so set it to something higher than the default
+# 0MiB. Most tests would only need 512MiB (the default PHD guest VM memory
+# size), some tests want to run multiple VMs concurrently (particularly around
+# migration). 4096MiB is an arbitrary number intended to support the above and
+# that we might want to run those tests concurrently at some point.
+#
+# Currently the lab host these tests will run on is well-known and has much
+# more memory than this. Hopefully we won't have Propolis CI running on a
+# machine with ~4GiB of memory, but this number could be tuned down if the need
+# arises.
+pfexec /usr/lib/rsrvrctl -s 4096
+
 banner 'Tests'
 
 runner="$phddir/phd-runner"
@@ -65,8 +77,7 @@ failcount=$?
 set -e
 
 tar -czvf /tmp/phd-tmp-files.tar.gz \
-	-C /tmp/propolis-phd /tmp/propolis-phd/*.log \
-	-C /tmp/propolis-phd /tmp/propolis-phd/*.toml
+	-C /tmp/propolis-phd /tmp/propolis-phd/*.log
 
 exitcode=0
 if [ $failcount -eq 0 ]; then

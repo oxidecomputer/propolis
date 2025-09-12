@@ -2,15 +2,19 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::Context;
 use cpuid_utils::CpuidIdent;
-use propolis_client::types::{
-    Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
-    CpuidEntry, CpuidVendor, InstanceMetadata, InstanceSpecV0, NvmeDisk,
-    PciPath, SerialPort, SerialPortNumber, VirtioDisk,
+use propolis_client::{
+    instance_spec::{
+        Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
+        CpuidEntry, CpuidVendor, GuestHypervisorInterface, InstanceSpecV0,
+        MigrationFailureInjector, NvmeDisk, PciPath, SerialPort,
+        SerialPortNumber, SpecKey, VirtioDisk,
+    },
+    support::nvme_serial_from_str,
+    types::InstanceMetadata,
 };
 use uuid::Uuid;
 
@@ -51,10 +55,9 @@ pub struct VmConfig<'dr> {
     bootrom_artifact: String,
     boot_order: Option<Vec<&'dr str>>,
     disks: Vec<DiskRequest<'dr>>,
-    devices: BTreeMap<String, propolis_server_config::Device>,
+    migration_failure: Option<MigrationFailureInjector>,
+    guest_hv_interface: Option<GuestHypervisorInterface>,
 }
-
-const MIGRATION_FAILURE_DEVICE: &str = "test-migration-failure";
 
 impl<'dr> VmConfig<'dr> {
     pub(crate) fn new(
@@ -72,7 +75,8 @@ impl<'dr> VmConfig<'dr> {
             bootrom_artifact: bootrom.to_owned(),
             boot_order: None,
             disks: Vec::new(),
-            devices: BTreeMap::new(),
+            migration_failure: None,
+            guest_hv_interface: None,
         };
 
         config.boot_disk(
@@ -110,21 +114,31 @@ impl<'dr> VmConfig<'dr> {
         self
     }
 
+    pub fn guest_hv_interface(
+        &mut self,
+        interface: GuestHypervisorInterface,
+    ) -> &mut Self {
+        self.guest_hv_interface = Some(interface);
+        self
+    }
+
     pub fn fail_migration_exports(&mut self, exports: u32) -> &mut Self {
-        self.devices
-            .entry(MIGRATION_FAILURE_DEVICE.to_owned())
-            .or_insert_with(default_migration_failure_device)
-            .options
-            .insert("fail_exports".to_string(), exports.into());
+        let injector =
+            self.migration_failure.get_or_insert(MigrationFailureInjector {
+                fail_exports: 0,
+                fail_imports: 0,
+            });
+        injector.fail_exports = exports;
         self
     }
 
     pub fn fail_migration_imports(&mut self, imports: u32) -> &mut Self {
-        self.devices
-            .entry(MIGRATION_FAILURE_DEVICE.to_owned())
-            .or_insert_with(default_migration_failure_device)
-            .options
-            .insert("fail_imports".to_string(), imports.into());
+        let injector =
+            self.migration_failure.get_or_insert(MigrationFailureInjector {
+                fail_exports: 0,
+                fail_imports: 0,
+            });
+        injector.fail_imports = imports;
         self
     }
 
@@ -194,25 +208,27 @@ impl<'dr> VmConfig<'dr> {
         self
     }
 
-    pub(crate) async fn vm_spec(
+    pub async fn vm_spec(
         &self,
         framework: &Framework,
     ) -> anyhow::Result<VmSpec> {
-        // Figure out where the bootrom is and generate the serialized contents
-        // of a Propolis server config TOML that points to it.
-        let bootrom = framework
+        let VmConfig {
+            vm_name,
+            cpus,
+            memory_mib,
+            cpuid,
+            bootrom_artifact,
+            boot_order,
+            disks,
+            migration_failure,
+            guest_hv_interface,
+        } = self;
+
+        let bootrom_path = framework
             .artifact_store
-            .get_bootrom(&self.bootrom_artifact)
+            .get_bootrom(bootrom_artifact)
             .await
             .context("looking up bootrom artifact")?;
-
-        let config_toml_contents =
-            toml::ser::to_string(&propolis_server_config::Config {
-                bootrom: bootrom.clone().into(),
-                devices: self.devices.clone(),
-                ..Default::default()
-            })
-            .context("serializing Propolis server config")?;
 
         // The first disk in the boot list might not be the disk a test
         // *actually* expects to boot.
@@ -227,20 +243,19 @@ impl<'dr> VmConfig<'dr> {
         // specific guest OS adapter and avoid the guessing games. So far the
         // above supports existing tests and makes them "Just Work", but a more
         // complicated test may want more control here.
-        let boot_disk = self
-            .disks
+        let boot_disk = disks
             .iter()
             .find(|d| d.name == "boot-disk")
             .or_else(|| {
-                if let Some(boot_order) = self.boot_order.as_ref() {
-                    boot_order.first().and_then(|name| {
-                        self.disks.iter().find(|d| &d.name == name)
-                    })
+                if let Some(boot_order) = boot_order.as_ref() {
+                    boot_order
+                        .first()
+                        .and_then(|name| disks.iter().find(|d| &d.name == name))
                 } else {
                     None
                 }
             })
-            .or_else(|| self.disks.first())
+            .or_else(|| disks.first())
             .expect("VM config includes at least one disk");
 
         // XXX: assuming all bootable images are equivalent to the first, or at
@@ -256,7 +271,7 @@ impl<'dr> VmConfig<'dr> {
             .context("getting guest OS kind for boot disk")?;
 
         let mut disk_handles = Vec::new();
-        for disk in self.disks.iter() {
+        for disk in disks.iter() {
             disk_handles.push(
                 make_disk(disk.name.to_owned(), framework, disk)
                     .await
@@ -264,7 +279,7 @@ impl<'dr> VmConfig<'dr> {
             );
         }
 
-        let host_leaf_0 = cpuid_utils::host_query(CpuidIdent::leaf(0));
+        let host_leaf_0 = cpuid_utils::host::query(CpuidIdent::leaf(0));
         let host_vendor = cpuid_utils::CpuidVendor::try_from(host_leaf_0)
             .map_err(|_| {
                 anyhow::anyhow!(
@@ -274,16 +289,20 @@ impl<'dr> VmConfig<'dr> {
 
         let mut spec = InstanceSpecV0 {
             board: Board {
-                cpus: self.cpus,
-                memory_mb: self.memory_mib,
+                cpus: *cpus,
+                memory_mb: *memory_mib,
                 chipset: Chipset::default(),
-                cpuid: self.cpuid.as_ref().map(|entries| Cpuid {
+                cpuid: cpuid.as_ref().map(|entries| Cpuid {
                     entries: entries.clone(),
                     vendor: match host_vendor {
                         cpuid_utils::CpuidVendor::Amd => CpuidVendor::Amd,
                         cpuid_utils::CpuidVendor::Intel => CpuidVendor::Intel,
                     },
                 }),
+                guest_hv_interface: guest_hv_interface
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or_default(),
             },
             components: Default::default(),
         };
@@ -292,7 +311,7 @@ impl<'dr> VmConfig<'dr> {
         // elements for all of them. This assumes the disk handles were created
         // in the correct order: boot disk first, then in the data disks'
         // iteration order.
-        let all_disks = self.disks.iter().zip(disk_handles.iter());
+        let all_disks = disks.iter().zip(disk_handles.iter());
         for (req, hdl) in all_disks {
             let pci_path = PciPath::new(0, req.pci_device_num, 0).unwrap();
             let backend_spec = hdl.backend_spec();
@@ -300,39 +319,63 @@ impl<'dr> VmConfig<'dr> {
             let backend_name = device_name.clone().into_backend_name();
             let device_spec = match req.interface {
                 DiskInterface::Virtio => ComponentV0::VirtioDisk(VirtioDisk {
-                    backend_name: backend_name.clone().into_string(),
+                    backend_id: SpecKey::Name(
+                        backend_name.clone().into_string(),
+                    ),
                     pci_path,
                 }),
                 DiskInterface::Nvme => ComponentV0::NvmeDisk(NvmeDisk {
-                    backend_name: backend_name.clone().into_string(),
+                    backend_id: SpecKey::Name(
+                        backend_name.clone().into_string(),
+                    ),
                     pci_path,
+                    serial_number: nvme_serial_from_str(
+                        device_name.as_str(),
+                        // Omicron supplies (or will supply, as of this writing)
+                        // 0 as the padding byte to maintain compatibility for
+                        // existing disks. Match that behavior here so that PHD
+                        // and Omicron VM configurations are as similar as
+                        // possible.
+                        0,
+                    ),
                 }),
             };
 
-            let _old =
-                spec.components.insert(device_name.into_string(), device_spec);
+            let _old = spec
+                .components
+                .insert(device_name.into_string().into(), device_spec);
             assert!(_old.is_none());
             let _old = spec
                 .components
-                .insert(backend_name.into_string(), backend_spec);
+                .insert(backend_name.into_string().into(), backend_spec);
             assert!(_old.is_none());
         }
 
         let _old = spec.components.insert(
-            "com1".to_string(),
+            "com1".into(),
             ComponentV0::SerialPort(SerialPort { num: SerialPortNumber::Com1 }),
         );
         assert!(_old.is_none());
 
-        if let Some(boot_order) = self.boot_order.as_ref() {
+        if let Some(boot_order) = boot_order.as_ref() {
             let _old = spec.components.insert(
-                "boot-settings".to_string(),
+                "boot-settings".into(),
                 ComponentV0::BootSettings(BootSettings {
                     order: boot_order
                         .iter()
-                        .map(|item| BootOrderEntry { name: item.to_string() })
+                        .map(|item| BootOrderEntry {
+                            id: SpecKey::Name(item.to_string()),
+                        })
                         .collect(),
                 }),
+            );
+            assert!(_old.is_none());
+        }
+
+        if let Some(mig) = migration_failure.as_ref() {
+            let _old = spec.components.insert(
+                "migration-failure".into(),
+                ComponentV0::MigrationFailureInjector(mig.clone()),
             );
             assert!(_old.is_none());
         }
@@ -348,21 +391,21 @@ impl<'dr> VmConfig<'dr> {
             sled_serial: sled_id.to_string(),
         };
 
-        Ok(VmSpec {
-            vm_name: self.vm_name.clone(),
-            instance_spec: spec,
+        Ok(VmSpec::new(
+            vm_name.clone(),
+            spec,
             disk_handles,
             guest_os_kind,
-            config_toml_contents,
+            bootrom_path,
             metadata,
-        })
+        ))
     }
 }
 
-async fn make_disk<'req>(
+async fn make_disk(
     device_name: String,
     framework: &Framework,
-    req: &DiskRequest<'req>,
+    req: &DiskRequest<'_>,
 ) -> anyhow::Result<Arc<dyn DiskConfig>> {
     let device_name = DeviceName::new(device_name);
 
@@ -399,11 +442,4 @@ async fn make_disk<'req>(
             })?
             as Arc<dyn DiskConfig>,
     })
-}
-
-fn default_migration_failure_device() -> propolis_server_config::Device {
-    propolis_server_config::Device {
-        driver: MIGRATION_FAILURE_DEVICE.to_owned(),
-        options: Default::default(),
-    }
 }

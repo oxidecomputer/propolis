@@ -227,7 +227,7 @@ pub struct InverseIter<'a, T> {
     end: usize,
 }
 
-impl<'a, T> Iterator for InverseIter<'a, T> {
+impl<T> Iterator for InverseIter<'_, T> {
     /// Item represents unregistered region in address mapping.
     type Item = Extent;
 

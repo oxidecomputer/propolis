@@ -143,13 +143,26 @@ impl FatFilesystem {
         Self { files: vec![], sectors_remaining: total_usable_sectors() }
     }
 
-    /// Adds a file with the supplied `contents` that will appear in the root
-    /// directory of the generated file system. The given `filename` must not
-    /// contain any path separators (the `/` character).
+    /// Converts the supplied `contents` string slice to bytes and adds it to
+    /// the filesystem using [`Self::add_file_from_bytes`].
+    ///
+    /// The supplied `filename` must not contain any path separators (the `/`
+    /// character).
     pub fn add_file_from_str(
         &mut self,
         filename: &str,
         contents: &str,
+    ) -> Result<(), Error> {
+        self.add_file_from_bytes(filename, contents.as_bytes())
+    }
+
+    /// Adds a file with the supplied `contents` that will appear in the root
+    /// directory of the generated file system. The given `filename` must not
+    /// contain any path separators (the `/` character).
+    pub fn add_file_from_bytes(
+        &mut self,
+        filename: &str,
+        contents: &[u8],
     ) -> Result<(), Error> {
         // The `fatfs` crate will break paths containing separators into their
         // component directories before trying to create the requested file in
@@ -163,8 +176,7 @@ impl FatFilesystem {
             return Err(Error::PathSeparatorInFilename(filename.to_owned()));
         }
 
-        let bytes = contents.as_bytes();
-        let sectors_needed = Sectors::needed_for_bytes(bytes.len());
+        let sectors_needed = Sectors::needed_for_bytes(contents.len());
         if sectors_needed > self.sectors_remaining {
             Err(Error::NoSpace {
                 required: sectors_needed.0,
@@ -173,7 +185,7 @@ impl FatFilesystem {
         } else {
             self.files.push(File {
                 name: filename.to_owned(),
-                contents: bytes.to_vec(),
+                contents: contents.to_vec(),
             });
 
             self.sectors_remaining -= sectors_needed;

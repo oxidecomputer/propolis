@@ -54,12 +54,14 @@ pub enum AdminCmd {
     /// Asynchronous Event Request Command
     AsyncEventReq,
     /// An unknown admin command
-    Unknown(#[allow(dead_code)] SubmissionQueueEntry),
+    Unknown(#[allow(dead_code)] GuestData<SubmissionQueueEntry>),
 }
 
 impl AdminCmd {
     /// Try to parse an `AdminCmd` out of a raw Submission Entry.
-    pub fn parse(raw: SubmissionQueueEntry) -> Result<Self, ParseErr> {
+    pub fn parse(
+        raw: GuestData<SubmissionQueueEntry>,
+    ) -> Result<Self, ParseErr> {
         let cmd = match raw.opcode() {
             bits::ADMIN_OPC_DELETE_IO_SQ => {
                 AdminCmd::DeleteIOSubQ(raw.cdw10 as u16)
@@ -612,7 +614,7 @@ impl TryFrom<u32> for FeatNumberQueues {
 impl From<FeatNumberQueues> for u32 {
     fn from(value: FeatNumberQueues) -> Self {
         // Convert to 0's based DW0
-        u32::from(value.ncq.saturating_sub(1)) << 16
+        (u32::from(value.ncq.saturating_sub(1)) << 16)
             | u32::from(value.nsq.saturating_sub(1))
     }
 }
@@ -630,7 +632,7 @@ impl From<u32> for FeatInterruptVectorConfig {
 }
 impl From<FeatInterruptVectorConfig> for u32 {
     fn from(value: FeatInterruptVectorConfig) -> Self {
-        u32::from(value.iv) | u32::from(value.cd) << 16
+        u32::from(value.iv) | (u32::from(value.cd) << 16)
     }
 }
 
@@ -645,12 +647,14 @@ pub enum NvmCmd {
     /// Read data and metadata
     Read(ReadCmd),
     /// An unknown NVM command
-    Unknown(SubmissionQueueEntry),
+    Unknown(GuestData<SubmissionQueueEntry>),
 }
 
 impl NvmCmd {
     /// Try to parse an `NvmCmd` out of a raw Submission Entry.
-    pub fn parse(raw: SubmissionQueueEntry) -> Result<Self, ParseErr> {
+    pub fn parse(
+        raw: GuestData<SubmissionQueueEntry>,
+    ) -> Result<Self, ParseErr> {
         let _fuse = match (raw.cdw0 >> 8) & 0b11 {
             0b00 => Ok(()),               // Normal (non-fused) operation
             0b01 => Err(ParseErr::Fused), // First fused op
@@ -660,14 +664,14 @@ impl NvmCmd {
         let cmd = match raw.opcode() {
             bits::NVM_OPC_FLUSH => NvmCmd::Flush,
             bits::NVM_OPC_WRITE => NvmCmd::Write(WriteCmd {
-                slba: u64::from(raw.cdw11) << 32 | u64::from(raw.cdw10),
+                slba: (u64::from(raw.cdw11) << 32) | u64::from(raw.cdw10),
                 // Convert from 0's based value
                 nlb: raw.cdw12 as u16 + 1,
                 prp1: raw.prp1,
                 prp2: raw.prp2,
             }),
             bits::NVM_OPC_READ => NvmCmd::Read(ReadCmd {
-                slba: u64::from(raw.cdw11) << 32 | u64::from(raw.cdw10),
+                slba: (u64::from(raw.cdw11) << 32) | u64::from(raw.cdw10),
                 // Convert from 0's based value
                 nlb: raw.cdw12 as u16 + 1,
                 prp1: raw.prp1,
@@ -882,7 +886,7 @@ impl PrpIter<'_> {
             PrpNext::List(base, idx) => {
                 assert!(idx <= PRP_LIST_MAX);
                 let entry_addr = base + u64::from(idx) * 8;
-                let entry: u64 = self
+                let entry: GuestData<u64> = self
                     .mem
                     .read(GuestAddr(entry_addr))
                     .ok_or_else(|| "Unable to read PRP list entry")?;
@@ -890,21 +894,21 @@ impl PrpIter<'_> {
                     || (self as *const Self as u64, entry,)
                 );
 
-                if entry & PAGE_OFFSET as u64 != 0 {
+                if *entry & PAGE_OFFSET as u64 != 0 {
                     return Err("Inappropriate PRP list entry offset");
                 }
 
                 if self.remain <= PAGE_SIZE as u64 {
-                    (entry, self.remain, PrpNext::Done)
+                    (*entry, self.remain, PrpNext::Done)
                 } else if idx != PRP_LIST_MAX {
-                    (entry, PAGE_SIZE as u64, PrpNext::List(base, idx + 1))
+                    (*entry, PAGE_SIZE as u64, PrpNext::List(base, idx + 1))
                 } else {
                     // The last PRP in this list chains to another
                     // (page-aligned) list with the next PRP.
-                    self.next = PrpNext::List(entry, 0);
+                    self.next = PrpNext::List(*entry, 0);
                     probes::nvme_prp_list!(|| (
                         self as *const Self as u64,
-                        entry,
+                        *entry,
                         0,
                     ));
                     return self.get_next();
@@ -1010,8 +1014,8 @@ impl Completion {
 
     /// Helper method to combine [StatusCodeType] and status code
     const fn status_field(sct: StatusCodeType, sc: u8) -> u16 {
-        (sc as u16) << 1 | ((sct as u8) as u16) << 9
-        // (more as u16) << 14 | (dnr as u16) << 15
+        ((sc as u16) << 1) | (((sct as u8) as u16) << 9)
+        // ((more as u16) << 14) | ((dnr as u16) << 15)
     }
 }
 

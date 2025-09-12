@@ -11,5 +11,10 @@ doctest = false
 libc.workspace = true
 viona_api_sys.workspace = true
 
+# nvpair dependency only enabled when building on illumos to avoid any attempts
+# to link to an absent libnvpair
+[target.'cfg(target_os = "illumos")'.dependencies]
+nvpair.workspace = true
+
 [features]
 falcon = ["viona_api_sys/falcon"]

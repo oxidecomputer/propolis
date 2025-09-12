@@ -5,8 +5,133 @@
 use std::ops::{Add, BitAnd};
 use std::ops::{Bound::*, RangeBounds};
 use std::slice::SliceIndex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::vmm::SubMapping;
+
+/// A vCPU number.
+#[derive(Clone, Copy, Debug)]
+pub struct VcpuId(u32);
+
+impl From<u32> for VcpuId {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<i32> for VcpuId {
+    /// Converts a signed 32-bit value into a CPU identifier.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `value` cannot be converted into a `u32`. This should
+    /// generally not be possible because bhyve uses non-negative (though
+    /// signed) CPU identifiers.
+    fn from(value: i32) -> Self {
+        Self(
+            u32::try_from(value)
+                .expect("vCPU number {value} should fit in a u32"),
+        )
+    }
+}
+
+impl Into<u32> for VcpuId {
+    fn into(self) -> u32 {
+        self.0
+    }
+}
+
+impl Into<i32> for VcpuId {
+    /// Converts a CPU identifier into a signed 32-bit value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the inner value cannot be converted to an `i32`. This should
+    /// generally not be possible because Propolis limits the maximum number of
+    /// CPUs a VM can have to a number well below `i32::MAX`.
+    fn into(self) -> i32 {
+        i32::try_from(self.0)
+            .expect("vCPU number {self.0} should fit in an i32")
+    }
+}
+
+/// Controls whether items wrapped in a [`GuestData`] are displayed or redacted
+/// when the wrappers are printed via their `Display` or `Debug` impls.
+//
+// The Propolis server binary should only link the Propolis lib once (any
+// structure that links the lib multiple times means something is very odd about
+// its dependency graph), so there should never be any ambiguity about what
+// `DISPLAY_GUEST_DATA` refers to when linking. But to be maximally cautious,
+// label this static as `no_mangle` so that pulling in multiple Propolis
+// libraries will break the build instead of possibly resolving ambiguously.
+#[no_mangle]
+pub static DISPLAY_GUEST_DATA: AtomicBool = AtomicBool::new(false);
+
+/// A wrapper type denoting that the contained `T` was obtained from the guest
+/// (e.g. by reading the guest's memory). This type implements various traits
+/// (`Deref`, `DerefMut`, and `Borrow`) that allow it to be treated in most
+/// cases as just another instance of a `T`. The main difference is that this
+/// wrapper has custom `Display` and `Debug` implementations that redact the
+/// wrapped value unless the program has set the [`DISPLAY_GUEST_DATA`] flag.
+///
+/// NOTE: This wrapper type is not airtight: owners of a wrapper can always
+/// dereference it and invoke the Display/Debug impls directly on the resulting
+/// reference to the wrapped value. If `T` is `Clone`, they can also clone the
+/// dereferenced value and display the clone. (This comes with the territory
+/// here: users need to be able to get at the wrapped value to be able to do
+/// anything useful with it!)
+///
+/// NOTE: This type does not provide any other security guarantees (e.g. it does
+/// not ensure that the wrapped memory will be zeroed on drop).
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct GuestData<T: ?Sized>(T);
+
+impl<T: std::fmt::Display> std::fmt::Display for GuestData<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if DISPLAY_GUEST_DATA.load(Ordering::Relaxed) {
+            write!(f, "{}", self.0)
+        } else {
+            write!(f, "<guest data redacted>")
+        }
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for GuestData<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if DISPLAY_GUEST_DATA.load(Ordering::Relaxed) {
+            write!(f, "{:?}", self.0)
+        } else {
+            write!(f, "<guest data redacted>")
+        }
+    }
+}
+
+impl<T> std::ops::Deref for GuestData<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for GuestData<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T> From<T> for GuestData<T> {
+    fn from(value: T) -> Self {
+        Self(value)
+    }
+}
+
+impl<T> std::borrow::Borrow<T> for GuestData<T> {
+    fn borrow(&self) -> &T {
+        &self.0
+    }
+}
 
 fn numeric_bounds(
     bound: impl RangeBounds<usize>,
@@ -342,7 +467,7 @@ impl RWOp<'_, '_> {
 }
 
 /// An address within a guest VM.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct GuestAddr(pub u64);
 
 impl GuestAddr {

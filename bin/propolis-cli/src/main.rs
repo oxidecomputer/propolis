@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -12,10 +13,22 @@ use std::{
 };
 
 use anyhow::{anyhow, Context};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use futures::{future, SinkExt};
 use newtype_uuid::{GenericUuid, TypedUuid, TypedUuidKind, TypedUuidTag};
-use propolis_client::types::InstanceMetadata;
+use propolis_client::instance_spec::{
+    BlobStorageBackend, Board, Chipset, ComponentV0, CrucibleStorageBackend,
+    GuestHypervisorInterface, HyperVFeatureFlag, I440Fx, InstanceSpecV0,
+    NvmeDisk, PciPath, QemuPvpanic, ReplacementComponent, SerialPort,
+    SerialPortNumber, SpecKey, VirtioDisk,
+};
+use propolis_client::support::nvme_serial_from_str;
+use propolis_client::types::{
+    InstanceEnsureRequest, InstanceInitializationMethod, InstanceMetadata,
+    InstanceSpecGetResponse,
+};
+use propolis_config_toml::spec::SpecConfig;
+use serde::{Deserialize, Serialize};
 use slog::{o, Drain, Level, Logger};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::{
@@ -27,7 +40,6 @@ use uuid::Uuid;
 use propolis_client::{
     support::{InstanceSerialConsoleHelper, WSClientOffset},
     types::{
-        DiskRequest, InstanceEnsureRequest, InstanceMigrateInitiateRequest,
         InstanceProperties, InstanceStateRequested, InstanceVcrReplace,
         MigrationState,
     },
@@ -66,21 +78,8 @@ enum Command {
         #[clap(short = 'u', action)]
         uuid: Option<Uuid>,
 
-        /// Number of vCPUs allocated to instance
-        #[clap(short = 'c', default_value = "4", action)]
-        vcpus: u8,
-
-        /// Memory allocated to instance (MiB)
-        #[clap(short, default_value = "1024", action)]
-        memory: u64,
-
-        /// File with a JSON array of DiskRequest structs
-        #[clap(long, action)]
-        crucible_disks: Option<PathBuf>,
-
-        // cloud_init ISO file
-        #[clap(long, action)]
-        cloud_init: Option<PathBuf>,
+        #[clap(flatten)]
+        config: VmConfig,
 
         /// A UUID to use for the instance's silo, attached to instance metrics.
         #[clap(long)]
@@ -158,13 +157,265 @@ enum Command {
     /// Call the VolumeConstructionRequest replace endpoint
     Vcr {
         /// Uuid for the disk
-        #[clap(short = 'u', action)]
-        uuid: Uuid,
+        #[clap(short = 'd', action)]
+        disk_id: String,
 
         /// File with a JSON InstanceVcrReplace struct
         #[clap(long, action)]
         vcr_replace: PathBuf,
     },
+}
+
+#[derive(Args, Clone, Debug)]
+struct VmConfig {
+    /// A path to a file containing a JSON-formatted instance spec
+    #[clap(short = 's', long, action, group = "spec_group")]
+    spec: Option<PathBuf>,
+
+    /// Number of vCPUs allocated to instance
+    #[clap(short = 'c', default_value = "4", action, requires = "config_toml")]
+    vcpus: u8,
+
+    /// Memory allocated to instance (MiB)
+    #[clap(short, default_value = "1024", action, requires = "config_toml")]
+    memory: u64,
+
+    /// A path to a file containing a config TOML
+    #[clap(short = 't', long, action, group = "config_group", requires_all = ["vcpus", "memory"])]
+    config_toml: Option<PathBuf>,
+
+    /// File with a JSON array of DiskRequest structs
+    #[clap(long, action, conflicts_with = "spec")]
+    crucible_disks: Option<PathBuf>,
+
+    // cloud_init ISO file
+    #[clap(long, action, conflicts_with = "spec")]
+    cloud_init: Option<PathBuf>,
+
+    /// enable Hyper-V compatible enlightenments for this VM
+    #[clap(long, action)]
+    hyperv: bool,
+}
+
+fn add_component_to_spec(
+    spec: &mut InstanceSpecV0,
+    id: SpecKey,
+    component: ComponentV0,
+) -> anyhow::Result<()> {
+    use std::collections::btree_map::Entry;
+    match spec.components.entry(id) {
+        Entry::Vacant(vacant_entry) => {
+            vacant_entry.insert(component);
+            Ok(())
+        }
+        Entry::Occupied(occupied_entry) => Err(anyhow::anyhow!(
+            "duplicate component ID {:?}",
+            occupied_entry.key()
+        )),
+    }
+}
+
+/// A legacy Propolis API disk request, preserved here for compatibility with
+/// the `--crucible-disks` option.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct DiskRequest {
+    name: String,
+    slot: u8,
+    read_only: bool,
+    device: String,
+    volume_construction_request: propolis_client::VolumeConstructionRequest,
+}
+
+#[derive(Clone, Debug)]
+struct ParsedDiskRequest {
+    device_id: SpecKey,
+    device_spec: ComponentV0,
+    backend_id: SpecKey,
+    backend_spec: CrucibleStorageBackend,
+}
+
+impl DiskRequest {
+    fn parse(&self) -> anyhow::Result<ParsedDiskRequest> {
+        // Preserve compatibility with the old Propolis API by adding 16 to the
+        // slot number, which must be between 0 and 7 inclusive.
+        if !(0..8).contains(&self.slot) {
+            anyhow::bail!("disk request slots must be in [0..7]");
+        }
+
+        let slot = self.slot + 0x10;
+        let backend_id = SpecKey::Name(format!("{}-backend", self.name));
+        let pci_path = PciPath::new(0, slot, 0).with_context(|| {
+            format!("processing disk request {:?}", self.name)
+        })?;
+        let device_spec = match self.device.as_ref() {
+            "virtio" => ComponentV0::VirtioDisk(VirtioDisk {
+                backend_id: backend_id.clone(),
+                pci_path,
+            }),
+            "nvme" => ComponentV0::NvmeDisk(NvmeDisk {
+                backend_id: backend_id.clone(),
+                pci_path,
+                serial_number: nvme_serial_from_str(&self.name, b' '),
+            }),
+            _ => anyhow::bail!(
+                "invalid device type in disk request: {:?}",
+                self.device
+            ),
+        };
+
+        let backend_spec = CrucibleStorageBackend {
+            readonly: self.read_only,
+            request_json: serde_json::to_string(
+                &self.volume_construction_request,
+            )?,
+        };
+
+        Ok(ParsedDiskRequest {
+            device_id: SpecKey::Name(self.name.clone()),
+            device_spec,
+            backend_id,
+            backend_spec,
+        })
+    }
+}
+
+impl VmConfig {
+    fn instance_spec(&self) -> anyhow::Result<InstanceSpecV0> {
+        // If the configuration specifies an instance spec path, just read the
+        // spec from that path and return it. Otherwise, construct a spec from
+        // this configuration's component parts.
+        if let Some(path) = &self.spec {
+            return parse_json_file(path);
+        }
+
+        let from_toml = &self
+            .config_toml
+            .as_ref()
+            .map(propolis_config_toml::parse)
+            .transpose()?
+            .as_ref()
+            .map(SpecConfig::try_from)
+            .transpose()?;
+
+        let enable_pcie =
+            from_toml.as_ref().map(|cfg| cfg.enable_pcie).unwrap_or(false);
+
+        let mut spec = InstanceSpecV0 {
+            board: Board {
+                chipset: Chipset::I440Fx(I440Fx { enable_pcie }),
+                cpuid: None,
+                cpus: self.vcpus,
+                memory_mb: self.memory,
+                guest_hv_interface: if self.hyperv {
+                    GuestHypervisorInterface::HyperV {
+                        features: [HyperVFeatureFlag::ReferenceTsc]
+                            .into_iter()
+                            .collect(),
+                    }
+                } else {
+                    Default::default()
+                },
+            },
+            components: Default::default(),
+        };
+
+        if let Some(from_toml) = from_toml {
+            for (id, component) in from_toml.components.iter() {
+                add_component_to_spec(
+                    &mut spec,
+                    id.clone(),
+                    component.clone(),
+                )?;
+            }
+        }
+
+        for disk_request in self
+            .crucible_disks
+            .as_ref()
+            .map(|path| parse_json_file::<Vec<DiskRequest>>(path))
+            .transpose()?
+            .iter()
+            .flatten()
+        {
+            let ParsedDiskRequest {
+                device_id,
+                device_spec,
+                backend_id,
+                backend_spec,
+            } = disk_request.parse()?;
+            add_component_to_spec(&mut spec, device_id, device_spec)?;
+            add_component_to_spec(
+                &mut spec,
+                backend_id,
+                ComponentV0::CrucibleStorageBackend(backend_spec),
+            )?;
+        }
+
+        if let Some(cloud_init) = self.cloud_init.as_ref() {
+            let bytes = base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                std::fs::read(cloud_init)?,
+            );
+
+            const CLOUD_INIT_NAME: &str = "cloud-init";
+            const CLOUD_INIT_BACKEND_NAME: &str = "cloud-init-backend";
+
+            add_component_to_spec(
+                &mut spec,
+                SpecKey::Name(CLOUD_INIT_NAME.to_owned()),
+                ComponentV0::VirtioDisk(VirtioDisk {
+                    backend_id: SpecKey::Name(
+                        CLOUD_INIT_BACKEND_NAME.to_owned(),
+                    ),
+                    pci_path: PciPath::new(0, 0x18, 0).unwrap(),
+                }),
+            )?;
+
+            add_component_to_spec(
+                &mut spec,
+                SpecKey::Name(CLOUD_INIT_BACKEND_NAME.to_owned()),
+                ComponentV0::BlobStorageBackend(BlobStorageBackend {
+                    base64: bytes,
+                    readonly: true,
+                }),
+            )?;
+        }
+
+        for (name, port) in [
+            ("com1", SerialPortNumber::Com1),
+            ("com2", SerialPortNumber::Com2),
+            ("com3", SerialPortNumber::Com3),
+        ] {
+            add_component_to_spec(
+                &mut spec,
+                SpecKey::Name(name.to_owned()),
+                ComponentV0::SerialPort(SerialPort { num: port }),
+            )?;
+        }
+
+        // If there are no SoftNPU devices, also enable COM4.
+        if !spec
+            .components
+            .iter()
+            .any(|(_, c)| matches!(c, ComponentV0::SoftNpuPort(_)))
+        {
+            add_component_to_spec(
+                &mut spec,
+                SpecKey::Name("com4".to_owned()),
+                ComponentV0::SerialPort(SerialPort {
+                    num: SerialPortNumber::Com4,
+                }),
+            )?;
+        }
+
+        add_component_to_spec(
+            &mut spec,
+            SpecKey::Name("pvpanic".to_owned()),
+            ComponentV0::QemuPvpanic(QemuPvpanic { enable_isa: true }),
+        )?;
+
+        Ok(spec)
+    }
 }
 
 fn parse_state(state: &str) -> anyhow::Result<InstanceStateRequested> {
@@ -242,10 +493,7 @@ async fn new_instance(
     client: &Client,
     name: String,
     id: Uuid,
-    vcpus: u8,
-    memory: u64,
-    disks: Vec<DiskRequest>,
-    cloud_init_bytes: Option<String>,
+    spec: InstanceSpecV0,
     metadata: InstanceMetadata,
 ) -> anyhow::Result<()> {
     let properties = InstanceProperties {
@@ -253,22 +501,11 @@ async fn new_instance(
         name,
         description: "propolis-cli generated instance".to_string(),
         metadata,
-        // TODO: Use real UUID
-        image_id: Uuid::default(),
-        // TODO: Use real UUID
-        bootrom_id: Uuid::default(),
-        memory,
-        vcpus,
     };
 
     let request = InstanceEnsureRequest {
         properties,
-        // TODO: Allow specifying NICs
-        nics: vec![],
-        disks,
-        boot_settings: None,
-        migrate: None,
-        cloud_init_bytes,
+        init: InstanceInitializationMethod::Spec { spec },
     };
 
     // Try to create the instance
@@ -284,7 +521,7 @@ async fn new_instance(
 
 async fn replace_vcr(
     client: &Client,
-    id: Uuid,
+    id: String,
     vcr_replace: InstanceVcrReplace,
 ) -> anyhow::Result<()> {
     // Try to call the endpoint
@@ -442,7 +679,7 @@ async fn serial(
                                 stdout.flush().await?;
                             }
                             Ok(Message::Close(Some(CloseFrame {code, reason}))) => {
-                                eprint!("\r\nConnection closed: {:?}\r\n", code);
+                                eprint!("\r\nConnection closed: {code:?}\r\n");
                                 match code {
                                     CloseCode::Abnormal
                                     | CloseCode::Error
@@ -503,30 +740,40 @@ async fn migrate_instance(
     disks: Vec<DiskRequest>,
 ) -> anyhow::Result<()> {
     // Grab the instance details
-    let src_instance =
-        src_client.instance_get().send().await.with_context(|| {
-            anyhow!("failed to get src instance properties")
-        })?;
-    let src_uuid = src_instance.instance.properties.id;
+    let InstanceSpecGetResponse { mut properties, .. } = src_client
+        .instance_spec_get()
+        .send()
+        .await
+        .with_context(|| anyhow!("failed to get src instance properties"))?
+        .into_inner();
+    let src_uuid = properties.id;
+    properties.id = dst_uuid;
+
+    let mut replace_components = HashMap::new();
+    for disk in disks {
+        let ParsedDiskRequest { backend_id, backend_spec, .. } =
+            disk.parse()?;
+
+        let old = replace_components.insert(
+            backend_id.to_string(),
+            ReplacementComponent::CrucibleStorageBackend(backend_spec),
+        );
+
+        if old.is_some() {
+            anyhow::bail!(
+                "duplicate backend name {backend_id} in replacement disk \
+                list"
+            );
+        }
+    }
 
     let request = InstanceEnsureRequest {
-        properties: InstanceProperties {
-            // Use a new ID for the destination instance we're creating
-            id: dst_uuid,
-            ..src_instance.instance.properties.clone()
-        },
-        // TODO: Handle migrating NICs
-        nics: vec![],
-        disks,
-        // TODO: Handle retaining boot settings? Or extant boot settings
-        // forwarded along outside InstanceEnsure anyway.
-        boot_settings: None,
-        migrate: Some(InstanceMigrateInitiateRequest {
+        properties,
+        init: InstanceInitializationMethod::MigrationTarget {
             migration_id: Uuid::new_v4(),
             src_addr: src_addr.to_string(),
-            src_uuid,
-        }),
-        cloud_init_bytes: None,
+            replace_components,
+        },
     };
 
     // Initiate the migration via the destination instance
@@ -579,7 +826,7 @@ async fn migrate_instance(
                 }
 
                 let state = migration.state;
-                println!("{}({}) migration state={:?}", role, id, state);
+                println!("{role}({id}) migration state={state:?}");
                 if state == MigrationState::Finish {
                     return Ok::<_, anyhow::Error>(());
                 } else if state == MigrationState::Error {
@@ -656,10 +903,7 @@ async fn main() -> anyhow::Result<()> {
         Command::New {
             name,
             uuid,
-            vcpus,
-            memory,
-            crucible_disks,
-            cloud_init,
+            config,
             silo_id,
             project_id,
             sled_id,
@@ -667,19 +911,6 @@ async fn main() -> anyhow::Result<()> {
             sled_revision,
             sled_serial,
         } => {
-            let disks = if let Some(crucible_disks) = crucible_disks {
-                parse_json_file(&crucible_disks)?
-            } else {
-                vec![]
-            };
-            let cloud_init_bytes = if let Some(cloud_init) = cloud_init {
-                Some(base64::Engine::encode(
-                    &base64::engine::general_purpose::STANDARD,
-                    std::fs::read(cloud_init)?,
-                ))
-            } else {
-                None
-            };
             let metadata = InstanceMetadata {
                 project_id: project_id
                     .unwrap_or_else(TypedUuid::new_v4)
@@ -698,10 +929,7 @@ async fn main() -> anyhow::Result<()> {
                 &client,
                 name.to_string(),
                 uuid.unwrap_or_else(Uuid::new_v4),
-                vcpus,
-                memory,
-                disks,
-                cloud_init_bytes,
+                config.instance_spec()?,
                 metadata,
             )
             .await?
@@ -724,9 +952,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Monitor => monitor(addr).await?,
         Command::InjectNmi => inject_nmi(&client).await?,
-        Command::Vcr { uuid, vcr_replace } => {
+        Command::Vcr { disk_id, vcr_replace } => {
             let replace: InstanceVcrReplace = parse_json_file(&vcr_replace)?;
-            replace_vcr(&client, uuid, replace).await?
+            replace_vcr(&client, disk_id, replace).await?
         }
     }
 

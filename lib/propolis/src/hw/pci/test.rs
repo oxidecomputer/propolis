@@ -83,7 +83,7 @@ fn pcie_decoder_multiple_bdfs() {
     });
 
     let mut ro =
-        ReadOp::from_buf(4_usize << 15 | 3_usize << 12 | 0x123, &mut buf);
+        ReadOp::from_buf((4_usize << 15) | (3_usize << 12) | 0x123, &mut buf);
     pcie.service(RWOp::Read(&mut ro), |bdf, rwo| {
         assert_eq!(*bdf, Bdf::new(0, 4, 3).unwrap());
         assert_eq!(rwo.offset(), 0x123);
@@ -91,7 +91,7 @@ fn pcie_decoder_multiple_bdfs() {
     });
 
     let mut ro = ReadOp::from_buf(
-        133_usize << 20 | 7_usize << 15 | 1_usize << 12 | 0x337,
+        (133_usize << 20) | (7_usize << 15) | (1_usize << 12) | 0x337,
         &mut buf,
     );
     pcie.service(RWOp::Read(&mut ro), |bdf, rwo| {

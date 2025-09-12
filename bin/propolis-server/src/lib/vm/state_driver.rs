@@ -2,7 +2,92 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! A task to handle requests to change a VM's state or configuration.
+//! Structures and tasks that handle VM state and configuration change requests.
+//!
+//! This module handles the second high-level phase of a VM's lifecycle: once a
+//! VM's components and services exist, it enters an event loop that changes the
+//! VM's state in response to external API requests and signals arriving from
+//! within the VM. See the [`ensure`] module for more information about the
+//! initialization phase.
+//!
+//! This module's main struct is the [`StateDriver`], which holds references to
+//! an active VM's components, the VM's event queues, and the sender side of a
+//! channel that publishes instance state updates. External API requests are
+//! routed to the driver's event queue and handled by the driver task. This
+//! model ensures that only one task handles VM events and updates VM state; the
+//! idea is to minimize the number of different tasks and threads one has to
+//! consider when reasoning about concurrency in the VM state machine.
+//!
+//! On a migration in, the state driver implicitly starts the VM before entering
+//! the main event loop:
+//!
+//! ```text
+//!                   +-----------------------+
+//!                   | VM components created |
+//!                   +-----------+-----------+
+//!                               |
+//!                               |
+//!            Yes +--------------v--------------+ No
+//!              +-+ Initialized via migration?  +-+
+//!              | +-----------------------------+ |
+//!              |                                 |
+//!       +------v--------+                        |
+//!       | Auto-start VM |                        |
+//!       +------+--------+                        |
+//!              |                                 |
+//! +------------v------------+                    |
+//! | Start devices and vCPUs |                    |
+//! +------------+------------+                    |
+//!              |                                 |
+//!              |                                 |
+//!              |    +-----------------------+    |
+//!              +----> Enter main event loop <----+
+//!                   +-----------------------+
+//! ```
+//!
+//! Once in the main event loop, a VM generally remains active until it receives
+//! a signal telling it to do something else:
+//!
+//! ```text
+//! +-----------------+   +-----------------+  error during startup
+//! | Not yet started |   | Not yet started |       +--------+
+//! | (migrating in)  |   |   (Creating)    +-------> Failed |
+//! +-------+---------+   +--------+--------+       +--------+
+//!         |                      |
+//!         |                      | Successful start request
+//!         +-----------+          |
+//!                    +v----------v-----------+ API/chipset request
+//!          +---------+        Running        +------+
+//!          |         +---^-------+--------^--+   +--v--------+
+//!          |             |       |        +------+ Rebooting |
+//!          |             |       |               +-----------+
+//! +--------v------+      |       |
+//! | Migrating out +------+       | API/chipset request
+//! +--------+------+              |
+//!          |                +----v-----+
+//!          |                | Stopping |
+//!          |                +----+-----+
+//!          |                     |
+//!          |                     |            +-----------------+
+//!          |                +----v-----+      |    Destroyed    |
+//!          +----------------> Stopped  +------> (after rundown) |
+//!                           +----------+      +-----------------+
+//! ```
+//!
+//! The state driver's [`InputQueue`] receives events that can push a running VM
+//! out of its steady "running" state. These can come either from the external
+//! API or from events happening in the guest (e.g. a vCPU asserting a pin on
+//! the virtual chipset that should reset or halt the VM). The policy that
+//! determines what API requests can be accepted in which states is implemented
+//! in the [`request_queue`] module.
+//!
+//! The "stopped" and "failed" states are terminal states. When the state driver
+//! reaches one of these states, it exits the event loop, returning its final
+//! state to the wrapper function that launched the driver. The wrapper task is
+//! responsible for running down the VM objects and structures and resetting the
+//! server so that it can start another VM.
+//!
+//! [`ensure`]: crate::vm::ensure
 
 use std::{
     sync::{Arc, Mutex},
@@ -10,9 +95,10 @@ use std::{
 };
 
 use anyhow::Context;
+use dropshot::HttpError;
 use propolis_api_types::{
-    instance_spec::components::backends::CrucibleStorageBackend, InstanceState,
-    MigrationState,
+    instance_spec::{components::backends::CrucibleStorageBackend, SpecKey},
+    InstanceState, MigrationState,
 };
 use slog::{error, info};
 use tokio::sync::Notify;
@@ -23,14 +109,20 @@ use crate::{
         destination::DestinationProtocol, source::SourceProtocol, MigrateRole,
     },
     spec::StorageBackend,
-    vm::state_publisher::ExternalStateUpdate,
+    vm::{state_publisher::ExternalStateUpdate, BlockBackendMap},
 };
 
 use super::{
-    ensure::{VmEnsureActive, VmEnsureNotStarted, VmEnsureRequest},
+    ensure::{
+        VmEnsureActive, VmEnsureActiveOutput, VmEnsureNotStarted,
+        VmEnsureRequest,
+    },
     guest_event::{self, GuestEvent},
     objects::VmObjects,
-    request_queue::{self, ExternalRequest, InstanceAutoStart},
+    request_queue::{
+        self, CompletedRequest, ComponentChangeRequest, ExternalRequest,
+        InstanceAutoStart, StateChangeRequest,
+    },
     state_publisher::{MigrationStateUpdate, StatePublisher},
     InstanceEnsureResponseTx,
 };
@@ -47,6 +139,28 @@ enum HandleEventOutcome {
 pub(super) enum VmStartReason {
     MigratedIn,
     ExplicitRequest,
+}
+
+/// The outcome of a request to start a VM.
+enum VmStartOutcome {
+    Succeeded,
+    Failed,
+    Aborted,
+}
+
+impl VmStartOutcome {
+    /// If this start outcome implies that the state driver should return
+    /// immediately and allow the VM to be torn down, this routine returns
+    /// `Some(state)` where `state` is the final VM state to return from the
+    /// driver. If the driver should continue running the VM, this routine
+    /// returns `None`.
+    fn final_vm_state(&self) -> Option<InstanceState> {
+        match self {
+            Self::Succeeded => None,
+            Self::Failed => Some(InstanceState::Failed),
+            Self::Aborted => Some(InstanceState::Destroyed),
+        }
+    }
 }
 
 /// A kind of event the state driver can handle.
@@ -103,12 +217,17 @@ impl InputQueue {
         }
     }
 
-    /// Waits for an event to arrive on the input queue and returns it for
-    /// processing.
+    /// Waits for a new event to arrive on one of the queue's sub-queues and
+    /// dispatches it for processing.
     ///
-    /// External requests and guest events are stored in separate queues. If
-    /// both queues have events when this routine is called, the guest event
-    /// queue takes precedence.
+    /// The sub-queues, listed here in priority order, are:
+    ///
+    /// - Guest events: These are signals raised from the VM's vCPUs and
+    ///   devices (e.g. a request to reboot or halt the VM arising from a vCPU
+    ///   asserting a virtual chipset signal).
+    /// - External requests: These are state change requests received via the
+    ///   server API. See [`super::request_queue`] for more details about how
+    ///   these requests are queued.
     ///
     /// # Synchronization
     ///
@@ -138,15 +257,19 @@ impl InputQueue {
         }
     }
 
-    /// Notifies the external request queue that the instance's state has
-    /// changed so that it can change the dispositions for new state change
-    /// requests.
-    fn notify_instance_state_change(
-        &self,
-        state: request_queue::InstanceStateChange,
-    ) {
+    /// Notifies the external request queue that the state driver has completed
+    /// a request from that queue.
+    fn notify_request_completed(&self, state: CompletedRequest) {
         let mut guard = self.inner.lock().unwrap();
-        guard.external_requests.notify_instance_state_change(state);
+        guard.external_requests.notify_request_completed(state);
+    }
+
+    /// Notifies the external request queue that the instance has stopped. This
+    /// is used to stop the queue when the instance stops without a request from
+    /// the API (e.g. because the guest requested a chipset-driven shutdown).
+    fn notify_stopped(&self) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.external_requests.notify_stopped();
     }
 
     /// Submits an external state change request to the queue.
@@ -198,11 +321,11 @@ impl guest_event::VcpuEventHandler for InputQueue {
         vcpu_id: i32,
         exit: propolis::exits::VmExitKind,
     ) {
-        panic!("vCPU {}: Unhandled VM exit: {:?}", vcpu_id, exit);
+        panic!("vCPU {vcpu_id}: Unhandled VM exit: {exit:?}");
     }
 
     fn io_error_event(&self, vcpu_id: i32, error: std::io::Error) {
-        panic!("vCPU {}: Unhandled vCPU error: {}", vcpu_id, error);
+        panic!("vCPU {vcpu_id}: Unhandled vCPU error: {error}");
     }
 }
 
@@ -244,7 +367,10 @@ struct StateDriver {
     migration_src_state: crate::migrate::source::PersistentState,
 }
 
-/// The values returned by a state driver task when it exits.
+/// Contains a state driver's terminal state and the channel it used to publish
+/// state updates to the rest of the server. The driver's owner can use these to
+/// publish the VM's terminal state after running down all of its objects and
+/// services.
 pub(super) struct StateDriverOutput {
     /// The channel this driver used to publish external instance state changes.
     pub state_publisher: StatePublisher,
@@ -254,9 +380,14 @@ pub(super) struct StateDriverOutput {
     pub final_state: InstanceState,
 }
 
-/// Creates a new set of VM objects in response to an `ensure_request` directed
-/// to the supplied `vm`.
-pub(super) async fn run_state_driver(
+/// Given an instance ensure request, processes the request and hands the
+/// resulting activated VM off to a [`StateDriver`] that will drive the main VM
+/// event loop.
+///
+/// Returns the final state driver disposition. Note that this routine does not
+/// return a `Result`; if the VM fails to start, the returned
+/// [`StateDriverOutput`] contains appropriate state for a failed VM.
+pub(super) async fn ensure_vm_and_launch_driver(
     log: slog::Logger,
     vm: Arc<super::Vm>,
     mut state_publisher: StatePublisher,
@@ -264,7 +395,8 @@ pub(super) async fn run_state_driver(
     ensure_result_tx: InstanceEnsureResponseTx,
     ensure_options: super::EnsureOptions,
 ) -> StateDriverOutput {
-    let activated_vm = match create_and_activate_vm(
+    let ensure_options = Arc::new(ensure_options);
+    let activated_vm = match ensure_active_vm(
         &log,
         &vm,
         &mut state_publisher,
@@ -284,10 +416,12 @@ pub(super) async fn run_state_driver(
         }
     };
 
-    let (objects, input_queue) = activated_vm.into_inner();
+    let VmEnsureActiveOutput { vm_objects, input_queue, vmm_rt_hdl } =
+        activated_vm.into_inner();
+
     let state_driver = StateDriver {
         log,
-        objects,
+        objects: vm_objects,
         input_queue,
         external_state: state_publisher,
         paused: false,
@@ -296,20 +430,28 @@ pub(super) async fn run_state_driver(
 
     // Run the VM until it exits, then set rundown on the parent VM so that no
     // new external callers can access its objects or services.
-    let output = state_driver.run(ensure_request.migrate.is_some()).await;
-    vm.set_rundown().await;
-    output
+    match vmm_rt_hdl
+        .spawn(async move {
+            let output = state_driver.run(ensure_request.is_migration()).await;
+            vm.set_rundown().await;
+            output
+        })
+        .await
+    {
+        Ok(output) => output,
+        Err(e) => panic!("failed to join state driver task: {e}"),
+    }
 }
 
 /// Processes the supplied `ensure_request` to create a set of VM objects that
 /// can be moved into a new `StateDriver`.
-async fn create_and_activate_vm<'a>(
+async fn ensure_active_vm<'a>(
     log: &'a slog::Logger,
     vm: &'a Arc<super::Vm>,
     state_publisher: &'a mut StatePublisher,
     ensure_request: &'a VmEnsureRequest,
     ensure_result_tx: InstanceEnsureResponseTx,
-    ensure_options: &'a super::EnsureOptions,
+    ensure_options: &'a Arc<super::EnsureOptions>,
 ) -> anyhow::Result<VmEnsureActive<'a>> {
     let ensure = VmEnsureNotStarted::new(
         log,
@@ -320,7 +462,7 @@ async fn create_and_activate_vm<'a>(
         state_publisher,
     );
 
-    if let Some(migrate_request) = ensure_request.migrate.as_ref() {
+    if let Some(migrate_request) = ensure_request.migration_info() {
         let migration = match crate::migrate::destination::initiate(
             log,
             migrate_request,
@@ -347,7 +489,7 @@ async fn create_and_activate_vm<'a>(
             .context("running live migration protocol")?)
     } else {
         let created = ensure
-            .create_objects()
+            .create_objects_from_request()
             .await
             .context("creating VM objects for new instance")?;
 
@@ -356,23 +498,33 @@ async fn create_and_activate_vm<'a>(
 }
 
 impl StateDriver {
+    /// Directs this state driver to enter its main event loop. The driver may
+    /// perform additional tasks (e.g. automatically starting a migration
+    /// target) before it begins processing events from its queues.
     pub(super) async fn run(mut self, migrated_in: bool) -> StateDriverOutput {
         info!(self.log, "state driver launched");
 
         let final_state = if migrated_in {
-            if self.start_vm(VmStartReason::MigratedIn).await.is_ok() {
-                self.run_loop().await
-            } else {
-                InstanceState::Failed
+            // If the final state is known merely from the attempt to start the
+            // VM, return it immediately; otherwise, run the event loop and wait
+            // for it to return the final state.
+            match self
+                .start_vm(VmStartReason::MigratedIn)
+                .await
+                .final_vm_state()
+            {
+                None => self.event_loop().await,
+                Some(s) => s,
             }
         } else {
-            self.run_loop().await
+            self.event_loop().await
         };
 
         StateDriverOutput { state_publisher: self.external_state, final_state }
     }
 
-    async fn run_loop(&mut self) -> InstanceState {
+    /// Runs the state driver's main event loop.
+    async fn event_loop(&mut self) -> InstanceState {
         info!(self.log, "state driver entered main loop");
         loop {
             let event = self.input_queue.wait_for_next_event().await;
@@ -400,26 +552,223 @@ impl StateDriver {
         }
     }
 
+    /// Starts the driver's VM by sending start commands to its devices and
+    /// vCPUs.
     async fn start_vm(
         &mut self,
         start_reason: VmStartReason,
-    ) -> anyhow::Result<()> {
+    ) -> VmStartOutcome {
         info!(self.log, "starting instance"; "reason" => ?start_reason);
 
-        let start_result =
-            self.objects.lock_exclusive().await.start(start_reason).await;
-        match &start_result {
-            Ok(()) => {
-                self.publish_steady_state(InstanceState::Running);
-            }
-            Err(e) => {
-                error!(&self.log, "failed to start devices";
-                                 "error" => ?e);
-                self.publish_steady_state(InstanceState::Failed);
+        // Tell listeners that the VM's components are now starting up and not
+        // merely being created (but keep the VM in the Migrating state if it's
+        // being started pursuant to a migration in).
+        if let VmStartReason::ExplicitRequest = start_reason {
+            self.external_state
+                .update(ExternalStateUpdate::Instance(InstanceState::Starting));
+        }
+
+        // The start sequence is arranged so that calls to block backends can be
+        // interleaved with processing of requests from the external request
+        // queue. This allows Nexus to reconfigure Crucible backends while they
+        // are being activated, which can be necessary if the VM's original
+        // specification specifies a Crucible downstairs server that is offline
+        // or unavailable. (Downstairs instances can disappear at any time,
+        // e.g. due to sled failure, so these configurations aren't necessarily
+        // client errors.)
+        //
+        // Before getting into any of that, handle the synchronous portions of
+        // VM startup. First, ensure that the kernel VM and all its associated
+        // devices are in the correct initial states.
+        let objects = self.objects.lock_shared().await;
+        match start_reason {
+            // If this VM is a migration target, migration will have properly
+            // initialized the vCPUs, but will have left the kernel VM paused.
+            // Resume it here before asking any in-kernel components to start.
+            VmStartReason::MigratedIn => objects.resume_kernel_vm(),
+
+            // If this VM is starting from scratch, its kernel VM is active, but
+            // its vCPUs have not been initialized yet.
+            VmStartReason::ExplicitRequest => objects.reset_vcpus(),
+        }
+
+        // Send synchronous start commands to all devices.
+        for (name, dev) in objects.device_map() {
+            info!(self.log, "sending start request to {}", name);
+            let res = dev.start();
+            if let Err(e) = res {
+                error!(
+                    self.log, "device start() returned an error";
+                    "device" => %name,
+                    "error" => %e
+                );
+
+                return VmStartOutcome::Failed;
             }
         }
 
-        start_result
+        // Next, prepare to start block backends. This is done by capturing the
+        // current block backend set and creating a future that issues all the
+        // start requests.
+        //
+        // For this to work, the set of block backends to be started must not
+        // change while the VM is starting. This is guaranteed because all such
+        // requests to hotplug a block backend will be dispatched to the VM's
+        // request queue; if any such requests are seen below, they can simply
+        // be buffered and handled after the rest of the VM has started.
+        async fn start_block_backends(
+            log: slog::Logger,
+            backends: BlockBackendMap,
+        ) -> anyhow::Result<()> {
+            for (name, backend) in backends {
+                info!(log, "starting block backend {}", name);
+                let res = backend.start().await;
+                if let Err(e) = &res {
+                    error!(
+                        log,
+                        "block backend start() returned an error";
+                        "backend" => %name,
+                        "error" => %e
+                    );
+
+                    return res;
+                }
+            }
+
+            Ok(())
+        }
+
+        let block_backends = objects.block_backend_map().clone();
+        let block_backend_fut =
+            start_block_backends(self.log.clone(), block_backends);
+        tokio::pin!(block_backend_fut);
+
+        // Drop the VM object lock before proceeding to allow other API calls
+        // that simply read the VM to make progress. Again, note that the set of
+        // objects being started still can't change, not because the lock is
+        // held, but because the only entity that can change them is the current
+        // task, which can decide whether and how to buffer incoming requests.
+        drop(objects);
+
+        // Keep track of whether the external queue produced a request to stop
+        // the VM while it was being started. If such a request is seen, send a
+        // self-request to stop just before returning so that the VM will stop
+        // immediately.
+        enum Selection {
+            BackendFuture(anyhow::Result<()>),
+            Event(InputQueueEvent),
+        }
+        loop {
+            let selection = tokio::select! {
+                // If the VM successfully starts, return immediately and let
+                // the caller process any events that may happen to be on the
+                // queue.
+                biased;
+
+                res = &mut block_backend_fut => {
+                    Selection::BackendFuture(res)
+                }
+
+                event = self.input_queue.wait_for_next_event() => {
+                    Selection::Event(event)
+                }
+            };
+
+            let req: ExternalRequest = match selection {
+                Selection::BackendFuture(Ok(())) => {
+                    let objects = &self.objects;
+                    objects.lock_exclusive().await.resume_vcpus();
+                    self.external_state.update(ExternalStateUpdate::Instance(
+                        InstanceState::Running,
+                    ));
+
+                    self.input_queue.notify_request_completed(
+                        CompletedRequest::Start { succeeded: true },
+                    );
+
+                    info!(&self.log, "VM successfully started");
+                    return VmStartOutcome::Succeeded;
+                }
+
+                Selection::BackendFuture(Err(e)) => {
+                    info!(&self.log, "VM startup failed: {e}");
+                    self.input_queue.notify_request_completed(
+                        CompletedRequest::Start { succeeded: false },
+                    );
+
+                    return VmStartOutcome::Failed;
+                }
+
+                // The VM's vCPUs only start when the block backend startup
+                // future resolves and is selected above. If control reached
+                // that point, that branch wasn't selected, so the vCPUs should
+                // still be paused, which means the dequeued event should not be
+                // a guest event.
+                Selection::Event(InputQueueEvent::GuestEvent(_)) => {
+                    unreachable!("can't get guest events before vCPUs start")
+                }
+
+                Selection::Event(InputQueueEvent::ExternalRequest(req)) => req,
+            };
+
+            match req {
+                ExternalRequest::State(StateChangeRequest::Stop) => {
+                    info!(
+                        &self.log,
+                        "got request to stop while still starting"
+                    );
+
+                    // Don't send any pause/halt notifications here, since
+                    // (depending on what async work was in flight when this
+                    // notification was received) there may be a
+                    // partially-started component that is not prepared to be
+                    // paused and halted. Instead, simply move the VM to
+                    // Stopped, return an "aborted" status, and let the caller
+                    // arrange to drop all the VM's components. (Note that no
+                    // vCPUs have started yet, so no guest work is in flight at
+                    // this point.)
+                    self.external_state.update(ExternalStateUpdate::Instance(
+                        InstanceState::Stopped,
+                    ));
+
+                    self.input_queue.notify_stopped();
+                    return VmStartOutcome::Aborted;
+                }
+                ExternalRequest::Component(
+                    ComponentChangeRequest::ReconfigureCrucibleVolume {
+                        backend_id,
+                        new_vcr_json,
+                        result_tx,
+                    },
+                ) => {
+                    // The API caller who requested this operation can hang up
+                    // and drop the receiver. This isn't fatal; just keep
+                    // starting the VM if it happens.
+                    let _ = result_tx.send(
+                        self.reconfigure_crucible_volume(
+                            &backend_id,
+                            new_vcr_json,
+                        )
+                        .await,
+                    );
+                }
+                // The request queue is expected to reject (or at least silently
+                // ignore) requests to migrate or reboot an instance that hasn't
+                // reported that it's fully started. Similarly, requests to
+                // start a VM that's already starting are expected to be ignored
+                // for idempotency.
+                r @ ExternalRequest::State(StateChangeRequest::Start)
+                | r @ ExternalRequest::State(
+                    StateChangeRequest::MigrateAsSource { .. },
+                )
+                | r @ ExternalRequest::State(StateChangeRequest::Reboot) => {
+                    unreachable!(
+                        "external request {r:?} shouldn't be queued while \
+                        starting"
+                    );
+                }
+            }
+        }
     }
 
     async fn handle_guest_event(
@@ -430,6 +779,11 @@ impl StateDriver {
             GuestEvent::VcpuSuspendHalt(_when) => {
                 info!(self.log, "Halting due to VM suspend event",);
                 self.do_halt().await;
+                self.external_state.update(ExternalStateUpdate::Instance(
+                    InstanceState::Stopped,
+                ));
+
+                self.input_queue.notify_stopped();
                 HandleEventOutcome::Exit {
                     final_state: InstanceState::Destroyed,
                 }
@@ -450,6 +804,11 @@ impl StateDriver {
             GuestEvent::ChipsetHalt => {
                 info!(self.log, "Halting due to chipset-driven halt");
                 self.do_halt().await;
+                self.external_state.update(ExternalStateUpdate::Instance(
+                    InstanceState::Stopped,
+                ));
+
+                self.input_queue.notify_stopped();
                 HandleEventOutcome::Exit {
                     final_state: InstanceState::Destroyed,
                 }
@@ -467,47 +826,67 @@ impl StateDriver {
         request: ExternalRequest,
     ) -> HandleEventOutcome {
         match request {
-            ExternalRequest::Start => {
-                match self.start_vm(VmStartReason::ExplicitRequest).await {
-                    Ok(_) => HandleEventOutcome::Continue,
-                    Err(_) => HandleEventOutcome::Exit {
-                        final_state: InstanceState::Failed,
-                    },
+            ExternalRequest::State(StateChangeRequest::Start) => {
+                // If this start attempt produces a terminal VM state, return it
+                // to the driver and indicate that the driver should exit.
+                match self
+                    .start_vm(VmStartReason::ExplicitRequest)
+                    .await
+                    .final_vm_state()
+                {
+                    None => HandleEventOutcome::Continue,
+                    Some(final_state) => {
+                        HandleEventOutcome::Exit { final_state }
+                    }
                 }
             }
-            ExternalRequest::MigrateAsSource { migration_id, websock } => {
-                self.migrate_as_source(migration_id, websock.into_inner())
-                    .await;
-
-                // The callee either queues its own stop request (on a
-                // successful migration out) or resumes the VM (on a failed
-                // migration out). Either way, the main loop can just proceed to
-                // process the queue as normal.
-                HandleEventOutcome::Continue
+            ExternalRequest::State(StateChangeRequest::MigrateAsSource {
+                migration_id,
+                websock,
+            }) => {
+                if self
+                    .migrate_as_source(migration_id, websock.into_inner())
+                    .await
+                    .is_ok()
+                {
+                    self.do_halt().await;
+                    HandleEventOutcome::Exit {
+                        final_state: InstanceState::Destroyed,
+                    }
+                } else {
+                    HandleEventOutcome::Continue
+                }
             }
-            ExternalRequest::Reboot => {
+            ExternalRequest::State(StateChangeRequest::Reboot) => {
                 self.do_reboot().await;
+                self.input_queue
+                    .notify_request_completed(CompletedRequest::Reboot);
+
                 HandleEventOutcome::Continue
             }
-            ExternalRequest::Stop => {
+            ExternalRequest::State(StateChangeRequest::Stop) => {
                 self.do_halt().await;
+                self.external_state.update(ExternalStateUpdate::Instance(
+                    InstanceState::Stopped,
+                ));
+
+                self.input_queue
+                    .notify_request_completed(CompletedRequest::Stop);
+
                 HandleEventOutcome::Exit {
                     final_state: InstanceState::Destroyed,
                 }
             }
-            ExternalRequest::ReconfigureCrucibleVolume {
-                disk_name,
-                backend_id,
-                new_vcr_json,
-                result_tx,
-            } => {
+            ExternalRequest::Component(
+                ComponentChangeRequest::ReconfigureCrucibleVolume {
+                    backend_id,
+                    new_vcr_json,
+                    result_tx,
+                },
+            ) => {
                 let _ = result_tx.send(
-                    self.reconfigure_crucible_volume(
-                        disk_name,
-                        &backend_id,
-                        new_vcr_json,
-                    )
-                    .await,
+                    self.reconfigure_crucible_volume(&backend_id, new_vcr_json)
+                        .await,
                 );
                 HandleEventOutcome::Continue
             }
@@ -524,9 +903,6 @@ impl StateDriver {
 
         // Notify other consumers that the instance successfully rebooted and is
         // now back to Running.
-        self.input_queue.notify_instance_state_change(
-            request_queue::InstanceStateChange::Rebooted,
-        );
         self.external_state
             .update(ExternalStateUpdate::Instance(InstanceState::Running));
     }
@@ -549,34 +925,13 @@ impl StateDriver {
 
             guard.halt().await;
         }
-
-        self.publish_steady_state(InstanceState::Stopped);
-    }
-
-    fn publish_steady_state(&mut self, state: InstanceState) {
-        let change = match state {
-            InstanceState::Running => {
-                request_queue::InstanceStateChange::StartedRunning
-            }
-            InstanceState::Stopped => {
-                request_queue::InstanceStateChange::Stopped
-            }
-            InstanceState::Failed => request_queue::InstanceStateChange::Failed,
-            _ => panic!(
-                "Called publish_steady_state on non-terminal state {:?}",
-                state
-            ),
-        };
-
-        self.input_queue.notify_instance_state_change(change);
-        self.external_state.update(ExternalStateUpdate::Instance(state));
     }
 
     async fn migrate_as_source(
         &mut self,
         migration_id: Uuid,
         websock: dropshot::WebsocketConnection,
-    ) {
+    ) -> Result<(), ()> {
         let conn = tokio_tungstenite::WebSocketStream::from_raw_socket(
             websock.into_inner(),
             tokio_tungstenite::tungstenite::protocol::Role::Server,
@@ -603,7 +958,7 @@ impl StateDriver {
                     },
                 ));
 
-                return;
+                return Err(());
             }
         };
 
@@ -631,33 +986,36 @@ impl StateDriver {
                 // On a successful migration out, the protocol promises to leave
                 // the VM objects in a paused state, so don't pause them again.
                 self.paused = true;
-                self.input_queue
-                    .queue_external_request(ExternalRequest::Stop)
-                    .expect("can always queue a request to stop");
+                self.input_queue.notify_request_completed(
+                    CompletedRequest::MigrationOut { succeeded: true },
+                );
+
+                Ok(())
             }
             Err(e) => {
                 info!(self.log, "migration out failed, resuming";
                       "error" => ?e);
 
-                self.publish_steady_state(InstanceState::Running);
+                self.input_queue.notify_request_completed(
+                    CompletedRequest::MigrationOut { succeeded: false },
+                );
+
+                self.external_state.update(ExternalStateUpdate::Instance(
+                    InstanceState::Running,
+                ));
+
+                Err(())
             }
         }
     }
 
     async fn reconfigure_crucible_volume(
         &self,
-        disk_name: String,
-        backend_id: &Uuid,
+        backend_id: &SpecKey,
         new_vcr_json: String,
     ) -> super::CrucibleReplaceResult {
         info!(self.log, "request to replace Crucible VCR";
-              "disk_name" => %disk_name,
               "backend_id" => %backend_id);
-
-        fn spec_element_not_found(disk_name: &str) -> dropshot::HttpError {
-            let msg = format!("Crucible backend for {:?} not found", disk_name);
-            dropshot::HttpError::for_not_found(Some(msg.clone()), msg)
-        }
 
         let mut objects = self.objects.lock_exclusive().await;
         let backend = objects
@@ -669,21 +1027,28 @@ impl StateDriver {
             })?
             .clone();
 
-        let Some(disk) = objects.instance_spec_mut().disks.get_mut(&disk_name)
-        else {
-            return Err(spec_element_not_found(&disk_name));
+        let Some(disk) = objects.instance_spec_mut().disks.iter_mut().find(
+            |(_id, device)| device.device_spec.backend_id() == backend_id,
+        ) else {
+            let msg = format!("no disk in spec with backend ID {backend_id}");
+            return Err(HttpError::for_not_found(Some(msg.clone()), msg));
         };
 
         let StorageBackend::Crucible(CrucibleStorageBackend {
             request_json: old_vcr_json,
             readonly,
-        }) = &disk.backend_spec
+        }) = &disk.1.backend_spec
         else {
-            return Err(spec_element_not_found(&disk_name));
+            let msg = format!(
+                "disk {} has backend {backend_id} but its kind is {}",
+                disk.0,
+                disk.1.backend_spec.kind()
+            );
+            return Err(HttpError::for_not_found(Some(msg.clone()), msg));
         };
 
         let replace_result = backend
-            .vcr_replace(old_vcr_json, &new_vcr_json)
+            .vcr_replace(old_vcr_json.as_str(), &new_vcr_json)
             .await
             .map_err(|e| {
                 dropshot::HttpError::for_bad_request(
@@ -692,10 +1057,11 @@ impl StateDriver {
                 )
             })?;
 
-        disk.backend_spec = StorageBackend::Crucible(CrucibleStorageBackend {
-            readonly: *readonly,
-            request_json: new_vcr_json,
-        });
+        disk.1.backend_spec =
+            StorageBackend::Crucible(CrucibleStorageBackend {
+                readonly: *readonly,
+                request_json: new_vcr_json,
+            });
 
         info!(self.log, "replaced Crucible VCR"; "backend_id" => %backend_id);
 

@@ -9,8 +9,10 @@ use propolis::migrate::{
     MigrateCtx, MigrateStateError, Migrator, PayloadOffer, PayloadOffers,
 };
 use propolis::vmm;
-use propolis_api_types::InstanceMigrateInitiateRequest;
+use propolis_api_types::instance_spec::SpecKey;
+use propolis_api_types::ReplacementComponent;
 use slog::{error, info, trace, warn};
+use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::io;
 use std::net::SocketAddr;
@@ -27,6 +29,7 @@ use crate::migrate::probes;
 use crate::migrate::{
     Device, MigrateError, MigratePhase, MigrateRole, MigrationState, PageIter,
 };
+use crate::spec::Spec;
 use crate::vm::ensure::{VmEnsureActive, VmEnsureNotStarted};
 use crate::vm::state_publisher::{
     ExternalStateUpdate, MigrationStateUpdate, StatePublisher,
@@ -34,6 +37,12 @@ use crate::vm::state_publisher::{
 
 use super::protocol::Protocol;
 use super::MigrateConn;
+
+pub(crate) struct MigrationTargetInfo {
+    pub migration_id: Uuid,
+    pub src_addr: SocketAddr,
+    pub replace_components: BTreeMap<SpecKey, ReplacementComponent>,
+}
 
 /// The interface to an arbitrary version of the target half of the live
 /// migration protocol.
@@ -57,7 +66,7 @@ pub(crate) trait DestinationProtocol {
 /// that the caller can use to run the migration.
 pub(crate) async fn initiate(
     log: &slog::Logger,
-    migrate_info: &InstanceMigrateInitiateRequest,
+    migrate_info: &MigrationTargetInfo,
     local_addr: SocketAddr,
 ) -> Result<impl DestinationProtocol, MigrateError> {
     let migration_id = migrate_info.migration_id;
@@ -171,21 +180,24 @@ impl<T: MigrateConn + Sync> DestinationProtocol for RonV0<T> {
         let result = async {
             // Run the sync phase to ensure that the source's instance spec is
             // compatible with the spec supplied in the ensure parameters.
-            if let Err(e) = self.run_sync_phases(&mut ensure).await {
-                self.update_state(
-                    ensure.state_publisher(),
-                    MigrationState::Error,
-                );
-                let e = ensure.fail(e.into()).await;
-                return Err(e
-                    .downcast::<MigrateError>()
-                    .expect("original error was a MigrateError"));
-            }
+            let spec = match self.run_sync_phases(&mut ensure).await {
+                Ok(spec) => spec,
+                Err(e) => {
+                    self.update_state(
+                        ensure.state_publisher(),
+                        MigrationState::Error,
+                    );
+                    let e = ensure.fail(e.into()).await;
+                    return Err(e
+                        .downcast::<MigrateError>()
+                        .expect("original error was a MigrateError"));
+                }
+            };
 
             // The sync phase succeeded, so it's OK to go ahead with creating
             // the objects in the target's instance spec.
             let mut objects_created =
-                ensure.create_objects().await.map_err(|e| {
+                ensure.create_objects_from_spec(spec).await.map_err(|e| {
                     MigrateError::TargetInstanceInitializationFailed(
                         e.to_string(),
                     )
@@ -260,14 +272,14 @@ impl<T: MigrateConn> RonV0<T> {
     async fn run_sync_phases(
         &mut self,
         ensure_ctx: &mut VmEnsureNotStarted<'_>,
-    ) -> Result<(), MigrateError> {
+    ) -> Result<Spec, MigrateError> {
         let step = MigratePhase::MigrateSync;
 
         probes::migrate_phase_begin!(|| { step.to_string() });
-        self.sync(ensure_ctx).await?;
+        let result = self.sync(ensure_ctx).await;
         probes::migrate_phase_end!(|| { step.to_string() });
 
-        Ok(())
+        result
     }
 
     async fn run_import_phases(
@@ -330,7 +342,7 @@ impl<T: MigrateConn> RonV0<T> {
     async fn sync(
         &mut self,
         ensure_ctx: &mut VmEnsureNotStarted<'_>,
-    ) -> Result<(), MigrateError> {
+    ) -> Result<Spec, MigrateError> {
         self.update_state(ensure_ctx.state_publisher(), MigrationState::Sync);
         let preamble: Preamble = match self.read_msg().await? {
             codec::Message::Serialized(s) => {
@@ -346,18 +358,27 @@ impl<T: MigrateConn> RonV0<T> {
         }?;
         info!(self.log(), "Destination read Preamble: {:?}", preamble);
 
-        if let Err(e) =
-            preamble.check_compatibility(&ensure_ctx.instance_spec().clone())
-        {
-            error!(
-                self.log(),
-                "source and destination instance specs incompatible";
-                "error" => #%e
-            );
-            return Err(MigrateError::InstanceSpecsIncompatible(e.to_string()));
-        }
+        let spec = match preamble.amend_spec(
+            &ensure_ctx
+                .migration_info()
+                .expect("migration in was requested")
+                .replace_components,
+        ) {
+            Ok(spec) => spec,
+            Err(e) => {
+                error!(
+                    self.log(),
+                    "source and destination instance specs incompatible";
+                    "error" => #%e
+                );
+                return Err(MigrateError::InstanceSpecsIncompatible(
+                    e.to_string(),
+                ));
+            }
+        };
 
-        self.send_msg(codec::Message::Okay).await
+        self.send_msg(codec::Message::Okay).await?;
+        Ok(spec)
     }
 
     async fn ram_push(
@@ -499,16 +520,13 @@ impl<T: MigrateConn> RonV0<T> {
             let migrate_ctx =
                 MigrateCtx { mem: &vm_objects.access_mem().unwrap() };
             for device in devices {
-                info!(
-                    self.log(),
-                    "Applying state to device {}", device.instance_name
-                );
+                let key = SpecKey::from(device.instance_name.clone());
+                info!(self.log(), "Applying state to device {key}");
 
-                let target = vm_objects
-                    .device_by_name(&device.instance_name)
-                    .ok_or_else(|| {
-                    MigrateError::UnknownDevice(device.instance_name.clone())
-                })?;
+                let target =
+                    vm_objects.device_by_id(&key).ok_or_else(|| {
+                        MigrateError::UnknownDevice(key.to_string())
+                    })?;
                 self.import_device(&target, &device, &migrate_ctx)?;
             }
         }
@@ -534,8 +552,7 @@ impl<T: MigrateConn> RonV0<T> {
         let time_data_src: vmm::time::VmTimeData = ron::from_str(&raw)
             .map_err(|e| {
                 MigrateError::TimeData(format!(
-                    "VMM Time Data deserialization error: {}",
-                    e
+                    "VMM Time Data deserialization error: {e}"
                 ))
             })?;
         probes::migrate_time_data_before!(|| {
@@ -553,17 +570,13 @@ impl<T: MigrateConn> RonV0<T> {
 
         let (dst_hrt, dst_wc) = vmm::time::host_time_snapshot(vmm_hdl)
             .map_err(|e| {
-                MigrateError::TimeData(format!(
-                    "could not read host time: {}",
-                    e
-                ))
+                MigrateError::TimeData(format!("could not read host time: {e}"))
             })?;
         let (time_data_dst, adjust) =
             vmm::time::adjust_time_data(time_data_src, dst_hrt, dst_wc)
                 .map_err(|e| {
                     MigrateError::TimeData(format!(
-                        "could not adjust VMM Time Data: {}",
-                        e
+                        "could not adjust VMM Time Data: {e}"
                     ))
                 })?;
 
@@ -617,7 +630,7 @@ impl<T: MigrateConn> RonV0<T> {
 
         // Import the adjusted time data
         vmm::time::import_time_data(vmm_hdl, time_data_dst).map_err(|e| {
-            MigrateError::TimeData(format!("VMM Time Data import error: {}", e))
+            MigrateError::TimeData(format!("VMM Time Data import error: {e}"))
         })?;
 
         self.send_msg(codec::Message::Okay).await

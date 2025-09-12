@@ -59,12 +59,13 @@ pub use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor};
 use thiserror::Error;
 
 pub mod bits;
+pub mod host;
 
 #[cfg(feature = "instance-spec")]
 mod instance_spec;
 
 type CpuidSubleafMap = BTreeMap<u32, CpuidValues>;
-type CpuidMapInsertResult = Result<Option<CpuidValues>, SubleafInsertConflict>;
+type CpuidMapInsertResult = Result<Option<CpuidValues>, CpuidMapInsertError>;
 
 /// Denotes the presence or absence of subleaves for a given CPUID leaf.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,7 +82,7 @@ enum Subleaves {
 /// new value would produce a leaf that has both per-subleaf values and a
 /// no-subleaf value.
 #[derive(Debug, Error)]
-pub enum SubleafInsertConflict {
+pub enum CpuidMapInsertError {
     #[error("leaf {0:x} has entries with subleaves")]
     SubleavesAlreadyPresent(u32),
 
@@ -160,7 +161,7 @@ impl CpuidMap {
             }
             Entry::Occupied(mut e) => match e.get_mut() {
                 Subleaves::Present(_) => {
-                    Err(SubleafInsertConflict::SubleavesAlreadyPresent(leaf))
+                    Err(CpuidMapInsertError::SubleavesAlreadyPresent(leaf))
                 }
                 Subleaves::Absent(v) => Ok(Some(std::mem::replace(v, values))),
             },
@@ -182,7 +183,7 @@ impl CpuidMap {
             }
             Entry::Occupied(mut e) => match e.get_mut() {
                 Subleaves::Absent(_) => {
-                    Err(SubleafInsertConflict::SubleavesAlreadyAbsent(leaf))
+                    Err(CpuidMapInsertError::SubleavesAlreadyAbsent(leaf))
                 }
                 Subleaves::Present(sl_map) => {
                     Ok(sl_map.insert(subleaf, values))
@@ -265,28 +266,20 @@ impl CpuidMap {
         self.0.remove(&leaf);
     }
 
-    /// Passes each leaf number in the map to `f` and removes any leaf entries
-    /// for which `f` returns `false`. If a removed leaf has subleaves, all
-    /// their entries are removed.
-    //
-    // This function can be made to consider subleaves by changing `f` to take a
-    // `CpuidIdent` and then writing the call to `retain` with a `match`:
-    //
-    // - If the leaf has `Subleaves::Absent`, pass the leaf ID through to `f`
-    //   directly and return the result to `retain`.
-    // - If the leaf has `Subleaves::Present`, call `retain` on the subleaf map,
-    //   passing each subleaf to `f`, then return `!map.is_empty()` to the outer
-    //   call to `retain` (i.e. keep the leaf entry if the subleaf map still has
-    //   entries in it).
-    //
-    // The cost of doing this is that the function now needs to visit every
-    // subleaf entry in the map, even if the caller doesn't care about subleaf
-    // IDs. So it may be better to break this out into a separate function.
-    pub fn retain_by_leaf<F>(&mut self, mut f: F)
+    /// Retains only the entries in this map for which `f` returns `true`.
+    pub fn retain<F>(&mut self, mut f: F)
     where
-        F: FnMut(u32) -> bool,
+        F: FnMut(CpuidIdent, CpuidValues) -> bool,
     {
-        self.0.retain(|leaf, _| f(*leaf));
+        self.0.retain(|leaf, subleaves| match subleaves {
+            Subleaves::Absent(v) => f(CpuidIdent::leaf(*leaf), *v),
+            Subleaves::Present(sl_map) => {
+                sl_map.retain(|subleaf, v| {
+                    f(CpuidIdent::subleaf(*leaf, *subleaf), *v)
+                });
+                !sl_map.is_empty()
+            }
+        })
     }
 
     /// Clears the entire map.
@@ -417,11 +410,8 @@ impl CpuidSet {
 
     /// Creates a new `CpuidSet` with the supplied initial leaf/value `map` and
     /// `vendor`.
-    pub fn from_map(
-        map: CpuidMap,
-        vendor: CpuidVendor,
-    ) -> Result<Self, SubleafInsertConflict> {
-        Ok(Self { map, vendor })
+    pub fn from_map(map: CpuidMap, vendor: CpuidVendor) -> Self {
+        Self { map, vendor }
     }
 
     /// Yields this set's vendor.
@@ -437,7 +427,7 @@ impl CpuidSet {
     /// Panics if the host is not an Intel or AMD CPU (leaf 0 ebx/ecx/edx
     /// contain something other than "GenuineIntel" or "AuthenticAMD").
     pub fn new_host() -> Self {
-        let vendor = CpuidVendor::try_from(host_query(CpuidIdent::leaf(0)))
+        let vendor = CpuidVendor::try_from(host::query(CpuidIdent::leaf(0)))
             .expect("host CPU should be from recognized vendor");
         Self::new(vendor)
     }
@@ -466,6 +456,14 @@ impl CpuidSet {
         self.map.remove_leaf(leaf);
     }
 
+    /// See [`CpuidMap::retain`].
+    pub fn retain<F>(&mut self, f: F)
+    where
+        F: FnMut(CpuidIdent, CpuidValues) -> bool,
+    {
+        self.map.retain(f);
+    }
+
     /// See [`CpuidMap::is_empty`].
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
@@ -477,7 +475,7 @@ impl CpuidSet {
     }
 
     /// Returns `Ok` if `self` is equivalent to `other`; if not, returns a
-    /// [`CpuidMapMismatch`] describing the first observed difference between
+    /// [`CpuidSetMismatch`] describing the first observed difference between
     /// the two sets.
     pub fn is_equivalent_to(
         &self,
@@ -555,7 +553,7 @@ pub enum CpuidMapConversionError {
     LeafOutOfRange(u32),
 
     #[error(transparent)]
-    SubleafConflict(#[from] SubleafInsertConflict),
+    SubleafConflict(#[from] CpuidMapInsertError),
 }
 
 /// The range of standard, architecturally-defined CPUID leaves.
@@ -564,50 +562,6 @@ pub const STANDARD_LEAVES: RangeInclusive<u32> = 0..=0xFFFF;
 /// The range of extended CPUID leaves. The meanings of these leaves are CPU
 /// vendor-specific.
 pub const EXTENDED_LEAVES: RangeInclusive<u32> = 0x8000_0000..=0x8000_FFFF;
-
-/// Queries the supplied CPUID leaf on the caller's machine.
-#[cfg(target_arch = "x86_64")]
-pub fn host_query(leaf: CpuidIdent) -> CpuidValues {
-    unsafe {
-        core::arch::x86_64::__cpuid_count(leaf.leaf, leaf.subleaf.unwrap_or(0))
-    }
-    .into()
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub fn host_query(leaf: CpuidIdent) -> CpuidValues {
-    panic!("host CPUID queries only work on x86-64 hosts")
-}
-
-/// Queries subleaf 0 of all of the valid CPUID leaves on the host and returns
-/// the results in a [`CpuidMap`].
-///
-/// # Panics
-///
-/// Panics if the target architecture is not x86-64.
-pub fn host_query_all() -> CpuidMap {
-    let mut map = CpuidMap::default();
-    let leaf_0 = CpuidIdent::leaf(*STANDARD_LEAVES.start());
-    let leaf_0_values = host_query(leaf_0);
-    map.insert(leaf_0, leaf_0_values).unwrap();
-
-    for l in (STANDARD_LEAVES.start() + 1)..=leaf_0_values.eax {
-        let leaf = CpuidIdent::leaf(l);
-        map.insert(leaf, host_query(leaf)).unwrap();
-    }
-
-    // This needs to be done by hand because the `__get_cpuid_max` intrinsic
-    // only returns the maximum standard leaf.
-    let ext_leaf_0 = CpuidIdent::leaf(*EXTENDED_LEAVES.start());
-    let ext_leaf_0_values = host_query(ext_leaf_0);
-    map.insert(ext_leaf_0, ext_leaf_0_values).unwrap();
-    for l in (EXTENDED_LEAVES.start() + 1)..=ext_leaf_0_values.eax {
-        let leaf = CpuidIdent::leaf(l);
-        map.insert(leaf, host_query(leaf)).unwrap();
-    }
-
-    map
-}
 
 #[cfg(test)]
 mod test {
@@ -729,8 +683,8 @@ mod test {
         len -= 3;
         assert_eq!(map.len(), len);
 
-        // Remove leaf 4 via `retain_by_leaf`.
-        map.retain_by_leaf(|leaf| leaf != 4);
+        // Remove leaf 4 via `retain`.
+        map.retain(|id, _val| id.leaf != 4);
         len -= 3;
         assert_eq!(map.len(), len);
 

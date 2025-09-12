@@ -12,6 +12,8 @@ use bhyve_api::{
     vm_suspend_how,
 };
 
+use crate::common::GuestData;
+
 /// Describes the reason for exiting execution of a vCPU.
 pub struct VmExit {
     /// The instruction pointer of the guest at the time of exit.
@@ -95,9 +97,10 @@ impl From<&bhyve_api::vm_exit_vmx> for VmxDetail {
 
 #[derive(Copy, Clone, Debug)]
 pub struct InstEmul {
-    pub inst_data: [u8; 15],
+    pub inst_data: GuestData<[u8; 15]>,
     pub len: u8,
 }
+
 impl InstEmul {
     pub fn bytes(&self) -> &[u8] {
         &self.inst_data[..usize::min(self.inst_data.len(), self.len as usize)]
@@ -105,7 +108,8 @@ impl InstEmul {
 }
 impl From<&bhyve_api::vm_inst_emul> for InstEmul {
     fn from(raw: &bhyve_api::vm_inst_emul) -> Self {
-        let mut res = Self { inst_data: [0u8; 15], len: raw.num_valid };
+        let mut res =
+            Self { inst_data: GuestData::from([0u8; 15]), len: raw.num_valid };
         assert!(res.len as usize <= res.inst_data.len());
         res.inst_data.copy_from_slice(&raw.inst[..]);
 

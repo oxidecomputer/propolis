@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 progenitor::generate_api!(
     spec = "../../openapi/propolis-server.json",
     derives = [schemars::JsonSchema],
+    replace = {
+        SpecKey = propolis_api_types::instance_spec::SpecKey,
+    },
     patch = {
         InstanceMetadata = { derives = [Clone, Eq, PartialEq] },
         InstanceProperties = { derives = [ Clone, Eq, PartialEq ] },
@@ -22,7 +25,6 @@ impl TryFrom<types::PciPath> for propolis_types::PciPath {
             .map_err(|e| e.to_string())
     }
 }
-pub use propolis_types::PciPath;
 
 // Duplicate the parameter types for the endpoints related to the serial console
 
@@ -51,4 +53,17 @@ pub struct InstanceSerialHistoryParams {
     /// range runs to the end of the available buffer, the data returned will be shorter than
     /// `max_bytes`.
     pub max_bytes: Option<u64>,
+}
+
+#[derive(
+    Copy, Clone, Debug, PartialEq, Eq, JsonSchema, Serialize, Deserialize,
+)]
+pub enum MockMode {
+    /// The mock server should run freely, advancing the state every time the
+    /// instance_state_monitor endpoint is requested while new state
+    /// transitions are queued.
+    Run,
+    /// The mock server should only advance the current state when the
+    /// /mock/step endpoint is requested.
+    SingleStep,
 }

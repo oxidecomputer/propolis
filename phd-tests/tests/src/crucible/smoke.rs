@@ -4,6 +4,10 @@
 
 use std::time::Duration;
 
+use phd_framework::{
+    disk::{BlockSize, DiskSource},
+    test_vm::{DiskBackend, DiskInterface},
+};
 use phd_testcase::*;
 use propolis_client::types::InstanceState;
 
@@ -37,11 +41,7 @@ async fn guest_reboot_test(ctx: &Framework) {
     vm.launch().await?;
     vm.wait_to_boot().await?;
 
-    // XXX: use graceful_reboot() now.
-    // Don't use `run_shell_command` because the guest won't echo another prompt
-    // after this.
-    vm.send_serial_str("reboot\n").await?;
-    vm.wait_to_boot().await?;
+    vm.graceful_reboot().await?;
 }
 
 #[phd_testcase]
@@ -86,4 +86,65 @@ async fn shutdown_persistence_test(ctx: &Framework) {
     // The touched file from the previous VM should be present in the new one.
     let lsout = vm.run_shell_command("ls foo.bar 2> /dev/null").await?;
     assert_eq!(lsout, "foo.bar");
+}
+
+#[phd_testcase]
+async fn vcr_replace_during_start_test(ctx: &Framework) {
+    if !ctx.crucible_enabled() {
+        phd_skip!("Crucible backends not enabled (no downstairs path)");
+    }
+
+    let mut config =
+        ctx.vm_config_builder("crucible_vcr_replace_during_start_test");
+
+    // Create a blank data disk on which to perform VCR replacement. This is
+    // necessary because Crucible doesn't permit VCR replacements for volumes
+    // whose read-only parents are local files (which is true for artifact-based
+    // Crucible disks).
+    const DATA_DISK_NAME: &str = "vcr-replacement-target";
+    config.data_disk(
+        DATA_DISK_NAME,
+        DiskSource::Blank(1024 * 1024 * 1024),
+        DiskInterface::Nvme,
+        DiskBackend::Crucible {
+            min_disk_size_gib: 1,
+            block_size: BlockSize::Bytes512,
+        },
+        5,
+    );
+
+    // Configure the disk so that when the VM starts, it will have an invalid
+    // downstairs address.
+    let spec = config.vm_spec(ctx).await?;
+    let disk_hdl =
+        spec.get_disk_by_device_name(DATA_DISK_NAME).cloned().unwrap();
+    let disk = disk_hdl.as_crucible().unwrap();
+    disk.enable_vcr_black_hole();
+
+    // Try to start the VM, but don't wait for it to boot; it should get stuck
+    // while activating using an invalid downstairs address.
+    let mut vm = ctx.spawn_vm_with_spec(spec, None).await?;
+    vm.launch().await?;
+
+    // The VM is expected not to reach the Running state. Unfortunately, there's
+    // no great way to test that this is never going to happen; as a best-effort
+    // alternative, wait for a short while and assert that the VM doesn't reach
+    // Running in the timeout interval.
+    vm.wait_for_state(InstanceState::Running, Duration::from_secs(5))
+        .await
+        .unwrap_err();
+
+    // Fix the disk's downstairs address and send a replacement request. This
+    // should be processed and should allow the VM to boot.
+    disk.disable_vcr_black_hole();
+    disk.set_generation(2);
+    vm.replace_crucible_vcr(disk).await?;
+    vm.wait_to_boot().await?;
+
+    assert_eq!(vm.get().await?.instance.state, InstanceState::Running);
+
+    // VCR replacements should continue to be accepted now that the instance is
+    // running.
+    disk.set_generation(3);
+    vm.replace_crucible_vcr(disk).await?;
 }

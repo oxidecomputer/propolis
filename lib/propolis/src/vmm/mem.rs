@@ -14,10 +14,13 @@ use std::sync::{Arc, Mutex};
 
 use libc::iovec;
 
-use crate::common::PAGE_SIZE;
-use crate::common::{GuestAddr, GuestRegion};
+use crate::common::{
+    GuestAddr, GuestData, GuestRegion, PAGE_MASK, PAGE_SHIFT, PAGE_SIZE,
+};
 use crate::util::aspace::ASpace;
 use crate::vmm::VmmHdl;
+
+use zerocopy::FromBytes;
 
 bitflags! {
     /// Bitflags representing memory protections.
@@ -56,6 +59,22 @@ pub(crate) enum MapKind {
 pub(crate) struct MapEnt {
     name: String,
     kind: MapKind,
+}
+
+impl MapEnt {
+    fn map_type(&self) -> MapType {
+        match &self.kind {
+            MapKind::Dram(_) => MapType::Dram,
+            MapKind::Rom(_) => MapType::Rom,
+            MapKind::MmioReserve => MapType::Mmio,
+        }
+    }
+}
+
+pub enum MapType {
+    Dram,
+    Rom,
+    Mmio,
 }
 
 pub struct PhysMap {
@@ -157,6 +176,17 @@ impl PhysMap {
             }
         }
         Ok(())
+    }
+
+    pub fn mappings(&self) -> Vec<(usize, usize, MapType)> {
+        let guard = self.map.lock().unwrap();
+        let mut mappings = Vec::new();
+
+        for (addr, len, ent) in guard.iter() {
+            mappings.push((addr, len, ent.map_type()));
+        }
+
+        mappings
     }
 
     pub(crate) fn memctx(&mut self) -> Arc<MemCtx> {
@@ -403,9 +433,7 @@ impl SubMapping<'_> {
         let prot = base.prot;
         SubMapping { backing: Backing::Base(base), ptr, len, prot }
     }
-}
 
-impl<'a> SubMapping<'a> {
     /// Acquire a reference to a region of memory within the
     /// current mapping.
     ///
@@ -480,7 +508,7 @@ impl<'a> SubMapping<'a> {
     }
 
     /// Reads a `T` object from the mapping.
-    pub fn read<T: Copy>(&self) -> Result<T> {
+    pub fn read<T: Copy + FromBytes>(&self) -> Result<T> {
         self.check_read_access()?;
         let typed = self.ptr.as_ptr() as *const T;
         if self.len < std::mem::size_of::<T>() {
@@ -488,13 +516,19 @@ impl<'a> SubMapping<'a> {
         }
 
         // Safety:
-        // - typed must be valid for reads
-        // - typed must point to a properly initialized value of T
+        // - typed must be valid for reads: `check_read_access()` succeeded
+        // - typed must point to a properly initialized value of T: always true
+        //     because we require `T: FromBytes`. `zerocopy::FromBytes` happens
+        //     to have the same concerns as us - that T is valid for all bit
+        //     patterns.
         Ok(unsafe { typed.read_unaligned() })
     }
 
     /// Read `values` from the mapping.
-    pub fn read_many<T: Copy>(&self, values: &mut [T]) -> Result<()> {
+    pub fn read_many<T: Copy + FromBytes>(
+        &self,
+        values: &mut [T],
+    ) -> Result<()> {
         self.check_read_access()?;
         let copy_len = size_of_val(values);
         if self.len < copy_len {
@@ -508,11 +542,13 @@ impl<'a> SubMapping<'a> {
         // not guaranteed for the source pointer.  Cast it down to a u8, which
         // will appease those alignment concerns
         let src = self.ptr.as_ptr() as *const u8;
+        // We know reinterpreting `*mut T` as `*mut u8` and writing to it cannot
+        // result in invalid `T` because `T: FromBytes`
         let dst = values.as_mut_ptr() as *mut u8;
 
         // Safety
         // - `src` is valid for read for the `copy_len` as checked above
-        // - `src` is valid for writes for its entire length, since it is from a
+        // - `dst` is valid for writes for its entire length, since it is from a
         // valid mutable reference passed in to us
         // - both are aligned for a `u8` copy
         // - `dst` cannot be overlapped by `src`, since the former came from a
@@ -618,7 +654,7 @@ impl<'a> SubMapping<'a> {
     /// If `buf` is larger than the SubMapping, the write will be truncated to
     /// length of the SubMapping.
     ///
-    /// Returns the number of bytes read.
+    /// Returns the number of bytes written.
     pub fn write_bytes(&self, buf: &[u8]) -> Result<usize> {
         let write_len = usize::min(buf.len(), self.len);
         self.write_many(&buf[..write_len])?;
@@ -788,11 +824,14 @@ pub struct MemCtx {
 }
 impl MemCtx {
     /// Reads a generic value from a specified guest address.
-    pub fn read<T: Copy>(&self, addr: GuestAddr) -> Option<T> {
+    pub fn read<T: Copy + FromBytes>(
+        &self,
+        addr: GuestAddr,
+    ) -> Option<GuestData<T>> {
         if let Some(mapping) =
             self.region_covered(addr, size_of::<T>(), Prot::READ)
         {
-            mapping.read().ok()
+            mapping.read::<T>().ok().map(GuestData::from)
         } else {
             None
         }
@@ -803,7 +842,7 @@ impl MemCtx {
     pub fn read_into(
         &self,
         addr: GuestAddr,
-        buf: &mut [u8],
+        buf: &mut GuestData<&mut [u8]>,
         len: usize,
     ) -> Option<usize> {
         let len = usize::min(buf.len(), len);
@@ -818,7 +857,7 @@ impl MemCtx {
     pub fn direct_read_into(
         &self,
         addr: GuestAddr,
-        buf: &mut [u8],
+        buf: &mut GuestData<&mut [u8]>,
         len: usize,
     ) -> Option<usize> {
         let len = usize::min(buf.len(), len);
@@ -828,13 +867,20 @@ impl MemCtx {
     }
 
     /// Reads multiple objects from a guest address.
-    pub fn read_many<T: Copy>(
+    pub fn read_many<T: Copy + FromBytes>(
         &self,
         base: GuestAddr,
         count: usize,
-    ) -> Option<MemMany<T>> {
+    ) -> Option<GuestData<MemMany<T>>> {
         self.region_covered(base, size_of::<T>() * count, Prot::READ).map(
-            |mapping| MemMany { mapping, pos: 0, count, phantom: PhantomData },
+            |mapping| {
+                GuestData::from(MemMany {
+                    mapping,
+                    pos: 0,
+                    count,
+                    phantom: PhantomData,
+                })
+            },
         )
     }
     /// Writes a value to guest memory.
@@ -891,6 +937,10 @@ impl MemCtx {
     }
     pub fn readable_region(&self, region: &GuestRegion) -> Option<SubMapping> {
         let mapping = self.region_covered(region.0, region.1, Prot::READ)?;
+        Some(mapping)
+    }
+    pub fn readwrite_region(&self, region: &GuestRegion) -> Option<SubMapping> {
+        let mapping = self.region_covered(region.0, region.1, Prot::RW)?;
         Some(mapping)
     }
 
@@ -1015,26 +1065,85 @@ pub struct MemMany<'a, T: Copy> {
     pos: usize,
     phantom: PhantomData<T>,
 }
-impl<'a, T: Copy> MemMany<'a, T> {
+impl<T: Copy + FromBytes> GuestData<MemMany<'_, T>> {
     /// Gets the object at position `pos` within the memory region.
     ///
     /// Returns [`Option::None`] if out of range.
-    pub fn get(&self, pos: usize) -> Option<T> {
+    pub fn get(&self, pos: usize) -> Option<GuestData<T>> {
         if pos < self.count {
             let sz = std::mem::size_of::<T>();
-            self.mapping.subregion(pos * sz, sz)?.read().ok()
+            self.mapping
+                .subregion(pos * sz, sz)?
+                .read::<T>()
+                .ok()
+                .map(GuestData::from)
         } else {
             None
         }
     }
 }
-impl<'a, T: Copy> Iterator for MemMany<'a, T> {
-    type Item = T;
+impl<T: Copy + FromBytes> Iterator for GuestData<MemMany<'_, T>> {
+    type Item = GuestData<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let res = self.get(self.pos);
         self.pos += 1;
         res
+    }
+}
+
+/// A 52-bit physical page number, i.e., the ordinal index of a 4 KiB page of
+/// guest memory.
+#[derive(Clone, Copy, Ord, PartialOrd, Eq, PartialEq)]
+pub(crate) struct Pfn(u64);
+
+impl std::fmt::Debug for Pfn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Pfn({:#x})", self.0)
+    }
+}
+
+impl std::fmt::Display for Pfn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        core::fmt::LowerHex::fmt(&self.0, f)
+    }
+}
+
+impl From<Pfn> for u64 {
+    fn from(value: Pfn) -> Self {
+        value.0
+    }
+}
+
+impl Pfn {
+    /// Creates a new PFN wrapper for the supplied physical page number. Returns
+    /// `None` if the page number cannot correctly be shifted to form the
+    /// corresponding 64-bit address.
+    pub(crate) fn new(pfn: u64) -> Option<Self> {
+        if pfn > (PAGE_MASK as u64 >> PAGE_SHIFT) {
+            None
+        } else {
+            Some(Self(pfn))
+        }
+    }
+
+    /// Creates a new PFN wrapper without checking that the supplied PFN can
+    /// be shifted to produce a corresponding 64-bit address.
+    ///
+    /// # Safety
+    ///
+    /// The supplied PFN must fit in 52 bits; otherwise [`Self::addr`] will
+    /// return incorrect addresses for this PFN.
+    //
+    // This is currently only used by test code.
+    #[cfg(test)]
+    pub(crate) fn new_unchecked(pfn: u64) -> Self {
+        Self(pfn)
+    }
+
+    /// Yields the 64-bit address corresponding to this PFN.
+    pub(crate) fn addr(&self) -> GuestAddr {
+        GuestAddr(self.0 << PAGE_SHIFT)
     }
 }
 

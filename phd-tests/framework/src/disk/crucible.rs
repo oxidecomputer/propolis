@@ -5,25 +5,23 @@
 //! Abstractions for Crucible-backed disks.
 
 use std::{
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::Mutex,
 };
 
 use anyhow::Context;
-use propolis_client::types::{
-    ComponentV0, CrucibleOpts, CrucibleStorageBackend,
-    VolumeConstructionRequest,
+use propolis_client::{
+    instance_spec::{ComponentV0, CrucibleStorageBackend},
+    CrucibleOpts, VolumeConstructionRequest,
 };
 use rand::{rngs::StdRng, RngCore, SeedableRng};
 use tracing::{error, info};
 use uuid::Uuid;
 
 use super::BlockSize;
-use crate::{
-    disk::DeviceName, guest_os::GuestOsKind, server_log_mode::ServerLogMode,
-};
+use crate::{disk::DeviceName, guest_os::GuestOsKind, log_config::LogConfig};
 
 /// An RAII wrapper around a directory containing Crucible data files. Deletes
 /// the directory and its contents when dropped.
@@ -47,8 +45,22 @@ impl Drop for DataDirectory {
 #[derive(Debug)]
 struct Downstairs {
     process_handle: std::process::Child,
+
+    /// The address on which this downstairs is serving its API.
     address: SocketAddr,
+
+    /// The address to insert as a connection target when constructing a VCR
+    /// that refers to this downstairs. If `None`, the downstairs's API address
+    /// is used instead.
+    vcr_address_override: Option<SocketAddr>,
+
     data_dir: DataDirectory,
+}
+
+impl Downstairs {
+    fn vcr_address(&self) -> SocketAddr {
+        self.vcr_address_override.unwrap_or(self.address)
+    }
 }
 
 impl Drop for Downstairs {
@@ -62,12 +74,106 @@ impl Drop for Downstairs {
 /// An RAII wrapper around a Crucible disk.
 #[derive(Debug)]
 pub struct CrucibleDisk {
-    /// The name to use in instance specs that include this disk.
     device_name: DeviceName,
+    disk_id: Uuid,
+    guest_os: Option<GuestOsKind>,
+    inner: Mutex<Inner>,
+}
 
-    /// The UUID to insert into this disk's `VolumeConstructionRequest`s.
-    id: Uuid,
+impl CrucibleDisk {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        device_name: DeviceName,
+        min_disk_size_gib: u64,
+        block_size: BlockSize,
+        downstairs_binary_path: &impl AsRef<std::ffi::OsStr>,
+        downstairs_ports: &[u16],
+        data_dir_root: &impl AsRef<Path>,
+        read_only_parent: Option<&impl AsRef<Path>>,
+        guest_os: Option<GuestOsKind>,
+        log_config: LogConfig,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            device_name,
+            disk_id: Uuid::new_v4(),
+            guest_os,
+            inner: Mutex::new(Inner::new(
+                min_disk_size_gib,
+                block_size,
+                downstairs_binary_path,
+                downstairs_ports,
+                data_dir_root,
+                read_only_parent,
+                log_config,
+            )?),
+        })
+    }
 
+    /// Obtains the current volume construction request for this disk.
+    pub fn vcr(&self) -> VolumeConstructionRequest {
+        self.inner.lock().unwrap().vcr(self.disk_id)
+    }
+
+    /// Sets the generation number to use in subsequent calls to create a
+    /// backend spec for this disk.
+    pub fn set_generation(&self, generation: u64) {
+        self.inner.lock().unwrap().generation = generation;
+    }
+
+    /// Changes this disk's downstairs configuration so that the returned IP
+    /// address of the first downstairs is an IPv6 black hole instead of its
+    /// actual address. This will prevent VMs from activating this disk until
+    /// the VCR is replaced with one bearing the correct IP address.
+    pub fn enable_vcr_black_hole(&self) {
+        info!(disk = self.device_name.as_str(), "enabling vcr black hole");
+
+        // 100::/64 is the IPv6 discard prefix (per RFC 6666).
+        let address = SocketAddr::V6(SocketAddrV6::new(
+            Ipv6Addr::new(0x100, 0, 0, 0, 0, 0, 0, 0),
+            9000,
+            0,
+            0,
+        ));
+
+        let mut inner = self.inner.lock().unwrap();
+
+        // Crucible rejects VCR replacement requests that change more than one
+        // downstairs address, so just invalidate the first downstairs address.
+        // This ensures that if the black hole is disabled, subsequent VCRs are
+        // valid replacements for the ones produced while the black hole was
+        // enabled.
+        inner.downstairs_instances[0].vcr_address_override = Some(address);
+    }
+
+    /// Ensures that this disk's downstairs configuration will return the
+    /// correct addresses for all its downstairs instances.
+    pub fn disable_vcr_black_hole(&self) {
+        info!(disk = self.device_name.as_str(), "disabling vcr black hole");
+        let mut inner = self.inner.lock().unwrap();
+        inner.downstairs_instances[0].vcr_address_override = None;
+    }
+}
+
+impl super::DiskConfig for CrucibleDisk {
+    fn device_name(&self) -> &DeviceName {
+        &self.device_name
+    }
+
+    fn backend_spec(&self) -> ComponentV0 {
+        self.inner.lock().unwrap().backend_spec(self.disk_id)
+    }
+
+    fn guest_os(&self) -> Option<GuestOsKind> {
+        self.guest_os
+    }
+
+    fn as_crucible(&self) -> Option<&CrucibleDisk> {
+        Some(self)
+    }
+}
+
+#[derive(Debug)]
+struct Inner {
     /// The disk's block size.
     block_size: BlockSize,
 
@@ -83,31 +189,26 @@ pub struct CrucibleDisk {
     /// An optional path to a file to use as a read-only parent for this disk.
     read_only_parent: Option<PathBuf>,
 
-    /// The kind of guest OS that can be found on this disk, if there is one.
-    guest_os: Option<GuestOsKind>,
-
     /// The base64-encoded encryption key to use for this disk.
     encryption_key: String,
 
     /// The generation number to insert into this disk's
     /// `VolumeConstructionRequest`s.
-    generation: AtomicU64,
+    generation: u64,
 }
 
-impl CrucibleDisk {
+impl Inner {
     /// Constructs a new Crucible disk that stores its files in the supplied
     /// `data_dir`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        device_name: DeviceName,
         min_disk_size_gib: u64,
         block_size: BlockSize,
         downstairs_binary_path: &impl AsRef<std::ffi::OsStr>,
         downstairs_ports: &[u16],
         data_dir_root: &impl AsRef<Path>,
         read_only_parent: Option<&impl AsRef<Path>>,
-        guest_os: Option<GuestOsKind>,
-        log_mode: ServerLogMode,
+        log_config: LogConfig,
     ) -> anyhow::Result<Self> {
         // To create a region, Crucible requires a block size, an extent size
         // given as a number of blocks, and an extent count. Compute the latter
@@ -166,7 +267,7 @@ impl CrucibleDisk {
         let disk_uuid = Uuid::new_v4();
         for port in downstairs_ports {
             let mut data_dir_path = data_dir_root.as_ref().to_path_buf();
-            data_dir_path.push(format!("{}_{}", disk_uuid, port));
+            data_dir_path.push(format!("{disk_uuid}_{port}"));
             std::fs::create_dir_all(&data_dir_path)?;
             data_dirs.push(DataDirectory { path: data_dir_path });
         }
@@ -232,9 +333,14 @@ impl CrucibleDisk {
                 dir_arg.as_ref(),
             ];
 
-            let (stdout, stderr) = log_mode.get_handles(
+            // NOTE: `log_format` is ignored here because Crucible determines
+            // Bunyan or plain formatting based on `atty::is()`. In practice
+            // this is fine, and matches what we want right now, but it might be
+            // nice to connect this more directly to the output desire expressed
+            // by the test runner.
+            let (stdout, stderr) = log_config.output_mode.get_handles(
                 data_dir_root,
-                &format!("crucible_{}_{}", disk_uuid, port),
+                &format!("crucible_{disk_uuid}_{port}"),
             )?;
 
             info!(?crucible_args, "Launching Crucible downstairs server");
@@ -246,6 +352,7 @@ impl CrucibleDisk {
                     stderr,
                 )?,
                 address: SocketAddr::V4(addr),
+                vcr_address_override: None,
                 data_dir: dir,
             };
 
@@ -253,8 +360,6 @@ impl CrucibleDisk {
         }
 
         Ok(Self {
-            device_name,
-            id: disk_uuid,
             block_size,
             blocks_per_extent,
             extent_count: extents_in_disk as u32,
@@ -269,40 +374,36 @@ impl CrucibleDisk {
                     bytes
                 },
             ),
-            guest_os,
-            generation: AtomicU64::new(1),
+            generation: 1,
         })
     }
 
-    /// Sets the generation number to use in subsequent calls to create a
-    /// backend spec for this disk.
-    pub fn set_generation(&self, gen: u64) {
-        self.generation.store(gen, Ordering::Relaxed);
-    }
-}
+    fn backend_spec(&self, disk_id: Uuid) -> ComponentV0 {
+        let vcr = self.vcr(disk_id);
 
-impl super::DiskConfig for CrucibleDisk {
-    fn device_name(&self) -> &DeviceName {
-        &self.device_name
+        ComponentV0::CrucibleStorageBackend(CrucibleStorageBackend {
+            request_json: serde_json::to_string(&vcr)
+                .expect("VolumeConstructionRequest should serialize"),
+            readonly: false,
+        })
     }
 
-    fn backend_spec(&self) -> ComponentV0 {
-        let gen = self.generation.load(Ordering::Relaxed);
+    fn vcr(&self, disk_id: Uuid) -> VolumeConstructionRequest {
         let downstairs_addrs = self
             .downstairs_instances
             .iter()
-            .map(|ds| ds.address.to_string())
+            .map(Downstairs::vcr_address)
             .collect();
 
-        let vcr = VolumeConstructionRequest::Volume {
-            id: self.id,
+        VolumeConstructionRequest::Volume {
+            id: disk_id,
             block_size: self.block_size.bytes(),
             sub_volumes: vec![VolumeConstructionRequest::Region {
                 block_size: self.block_size.bytes(),
                 blocks_per_extent: self.blocks_per_extent,
                 extent_count: self.extent_count,
                 opts: CrucibleOpts {
-                    id: Uuid::new_v4(),
+                    id: disk_id,
                     target: downstairs_addrs,
                     lossy: false,
                     flush_timeout: None,
@@ -313,7 +414,7 @@ impl super::DiskConfig for CrucibleDisk {
                     control: None,
                     read_only: false,
                 },
-                gen,
+                r#gen: self.generation,
             }],
             read_only_parent: self.read_only_parent.as_ref().map(|p| {
                 Box::new(VolumeConstructionRequest::File {
@@ -322,21 +423,7 @@ impl super::DiskConfig for CrucibleDisk {
                     path: p.to_string_lossy().to_string(),
                 })
             }),
-        };
-
-        ComponentV0::CrucibleStorageBackend(CrucibleStorageBackend {
-            request_json: serde_json::to_string(&vcr)
-                .expect("VolumeConstructionRequest should serialize"),
-            readonly: false,
-        })
-    }
-
-    fn guest_os(&self) -> Option<GuestOsKind> {
-        self.guest_os
-    }
-
-    fn as_crucible(&self) -> Option<&CrucibleDisk> {
-        Some(self)
+        }
     }
 }
 

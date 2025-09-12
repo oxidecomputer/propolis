@@ -17,14 +17,13 @@ use propolis::{
     vmm::VmmHdl,
     Machine,
 };
+use propolis_api_types::instance_spec::SpecKey;
 use slog::{error, info};
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::{serial::Serial, spec::Spec, vcpu_tasks::VcpuTaskController};
 
-use super::{
-    state_driver::VmStartReason, BlockBackendMap, CrucibleBackendMap, DeviceMap,
-};
+use super::{BlockBackendMap, CrucibleBackendMap, DeviceMap};
 
 /// A collection of components that make up a Propolis VM instance.
 pub(crate) struct VmObjects {
@@ -159,12 +158,12 @@ impl VmObjectsLocked {
     }
 
     /// Obtains a handle to the lifecycle trait object for the component with
-    /// the supplied `name`.
-    pub(crate) fn device_by_name(
+    /// the supplied `id`.
+    pub(crate) fn device_by_id(
         &self,
-        name: &str,
+        id: &SpecKey,
     ) -> Option<Arc<dyn propolis::common::Lifecycle>> {
-        self.devices.get(name).cloned()
+        self.devices.get(id).cloned()
     }
 
     /// Yields the VM's current Crucible backend map.
@@ -188,11 +187,19 @@ impl VmObjectsLocked {
         &self.ps2ctrl
     }
 
+    pub(crate) fn device_map(&self) -> &DeviceMap {
+        &self.devices
+    }
+
+    pub(crate) fn block_backend_map(&self) -> &BlockBackendMap {
+        &self.block_backends
+    }
+
     /// Iterates over all of the lifecycle trait objects in this VM and calls
     /// `func` on each one.
     pub(crate) fn for_each_device(
         &self,
-        mut func: impl FnMut(&str, &Arc<dyn propolis::common::Lifecycle>),
+        mut func: impl FnMut(&SpecKey, &Arc<dyn propolis::common::Lifecycle>),
     ) {
         for (name, dev) in self.devices.iter() {
             func(name, dev);
@@ -205,7 +212,7 @@ impl VmObjectsLocked {
     pub(crate) fn for_each_device_fallible<E>(
         &self,
         mut func: impl FnMut(
-            &str,
+            &SpecKey,
             &Arc<dyn propolis::common::Lifecycle>,
         ) -> std::result::Result<(), E>,
     ) -> std::result::Result<(), E> {
@@ -243,35 +250,11 @@ impl VmObjectsLocked {
         self.machine.reinitialize().unwrap();
     }
 
-    /// Starts a VM's devices and allows all of its vCPU tasks to run.
-    ///
-    /// This function may be called either after initializing a new VM from
-    /// scratch or after an inbound live migration. In the latter case, this
-    /// routine assumes that the caller initialized and activated the VM's vCPUs
-    /// prior to importing state from the migration source.
-    pub(super) async fn start(
-        &mut self,
-        reason: VmStartReason,
-    ) -> anyhow::Result<()> {
-        match reason {
-            VmStartReason::ExplicitRequest => {
-                self.reset_vcpus();
-            }
-            VmStartReason::MigratedIn => {
-                self.resume_kernel_vm();
-            }
-        }
-
-        let result = self.start_devices().await;
-        if result.is_ok() {
-            self.vcpu_tasks.resume_all();
-        }
-
-        result
-    }
-
     /// Pauses this VM's devices and its kernel VMM.
     pub(crate) async fn pause(&mut self) {
+        // Order matters here: the Propolis lifecycle trait's pause function
+        // requires that all vCPUs pause before any devices do, and all vCPUs
+        // must be paused before the kernel VM can pause.
         self.vcpu_tasks.pause_all();
         self.pause_devices().await;
         self.pause_kernel_vm();
@@ -279,8 +262,21 @@ impl VmObjectsLocked {
 
     /// Resumes this VM's devices and its kernel VMM.
     pub(crate) fn resume(&mut self) {
+        // Order matters here: the kernel VM must resume before any vCPUs can
+        // resume, and the Propolis lifecycle trait's resume function requires
+        // that all devices resume before any vCPUs do.
         self.resume_kernel_vm();
         self.resume_devices();
+        self.resume_vcpus();
+    }
+
+    /// Resumes this VM's vCPU tasks.
+    ///
+    /// This is intended for use in VM startup sequences where the state driver
+    /// needs fine-grained control over the order in which devices and vCPUs
+    /// start. When pausing and resuming a VM that's already been started, use
+    /// [`Self::pause`] and [`Self::resume`] instead.
+    pub(crate) fn resume_vcpus(&mut self) {
         self.vcpu_tasks.resume_all();
     }
 
@@ -314,31 +310,7 @@ impl VmObjectsLocked {
         // Resume devices so they're ready to do more work, then resume
         // vCPUs.
         self.resume_devices();
-        self.vcpu_tasks.resume_all();
-    }
-
-    /// Starts all of a VM's devices and allows its block backends to process
-    /// requests from their devices.
-    async fn start_devices(&self) -> anyhow::Result<()> {
-        self.for_each_device_fallible(|name, dev| {
-            info!(self.log, "sending startup complete to {}", name);
-            let res = dev.start();
-            if let Err(e) = &res {
-                error!(self.log, "startup failed for {}: {:?}", name, e);
-            }
-            res
-        })?;
-
-        for (name, backend) in self.block_backends.iter() {
-            info!(self.log, "starting block backend {}", name);
-            let res = backend.start().await;
-            if let Err(e) = &res {
-                error!(self.log, "startup failed for {}: {:?}", name, e);
-                return res;
-            }
-        }
-
-        Ok(())
+        self.resume_vcpus();
     }
 
     /// Pauses all of a VM's devices.
@@ -377,7 +349,7 @@ impl VmObjectsLocked {
             .iter()
             .map(|(name, dev)| {
                 info!(self.log, "got paused future from dev {}", name);
-                NamedFuture { name: name.clone(), future: dev.paused() }
+                NamedFuture { name: name.to_string(), future: dev.paused() }
             })
             .collect();
 
@@ -408,12 +380,12 @@ impl VmObjectsLocked {
             });
         });
 
-        for (name, backend) in self.block_backends.iter() {
-            info!(self.log, "stopping and detaching block backend {}", name);
+        for (id, backend) in self.block_backends.iter() {
+            info!(self.log, "stopping and detaching block backend {}", id);
             backend.stop().await;
             if let Err(err) = backend.detach() {
                 error!(self.log, "error detaching block backend";
-                       "name" => name,
+                       "id" => %id,
                        "error" => ?err);
             }
         }

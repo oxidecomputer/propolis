@@ -157,16 +157,207 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor, PciPath};
+use uuid::Uuid;
 
 pub mod components;
 pub mod v0;
 
-/// Type alias for keys in the instance spec's maps.
-type SpecKey = String;
+/// A key identifying a component in an instance spec.
+//
+// Some of the components Omicron attaches to Propolis VMs, like network
+// interfaces and Crucible disks, are described by database records with UUID
+// primary keys. It's natural to reuse these UUIDs as component identifiers in
+// Propolis, especially because it lets Omicron functions that need to identify
+// a specific component (e.g. a specific Crucible backend that should handle a
+// disk snapshot request) pass that component's ID directly to Propolis.
+//
+// In some cases it's not desirable or possible to use UUIDs this way:
+//
+// - Some components (like the cloud-init disk) don't have their own rows in the
+//   database and so don't have obvious UUIDs to use.
+// - Some objects (like Crucible disks) require both a device and a backend
+//   component in the spec, and these can't share the same key.
+// - Propolis users outside the control plane may not have any component UUIDs
+//   at all and may just want to use strings to identify all their components.
+//
+// For these reasons, the key type may be represented as either a UUID or a
+// String. This allows the more compact, more-easily-compared UUID format to be
+// used wherever it is practical while still allowing callers to use strings as
+// names if they have no UUIDs available or the most obvious UUID is in use
+// elsewhere. The key type's From impls will try to parse strings into UUIDs
+// before storing keys as strings.
+#[derive(
+    Clone, Debug, Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd,
+)]
+// Direct serde to use an untagged enum representation for this type. Since both
+// Uuid and String serialize to strings, this allows other types that contain a
+// Map<K = SpecKey> to derive Serialize and successfully serialize to JSON.
+// (This doesn't work with a tagged representation because JSON doesn't allow
+// maps to be used as map keys.)
+//
+// Note that this makes the order of variants matter: serde will pick the first
+// variant into which it can successfully deserialize an untagged enum value,
+// and the point is to use the UUID representation for any value that can be
+// interpreted as a UUID.
+#[serde(untagged)]
+pub enum SpecKey {
+    Uuid(Uuid),
+    Name(String),
+}
+
+impl std::fmt::Display for SpecKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Uuid(uuid) => write!(f, "{uuid}"),
+            Self::Name(name) => write!(f, "{name}"),
+        }
+    }
+}
+
+impl std::str::FromStr for SpecKey {
+    type Err = core::convert::Infallible;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(s.into())
+    }
+}
+
+impl From<&str> for SpecKey {
+    fn from(s: &str) -> Self {
+        match Uuid::parse_str(s) {
+            Ok(uuid) => Self::Uuid(uuid),
+            Err(_) => Self::Name(s.to_owned()),
+        }
+    }
+}
+
+impl From<String> for SpecKey {
+    fn from(value: String) -> Self {
+        match Uuid::parse_str(value.as_str()) {
+            Ok(uuid) => Self::Uuid(uuid),
+            Err(_) => Self::Name(value),
+        }
+    }
+}
+
+impl From<Uuid> for SpecKey {
+    fn from(value: Uuid) -> Self {
+        Self::Uuid(value)
+    }
+}
+
+// Manually implement JsonSchema to help Progenitor generate the expected enum
+// type for spec keys.
+impl JsonSchema for SpecKey {
+    fn schema_name() -> String {
+        "SpecKey".to_owned()
+    }
+
+    fn json_schema(
+        generator: &mut schemars::gen::SchemaGenerator,
+    ) -> schemars::schema::Schema {
+        use schemars::schema::*;
+        fn label_schema(label: &str, schema: Schema) -> Schema {
+            SchemaObject {
+                metadata: Some(
+                    Metadata {
+                        title: Some(label.to_string()),
+                        ..Default::default()
+                    }
+                    .into(),
+                ),
+                subschemas: Some(
+                    SubschemaValidation {
+                        all_of: Some(vec![schema]),
+                        ..Default::default()
+                    }
+                    .into(),
+                ),
+                ..Default::default()
+            }
+            .into()
+        }
+
+        SchemaObject {
+            metadata: Some(
+                Metadata {
+                    description: Some(
+                        "A key identifying a component in an instance spec."
+                            .to_string(),
+                    ),
+                    ..Default::default()
+                }
+                .into(),
+            ),
+            subschemas: Some(Box::new(SubschemaValidation {
+                one_of: Some(vec![
+                    label_schema("uuid", generator.subschema_for::<Uuid>()),
+                    label_schema("name", generator.subschema_for::<String>()),
+                ]),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .into()
+    }
+}
 
 /// A versioned instance spec.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, tag = "version", content = "spec")]
 pub enum VersionedInstanceSpec {
     V0(v0::InstanceSpecV0),
+}
+
+#[cfg(test)]
+mod test {
+    use std::collections::BTreeMap;
+
+    use uuid::Uuid;
+
+    use super::{components::devices::QemuPvpanic, v0::ComponentV0, SpecKey};
+
+    type TestMap = BTreeMap<SpecKey, ComponentV0>;
+
+    // Verifies that UUID-type spec keys that are serialized and deserialized
+    // continue to be interpreted as UUID-type spec keys.
+    #[test]
+    fn spec_key_uuid_roundtrip() {
+        let id = Uuid::new_v4();
+        let mut map = TestMap::new();
+        map.insert(
+            SpecKey::Uuid(id),
+            ComponentV0::QemuPvpanic(QemuPvpanic { enable_isa: true }),
+        );
+
+        let ser = serde_json::to_string(&map).unwrap();
+        let unser: TestMap = serde_json::from_str(&ser).unwrap();
+        let key = unser.keys().next().expect("one key in the map");
+        let SpecKey::Uuid(got_id) = key else {
+            panic!("expected SpecKey::Uuid, got {key}");
+        };
+
+        assert_eq!(*got_id, id);
+    }
+
+    // Verifies that serializing a name-type spec key that happens to be the
+    // string representation of a UUID causes the key to deserialize as a
+    // UUID-type key.
+    #[test]
+    fn spec_key_uuid_string_deserializes_as_uuid_variant() {
+        let id = Uuid::new_v4();
+        let mut map = TestMap::new();
+        map.insert(
+            SpecKey::Name(id.to_string()),
+            ComponentV0::QemuPvpanic(QemuPvpanic { enable_isa: true }),
+        );
+
+        let ser = serde_json::to_string(&map).unwrap();
+        let unser: TestMap = serde_json::from_str(&ser).unwrap();
+        let key = unser.keys().next().expect("one key in the map");
+        let SpecKey::Uuid(got_id) = key else {
+            panic!("expected SpecKey::Uuid, got {key}");
+        };
+
+        assert_eq!(*got_id, id);
+    }
 }

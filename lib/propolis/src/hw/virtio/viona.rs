@@ -27,6 +27,9 @@ use tokio::io::Interest;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+// Re-export API versioning interface for convenience of propolis consumers
+pub use viona_api::{api_version, ApiVersion};
+
 const ETHERADDRL: usize = 6;
 
 /// Viona's in-kernel emulation of the device VirtQueues is performed in what it
@@ -86,6 +89,59 @@ impl Inner {
     }
 }
 
+/// Configuration parmaeters for the underlying viona device
+///
+/// These parameters assume an [viona_api::ApiVersion::V3] device
+#[derive(Copy, Clone)]
+pub struct DeviceParams {
+    /// When transmitting packets, should viona (allocate and) copy the entire
+    /// contents of the packet, rather than "loaning" the guest memory beyond
+    /// the packet headers?
+    ///
+    /// There is a performance cost to copying the full packet, but it avoids
+    /// certain issues pertaining to looped-back viona packets being delivered
+    /// to native zones on the machine.
+    pub copy_data: bool,
+
+    /// Byte count for padding added to the head of transmitted packets.  This
+    /// padding can be used by subsequent operations in the transmission chain,
+    /// such as encapsulation, which would otherwise need to re-allocate for the
+    /// larger header.
+    pub header_pad: u16,
+}
+impl DeviceParams {
+    #[cfg(target_os = "illumos")]
+    fn set(&self, hdl: &VionaHdl) -> io::Result<()> {
+        // Set parameters assuming an ApiVersion::V3 device
+        let mut params = viona_api::NvList::new();
+        params.add(c"tx_copy_data", self.copy_data);
+        params.add(c"tx_header_pad", self.header_pad);
+        if let Err(e) = hdl.0.set_parameters(&mut params) {
+            match e {
+                viona_api::ParamError::Io(io) => Err(io),
+                viona_api::ParamError::Detailed(_) => Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    "unsupported viona parameters",
+                )),
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(not(target_os = "illumos"))]
+    fn set(&self, _hdl: &VionaHdl) -> io::Result<()> {
+        panic!("viona and libnvpair not present on non-illumos")
+    }
+}
+impl Default for DeviceParams {
+    fn default() -> Self {
+        // Viona (as of V3) allocs/copies entire packet by default, with no
+        // padding added to the header.
+        Self { copy_data: true, header_pad: 0 }
+    }
+}
+
 /// Represents a connection to the kernel's Viona (VirtIO Network Adapter)
 /// driver.
 pub struct PciVirtioViona {
@@ -102,6 +158,7 @@ impl PciVirtioViona {
         vnic_name: &str,
         queue_size: u16,
         vm: &VmmHdl,
+        viona_params: Option<DeviceParams>,
     ) -> io::Result<Arc<PciVirtioViona>> {
         let dlhdl = dladm::Handle::new()?;
         let info = dlhdl.query_link(vnic_name)?;
@@ -117,11 +174,28 @@ impl PciVirtioViona {
             eprintln!("failed to enable promisc mode on {vnic_name}: {e:?}");
         }
 
+        if let Some(vp) = viona_params {
+            vp.set(&hdl)?;
+        }
+
         // TX and RX
         let queue_count = NonZeroU16::new(2).unwrap();
         // interrupts for TX, RX, and device config
         let msix_count = Some(3);
         let dev_features = hdl.get_avail_features()?;
+
+        // Do in-kernel configuration of device MTU
+        if let Some(mtu) = info.mtu {
+            if hdl.api_version().unwrap() >= viona_api::ApiVersion::V4 {
+                hdl.set_mtu(mtu)?;
+            } else if mtu != 1500 {
+                // Squawk about MTUs not matching the default of 1500
+                return Err(io::Error::new(
+                    ErrorKind::Unsupported,
+                    "viona device version is inadequate to set MTU",
+                ));
+            }
+        }
 
         let queues =
             VirtQueues::new(NonZeroU16::new(queue_size).unwrap(), queue_count);
@@ -658,6 +732,16 @@ impl VionaHdl {
         self.0.instance_id()
     }
 
+    /// Set MTU for viona device
+    fn set_mtu(&self, mtu: u16) -> io::Result<()> {
+        self.0.ioctl_usize(viona_api::VNA_IOC_SET_MTU, mtu.into())?;
+        Ok(())
+    }
+
+    fn api_version(&self) -> io::Result<u32> {
+        self.0.api_version()
+    }
+
     /// Set the desired promiscuity level on this interface.
     #[cfg(feature = "falcon")]
     fn set_promisc(&self, p: viona_api::viona_promisc_t) -> io::Result<()> {
@@ -864,8 +948,7 @@ use bits::*;
 
 /// Check that available viona API matches expectations of propolis crate
 pub(crate) fn check_api_version() -> Result<(), crate::api_version::Error> {
-    let fd = viona_api::VionaFd::open()?;
-    let vers = fd.api_version()?;
+    let vers = viona_api::api_version()?;
 
     // viona only requires the V2 bits for now
     let compare = viona_api::ApiVersion::V2;

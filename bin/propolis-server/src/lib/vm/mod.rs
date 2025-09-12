@@ -79,15 +79,16 @@
 //! In the latter case, the driver moves to `Rundown` and allows `VmObjects`
 //! teardown to drive the state machine to `RundownComplete`.
 
-use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
+use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use active::ActiveVm;
 use ensure::VmEnsureRequest;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types::{
-    instance_spec::VersionedInstanceSpec, InstanceEnsureResponse,
-    InstanceMigrateStatusResponse, InstanceMigrationStatus, InstanceProperties,
-    InstanceSpecGetResponse, InstanceState, InstanceStateMonitorResponse,
+    instance_spec::{SpecKey, VersionedInstanceSpec},
+    InstanceEnsureResponse, InstanceMigrateStatusResponse,
+    InstanceMigrationStatus, InstanceProperties, InstanceSpecGetResponse,
+    InstanceSpecStatus, InstanceState, InstanceStateMonitorResponse,
     MigrationState,
 };
 use slog::info;
@@ -109,7 +110,7 @@ pub(crate) mod state_publisher;
 /// Maps component names to lifecycle trait objects that allow
 /// components to be started, paused, resumed, and halted.
 pub(crate) type DeviceMap =
-    BTreeMap<String, Arc<dyn propolis::common::Lifecycle>>;
+    BTreeMap<SpecKey, Arc<dyn propolis::common::Lifecycle>>;
 
 /// Mapping of NIC identifiers to viona device instance IDs.
 /// We use a Vec here due to the limited size of the NIC array.
@@ -117,11 +118,11 @@ pub(crate) type NetworkInterfaceIds = Vec<(uuid::Uuid, KstatInstanceId)>;
 
 /// Maps component names to block backend trait objects.
 pub(crate) type BlockBackendMap =
-    BTreeMap<String, Arc<dyn propolis::block::Backend>>;
+    BTreeMap<SpecKey, Arc<dyn propolis::block::Backend>>;
 
 /// Maps component names to Crucible backend objects.
 pub(crate) type CrucibleBackendMap =
-    BTreeMap<uuid::Uuid, Arc<propolis::block::CrucibleBackend>>;
+    BTreeMap<SpecKey, Arc<propolis::block::CrucibleBackend>>;
 
 /// Type alias for the sender side of the channel that receives
 /// externally-visible instance state updates.
@@ -179,9 +180,6 @@ pub(crate) enum VmError {
 
     #[error("Forbidden state change")]
     ForbiddenStateChange(#[from] request_queue::RequestDeniedReason),
-
-    #[error("Failed to initialize VM's tokio runtime")]
-    TokioRuntimeInitializationFailed(#[source] std::io::Error),
 }
 
 /// The top-level VM wrapper type.
@@ -207,6 +205,29 @@ struct VmInner {
     driver: Option<tokio::task::JoinHandle<StateDriverOutput>>,
 }
 
+/// Stores a possibly-absent instance spec with a reason for its absence.
+#[derive(Clone, Debug)]
+enum MaybeSpec {
+    Present(Box<Spec>),
+
+    /// The spec is not known yet because the VM is initializing via live
+    /// migration, and the source's spec is not available yet.
+    WaitingForMigrationSource,
+}
+
+impl From<MaybeSpec> for InstanceSpecStatus {
+    fn from(value: MaybeSpec) -> Self {
+        match value {
+            MaybeSpec::WaitingForMigrationSource => {
+                Self::WaitingForMigrationSource
+            }
+            MaybeSpec::Present(spec) => {
+                Self::Present(VersionedInstanceSpec::V0((*spec).into()))
+            }
+        }
+    }
+}
+
 /// Describes a past or future VM and its properties.
 struct VmDescription {
     /// Records the VM's last externally-visible state.
@@ -214,9 +235,6 @@ struct VmDescription {
 
     /// The VM's API-level instance properties.
     properties: InstanceProperties,
-
-    /// The VM's last-known instance specification.
-    spec: Spec,
 
     /// The runtime on which the VM's state driver is running (or on which it
     /// ran).
@@ -231,17 +249,17 @@ enum VmState {
 
     /// A new state driver is attempting to initialize objects for a VM with the
     /// ecnlosed description.
-    WaitingForInit(VmDescription),
+    WaitingForInit { vm: VmDescription, spec: MaybeSpec },
 
     /// The VM is active, and callers can obtain a handle to its objects.
     Active(active::ActiveVm),
 
     /// The previous VM is shutting down, but its objects have not been fully
     /// destroyed yet.
-    Rundown(VmDescription),
+    Rundown { vm: VmDescription, spec: Box<Spec> },
 
     /// The previous VM and its objects have been cleaned up.
-    RundownComplete(VmDescription),
+    RundownComplete { vm: VmDescription, spec: MaybeSpec },
 }
 
 impl std::fmt::Display for VmState {
@@ -251,10 +269,10 @@ impl std::fmt::Display for VmState {
             "{}",
             match self {
                 Self::NoVm => "NoVm",
-                Self::WaitingForInit(_) => "WaitingForInit",
+                Self::WaitingForInit { .. } => "WaitingForInit",
                 Self::Active(_) => "Active",
-                Self::Rundown(_) => "Rundown",
-                Self::RundownComplete(_) => "RundownComplete",
+                Self::Rundown { .. } => "Rundown",
+                Self::RundownComplete { .. } => "RundownComplete",
             }
         )
     }
@@ -262,9 +280,12 @@ impl std::fmt::Display for VmState {
 
 /// Parameters to an instance ensure operation.
 pub(super) struct EnsureOptions {
-    /// A reference to the VM configuration specified in the config TOML passed
-    /// to this propolis-server process.
-    pub(super) toml_config: Arc<crate::server::VmTomlConfig>,
+    /// The path to the bootrom to load into the guest.
+    pub(super) bootrom_path: PathBuf,
+
+    /// The bootrom version string to expose to the guest. If None, the machine
+    /// initializer chooses a default.
+    pub(super) bootrom_version: Option<String>,
 
     /// True if VMs should allocate memory from the kernel VMM reservoir.
     pub(super) use_reservoir: bool,
@@ -332,20 +353,26 @@ impl Vm {
                 let state = vm.external_state_rx.borrow().clone();
                 Some(InstanceSpecGetResponse {
                     properties: vm.properties.clone(),
-                    spec: VersionedInstanceSpec::V0(spec.into()),
+                    spec: InstanceSpecStatus::Present(
+                        VersionedInstanceSpec::V0(spec.into()),
+                    ),
                     state: state.state,
                 })
             }
-
-            // If the VM is not active yet, or there is only a
-            // previously-run-down VM, return the state saved in the state
-            // machine.
-            VmState::WaitingForInit(vm)
-            | VmState::Rundown(vm)
-            | VmState::RundownComplete(vm) => Some(InstanceSpecGetResponse {
+            VmState::WaitingForInit { vm, spec }
+            | VmState::RundownComplete { vm, spec } => {
+                Some(InstanceSpecGetResponse {
+                    properties: vm.properties.clone(),
+                    state: vm.external_state_rx.borrow().state,
+                    spec: spec.clone().into(),
+                })
+            }
+            VmState::Rundown { vm, spec } => Some(InstanceSpecGetResponse {
                 properties: vm.properties.clone(),
                 state: vm.external_state_rx.borrow().state,
-                spec: VersionedInstanceSpec::V0(vm.spec.clone().into()),
+                spec: InstanceSpecStatus::Present(VersionedInstanceSpec::V0(
+                    spec.as_ref().to_owned().into(),
+                )),
             }),
         }
     }
@@ -362,9 +389,9 @@ impl Vm {
         match &guard.state {
             VmState::NoVm => None,
             VmState::Active(vm) => Some(vm.external_state_rx.clone()),
-            VmState::WaitingForInit(vm)
-            | VmState::Rundown(vm)
-            | VmState::RundownComplete(vm) => {
+            VmState::WaitingForInit { vm, .. }
+            | VmState::Rundown { vm, .. }
+            | VmState::RundownComplete { vm, .. } => {
                 Some(vm.external_state_rx.clone())
             }
         }
@@ -383,12 +410,13 @@ impl Vm {
         state_driver_queue: Arc<state_driver::InputQueue>,
         objects: &Arc<objects::VmObjects>,
         services: services::VmServices,
+        vmm_rt: tokio::runtime::Runtime,
     ) {
         info!(self.log, "installing active VM");
         let mut guard = self.inner.write().await;
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         match old {
-            VmState::WaitingForInit(vm) => {
+            VmState::WaitingForInit { vm, .. } => {
                 guard.state = VmState::Active(ActiveVm {
                     log: log.clone(),
                     state_driver_queue,
@@ -396,7 +424,7 @@ impl Vm {
                     properties: vm.properties,
                     objects: objects.clone(),
                     services,
-                    tokio_rt: vm.tokio_rt.expect("WaitingForInit has runtime"),
+                    tokio_rt: vmm_rt,
                 });
             }
             state => unreachable!(
@@ -419,8 +447,8 @@ impl Vm {
         let mut guard = self.inner.write().await;
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         match old {
-            VmState::WaitingForInit(vm) => {
-                guard.state = VmState::RundownComplete(vm)
+            VmState::WaitingForInit { vm, spec } => {
+                guard.state = VmState::RundownComplete { vm, spec }
             }
             state => unreachable!(
                 "start failures should only occur before an active VM is \
@@ -451,12 +479,14 @@ impl Vm {
 
             let spec = vm.objects().lock_shared().await.instance_spec().clone();
             let ActiveVm { external_state_rx, properties, tokio_rt, .. } = vm;
-            guard.state = VmState::Rundown(VmDescription {
-                external_state_rx,
-                properties,
-                spec,
-                tokio_rt: Some(tokio_rt),
-            });
+            guard.state = VmState::Rundown {
+                vm: VmDescription {
+                    external_state_rx,
+                    properties,
+                    tokio_rt: Some(tokio_rt),
+                },
+                spec: Box::new(spec),
+            };
             vm.services
         };
 
@@ -475,9 +505,12 @@ impl Vm {
         let mut guard = self.inner.write().await;
         let old = std::mem::replace(&mut guard.state, VmState::NoVm);
         let rt = match old {
-            VmState::Rundown(mut vm) => {
+            VmState::Rundown { mut vm, spec } => {
                 let rt = vm.tokio_rt.take().expect("rundown VM has a runtime");
-                guard.state = VmState::RundownComplete(vm);
+                guard.state = VmState::RundownComplete {
+                    vm,
+                    spec: MaybeSpec::Present(spec),
+                };
                 rt
             }
             state => unreachable!(
@@ -530,13 +563,13 @@ impl Vm {
             &log_for_driver,
             InstanceStateMonitorResponse {
                 gen: 1,
-                state: if ensure_request.migrate.is_some() {
+                state: if ensure_request.is_migration() {
                     InstanceState::Migrating
                 } else {
                     InstanceState::Creating
                 },
                 migration: InstanceMigrateStatusResponse {
-                    migration_in: ensure_request.migrate.as_ref().map(|req| {
+                    migration_in: ensure_request.migration_info().map(|req| {
                         InstanceMigrationStatus {
                             id: req.migration_id,
                             state: MigrationState::Sync,
@@ -553,32 +586,31 @@ impl Vm {
         {
             let mut guard = self.inner.write().await;
             match guard.state {
-                VmState::WaitingForInit(_) => {
-                    return Err(VmError::WaitingToInitialize);
+                VmState::WaitingForInit { .. } => {
+                    return Err(VmError::WaitingToInitialize)
                 }
-                VmState::Active(_) => return Err(VmError::AlreadyInitialized),
-                VmState::Rundown(_) => return Err(VmError::RundownInProgress),
+                VmState::Active { .. } => {
+                    return Err(VmError::AlreadyInitialized)
+                }
+                VmState::Rundown { .. } => {
+                    return Err(VmError::RundownInProgress)
+                }
                 _ => {}
             };
 
-            let thread_count = usize::max(
-                VMM_MIN_RT_THREADS,
-                VMM_BASE_RT_THREADS
-                    + ensure_request.instance_spec.board.cpus as usize,
-            );
-
-            let tokio_rt = tokio::runtime::Builder::new_multi_thread()
-                .thread_name("tokio-rt-vmm")
-                .worker_threads(thread_count)
-                .enable_all()
-                .build()
-                .map_err(VmError::TokioRuntimeInitializationFailed)?;
-
             let properties = ensure_request.properties.clone();
-            let spec = ensure_request.instance_spec.clone();
+            let spec = match &ensure_request.init {
+                ensure::VmInitializationMethod::Spec(s) => {
+                    MaybeSpec::Present(s.clone())
+                }
+                ensure::VmInitializationMethod::Migration(_) => {
+                    MaybeSpec::WaitingForMigrationSource
+                }
+            };
+
             let vm_for_driver = self.clone();
-            guard.driver = Some(tokio_rt.spawn(async move {
-                state_driver::run_state_driver(
+            guard.driver = Some(tokio::spawn(async move {
+                state_driver::ensure_vm_and_launch_driver(
                     log_for_driver,
                     vm_for_driver,
                     external_publisher,
@@ -589,12 +621,14 @@ impl Vm {
                 .await
             }));
 
-            guard.state = VmState::WaitingForInit(VmDescription {
-                external_state_rx: external_rx.clone(),
-                properties,
+            guard.state = VmState::WaitingForInit {
+                vm: VmDescription {
+                    external_state_rx: external_rx.clone(),
+                    properties,
+                    tokio_rt: None,
+                },
                 spec,
-                tokio_rt: Some(tokio_rt),
-            });
+            };
         }
 
         // Wait for the state driver task to dispose of this request.

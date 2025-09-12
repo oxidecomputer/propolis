@@ -153,7 +153,7 @@ pub(crate) fn save(
         header.set_size(device_bytes.len() as u64);
         builder.append_data(
             &mut header,
-            format!("{}/{}.json", DEVICE_DIR, name),
+            format!("{DEVICE_DIR}/{name}.json"),
             &device_bytes[..],
         )?;
     }
@@ -196,7 +196,7 @@ pub(crate) fn save(
         let end = start + hi as u64;
         let off = builder.append_space(
             &mut header,
-            format!("{}/{:08x}-{:08x}.bin", MEMORY_DIR, start, end),
+            format!("{MEMORY_DIR}/{start:08x}-{end:08x}.bin"),
         )?;
         hi_mapping.pwrite(&builder.rawfd(), hi_mapping.len(), off as i64)?;
     }
@@ -233,13 +233,10 @@ pub(crate) fn restore_config(path: impl AsRef<Path>) -> anyhow::Result<Config> {
     let file = File::open(&path).context("Failed to open snapshot file")?;
     let mut archive = TarArchive::new(file);
 
-    let entry = archive.named_entry(CONFIG_NAME)?;
-    let raw_bytes = entry.bytes().collect::<Result<Vec<u8>, _>>()?;
-    toml::from_str(
-        std::str::from_utf8(&raw_bytes[..])
-            .context("config should be valid utf-8")?,
-    )
-    .context("could not parse config")
+    let mut entry = archive.named_entry(CONFIG_NAME)?;
+    let mut toml_str = String::new();
+    entry.read_to_string(&mut toml_str)?;
+    toml::from_str(toml_str.as_str()).context("could not parse config")
 }
 
 /// Create an instance from a previously saved snapshot.
@@ -275,10 +272,10 @@ pub(crate) fn restore(
     // XXX put instance in migrate-source state
 
     let global: VmGlobalState = {
-        let global_ent = archive.named_entry(GLOBAL_NAME)?;
-        let global_bytes =
-            global_ent.bytes().collect::<Result<Vec<u8>, _>>()?;
-        serde_json::from_slice(&global_bytes[..])
+        let mut json_bytes = Vec::new();
+        let mut global_ent = archive.named_entry(GLOBAL_NAME)?;
+        global_ent.read_to_end(&mut json_bytes)?;
+        serde_json::from_slice(json_bytes.as_slice())
             .context("could not parse global data")?
     };
     import_global(&hdl, &global).context("failed to import global VM state")?;

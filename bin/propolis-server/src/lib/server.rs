@@ -10,39 +10,35 @@
 //! processing.
 
 use std::convert::TryFrom;
+use std::error::Error;
 use std::net::IpAddr;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::SocketAddrV6;
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::migrate::destination::MigrationTargetInfo;
+use crate::vm::ensure::VmInitializationMethod;
 use crate::{
     serial::history_buffer::SerialHistoryOffset,
-    spec::{
-        self,
-        api_spec_v0::ApiSpecError,
-        builder::{SpecBuilder, SpecBuilderError},
-        Spec,
-    },
     vm::{ensure::VmEnsureRequest, VmError},
     vnc::{self, VncServer},
 };
 
 use dropshot::{
-    channel, endpoint, ApiDescription, HttpError, HttpResponseCreated,
-    HttpResponseOk, HttpResponseUpdatedNoContent, Path, Query, RequestContext,
-    TypedBody, WebsocketConnection,
+    channel, endpoint, ApiDescription, ClientErrorStatusCode, HttpError,
+    HttpResponseCreated, HttpResponseOk, HttpResponseUpdatedNoContent, Path,
+    Query, RequestContext, TypedBody, WebsocketConnection,
 };
 use futures::SinkExt;
-use internal_dns::resolver::{ResolveError, Resolver};
-use internal_dns::ServiceName;
+use internal_dns_resolver::{ResolveError, Resolver};
+use internal_dns_types::names::ServiceName;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types as api;
-use propolis_api_types::instance_spec::{
-    self, components::devices::QemuPvpanic, VersionedInstanceSpec,
-};
-pub use propolis_server_config::Config as VmTomlConfig;
+use propolis_api_types::instance_spec::SpecKey;
+use propolis_api_types::InstanceInitializationMethod;
 use rfb::tungstenite::BinaryWs;
 use slog::{error, warn, Logger};
 use tokio::sync::MutexGuard;
@@ -70,8 +66,12 @@ pub struct MetricsEndpointConfig {
 /// this configuration at startup time and refers to it when manipulating its
 /// objects.
 pub struct StaticConfig {
-    /// The TOML-driven configuration for this server's instances.
-    pub vm: Arc<VmTomlConfig>,
+    /// The path to the bootrom image to expose to the guest.
+    pub bootrom_path: PathBuf,
+
+    /// The bootrom version string to expose to the guest. If None, machine
+    /// initialization chooses a default value.
+    pub bootrom_version: Option<String>,
 
     /// Whether to use the host's guest memory reservoir to back guest memory.
     pub use_reservoir: bool,
@@ -92,7 +92,8 @@ pub struct DropshotEndpointContext {
 impl DropshotEndpointContext {
     /// Creates a new server context object.
     pub fn new(
-        config: VmTomlConfig,
+        bootrom_path: PathBuf,
+        bootrom_version: Option<String>,
         use_reservoir: bool,
         log: slog::Logger,
         metric_config: Option<MetricsEndpointConfig>,
@@ -100,7 +101,8 @@ impl DropshotEndpointContext {
         let vnc_server = VncServer::new(log.clone());
         Self {
             static_config: StaticConfig {
-                vm: Arc::new(config),
+                bootrom_path,
+                bootrom_version,
                 use_reservoir,
                 metrics: metric_config,
             },
@@ -109,58 +111,6 @@ impl DropshotEndpointContext {
             log,
         }
     }
-}
-
-/// Creates an instance spec from an ensure request. (Both types are foreign to
-/// this crate, so implementing TryFrom for them is not allowed.)
-fn instance_spec_from_request(
-    request: &api::InstanceEnsureRequest,
-    toml_config: &VmTomlConfig,
-) -> Result<Spec, SpecBuilderError> {
-    let mut spec_builder = SpecBuilder::new(&request.properties);
-
-    spec_builder.add_devices_from_config(toml_config)?;
-
-    for nic in &request.nics {
-        spec_builder.add_nic_from_request(nic)?;
-    }
-
-    for disk in &request.disks {
-        spec_builder.add_disk_from_request(disk)?;
-    }
-
-    if let Some(boot_settings) = request.boot_settings.as_ref() {
-        let order = boot_settings.order.clone();
-        spec_builder.add_boot_order(
-            "boot-settings".to_string(),
-            order.into_iter().map(Into::into),
-        )?;
-    }
-
-    if let Some(base64) = &request.cloud_init_bytes {
-        spec_builder.add_cloud_init_from_request(base64.clone())?;
-    }
-
-    for (name, port) in [
-        ("com1", instance_spec::components::devices::SerialPortNumber::Com1),
-        ("com2", instance_spec::components::devices::SerialPortNumber::Com2),
-        ("com3", instance_spec::components::devices::SerialPortNumber::Com3),
-        // SoftNpu uses this port for ASIC management.
-        #[cfg(not(feature = "falcon"))]
-        ("com4", instance_spec::components::devices::SerialPortNumber::Com4),
-    ] {
-        spec_builder.add_serial_port(name.to_owned(), port)?;
-    }
-
-    #[cfg(feature = "falcon")]
-    spec_builder.set_softnpu_com4("com4".to_owned())?;
-
-    spec_builder.add_pvpanic_device(spec::QemuPvpanic {
-        name: "pvpanic".to_string(),
-        spec: QemuPvpanic { enable_isa: true },
-    })?;
-
-    Ok(spec_builder.finish())
 }
 
 /// Wrapper around a [`NexusClient`] object, which allows deferring
@@ -200,7 +150,7 @@ impl LazyNexusClient {
         let address = self.get_ip().await?;
 
         Ok(NexusClient::new(
-            &format!("http://{}", address),
+            &format!("http://{address}"),
             self.inner.log.clone(),
         ))
     }
@@ -239,13 +189,16 @@ async fn find_local_nexus_client(
     }
 }
 
-async fn instance_ensure_common(
+#[endpoint {
+    method = PUT,
+    path = "/instance",
+}]
+async fn instance_ensure(
     rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    properties: api::InstanceProperties,
-    migrate: Option<api::InstanceMigrateInitiateRequest>,
-    instance_spec: Spec,
+    request: TypedBody<api::InstanceEnsureRequest>,
 ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
     let server_context = rqctx.context();
+    let api::InstanceEnsureRequest { properties, init } = request.into_inner();
     let oximeter_registry = server_context
         .static_config
         .metrics
@@ -257,7 +210,8 @@ async fn instance_ensure_common(
             .await;
 
     let ensure_options = crate::vm::EnsureOptions {
-        toml_config: server_context.static_config.vm.clone(),
+        bootrom_path: server_context.static_config.bootrom_path.clone(),
+        bootrom_version: server_context.static_config.bootrom_version.clone(),
         use_reservoir: server_context.static_config.use_reservoir,
         metrics_config: server_context.static_config.metrics.clone(),
         oximeter_registry,
@@ -266,7 +220,35 @@ async fn instance_ensure_common(
         local_server_addr: rqctx.server.local_addr,
     };
 
-    let request = VmEnsureRequest { properties, migrate, instance_spec };
+    let vm_init = match init {
+        InstanceInitializationMethod::Spec { spec } => spec
+            .try_into()
+            .map(|s| VmInitializationMethod::Spec(Box::new(s)))
+            .map_err(|e| {
+                if let Some(s) = e.source() {
+                    format!("{e}: {s}")
+                } else {
+                    e.to_string()
+                }
+            }),
+        InstanceInitializationMethod::MigrationTarget {
+            migration_id,
+            src_addr,
+            replace_components,
+        } => Ok(VmInitializationMethod::Migration(MigrationTargetInfo {
+            migration_id,
+            src_addr,
+            replace_components,
+        })),
+    }
+    .map_err(|e| {
+        HttpError::for_bad_request(
+            None,
+            format!("failed to generate internal instance spec: {e}"),
+        )
+    })?;
+
+    let request = VmEnsureRequest { properties, init: vm_init };
     server_context
         .vm
         .ensure(&server_context.log, request, ensure_options)
@@ -280,7 +262,7 @@ async fn instance_ensure_common(
             | VmError::AlreadyInitialized
             | VmError::RundownInProgress => HttpError::for_client_error(
                 Some(api::ErrorCode::AlreadyInitialized.to_string()),
-                hyper::StatusCode::CONFLICT,
+                ClientErrorStatusCode::CONFLICT,
                 "instance already initialized".to_string(),
             ),
             VmError::InitializationFailed(e) => HttpError::for_internal_error(
@@ -290,61 +272,6 @@ async fn instance_ensure_common(
                 "unexpected error from VM controller: {e}"
             )),
         })
-}
-
-#[endpoint {
-    method = PUT,
-    path = "/instance",
-}]
-async fn instance_ensure(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    request: TypedBody<api::InstanceEnsureRequest>,
-) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
-    let server_context = rqctx.context();
-    let request = request.into_inner();
-    let instance_spec =
-        instance_spec_from_request(&request, &server_context.static_config.vm)
-            .map_err(|e| {
-                HttpError::for_bad_request(
-                    None,
-                    format!(
-                        "failed to generate instance spec from request: {:#?}",
-                        e
-                    ),
-                )
-            })?;
-
-    instance_ensure_common(
-        rqctx,
-        request.properties,
-        request.migrate,
-        instance_spec,
-    )
-    .await
-}
-
-#[endpoint {
-    method = PUT,
-    path = "/instance/spec",
-}]
-async fn instance_spec_ensure(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    request: TypedBody<api::InstanceSpecEnsureRequest>,
-) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
-    let request = request.into_inner();
-    let VersionedInstanceSpec::V0(v0_spec) = request.instance_spec;
-    let spec = Spec::try_from(v0_spec).map_err(|e: ApiSpecError| {
-        HttpError::for_bad_request(
-            None,
-            format!(
-                "failed to create internal instance spec from API spec: {:#?}",
-                e
-            ),
-        )
-    })?;
-
-    instance_ensure_common(rqctx, request.properties, request.migrate, spec)
-        .await
 }
 
 async fn instance_get_common(
@@ -376,8 +303,6 @@ async fn instance_get(
             instance: api::Instance {
                 properties: full.properties,
                 state: full.state,
-                disks: vec![],
-                nics: vec![],
             },
         })
     })
@@ -409,10 +334,9 @@ async fn instance_state_monitor(
         state_watcher.changed().await.map_err(|_| {
             HttpError::for_client_error(
                 Some(api::ErrorCode::NoInstance.to_string()),
-                hyper::StatusCode::GONE,
+                ClientErrorStatusCode::GONE,
                 format!(
-                    "No instance present; will never reach generation {}",
-                    gen
+                    "No instance present; will never reach generation {gen}",
                 ),
             )
         })?;
@@ -438,10 +362,14 @@ async fn instance_state_put(
                 None,
                 "instance is still initializing".to_string(),
             ),
-            VmError::ForbiddenStateChange(reason) => HttpError::for_status(
-                Some(format!("instance state change not allowed: {}", reason)),
-                hyper::StatusCode::FORBIDDEN,
-            ),
+            VmError::ForbiddenStateChange(reason) => {
+                HttpError::for_client_error_with_status(
+                    Some(format!(
+                        "instance state change not allowed: {reason}"
+                    )),
+                    ClientErrorStatusCode::FORBIDDEN,
+                )
+            }
             _ => HttpError::for_internal_error(format!(
                 "unexpected error from VM controller: {e}"
             )),
@@ -539,7 +467,7 @@ async fn instance_serial(
         .websocks_ch
         .send(ws_stream)
         .await
-        .map_err(|e| format!("Serial socket hand-off failed: {}", e).into())
+        .map_err(|e| format!("Serial socket hand-off failed: {e}").into())
 }
 
 #[channel {
@@ -626,8 +554,10 @@ async fn instance_issue_crucible_snapshot_request(
     let objects = vm.objects().lock_shared().await;
     let path_params = path_params.into_inner();
 
-    let backend =
-        objects.crucible_backends().get(&path_params.id).ok_or_else(|| {
+    let backend = objects
+        .crucible_backends()
+        .get(&SpecKey::from(path_params.id.clone()))
+        .ok_or_else(|| {
             let s = format!("no disk with id {}!", path_params.id);
             HttpError::for_not_found(Some(s.clone()), s)
         })?;
@@ -651,8 +581,10 @@ async fn disk_volume_status(
     let vm =
         rqctx.context().vm.active_vm().await.ok_or_else(not_created_error)?;
     let objects = vm.objects().lock_shared().await;
-    let backend =
-        objects.crucible_backends().get(&path_params.id).ok_or_else(|| {
+    let backend = objects
+        .crucible_backends()
+        .get(&SpecKey::from(path_params.id.clone()))
+        .ok_or_else(|| {
             let s = format!("No crucible backend for id {}", path_params.id);
             HttpError::for_not_found(Some(s.clone()), s)
         })?;
@@ -677,22 +609,27 @@ async fn instance_issue_crucible_vcr_request(
     let path_params = path_params.into_inner();
     let request = request.into_inner();
     let new_vcr_json = request.vcr_json;
-    let disk_name = request.name;
 
     let (tx, rx) = tokio::sync::oneshot::channel();
     let vm =
         rqctx.context().vm.active_vm().await.ok_or_else(not_created_error)?;
 
-    vm.reconfigure_crucible_volume(disk_name, path_params.id, new_vcr_json, tx)
-        .map_err(|e| match e {
-            VmError::ForbiddenStateChange(reason) => HttpError::for_status(
-                Some(format!("instance state change not allowed: {}", reason)),
-                hyper::StatusCode::FORBIDDEN,
-            ),
-            _ => HttpError::for_internal_error(format!(
-                "unexpected error from VM controller: {e}"
-            )),
-        })?;
+    vm.reconfigure_crucible_volume(
+        SpecKey::from(path_params.id),
+        new_vcr_json,
+        tx,
+    )
+    .map_err(|e| match e {
+        VmError::ForbiddenStateChange(reason) => {
+            HttpError::for_client_error_with_status(
+                Some(format!("instance state change not allowed: {reason}")),
+                ClientErrorStatusCode::FORBIDDEN,
+            )
+        }
+        _ => HttpError::for_internal_error(format!(
+            "unexpected error from VM controller: {e}"
+        )),
+    })?;
 
     let result = rx.await.map_err(|_| {
         HttpError::for_internal_error(
@@ -722,7 +659,6 @@ async fn instance_issue_nmi(
 pub fn api() -> ApiDescription<Arc<DropshotEndpointContext>> {
     let mut api = ApiDescription::new();
     api.register(instance_ensure).unwrap();
-    api.register(instance_spec_ensure).unwrap();
     api.register(instance_get).unwrap();
     api.register(instance_spec_get).unwrap();
     api.register(instance_state_monitor).unwrap();
@@ -743,7 +679,7 @@ pub fn api() -> ApiDescription<Arc<DropshotEndpointContext>> {
 fn not_created_error() -> HttpError {
     HttpError::for_client_error(
         Some(api::ErrorCode::NoInstance.to_string()),
-        hyper::StatusCode::FAILED_DEPENDENCY,
+        ClientErrorStatusCode::FAILED_DEPENDENCY,
         "Server not initialized (no instance)".to_string(),
     )
 }
@@ -754,7 +690,7 @@ mod test {
     fn test_propolis_server_openapi() {
         let mut buf: Vec<u8> = vec![];
         super::api()
-            .openapi("Oxide Propolis Server API", "0.0.1")
+            .openapi("Oxide Propolis Server API", semver::Version::new(0, 0, 1))
             .description(
                 "API for interacting with the Propolis hypervisor frontend.",
             )

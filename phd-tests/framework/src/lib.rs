@@ -35,8 +35,9 @@ use camino::Utf8PathBuf;
 
 use disk::DiskFactory;
 use futures::{stream::FuturesUnordered, StreamExt};
+use guest_os::GuestOsKind;
+use log_config::LogConfig;
 use port_allocator::PortAllocator;
-use server_log_mode::ServerLogMode;
 pub use test_vm::TestVm;
 use test_vm::{
     environment::EnvironmentSpec, spec::VmSpec, VmConfig, VmLocation,
@@ -51,16 +52,16 @@ pub mod disk;
 pub mod guest_os;
 pub mod host_api;
 pub mod lifecycle;
+pub mod log_config;
 mod port_allocator;
 mod serial;
-pub mod server_log_mode;
 pub mod test_vm;
 pub(crate) mod zfs;
 
 /// An instance of the PHD test framework.
 pub struct Framework {
     pub(crate) tmp_directory: Utf8PathBuf,
-    pub(crate) server_log_mode: ServerLogMode,
+    pub(crate) log_config: LogConfig,
 
     pub(crate) default_guest_cpus: u8,
     pub(crate) default_guest_memory_mib: u64,
@@ -98,7 +99,7 @@ pub struct FrameworkParameters<'a> {
     pub tmp_directory: Utf8PathBuf,
     pub artifact_directory: Utf8PathBuf,
     pub artifact_toml: Utf8PathBuf,
-    pub server_log_mode: ServerLogMode,
+    pub log_config: LogConfig,
 
     pub default_guest_cpus: u8,
     pub default_guest_memory_mib: u64,
@@ -186,14 +187,14 @@ impl Framework {
             &params.tmp_directory,
             artifact_store.clone(),
             port_allocator.clone(),
-            params.server_log_mode,
+            params.log_config,
         );
 
         let (cleanup_task_tx, cleanup_task_rx) =
             tokio::sync::mpsc::unbounded_channel();
         Ok(Self {
             tmp_directory: params.tmp_directory,
-            server_log_mode: params.server_log_mode,
+            log_config: params.log_config,
             default_guest_cpus: params.default_guest_cpus,
             default_guest_memory_mib: params.default_guest_memory_mib,
             default_guest_os_artifact: params.default_guest_os_artifact,
@@ -246,17 +247,32 @@ impl Framework {
     /// Spawns a new test VM using the supplied `config`. If `environment` is
     /// `Some`, the VM is spawned using the supplied environment; otherwise it
     /// is spawned using the default `environment_builder`.
-    pub async fn spawn_vm<'dr>(
+    pub async fn spawn_vm(
         &self,
-        config: &VmConfig<'dr>,
+        config: &VmConfig<'_>,
+        environment: Option<&EnvironmentSpec>,
+    ) -> anyhow::Result<TestVm> {
+        self.spawn_vm_with_spec(
+            config
+                .vm_spec(self)
+                .await
+                .context("building VM spec from VmConfig")?,
+            environment,
+        )
+        .await
+    }
+
+    /// Spawns a new test VM using the supplied `spec`. If `environment` is
+    /// `Some`, the VM is spawned using the supplied environment; otherwise it
+    /// is spawned using the default `environment_builder`.
+    pub async fn spawn_vm_with_spec(
+        &self,
+        spec: VmSpec,
         environment: Option<&EnvironmentSpec>,
     ) -> anyhow::Result<TestVm> {
         TestVm::new(
             self,
-            config
-                .vm_spec(self)
-                .await
-                .context("building VM config for test VM")?,
+            spec,
             environment.unwrap_or(&self.environment_builder()),
         )
         .await
@@ -274,15 +290,8 @@ impl Framework {
         vm: &TestVm,
         environment: Option<&EnvironmentSpec>,
     ) -> anyhow::Result<TestVm> {
-        let mut vm_spec =
-            VmSpec { vm_name: vm_name.to_owned(), ..vm.vm_spec() };
-
-        // Reconcile any differences between the generation numbers in the VM
-        // objects' instance spec and the associated Crucible disk handles.
-        // This may be needed because a test can call `set_generation` on a disk
-        // handle to change its active generation number mid-test, and this
-        // won't automatically be reflected in the VM's instance spec.
-        vm_spec.refresh_crucible_backends();
+        let mut vm_spec = vm.vm_spec().clone();
+        vm_spec.set_vm_name(vm_name.to_owned());
 
         // Create new metadata for an instance based on this predecessor. It
         // should have the same project and silo IDs, but the sled identifiers
@@ -302,6 +311,16 @@ impl Framework {
     /// builder defaults.
     pub fn default_guest_os_artifact(&self) -> &str {
         &self.default_guest_os_artifact
+    }
+
+    /// Yields the guest OS adapter corresponding to the default guest OS
+    /// artifact.
+    pub async fn default_guest_os_kind(&self) -> anyhow::Result<GuestOsKind> {
+        Ok(self
+            .artifact_store
+            .get_guest_os_image(&self.default_guest_os_artifact)
+            .await?
+            .1)
     }
 
     /// Indicates whether the disk factory in this framework supports the

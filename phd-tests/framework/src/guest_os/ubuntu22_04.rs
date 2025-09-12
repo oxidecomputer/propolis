@@ -16,12 +16,17 @@ impl GuestOs for Ubuntu2204 {
             CommandSequenceEntry::write_str("ubuntu"),
             CommandSequenceEntry::wait_for("Password: "),
             CommandSequenceEntry::write_str("1!Passw0rd"),
+            CommandSequenceEntry::wait_for("ubuntu@ubuntu:~$"),
+            CommandSequenceEntry::write_str("sudo bash\n"),
+            CommandSequenceEntry::wait_for("root@ubuntu:/home/ubuntu#"),
+            CommandSequenceEntry::write_str("cd ~\n"),
             CommandSequenceEntry::wait_for(self.get_shell_prompt()),
         ])
+        .extend(super::linux::stty_enable_long_lines(self))
     }
 
     fn get_shell_prompt(&self) -> &'static str {
-        "ubuntu@ubuntu:~$"
+        "root@ubuntu:~#"
     }
 
     fn read_only_fs(&self) -> bool {

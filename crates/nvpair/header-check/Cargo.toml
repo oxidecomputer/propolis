@@ -1,0 +1,20 @@
+[package]
+name = "nvpair-hdrchk"
+version = "0.0.0"
+license = "MPL-2.0"
+edition = "2021"
+build = "build.rs"
+publish = false
+
+[dependencies]
+nvpair_sys = { path = "../sys" }
+libc = "0.2"
+
+[build-dependencies]
+cc = "1"
+ctest2 = "0.4.7"
+
+[[test]]
+name = "main"
+path = "test/main.rs"
+harness = false

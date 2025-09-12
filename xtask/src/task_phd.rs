@@ -4,7 +4,7 @@
 
 use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
-use std::{fs, process::Command, time};
+use std::{collections::HashMap, fs, process::Command, time};
 
 macro_rules! cargo_log {
     ($tag:literal, $($arg:tt)*) => {
@@ -112,6 +112,16 @@ struct PropolisArgs {
     /// If set, build `propolis-server` in release mode.
     #[clap(long, short = 'r')]
     release: bool,
+
+    /// If set, build `propolis-server` with `omicron-build`. This may enable
+    /// codepaths that only work on `stlouis`, or otherwise expect specific test
+    /// environment configuration (such as having a reservoir large enough to
+    /// allocate VMs).
+    ///
+    /// This can be helpful if you're debugging an issue that occurs in CI,
+    /// where `propolis-server` is also tested with `omicron-build`.
+    #[clap(long)]
+    omicron_build: bool,
 }
 
 #[derive(Debug, Clone, clap::Parser)]
@@ -270,7 +280,7 @@ impl Cmd {
                 return Ok(());
             }
             Self::List { phd_args } => {
-                let phd_runner = build_bin("phd-runner", false)?;
+                let phd_runner = build_bin("phd-runner", false, None, None)?;
                 let status = run_exit_code(
                     phd_runner.command().arg("list").args(phd_args),
                 )?;
@@ -278,7 +288,7 @@ impl Cmd {
             }
 
             Self::RunnerHelp { phd_args } => {
-                let phd_runner = build_bin("phd-runner", false)?;
+                let phd_runner = build_bin("phd-runner", false, None, None)?;
                 let status = run_exit_code(
                     phd_runner.command().arg("help").args(phd_args),
                 )?;
@@ -292,7 +302,27 @@ impl Cmd {
                 cmd
             }
             None => {
-                let bin = build_bin("propolis-server", propolis_args.release)?;
+                let mut server_build_env = HashMap::new();
+                server_build_env
+                    .insert("PHD_BUILD".to_string(), "true".to_string());
+
+                // Some PHD tests specifically cover cases where a component in
+                // the system has encountered an error, so enable
+                // failure-injection. Do not enable `omicron-build` by default
+                // because it configures `propolis-server` to expect an Omicron-
+                // or stlouis-specific environment.
+                let mut propolis_features = vec!["failure-injection"];
+                if propolis_args.omicron_build {
+                    // If you know your environment looks like we'd expect in
+                    // Omicron, have at it!
+                    propolis_features.push("omicron-build");
+                }
+                let bin = build_bin(
+                    "propolis-server",
+                    propolis_args.release,
+                    Some(&propolis_features.join(",")),
+                    Some(server_build_env),
+                )?;
                 let path = bin
                     .path()
                     .try_into()
@@ -301,10 +331,8 @@ impl Cmd {
             }
         };
 
-        let artifact_dir = artifact_args
-            .artifact_directory
-            .map(Utf8PathBuf::from)
-            .unwrap_or_else(|| {
+        let artifact_dir =
+            artifact_args.artifact_directory.unwrap_or_else(|| {
                 // if there's no explicitly overridden `artifact_dir` path, use
                 // `target/phd/artifacts`.
                 phd_dir.join("artifacts")
@@ -332,10 +360,8 @@ impl Cmd {
 
         mkdir(&tmp_dir, "temp directory")?;
 
-        let artifacts_toml = artifact_args
-            .artifact_toml_path
-            .map(Utf8PathBuf::from)
-            .unwrap_or_else(|| {
+        let artifacts_toml =
+            artifact_args.artifact_toml_path.unwrap_or_else(|| {
                 // if there's no explicitly overridden `artifacts.toml` path,
                 // determine the default one from the workspace path.
                 relativize(&meta.workspace_root)
@@ -349,7 +375,7 @@ impl Cmd {
             anyhow::bail!("Missing artifacts config `{artifacts_toml}`!");
         }
 
-        let phd_runner = build_bin("phd-runner", false)?;
+        let phd_runner = build_bin("phd-runner", false, None, None)?;
         let mut cmd = if cfg!(target_os = "illumos") {
             let mut cmd = Command::new("pfexec");
             cmd.arg(phd_runner.path());
@@ -422,15 +448,30 @@ impl BasePropolisArgs {
     }
 }
 
+/// Build the binary `name` in debug or release with an optional build
+/// environment variables and a list of Cargo features.
+///
+/// `features` is passed directly to Cargo, and so must be a space or
+/// comma-separated list of features to activate.
 fn build_bin(
     name: impl AsRef<str>,
     release: bool,
+    features: Option<&str>,
+    build_env: Option<HashMap<String, String>>,
 ) -> anyhow::Result<escargot::CargoRun> {
     let name = name.as_ref();
     cargo_log!("Compiling", "{name}");
 
     let mut cmd =
         escargot::CargoBuild::new().package(name).bin(name).current_target();
+    if let Some(features) = features {
+        cmd = cmd.features(features);
+    }
+    if let Some(env) = build_env {
+        for (k, v) in env {
+            cmd = cmd.env(k, v);
+        }
+    }
     let profile = if release {
         cmd = cmd.release();
         "release [optimized]"
@@ -580,7 +621,7 @@ impl std::fmt::Debug for PrettyCmd<'_> {
             if f.alternate() && arg.starts_with("--") {
                 write!(f, " \\\n\t{arg}")?;
             } else {
-                write!(f, " {}", arg)?;
+                write!(f, " {arg}")?;
             }
         }
 

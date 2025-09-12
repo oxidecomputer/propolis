@@ -122,6 +122,34 @@ struct MemAsyncConfig {
     workers: Option<usize>,
 }
 
+#[derive(Deserialize)]
+pub struct VionaDeviceParams {
+    tx_copy_data: Option<bool>,
+    tx_header_pad: Option<u16>,
+}
+impl VionaDeviceParams {
+    pub fn from_opts(
+        opts: &BTreeMap<String, toml::Value>,
+    ) -> Result<Option<propolis::hw::virtio::viona::DeviceParams>, anyhow::Error>
+    {
+        use propolis::hw::virtio::viona::DeviceParams;
+        let parsed: Self = opt_deser(opts)?;
+        let out = if parsed.tx_copy_data.is_some()
+            || parsed.tx_header_pad.is_some()
+        {
+            let default = DeviceParams::default();
+
+            Some(DeviceParams {
+                copy_data: parsed.tx_copy_data.unwrap_or(default.copy_data),
+                header_pad: parsed.tx_header_pad.unwrap_or(default.header_pad),
+            })
+        } else {
+            None
+        };
+        Ok(out)
+    }
+}
+
 // Try to turn unmatched flattened options into a config struct
 fn opt_deser<'de, T: Deserialize<'de>>(
     value: &BTreeMap<String, toml::Value>,
@@ -140,7 +168,7 @@ pub fn block_backend(
 ) -> (Arc<dyn block::Backend>, String) {
     let backend_name = dev.options.get("block_dev").unwrap().as_str().unwrap();
     let Some(be) = config.block_devs.get(backend_name) else {
-        panic!("No configured block device named \"{}\"", backend_name);
+        panic!("No configured block device named \"{backend_name}\"");
     };
     let opts = block::BackendOpts {
         block_size: be.block_opts.block_size,
@@ -156,8 +184,8 @@ pub fn block_backend(
             let meta = std::fs::metadata(&parsed.path)
                 .with_context(|| {
                     format!(
-                        "opening {} for block device \"{}\"",
-                        parsed.path, backend_name
+                        "opening {} for block device \"{backend_name}\"",
+                        parsed.path,
                     )
                 })
                 .expect("file device path is valid");

@@ -2,9 +2,55 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Helper functions for generating Windows guest OS adaptations.
+//! Functionality common to all Windows guests.
+
+use crate::TestVm;
 
 use super::{CommandSequence, CommandSequenceEntry, GuestOsKind};
+
+use tracing::info;
+
+/// A wrapper that provides Windows-specific extensions to the core `TestVm`
+/// implementation.
+pub struct WindowsVm<'a> {
+    /// The VM being extended by this structure. The framework is required to
+    /// ensure that the VM is actually configured to run a Windows guest OS.
+    pub(crate) vm: &'a TestVm,
+}
+
+impl WindowsVm<'_> {
+    /// Runs `cmd` as a Powershell command.
+    pub async fn run_powershell_command(
+        &self,
+        cmd: &str,
+    ) -> anyhow::Result<String> {
+        assert!(self.vm.guest_os_kind().is_windows());
+
+        info!(cmd, "executing Powershell command");
+
+        // Use Powershell's -encodedCommand switch to keep important Powershell
+        // sigils in the command (like "$") from being interpreted by whatever
+        // shell is being used to invoke Powershell. This switch expects that
+        // the encoded string will decode into a UTF-16 string; `str`s are, of
+        // course, UTF-8, so switch encodings before converting to base64.
+        let utf16 = cmd.encode_utf16().collect::<Vec<u16>>();
+        let base64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            unsafe { utf16.align_to::<u8>().1 },
+        );
+
+        let cmd = format!("powershell -encodedCommand {base64}");
+        self.vm.run_shell_command(&cmd).await
+    }
+}
+
+impl std::ops::Deref for WindowsVm<'_> {
+    type Target = TestVm;
+
+    fn deref(&self) -> &Self::Target {
+        self.vm
+    }
+}
 
 const CYGWIN_CMD: &str = "C:\\cygwin\\cygwin.bat\r";
 
@@ -37,6 +83,22 @@ pub(super) fn get_login_sequence_for<'a>(
     ));
 
     let mut commands = vec![
+        // Look for `BdsDxe:` as a sign that we're actually seeing a fresh boot.
+        // This is not terribly important in the case of a first boot, but in a
+        // case such as logging out and waiting for reboot, exiting a cmd.exe
+        // session causes Windows to redraw its previous screen - everything
+        // past `Computer is booting, ...` below.
+        //
+        // A test that tries to boot and wait for a new login sequence would
+        // then incorrectly identify the already-booted VM as the freshly-booted
+        // OS it was waiting for, log in again, and at some point later finally
+        // actually reboot.
+        //
+        // At least on Windows Server 2022, there is an XML prelude that is
+        // printed to COM1 that we could look for here, but check for `BdsDxe: `
+        // instead as that comes from OVMF and will be consistent regardless of
+        // guest OS version.
+        CommandSequenceEntry::wait_for("BdsDxe: loading "),
         CommandSequenceEntry::wait_for(
             "Computer is booting, SAC started and initialized.",
         ),

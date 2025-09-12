@@ -7,11 +7,17 @@
 use std::io::Result;
 use std::sync::Arc;
 
+use crate::common::GuestData;
 use crate::common::Lifecycle;
+use crate::common::VcpuId;
 use crate::cpuid;
+use crate::enlightenment::Enlightenment;
 use crate::exits::*;
 use crate::migrate::*;
 use crate::mmio::MmioBus;
+use crate::msr::MsrId;
+use crate::msr::RdmsrOutcome;
+use crate::msr::WrmsrOutcome;
 use crate::pio::PioBus;
 use crate::tasks;
 use crate::vmm::VmmHdl;
@@ -20,7 +26,7 @@ use migrate::VcpuReadWrite;
 use thiserror::Error;
 
 use bhyve_api::ApiVersion;
-use propolis_types::{CpuidIdent, CpuidVendor};
+use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor};
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
@@ -53,6 +59,10 @@ pub struct Vcpu {
     pub id: i32,
     pub bus_mmio: Arc<MmioBus>,
     pub bus_pio: Arc<PioBus>,
+    pub guest_hv: Arc<dyn Enlightenment>,
+
+    /// Vendor of the underlying CPU hardware
+    hardware_vendor: CpuidVendor,
 }
 
 impl Vcpu {
@@ -62,8 +72,28 @@ impl Vcpu {
         id: i32,
         bus_mmio: Arc<MmioBus>,
         bus_pio: Arc<PioBus>,
+        guest_hv: Arc<dyn Enlightenment>,
     ) -> Arc<Self> {
-        Arc::new(Self { hdl, id, bus_mmio, bus_pio })
+        #[cfg(target_arch = "x86_64")]
+        fn query_hardware_vendor() -> CpuidVendor {
+            let res = unsafe { core::arch::x86_64::__cpuid(0) };
+            CpuidValues::from(res).try_into().expect("CPU vendor is recognized")
+        }
+
+        #[cfg(not(target_arch = "x86_64"))]
+        fn query_hardware_vendor() -> CpuidVendor {
+            // Just default to AMD when building for tests/etc on non-x86
+            CpuidVendor::Amd
+        }
+
+        Arc::new(Self {
+            hdl,
+            id,
+            bus_mmio,
+            bus_pio,
+            guest_hv,
+            hardware_vendor: query_hardware_vendor(),
+        })
     }
 
     /// ID of the virtual CPU.
@@ -230,7 +260,7 @@ impl Vcpu {
             // (by nature of doing the cpuid queries against the host CPU) it
             // ignores the INTEL_FALLBACK flag.  We must determine the vendor
             // kind by querying it.
-            let vendor = CpuidVendor::try_from(cpuid_utils::host_query(
+            let vendor = CpuidVendor::try_from(cpuid_utils::host::query(
                 CpuidIdent::leaf(0),
             ))
             .map_err(GetCpuidError::UnsupportedVendor)?;
@@ -392,6 +422,17 @@ impl Vcpu {
         unsafe { self.hdl.ioctl(bhyve_api::VM_INJECT_NMI, &mut vm_nmi) }
     }
 
+    pub fn inject_gp(&self) -> Result<()> {
+        let mut vm_excp = bhyve_api::vm_exception {
+            cpuid: self.cpuid(),
+            vector: i32::from(bits::IDT_GP),
+            error_code: 0,
+            error_code_valid: 0,
+            restart_instruction: 1,
+        };
+        unsafe { self.hdl.ioctl(bhyve_api::VM_INJECT_EXCEPTION, &mut vm_excp) }
+    }
+
     /// Process [`VmExit`] in the context of this vCPU, emitting a [`VmEntry`]
     /// if the parameters of the exit were such that they could be handled.
     pub fn process_vmexit(&self, exit: &VmExit) -> Option<VmEntry> {
@@ -432,9 +473,45 @@ impl Vcpu {
                     })
                     .ok(),
             },
-            VmExitKind::Rdmsr(_) | VmExitKind::Wrmsr(_, _) => {
-                // Leave it to the caller to emulate MSRs unhandled by the kernel
-                None
+            VmExitKind::Rdmsr(msr) => {
+                match self.guest_hv.rdmsr(VcpuId::from(self.id), MsrId(msr)) {
+                    RdmsrOutcome::NotHandled => None,
+                    RdmsrOutcome::Handled(val) => {
+                        let eax = val & 0xFFFF_FFFF;
+                        let edx = val >> 32;
+                        self.set_reg(
+                            bhyve_api::vm_reg_name::VM_REG_GUEST_RAX,
+                            eax,
+                        )
+                        .expect("setting eax should always succeed");
+                        self.set_reg(
+                            bhyve_api::vm_reg_name::VM_REG_GUEST_RDX,
+                            edx,
+                        )
+                        .expect("setting edx should always succeed");
+                        Some(VmEntry::Run)
+                    }
+                    RdmsrOutcome::GpException => {
+                        self.inject_gp()
+                            .expect("injecting #GP should always succeed");
+                        Some(VmEntry::Run)
+                    }
+                }
+            }
+            VmExitKind::Wrmsr(msr, val) => {
+                match self.guest_hv.wrmsr(
+                    VcpuId::from(self.id),
+                    MsrId(msr),
+                    val,
+                ) {
+                    WrmsrOutcome::NotHandled => None,
+                    WrmsrOutcome::Handled => Some(VmEntry::Run),
+                    WrmsrOutcome::GpException => {
+                        self.inject_gp()
+                            .expect("injecting #GP should always succeed");
+                        Some(VmEntry::Run)
+                    }
+                }
             }
             VmExitKind::Debug => {
                 // Until there is an interface to delay until a vCPU is no
@@ -480,7 +557,13 @@ impl MigrateMulti for Vcpu {
         output.push(migrate::VcpuMsrsV1::read(self)?.into())?;
         output.push(migrate::FpuStateV1::read(self)?.into())?;
         output.push(migrate::LapicV1::read(self)?.into())?;
-        output.push(migrate::CpuidV1::read(self)?.into())?;
+
+        // PMU was introduced in V18
+        if bhyve_api::api_version()? >= ApiVersion::V18
+            && self.hardware_vendor == CpuidVendor::Amd
+        {
+            output.push(migrate::PmuAmdV1::read(self)?.into())?;
+        }
 
         Ok(())
     }
@@ -498,7 +581,6 @@ impl MigrateMulti for Vcpu {
         let ms_regs: migrate::VcpuMsrsV1 = offer.take()?;
         let fpu: migrate::FpuStateV1 = offer.take()?;
         let lapic: migrate::LapicV1 = offer.take()?;
-        let cpuid: migrate::CpuidV1 = offer.take()?;
 
         run_state.write(self)?;
         gp_regs.write(self)?;
@@ -508,7 +590,10 @@ impl MigrateMulti for Vcpu {
         ms_regs.write(self)?;
         fpu.write(self)?;
         lapic.write(self)?;
-        cpuid.write(self)?;
+
+        if let Ok(pmu_amd) = offer.take::<migrate::PmuAmdV1>() {
+            pmu_amd.write(self)?;
+        }
 
         Ok(())
     }
@@ -522,8 +607,6 @@ pub mod migrate {
     use crate::migrate::*;
 
     use bhyve_api::{vdi_field_entry_v1, vm_reg_name, ApiVersion};
-    use cpuid_utils::CpuidSet;
-    use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor};
     use serde::{Deserialize, Serialize};
 
     pub(super) trait VcpuReadWrite: Sized {
@@ -702,83 +785,14 @@ pub mod migrate {
         pub dcr_timer: u32,
     }
 
-    #[derive(Copy, Clone, Default, Deserialize, Serialize)]
-    pub struct CpuidEntV1 {
-        pub func: u32,
-        pub idx: Option<u32>,
-        pub data: [u32; 4],
-    }
-    impl From<CpuidEntV1> for (CpuidIdent, CpuidValues) {
-        fn from(value: CpuidEntV1) -> Self {
-            (
-                CpuidIdent { leaf: value.func, subleaf: value.idx },
-                CpuidValues {
-                    eax: value.data[0],
-                    ebx: value.data[1],
-                    ecx: value.data[2],
-                    edx: value.data[3],
-                },
-            )
-        }
-    }
-
-    #[derive(Copy, Clone, Deserialize, Serialize)]
-    #[serde(rename_all = "lowercase")]
-    pub enum CpuidVendorV1 {
-        Amd,
-        Intel,
-    }
-    impl From<CpuidVendor> for CpuidVendorV1 {
-        fn from(value: CpuidVendor) -> Self {
-            match value {
-                CpuidVendor::Amd => Self::Amd,
-                CpuidVendor::Intel => Self::Intel,
-            }
-        }
-    }
-    impl From<CpuidVendorV1> for CpuidVendor {
-        fn from(value: CpuidVendorV1) -> Self {
-            match value {
-                CpuidVendorV1::Amd => Self::Amd,
-                CpuidVendorV1::Intel => Self::Intel,
-            }
-        }
-    }
-
     #[derive(Clone, Deserialize, Serialize)]
-    pub struct CpuidV1 {
-        pub vendor: CpuidVendorV1,
-        pub entries: Vec<CpuidEntV1>,
+    pub struct PmuAmdV1 {
+        pub evtsel: [u64; 6],
+        pub counter: [u64; 6],
     }
-    impl Schema<'_> for CpuidV1 {
+    impl Schema<'_> for PmuAmdV1 {
         fn id() -> SchemaId {
-            ("bhyve-x86-cpuid", 1)
-        }
-    }
-    impl From<CpuidSet> for CpuidV1 {
-        fn from(value: CpuidSet) -> Self {
-            let vendor = value.vendor().into();
-            let entries: Vec<_> = value
-                .iter()
-                .map(|(k, v)| CpuidEntV1 {
-                    func: k.leaf,
-                    idx: k.subleaf,
-                    data: [v.eax, v.ebx, v.ecx, v.edx],
-                })
-                .collect();
-            CpuidV1 { vendor, entries }
-        }
-    }
-    impl From<CpuidV1> for CpuidSet {
-        fn from(value: CpuidV1) -> Self {
-            let mut set = CpuidSet::new(value.vendor.into());
-            for item in value.entries {
-                let (ident, value) = item.into();
-                set.insert(ident, value).expect(
-                    "well-formed CpuidV1 entries have no subleaf conflicts",
-                );
-            }
-            set
+            ("bhyve-x86-pmu-amd", 1)
         }
     }
 
@@ -888,6 +902,19 @@ pub mod migrate {
                 vlp_lvt_error: value.lvt_error,
                 vlp_icr_timer: value.icr_timer,
                 vlp_dcr_timer: value.dcr_timer,
+            }
+        }
+    }
+    impl From<bhyve_api::vdi_pmu_amd_v1> for PmuAmdV1 {
+        fn from(value: bhyve_api::vdi_pmu_amd_v1) -> Self {
+            PmuAmdV1 { evtsel: value.vpa_evtsel, counter: value.vpa_ctr }
+        }
+    }
+    impl From<PmuAmdV1> for bhyve_api::vdi_pmu_amd_v1 {
+        fn from(value: PmuAmdV1) -> Self {
+            bhyve_api::vdi_pmu_amd_v1 {
+                vpa_evtsel: value.evtsel,
+                vpa_ctr: value.counter,
             }
         }
     }
@@ -1315,24 +1342,24 @@ pub mod migrate {
             Ok(())
         }
     }
-    impl VcpuReadWrite for CpuidV1 {
+    impl VcpuReadWrite for PmuAmdV1 {
         fn read(vcpu: &Vcpu) -> Result<Self> {
-            Ok(vcpu
-                .get_cpuid()
-                .map_err(|e| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!(
-                            "error reading CPUID for vCPU {}: {}",
-                            vcpu.id, e
-                        ),
-                    )
-                })?
-                .into())
+            let vdi = vcpu
+                .hdl
+                .data_op(bhyve_api::VDC_PMU_AMD, 1)
+                .for_vcpu(vcpu.id)
+                .read::<bhyve_api::vdi_pmu_amd_v1>()?;
+
+            Ok(vdi.into())
         }
 
         fn write(self, vcpu: &Vcpu) -> Result<()> {
-            vcpu.set_cpuid(self.into())
+            vcpu.hdl
+                .data_op(bhyve_api::VDC_PMU_AMD, 1)
+                .for_vcpu(vcpu.id)
+                .write::<bhyve_api::vdi_pmu_amd_v1>(&self.into())?;
+
+            Ok(())
         }
     }
 }
@@ -1340,4 +1367,114 @@ pub mod migrate {
 mod bits {
     pub const MSR_DEBUGCTL: u32 = 0x1d9;
     pub const MSR_EFER: u32 = 0xc0000080;
+
+    pub const IDT_GP: u8 = 0xd;
+}
+
+/// Pretty-printable diagnostic information about the state of a vCPU.
+pub struct Diagnostics {
+    gp_regs: Result<GuestData<migrate::VcpuGpRegsV1>>,
+    seg_regs: Result<GuestData<migrate::VcpuSegRegsV1>>,
+    ctrl_regs: Result<GuestData<migrate::VcpuCtrlRegsV1>>,
+}
+
+impl Diagnostics {
+    pub fn capture(vcpu: &Vcpu) -> Self {
+        Self {
+            gp_regs: migrate::VcpuGpRegsV1::read(vcpu).map(GuestData::from),
+            seg_regs: migrate::VcpuSegRegsV1::read(vcpu).map(GuestData::from),
+            ctrl_regs: migrate::VcpuCtrlRegsV1::read(vcpu).map(GuestData::from),
+        }
+    }
+}
+
+impl std::fmt::Display for migrate::VcpuGpRegsV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "%rax = {:#018x}\t%r9  = {:#018x}", self.rax, self.r9)?;
+        writeln!(f, "%rbx = {:#018x}\t%r10 = {:#018x}", self.rbx, self.r10)?;
+        writeln!(f, "%rcx = {:#018x}\t%r11 = {:#018x}", self.rcx, self.r11)?;
+        writeln!(f, "%rdx = {:#018x}\t%r12 = {:#018x}", self.rdx, self.r12)?;
+        writeln!(f, "%rsi = {:#018x}\t%r13 = {:#018x}", self.rsi, self.r13)?;
+        writeln!(f, "%rdi = {:#018x}\t%r14 = {:#018x}", self.rdi, self.r14)?;
+        writeln!(f, "%r8  = {:#018x}\t%r15 = {:#018x}", self.r8, self.r15)?;
+        writeln!(f)?;
+        writeln!(f, "%rip = {:#018x}", self.rip)?;
+        writeln!(f, "%rbp = {:#018x}", self.rbp)?;
+        writeln!(f, "%rsp = {:#018x}", self.rsp)?;
+        writeln!(f, "%rflags = {:#018x}", self.rflags)?;
+
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for migrate::SegDesc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "sel = {:#06x}\tbase = {:#018x}", self.selector, self.base)?;
+        write!(
+            f,
+            "\tlimit = {:#010x}\taccess = {:#010x}",
+            self.limit, self.access
+        )?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for migrate::VcpuSegRegsV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "%cs:   {}", self.cs)?;
+        writeln!(f, "%ds:   {}", self.ds)?;
+        writeln!(f, "%es:   {}", self.es)?;
+        writeln!(f, "%fs:   {}", self.fs)?;
+        writeln!(f, "%gs:   {}", self.gs)?;
+        writeln!(f, "%ss:   {}", self.ss)?;
+        writeln!(f, "%gdtr: {}", self.gdtr)?;
+        writeln!(f, "%idtr: {}", self.idtr)?;
+        writeln!(f, "%ldtr: {}", self.ldtr)?;
+        writeln!(f, "%tr:   {}", self.tr)?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for migrate::VcpuCtrlRegsV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "%cr0  = {:#018x}\t%cr2  = {:#018x}", self.cr0, self.cr2)?;
+        writeln!(f, "%cr3  = {:#018x}\t%cr4  = {:#018x}", self.cr3, self.cr4)?;
+        writeln!(
+            f,
+            "%xcr0 = {:#018x}\t%efer = {:#018x}",
+            self.xcr0, self.efer
+        )?;
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for Diagnostics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f)?;
+        writeln!(
+            f,
+            "{}",
+            self.gp_regs.as_ref().map(|regs| regs.to_string()).unwrap_or_else(
+                |e| format!("error reading general-purpose registers: {e}")
+            )
+        )?;
+        writeln!(
+            f,
+            "{}",
+            self.seg_regs.as_ref().map(|regs| regs.to_string()).unwrap_or_else(
+                |e| format!("error reading segment registers: {e}")
+            )
+        )?;
+        writeln!(
+            f,
+            "{}",
+            self.ctrl_regs
+                .as_ref()
+                .map(|regs| regs.to_string())
+                .unwrap_or_else(|e| format!(
+                    "error reading control registers: {e}"
+                ))
+        )?;
+        Ok(())
+    }
 }

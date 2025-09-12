@@ -3,6 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use phd_testcase::*;
+use propolis_client::{
+    instance_spec::VersionedInstanceSpec, types::InstanceSpecStatus,
+};
 
 #[phd_testcase]
 async fn nproc_test(ctx: &Framework) {
@@ -30,10 +33,7 @@ async fn guest_reboot_test(ctx: &Framework) {
     vm.launch().await?;
     vm.wait_to_boot().await?;
 
-    // Don't use `run_shell_command` because the guest won't echo another prompt
-    // after this.
-    vm.send_serial_str("reboot\n").await?;
-    vm.wait_to_boot().await?;
+    vm.graceful_reboot().await?;
 }
 
 #[phd_testcase]
@@ -49,8 +49,11 @@ async fn instance_spec_get_test(ctx: &Framework) {
     vm.launch().await?;
 
     let spec_get_response = vm.get_spec().await?;
-    let propolis_client::types::VersionedInstanceSpec::V0(spec) =
-        spec_get_response.spec;
+    let InstanceSpecStatus::Present(spec) = spec_get_response.spec else {
+        panic!("launched instance should have a spec");
+    };
+
+    let VersionedInstanceSpec::V0(spec) = spec;
     assert_eq!(spec.board.cpus, 4);
     assert_eq!(spec.board.memory_mb, 3072);
 }

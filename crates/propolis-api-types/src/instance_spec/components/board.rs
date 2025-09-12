@@ -5,6 +5,8 @@
 //! VM mainboard components. Every VM has a board, even if it has no other
 //! peripherals.
 
+use std::collections::BTreeSet;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +36,12 @@ pub struct I440Fx {
 pub enum Chipset {
     /// An Intel 440FX-compatible chipset.
     I440Fx(I440Fx),
+}
+
+impl Default for Chipset {
+    fn default() -> Self {
+        Self::I440Fx(I440Fx { enable_pcie: false })
+    }
 }
 
 /// A set of CPUID values to expose to a guest.
@@ -92,6 +100,56 @@ pub struct CpuidEntry {
     pub edx: u32,
 }
 
+/// Flags that enable "simple" Hyper-V enlightenments that require no
+/// feature-specific configuration.
+//
+// NOTE: This enum's variants should never have any associated data (note that
+// the type doesn't use serde's `tag` and `content` attributes). If a future
+// enlightenment requires associated data, it should be put into a
+// `HyperVExtendedFeatures` struct (or similar), and the `HyperV` variant of
+// `GuestHypervisorInterface` should be extended to `Option`ally include that
+// struct.
+#[derive(
+    Clone,
+    Deserialize,
+    Serialize,
+    Debug,
+    JsonSchema,
+    Ord,
+    PartialOrd,
+    Eq,
+    PartialEq,
+)]
+#[serde(deny_unknown_fields, rename_all = "snake_case")]
+pub enum HyperVFeatureFlag {
+    ReferenceTsc,
+}
+
+/// A hypervisor interface to expose to the guest.
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, Default)]
+#[serde(
+    deny_unknown_fields,
+    rename_all = "snake_case",
+    tag = "type",
+    content = "value"
+)]
+pub enum GuestHypervisorInterface {
+    /// Expose a bhyve-like interface ("bhyve bhyve " as the hypervisor ID in
+    /// leaf 0x4000_0000 and no additional leaves or features).
+    #[default]
+    Bhyve,
+
+    /// Expose a Hyper-V-compatible hypervisor interface with the supplied
+    /// features enabled.
+    HyperV { features: BTreeSet<HyperVFeatureFlag> },
+}
+
+impl GuestHypervisorInterface {
+    fn is_default(&self) -> bool {
+        matches!(self, Self::Bhyve)
+    }
+}
+
 /// A VM's mainboard.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -104,6 +162,17 @@ pub struct Board {
 
     /// The chipset to expose to guest software.
     pub chipset: Chipset,
+
+    /// The hypervisor platform to expose to the guest. The default is a
+    /// bhyve-compatible interface with no additional features.
+    ///
+    /// For compatibility with older versions of Propolis, this field is only
+    /// serialized if it specifies a non-default interface.
+    #[serde(
+        default,
+        skip_serializing_if = "GuestHypervisorInterface::is_default"
+    )]
+    pub guest_hv_interface: GuestHypervisorInterface,
 
     /// The CPUID values to expose to the guest. If `None`, bhyve will derive
     /// default values from the host's CPUID values.

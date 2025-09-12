@@ -14,6 +14,7 @@ use slog::{error, info, Logger};
 use crate::{
     serial::SerialTaskControlMessage,
     server::MetricsEndpointConfig,
+    spec::Spec,
     stats::{ServerStats, VirtualMachine},
     vnc::VncServer,
 };
@@ -56,16 +57,23 @@ impl VmServices {
         vm_properties: &InstanceProperties,
         ensure_options: &super::EnsureOptions,
     ) -> Self {
+        let vm_objects = vm_objects.lock_shared().await;
         let oximeter_state = if let Some(cfg) = &ensure_options.metrics_config {
             let registry = ensure_options.oximeter_registry.as_ref().expect(
                 "should have a producer registry if metrics are configured",
             );
-            register_oximeter_producer(log, cfg, registry, vm_properties).await
+            register_oximeter_producer(
+                log,
+                cfg,
+                registry,
+                vm_objects.instance_spec(),
+                vm_properties,
+            )
+            .await
         } else {
             OximeterState::default()
         };
 
-        let vm_objects = vm_objects.lock_shared().await;
         let vnc_server = ensure_options.vnc_server.clone();
         if let Some(ramfb) = vm_objects.framebuffer() {
             vnc_server.attach(vm_objects.ps2ctrl().clone(), ramfb.clone());
@@ -110,10 +118,11 @@ async fn register_oximeter_producer(
     log: &slog::Logger,
     cfg: &MetricsEndpointConfig,
     registry: &ProducerRegistry,
+    spec: &Spec,
     vm_properties: &InstanceProperties,
 ) -> OximeterState {
     let mut oximeter_state = OximeterState::default();
-    let virtual_machine = VirtualMachine::from(vm_properties);
+    let virtual_machine = VirtualMachine::new(spec.board.cpus, vm_properties);
 
     // Create the server itself.
     //
@@ -158,9 +167,9 @@ async fn register_oximeter_producer(
 }
 
 /// Launches a serial console handler task.
-async fn start_serial_task<'vm>(
+async fn start_serial_task(
     log: &slog::Logger,
-    vm_objects: &VmObjectsShared<'vm>,
+    vm_objects: &VmObjectsShared<'_>,
 ) -> crate::serial::SerialTask {
     let (websocks_ch, websocks_recv) = tokio::sync::mpsc::channel(1);
     let (control_ch, control_recv) = tokio::sync::mpsc::channel(1);

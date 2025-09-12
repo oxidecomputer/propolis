@@ -75,10 +75,13 @@ enum Args {
     /// Runs the Propolis server.
     Run {
         #[clap(action)]
-        cfg: PathBuf,
+        bootrom_path: PathBuf,
 
         #[clap(name = "PROPOLIS_IP:PORT", action)]
         propolis_addr: SocketAddr,
+
+        #[clap(long, action)]
+        bootrom_version: Option<String>,
 
         /// Method for registering as an Oximeter metric producer.
         ///
@@ -106,7 +109,7 @@ enum Args {
 
 pub fn run_openapi() -> Result<(), String> {
     server::api()
-        .openapi("Oxide Propolis Server API", "0.0.1")
+        .openapi("Oxide Propolis Server API", semver::Version::new(0, 0, 1))
         .description(
             "API for interacting with the Propolis hypervisor frontend.",
         )
@@ -117,7 +120,8 @@ pub fn run_openapi() -> Result<(), String> {
 }
 
 fn run_server(
-    config_app: config::Config,
+    bootrom_path: PathBuf,
+    bootrom_version: Option<String>,
     config_dropshot: dropshot::ConfigDropshot,
     config_metrics: Option<MetricsEndpointConfig>,
     vnc_addr: Option<SocketAddr>,
@@ -136,10 +140,18 @@ fn run_server(
         Err(e).context("API version checks")?;
     }
 
+    // If this is a development image being run outside of an Omicron zone,
+    // enable the display (in logs, panic messages, and the like) of diagnostic
+    // data that may have originated in the guest.
+    #[cfg(not(feature = "omicron-build"))]
+    propolis::common::DISPLAY_GUEST_DATA
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
     let use_reservoir = config::reservoir_decide(&log);
 
     let context = server::DropshotEndpointContext::new(
-        config_app,
+        bootrom_path,
+        bootrom_version,
         use_reservoir,
         log.new(slog::o!()),
         config_metrics,
@@ -148,11 +160,11 @@ fn run_server(
     // Spawn the runtime for handling API processing
     // If/when a VM instance is created, a separate runtime for handling device
     // emulation and other VM-related work will be spawned.
-    let api_runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(API_RT_THREADS)
-        .enable_all()
-        .thread_name("tokio-rt-api")
-        .build()?;
+    let api_runtime = {
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        builder.worker_threads(API_RT_THREADS).thread_name("tokio-rt-api");
+        oxide_tokio_rt::build(&mut builder)?
+    };
     let _guard = api_runtime.enter();
 
     // Start TCP listener for VNC, if requested
@@ -266,19 +278,37 @@ fn main() -> anyhow::Result<()> {
     // Ensure proper setup of USDT probes
     register_probes().unwrap();
 
+    #[cfg(all(
+        feature = "omicron-build",
+        any(feature = "failure-injection", feature = "falcon")
+    ))]
+    if option_env!("PHD_BUILD") != Some("true") {
+        panic!(
+            "`omicron-build` is enabled alongside development features, \
+            this build is NOT SUITABLE for production. Set PHD_BUILD=true in \
+            the environment and rebuild propolis-server if you really need \
+            this to work."
+        );
+    }
+
     // Command line arguments.
     let args = Args::parse();
 
     match args {
         Args::OpenApi => run_openapi()
             .map_err(|e| anyhow!("Cannot generate OpenAPI spec: {}", e)),
-        Args::Run { cfg, propolis_addr, metric_addr, vnc_addr, log_level } => {
-            let config = config::parse(cfg)?;
-
+        Args::Run {
+            bootrom_path,
+            bootrom_version,
+            propolis_addr,
+            metric_addr,
+            vnc_addr,
+            log_level,
+        } => {
             // Dropshot configuration.
             let config_dropshot = ConfigDropshot {
                 bind_address: propolis_addr,
-                request_body_max_bytes: 1024 * 1024, // 1M for ISO bytes
+                default_request_body_max_bytes: 1024 * 1024, // 1M for ISO bytes
                 default_handler_task_mode: HandlerTaskMode::Detached,
                 log_headers: vec![],
             };
@@ -291,7 +321,14 @@ fn main() -> anyhow::Result<()> {
                 propolis_addr.ip(),
             )?;
 
-            run_server(config, config_dropshot, metric_config, vnc_addr, log)
+            run_server(
+                bootrom_path,
+                bootrom_version,
+                config_dropshot,
+                metric_config,
+                vnc_addr,
+                log,
+            )
         }
     }
 }

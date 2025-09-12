@@ -61,7 +61,7 @@ are some options to get up-and-running quickly:
 ### Guest bootrom
 
 The current recommended and tested guest bootrom is available
-[here](https://buildomat.eng.oxide.computer/public/file/oxidecomputer/edk2/image_debug/6d92acf0a22718dd4175d7c64dbcf7aaec3740bd/OVMF_CODE.fd).
+[here](https://buildomat.eng.oxide.computer/public/file/oxidecomputer/edk2/image_debug/907a5fd1763ce5ddd74001261e5b52cd200a25f9/OVMF_CODE.fd).
 
 Other UEFI firmware images built from the [Open Virtual Machine Firmware
 project](https://github.com/tianocore/tianocore.github.io/wiki/OVMF) may also

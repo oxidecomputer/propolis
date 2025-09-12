@@ -155,7 +155,7 @@ struct QueueGuard<'a, QS: Debug> {
     state: MutexGuard<'a, QueueInner<QS>>,
     size: &'a u32,
 }
-impl<'a, QS: Debug> QueueGuard<'a, QS> {
+impl<QS: Debug> QueueGuard<'_, QS> {
     /// Returns if the queue is currently empty with the given head and tail
     /// pointers.
     ///
@@ -198,7 +198,7 @@ impl<'a, QS: Debug> QueueGuard<'a, QS> {
         wrap_sub(*self.size, idx, off)
     }
 }
-impl<'a> QueueGuard<'a, CompQueueState> {
+impl QueueGuard<'_, CompQueueState> {
     /// Attempt to return the Tail entry pointer and then move it forward by 1.
     ///
     /// If the queue is full this method returns [`None`].
@@ -297,7 +297,7 @@ impl SubQueueState {
         QueueState::new(size, SubQueueState())
     }
 }
-impl<'a> QueueGuard<'a, SubQueueState> {
+impl QueueGuard<'_, SubQueueState> {
     /// How many slots are empty between the tail and the head i.e., how many
     /// entries can we write to the queue currently.
     fn avail_empty(&self) -> u16 {
@@ -429,7 +429,7 @@ impl SubQueue {
     pub fn pop(
         self: &Arc<SubQueue>,
         mem: &MemCtx,
-    ) -> Option<(SubmissionQueueEntry, Permit, u16)> {
+    ) -> Option<(GuestData<SubmissionQueueEntry>, Permit, u16)> {
         // Attempt to reserve an entry on the Completion Queue
         let permit = self.cq.reserve_entry(&self)?;
         let mut state = self.state.lock();
