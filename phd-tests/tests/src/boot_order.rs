@@ -262,7 +262,8 @@ async fn guest_can_adjust_boot_order(ctx: &Framework) {
 
     // If the guest doesn't have an EFI partition then there's no way for boot
     // order preferences to be persisted.
-    let mountline = vm.run_shell_command("mount | grep efivarfs").await?;
+    let mountline =
+        vm.run_shell_command("mount | grep efivarfs").ignore_status().await?;
 
     if !mountline.starts_with("efivarfs on ") {
         warn!(
