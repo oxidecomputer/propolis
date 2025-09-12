@@ -67,10 +67,6 @@ async fn launch_vm_and_find_in_memory_disk(
 
         format!("/dev/sd{}", (b'a' + num) as char)
     } else {
-        // Non-Windows guests may expose a /dev/disk/by-path directory that
-        // contains symlinks mapping PCI paths to the underlying device nodes
-        // under /dev. If this is present, check the mapping for a virtio disk
-        // at 0.24.0.
         let ls = vm
             .run_shell_command(
                 "ls /sys/devices/pci0000:00/0000:00:18.0/virtio0/block",
