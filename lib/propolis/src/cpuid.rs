@@ -424,7 +424,7 @@ impl Specializer {
 }
 
 /// Flavors of CPU topology information
-#[derive(Clone, Copy, Ord, PartialOrd, Eq, PartialEq, strum::EnumIter)]
+#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, strum::EnumIter)]
 pub enum TopoKind {
     /// Leaf 0x4 (legacy Intel cache topology with some CPU information)
     Std4 = 0x4,
