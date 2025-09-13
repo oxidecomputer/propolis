@@ -43,6 +43,10 @@ pub enum SpecializeError {
     UnsupportedCacheLevel,
     #[error("missing vcpu count")]
     MissingVcpuCount,
+    #[error("missing vcpu id")]
+    MissingVcpuId,
+    #[error("unable to specialize leaf")]
+    IncompatibleTopology { leaf: u32, num_vcpu: u32, why: Option<&'static str> },
 }
 
 /// Specialize a set of cpuid leafs for provided attributes.
@@ -193,25 +197,142 @@ impl Specializer {
         }
         Ok(())
     }
+
     fn fix_cpu_topo(&self, set: &mut CpuidSet) -> Result<(), SpecializeError> {
         for topo in self.cpu_topo_populate.union(&self.cpu_topo_clear) {
-            // Nuke any existing info in order to potentially override it
             let leaf = *topo as u32;
-            set.remove_leaf(leaf);
 
             if !self.cpu_topo_populate.contains(topo) {
+                // We aren't fixing up this leaf, we're just asked to entirely
+                // discard it.
+                set.remove_leaf(leaf);
+
+                if *topo == TopoKind::Ext1E {
+                    // TODO: clear the TopologyExtensions bit in leaf 8000_0001
+                    // since we've just discarded the leaf.
+                }
+
                 continue;
             }
 
+            // The number of logical threads available to the guest.
             let num_vcpu = self
                 .num_vcpu
                 .ok_or(SpecializeError::MissingVcpuCount)
                 .map(|n| u32::from(n.get()))?;
 
+            // The number of logical processors the guest should see. If we
+            // indicate that SMT is enabled, then vCPUs are presented as pairs
+            // of sibling threads on vproc-many processors.
+            let num_vproc = if self.has_smt {
+                // TODO: What if num_vcpu is odd?!
+                num_vcpu >> 1
+            } else {
+                num_vcpu
+            };
+
             match topo {
+                TopoKind::Std4 => {
+                    // Leaf 4 is reserved by AMD, but Intel includes some
+                    // topology information here that OSes may use. From the
+                    // Intel SDM vol. 2A on
+                    //
+                    // > Deterministic Cache Parameters Leaf
+                    // > (Initial EAX Value = 04H)
+                    //
+                    // Bits 25-14 are the maximum number of addressable IDs for
+                    // logical processors sharing this cache (e.g. "1" for L1
+                    // and L2 caches, and "all" for L3)
+                    //
+                    // Bits 31-26 are the maximum number of addressable IDs for
+                    // processor cores in the package. This is constant for all
+                    // valid subleaves.
+
+                    // If the number of vCPUs is more than bits 31-26 can
+                    // represent, I don't know what to do! This is probably an
+                    // all-bits-set-and-use-another-topo-method condition, but
+                    // bail out here and demand someone take a look.
+                    if num_vproc >= 0b100_0000 {
+                        return Err(SpecializeError::IncompatibleTopology {
+                            leaf: 4,
+                            num_vcpu,
+                            why: Some(
+                                "Don't know how to set CPUID leaf 4 processor \
+                                 count if there are more than 64 processors!",
+                            ),
+                        });
+                    } else if num_vproc == 0 {
+                        return Err(SpecializeError::IncompatibleTopology {
+                            leaf: 4,
+                            num_vcpu,
+                            why: Some(
+                                "Cannot specialize CPUID leaf 4 for a 0 vCPU VM"
+                            )
+                        });
+                    }
+
+                    // Cache types come in any order, but type 0 means there are
+                    // no more caches, so iterate and adjust as needed until we
+                    // see that.
+                    const MAX_REASONABLE_LEVEL: u32 = 0x20;
+                    for i in 0..32 {
+                        let leaf = set.get(CpuidIdent::subleaf(4, i)).cloned();
+                        let Some(mut leaf) = leaf else {
+                            // We've reached the end of provided subleaves, so
+                            // we're done here.
+                            break;
+                        };
+
+                        let ty = leaf.eax & 0b11111;
+                        let level = (leaf.eax >> 5) & 0b111;
+
+                        if ty == 0 {
+                            // "Null" cache. This is not a cache, and there are
+                            // no more caches. We're done here.
+                            break;
+                        }
+
+                        const LEAF4_EAX_VPROC_MASK: u32 = 0xfc_00_00_00;
+                        const LEAF4_EAX_VCPU_MASK: u32 = 0x03_ff_c0_00;
+                        // Zero out the prior processor core count.
+                        leaf.eax &= !LEAF4_EAX_VPROC_MASK;
+                        // The processor count is encoded as one less than the
+                        // real count (e.g. 0x3f is 64 processors, 0x00 is 1
+                        // processor)
+                        leaf.eax |= (num_vproc - 1) << 26;
+
+                        // Present L1 and L2 caches as per-thread, L3 is across
+                        // the whole VM.
+                        if level < 3 {
+                            leaf.eax &= !LEAF4_EAX_VCPU_MASK;
+                            // And leave that range 0: this means only one
+                            // vCPU shares the cache.
+                        } else {
+                            leaf.eax &= !LEAF4_EAX_VCPU_MASK;
+                            let shifted_vcpu = (num_vcpu - 1) << 14;
+                            if shifted_vcpu & !LEAF4_EAX_VCPU_MASK != 0 {
+                                return Err(
+                                    SpecializeError::IncompatibleTopology {
+                                        leaf: 4,
+                                        num_vcpu,
+                                        why: Some("too many vCPUs"),
+                                    },
+                                );
+                            }
+                            leaf.eax |= shifted_vcpu;
+                        }
+
+                        set.insert(CpuidIdent::subleaf(4, i), leaf)
+                            .expect("can put the leaf back where we got it");
+                    }
+                }
                 TopoKind::StdB => {
                     // Queries with invalid ecx will get all-zeroes
                     set.insert(CpuidIdent::leaf(leaf), CpuidValues::default());
+                    let Some(vcpuid) = self.vcpuid.map(|id| id as u32) else {
+                        return Err(SpecializeError::MissingVcpuId);
+                    };
+
                     if self.has_smt {
                         set.insert(
                             CpuidIdent::subleaf(leaf, 0),
@@ -219,30 +340,59 @@ impl Specializer {
                                 eax: 0x1,
                                 ebx: 0x2,
                                 ecx: 0x100,
-                                // TODO: populate with x2APIC ID
-                                edx: 0x0,
+                                edx: vcpuid,
                             },
                         );
                     } else {
-                        set.insert(
-                            CpuidIdent::subleaf(leaf, 0),
-                            CpuidValues {
-                                eax: 0x0,
-                                ebx: 0x1,
-                                ecx: 0x100,
-                                // TODO: populate with x2APIC ID
-                                edx: 0x0,
-                            },
-                        );
+                        // We notionally want to insert a leaf like
+                        // CpuidValues {
+                        //     eax: 0x0,
+                        //     ebx: 0x1,
+                        //     ecx: 0x100,
+                        //     edx: vcpuid,
+                        // }
+                        // here, but EAX=0 implies the leaf is invalid, rather
+                        // than the desired "shift x2APIC ID right by 0 to get
+                        // to the topology ID of processor cores"
+                        //
+                        // The question here is: what does this leaf look like
+                        // with hyperthreading disabled? Does this leaf return 0
+                        // in EAX implying that it is invalid, or is it 1, with
+                        // x2APIC IDs skipping every other entry for the
+                        // disabled SMT siblings? Whatever hardware does here is
+                        // least likely to surprise guest OSes.
+                        return Err(SpecializeError::IncompatibleTopology {
+                            leaf: 0xB,
+                            num_vcpu,
+                            why: Some("Leaf B.1 would have EAX=0"),
+                        });
+                    }
+                    // TODO: Not wholly clear if we should just set this to
+                    // `ceil(log2(num_vcpu))` (which should guarantee that the
+                    // VM is conceptually one socket) or set this to 7 or 8 like
+                    // a "normal" processor.
+                    //
+                    // Go with 8 for now and error if num_vcpu is above that:
+                    // you should trip over this quickly if you've bumped up
+                    // VM_MAXCPU and you may have hardware to compare against at
+                    // that point.
+                    if num_vcpu >= 256 {
+                        return Err(SpecializeError::IncompatibleTopology {
+                            leaf: 4,
+                            num_vcpu,
+                            why: Some(
+                                "Don't know how to specialize CPUID leaf \
+                                       B for more than 256 processors!",
+                            ),
+                        });
                     }
                     set.insert(
                         CpuidIdent::subleaf(leaf, 1),
                         CpuidValues {
-                            eax: 0x0,
+                            eax: 0x8,
                             ebx: num_vcpu,
                             ecx: 0x201,
-                            // TODO: populate with x2APIC ID
-                            edx: 0x0,
+                            edx: vcpuid,
                         },
                     );
                 }
@@ -274,8 +424,10 @@ impl Specializer {
 }
 
 /// Flavors of CPU topology information
-#[derive(Clone, Copy, Ord, PartialOrd, Eq, PartialEq, strum::EnumIter)]
+#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, strum::EnumIter)]
 pub enum TopoKind {
+    /// Leaf 0x4 (legacy Intel cache topology with some CPU information)
+    Std4 = 0x4,
     /// Leaf 0xB AMD (and legacy on Intel)
     StdB = 0xb,
     /// Leaf 0x1F (Intel)
