@@ -277,7 +277,7 @@ async fn guest_can_adjust_boot_order(ctx: &Framework) {
     // reboot, and make sure they're all as we set them.
     let bootffff_path = efipath(&bootvar(0xffff));
     let bootffff_res = vm
-        .run_shell_command(&format!("ls {}", bootffff_path))
+        .run_shell_command(&format!("ls {bootffff_path}"))
         .ignore_status()
         .await?;
     // `ls` just prints the file path if it exists, but the error text varies a
