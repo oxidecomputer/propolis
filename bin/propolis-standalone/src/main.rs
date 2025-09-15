@@ -1388,6 +1388,15 @@ fn setup_instance(
     for vcpu in machine.vcpus.iter() {
         let vcpu_profile = if let Some(profile) = cpuid_profile.as_ref() {
             static UNSUPPORTED_TOPO: &[TopoKind] = &[
+                // We shouldn't try producing specialized StdB leaves yet: if a
+                // guest has an odd number of vCPUs and we're asked to indicate
+                // SMT is present, the specializer produces a somewhat bogus
+                // topology including a core with cache shared between two
+                // processors where the second processor is missing. Guests (at
+                // least, Linux) seems to tolerate this by giving up and saying
+                // all processors are threads on the same single processor core.
+                // Other guests' behavior is untested.
+                TopoKind::StdB,
                 // `fix_cpu_topo` doesn't know how to produce specialized leaf
                 // 1Fh entries yet.
                 TopoKind::Std1F,
@@ -1398,12 +1407,11 @@ fn setup_instance(
 
             let mut leaves_to_fix = Vec::new();
             for kind in TopoKind::iter() {
-                let has_leaf = profile.get(CpuidIdent::leaf(kind as u32)).is_some();
+                let has_leaf = set.get(CpuidIdent::leaf(kind as u32)).is_some();
                 let has_subleaf =
-                    profile.get(CpuidIdent::subleaf(kind as u32, 0)).is_some();
+                    set.get(CpuidIdent::subleaf(kind as u32, 0)).is_some();
                 let any_present = has_leaf || has_subleaf;
                 if any_present && !UNSUPPORTED_TOPO.contains(&kind) {
-                    eprintln!("FIXING UP {:?}", kind);
                     leaves_to_fix.push(kind);
                 }
             }
@@ -1416,7 +1424,7 @@ fn setup_instance(
                 .with_vcpuid(vcpu.id)
                 .with_cache_topo()
                 .clear_cpu_topo(cpuid::TopoKind::iter())
-                .with_cpu_topo(leaves_to_fix.into_iter())
+                .with_cpu_topo(cpuid::TopoKind::supported())
                 .execute(profile.clone())
                 .context("failed to specialize cpuid profile")?
         } else {

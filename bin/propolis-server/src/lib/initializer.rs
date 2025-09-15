@@ -1294,26 +1294,6 @@ impl MachineInitializer<'_> {
                     requests to set hypervisor leaves",
             );
 
-            static UNSUPPORTED_TOPO: &[TopoKind] = &[
-                // `fix_cpu_topo` doesn't know how to produce specialized leaf
-                // 1Fh entries yet.
-                TopoKind::Std1F,
-                // `fix_cpu_topo` doesn't know how to produce specialized leaf
-                // 8000_001Eh entries yet.
-                TopoKind::Ext1E,
-            ];
-
-            let mut leaves_to_fix = Vec::new();
-            for kind in TopoKind::iter() {
-                let has_leaf = set.get(CpuidIdent::leaf(kind as u32)).is_some();
-                let has_subleaf =
-                    set.get(CpuidIdent::subleaf(kind as u32, 0)).is_some();
-                let any_present = has_leaf || has_subleaf;
-                if any_present && !UNSUPPORTED_TOPO.contains(&kind) {
-                    leaves_to_fix.push(kind);
-                }
-            }
-
             let specialized = propolis::cpuid::Specializer::new()
                 .with_vcpu_count(
                     NonZeroU8::new(self.spec.board.cpus).unwrap(),
@@ -1322,7 +1302,7 @@ impl MachineInitializer<'_> {
                 .with_vcpuid(vcpu.id)
                 .with_cache_topo()
                 .clear_cpu_topo(TopoKind::iter())
-                .with_cpu_topo(leaves_to_fix.into_iter())
+                .with_cpu_topo(TopoKind::supported())
                 .execute(set)
                 .map_err(|e| {
                     MachineInitError::CpuidSpecializationFailed(vcpu.id, e)

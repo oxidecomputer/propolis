@@ -199,6 +199,22 @@ impl Specializer {
     }
 
     fn fix_cpu_topo(&self, set: &mut CpuidSet) -> Result<(), SpecializeError> {
+        // The number of logical threads available to the guest.
+        let num_vcpu = self
+            .num_vcpu
+            .ok_or(SpecializeError::MissingVcpuCount)
+            .map(|n| u32::from(n.get()))?;
+
+        // The number of logical processors the guest should see. If we
+        // indicate that SMT is enabled, then vCPUs are presented as pairs
+        // of sibling threads on vproc-many processors.
+        let num_vproc = if self.has_smt {
+            // TODO: What if num_vcpu is odd?!
+            num_vcpu >> 1
+        } else {
+            num_vcpu
+        };
+
         for topo in self.cpu_topo_populate.union(&self.cpu_topo_clear) {
             let leaf = *topo as u32;
 
@@ -209,27 +225,22 @@ impl Specializer {
 
                 if *topo == TopoKind::Ext1E {
                     // TODO: clear the TopologyExtensions bit in leaf 8000_0001
-                    // since we've just discarded the leaf.
+                    // since we've just discarded the leaf. Change this *after*
+                    // the wholesale move to fixed CPUID leaves (Omicron#8728)
+                    // so the typical case just never has this bit set and a
+                    // change here is not an additional guest-visible change.
                 }
 
                 continue;
             }
 
-            // The number of logical threads available to the guest.
-            let num_vcpu = self
-                .num_vcpu
-                .ok_or(SpecializeError::MissingVcpuCount)
-                .map(|n| u32::from(n.get()))?;
-
-            // The number of logical processors the guest should see. If we
-            // indicate that SMT is enabled, then vCPUs are presented as pairs
-            // of sibling threads on vproc-many processors.
-            let num_vproc = if self.has_smt {
-                // TODO: What if num_vcpu is odd?!
-                num_vcpu >> 1
-            } else {
-                num_vcpu
-            };
+            if !set.contains_leaf(leaf) {
+                // If the leaf isn't present at all, we won't try to specialize
+                // it. This lets callers request specializing any/all leaves
+                // related to CPU topology without us inventing Intel-only
+                // leaves on AMD or AMD-only leaves on Intel.
+                continue;
+            }
 
             match topo {
                 TopoKind::Std4 => {
@@ -266,7 +277,7 @@ impl Specializer {
                             leaf: 4,
                             num_vcpu,
                             why: Some(
-                                "Cannot specialize CPUID leaf 4 for a 0 vCPU VM"
+                                "Cannot specialize CPUID leaf 4 for 0 vproc VM"
                             )
                         });
                     }
@@ -434,6 +445,17 @@ pub enum TopoKind {
     Std1F = 0x1f,
     /// LEAF 0x8000001E (AMD)
     Ext1E = 0x8000001e,
+}
+
+impl TopoKind {
+    /// Return an iterator of the CPU topology information that Propolis
+    /// supports specializing. This is intended as a "reasonable default" for
+    /// CPUID profile specialization.
+    pub fn supported() -> std::iter::Cloned<std::slice::Iter<'static, Self>> {
+        // Topology leaves 1Fh and 8000_001E are partially or entirely TODO, so
+        // we can't specialize them.
+        [TopoKind::Std4, TopoKind::StdB].as_slice().into_iter().cloned()
+    }
 }
 
 /// Parse the Processor Brand String (aka ProcName) from extended leafs
