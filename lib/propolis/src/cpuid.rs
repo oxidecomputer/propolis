@@ -209,7 +209,17 @@ impl Specializer {
         // indicate that SMT is enabled, then vCPUs are presented as pairs
         // of sibling threads on vproc-many processors.
         let num_vproc = if self.has_smt {
-            // TODO: What if num_vcpu is odd?!
+            // If vCPUs are not even but we're asked to indicate SMT, we'll have
+            // one leftover core which won't have an SMT sibling. Reject this
+            // situation outright for the time being.
+            if num_vcpu % 2 != 0 {
+                return Err(SpecializeError::IncompatibleTopology {
+                    leaf: 0,
+                    num_vcpu,
+                    why: Some("Can't have SMT and odd vCPU count!"),
+                });
+            }
+
             num_vcpu >> 1
         } else {
             num_vcpu
