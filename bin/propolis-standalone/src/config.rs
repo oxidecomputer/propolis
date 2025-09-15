@@ -114,7 +114,7 @@ pub struct CloudInit {
 #[derive(Deserialize)]
 struct FileConfig {
     path: String,
-    workers: Option<usize>,
+    workers: Option<NonZeroUsize>,
 }
 #[derive(Deserialize)]
 struct MemAsyncConfig {
@@ -160,6 +160,7 @@ fn opt_deser<'de, T: Deserialize<'de>>(
 }
 
 const DEFAULT_WORKER_COUNT: usize = 8;
+const MAX_FILE_WORKERS: usize = 32;
 
 pub fn block_backend(
     config: &Config,
@@ -195,15 +196,24 @@ pub fn block_backend(
                     "path" => &parsed.path);
             }
 
-            block::FileBackend::create(
-                &parsed.path,
-                opts,
-                NonZeroUsize::new(
-                    parsed.workers.unwrap_or(DEFAULT_WORKER_COUNT),
-                )
-                .unwrap(),
-            )
-            .unwrap()
+            let workers: NonZeroUsize = match parsed.workers {
+                Some(workers) => {
+                    if workers.get() <= MAX_FILE_WORKERS {
+                        workers
+                    } else {
+                        slog::warn!(
+                            log,
+                            "workers must be between 1 and {} \
+                            Using default value of {}.",
+                            MAX_FILE_WORKERS,
+                            DEFAULT_WORKER_COUNT,
+                        );
+                        NonZeroUsize::new(DEFAULT_WORKER_COUNT).unwrap()
+                    }
+                }
+                None => NonZeroUsize::new(DEFAULT_WORKER_COUNT).unwrap(),
+            };
+            block::FileBackend::create(&parsed.path, opts, workers).unwrap()
         }
         "crucible" => create_crucible_backend(be, opts, log),
         "crucible-mem" => create_crucible_mem_backend(be, opts, log),

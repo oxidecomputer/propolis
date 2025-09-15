@@ -101,13 +101,13 @@ impl VmObjects {
 
     /// Yields a shared lock guard referring to the underlying object
     /// collection.
-    pub(crate) async fn lock_shared(&self) -> VmObjectsShared {
+    pub(crate) async fn lock_shared(&self) -> VmObjectsShared<'_> {
         VmObjectsShared(self.inner.read().await)
     }
 
     /// Yields an exclusive lock guard referring to the underlying object
     /// collection.
-    pub(crate) async fn lock_exclusive(&self) -> VmObjectsExclusive {
+    pub(crate) async fn lock_exclusive(&self) -> VmObjectsExclusive<'_> {
         VmObjectsExclusive(self.inner.write().await)
     }
 }
@@ -153,7 +153,7 @@ impl VmObjectsLocked {
     /// is not currently accessible.
     pub(crate) fn access_mem(
         &self,
-    ) -> Option<propolis::accessors::Guard<propolis::vmm::MemCtx>> {
+    ) -> Option<propolis::accessors::Guard<'_, propolis::vmm::MemCtx>> {
         self.machine.acc_mem.access()
     }
 

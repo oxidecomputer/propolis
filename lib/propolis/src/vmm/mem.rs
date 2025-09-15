@@ -416,7 +416,7 @@ impl SubMapping<'_> {
 
     /// Create `SubMapping` using entire region offered by existing `SubMapping`
     /// object.
-    fn new_sub(&self) -> SubMapping {
+    fn new_sub(&self) -> SubMapping<'_> {
         SubMapping {
             backing: Backing::Sub(self),
 
@@ -446,7 +446,7 @@ impl SubMapping<'_> {
         &self,
         offset: usize,
         length: usize,
-    ) -> Option<SubMapping> {
+    ) -> Option<SubMapping<'_>> {
         self.new_sub().constrain_region(offset, length).ok()
     }
 
@@ -871,7 +871,7 @@ impl MemCtx {
         &self,
         base: GuestAddr,
         count: usize,
-    ) -> Option<GuestData<MemMany<T>>> {
+    ) -> Option<GuestData<MemMany<'_, T>>> {
         self.region_covered(base, size_of::<T>() * count, Prot::READ).map(
             |mapping| {
                 GuestData::from(MemMany {
@@ -931,15 +931,24 @@ impl MemCtx {
         }
     }
 
-    pub fn writable_region(&self, region: &GuestRegion) -> Option<SubMapping> {
+    pub fn writable_region(
+        &self,
+        region: &GuestRegion,
+    ) -> Option<SubMapping<'_>> {
         let mapping = self.region_covered(region.0, region.1, Prot::WRITE)?;
         Some(mapping)
     }
-    pub fn readable_region(&self, region: &GuestRegion) -> Option<SubMapping> {
+    pub fn readable_region(
+        &self,
+        region: &GuestRegion,
+    ) -> Option<SubMapping<'_>> {
         let mapping = self.region_covered(region.0, region.1, Prot::READ)?;
         Some(mapping)
     }
-    pub fn readwrite_region(&self, region: &GuestRegion) -> Option<SubMapping> {
+    pub fn readwrite_region(
+        &self,
+        region: &GuestRegion,
+    ) -> Option<SubMapping<'_>> {
         let mapping = self.region_covered(region.0, region.1, Prot::RW)?;
         Some(mapping)
     }
@@ -948,7 +957,7 @@ impl MemCtx {
     pub fn direct_writable_region_by_name(
         &self,
         name: &str,
-    ) -> Result<SubMapping> {
+    ) -> Result<SubMapping<'_>> {
         let guard = self.map.lock().unwrap();
         let ent = guard
             .iter()
@@ -972,7 +981,7 @@ impl MemCtx {
     pub fn direct_writable_region(
         &self,
         region: &GuestRegion,
-    ) -> Option<SubMapping> {
+    ) -> Option<SubMapping<'_>> {
         let (_guest_map, seg_map) = self.region_mappings(region.0, region.1)?;
         Some(seg_map.constrain_access(Prot::WRITE))
     }
@@ -983,7 +992,7 @@ impl MemCtx {
     pub fn direct_readable_region(
         &self,
         region: &GuestRegion,
-    ) -> Option<SubMapping> {
+    ) -> Option<SubMapping<'_>> {
         let (_guest_map, seg_map) = self.region_mappings(region.0, region.1)?;
         Some(seg_map.constrain_access(Prot::READ))
     }
@@ -995,7 +1004,7 @@ impl MemCtx {
         &self,
         addr: GuestAddr,
         len: usize,
-    ) -> Option<(SubMapping, SubMapping)> {
+    ) -> Option<(SubMapping<'_>, SubMapping<'_>)> {
         let start = addr.0 as usize;
         let end = start + len;
         let guard = self.map.lock().unwrap();
@@ -1031,7 +1040,7 @@ impl MemCtx {
         addr: GuestAddr,
         len: usize,
         req_prot: Prot,
-    ) -> Option<SubMapping> {
+    ) -> Option<SubMapping<'_>> {
         let (guest_map, _seg_map) = self.region_mappings(addr, len)?;
         // Although this protection check could be considered redundant with the
         // permissions on the mapping itself, performing it here allows

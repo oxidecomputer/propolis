@@ -241,7 +241,7 @@ impl RamFb {
         Spec::try_from(&state.config)
     }
 
-    pub fn updated_since(&self, when: Instant) -> UpdatedSince {
+    pub fn updated_since(&self, when: Instant) -> UpdatedSince<'_> {
         UpdatedSince {
             ramfb: self,
             notified: self.notify.notified(),
@@ -325,7 +325,7 @@ impl Lifecycle for RamFb {
     fn type_name(&self) -> &'static str {
         "qemu-ramfb"
     }
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         Migrator::Single(self)
     }
 }

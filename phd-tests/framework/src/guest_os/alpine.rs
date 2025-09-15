@@ -9,7 +9,7 @@ use super::{CommandSequence, CommandSequenceEntry, GuestOs};
 pub(super) struct Alpine;
 
 impl GuestOs for Alpine {
-    fn get_login_sequence(&self) -> CommandSequence {
+    fn get_login_sequence(&self) -> CommandSequence<'_> {
         CommandSequence(vec![
             CommandSequenceEntry::wait_for("localhost login: "),
             CommandSequenceEntry::write_str("root"),
@@ -33,7 +33,7 @@ impl GuestOs for Alpine {
         )
     }
 
-    fn graceful_reboot(&self) -> CommandSequence {
+    fn graceful_reboot(&self) -> CommandSequence<'_> {
         // For Alpine guests we've looked at, `reboot` kicks off OpenRC behavior
         // to reboot the system. We *could* wait for a new shell prompt at this
         // point, but it's more reliable to wait for a guest to have fully

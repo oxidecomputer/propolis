@@ -276,7 +276,7 @@ impl Lifecycle for I440FxHostBridge {
     fn reset(&self) {
         self.pci_state.reset(self);
     }
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         Migrator::Multi(self)
     }
 }
@@ -482,7 +482,7 @@ impl Lifecycle for Piix3Lpc {
     fn reset(&self) {
         self.pci_state.reset(self);
     }
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         Migrator::Multi(self)
     }
 }
@@ -1008,7 +1008,7 @@ impl Lifecycle for Piix3PM {
     fn start(&self) -> anyhow::Result<()> {
         self.pmtimer.start()
     }
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         Migrator::Multi(self)
     }
 }

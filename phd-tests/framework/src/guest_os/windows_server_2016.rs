@@ -22,7 +22,7 @@ use super::{
 pub(super) struct WindowsServer2016;
 
 impl GuestOs for WindowsServer2016 {
-    fn get_login_sequence(&self) -> CommandSequence {
+    fn get_login_sequence(&self) -> CommandSequence<'_> {
         super::windows::get_login_sequence_for(GuestOsKind::WindowsServer2016)
     }
 
@@ -41,7 +41,7 @@ impl GuestOs for WindowsServer2016 {
         )
     }
 
-    fn graceful_reboot(&self) -> CommandSequence {
+    fn graceful_reboot(&self) -> CommandSequence<'_> {
         self.shell_command_sequence("shutdown /r /t 0 /d p:0:0")
     }
 }

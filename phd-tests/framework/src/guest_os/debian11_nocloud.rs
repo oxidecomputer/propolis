@@ -9,7 +9,7 @@ use super::{CommandSequence, CommandSequenceEntry, GuestOs};
 pub(super) struct Debian11NoCloud;
 
 impl GuestOs for Debian11NoCloud {
-    fn get_login_sequence(&self) -> CommandSequence {
+    fn get_login_sequence(&self) -> CommandSequence<'_> {
         CommandSequence(vec![
             CommandSequenceEntry::wait_for("debian login: "),
             CommandSequenceEntry::write_str("root"),
@@ -26,7 +26,7 @@ impl GuestOs for Debian11NoCloud {
         false
     }
 
-    fn graceful_reboot(&self) -> CommandSequence {
+    fn graceful_reboot(&self) -> CommandSequence<'_> {
         // On Debian 11, `reboot` does not seem to be the same wrapper for
         // `systemctl reboot` as it is on more recent Ubuntu. Whatever it *is*,
         // it does its job before a new prompt line is printed, so we can only

@@ -535,7 +535,7 @@ impl<T> Accessor<T> {
     ///
     /// Will return [None] if any ancestor node disables access, or if the node
     /// is not attached to a hierarchy containing a valid resource.
-    pub fn access(&self) -> Option<Guard<T>> {
+    pub fn access(&self) -> Option<Guard<'_, T>> {
         self.0.guard()
     }
 

@@ -22,7 +22,7 @@ impl Lifecycle for BhyveIoApic {
     fn type_name(&self) -> &'static str {
         "lpc-bhyve-ioapic"
     }
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         Migrator::Multi(self)
     }
 }

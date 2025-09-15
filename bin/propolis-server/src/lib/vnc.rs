@@ -185,7 +185,7 @@ impl VncServer {
         client.id.take();
         self.notify.notify_one();
     }
-    async fn wait_client_gone(&self) -> MutexGuard<Client> {
+    async fn wait_client_gone(&self) -> MutexGuard<'_, Client> {
         loop {
             {
                 let mut client = self.client.lock().unwrap();

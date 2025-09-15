@@ -463,7 +463,11 @@ impl VmmHdl {
         )
     }
 
-    pub fn data_op(&self, class: u16, version: u16) -> bhyve_api::VmmDataOp {
+    pub fn data_op(
+        &self,
+        class: u16,
+        version: u16,
+    ) -> bhyve_api::VmmDataOp<'_> {
         self.inner.data_op(class, version)
     }
 }

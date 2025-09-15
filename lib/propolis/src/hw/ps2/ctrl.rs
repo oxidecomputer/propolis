@@ -602,7 +602,7 @@ impl Lifecycle for PS2Ctrl {
     fn reset(&self) {
         PS2Ctrl::reset(self);
     }
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         Migrator::Single(self)
     }
 }

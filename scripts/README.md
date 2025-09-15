@@ -13,3 +13,4 @@ individual files for details.
   of a live migration.
 - `vm_exit_codes.d`: Measure VM exits and information about them both for
   #VMEXIT events and returns to Propolis.
+- `cpuid-queries.d`: Report guest CPUID queries and returned leaves.

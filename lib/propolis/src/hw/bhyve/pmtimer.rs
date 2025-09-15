@@ -67,7 +67,7 @@ impl Lifecycle for BhyvePmTimer {
         self.update_attachment();
         Ok(())
     }
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         Migrator::Multi(self)
     }
 }

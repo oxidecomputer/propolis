@@ -22,7 +22,7 @@ impl Lifecycle for BhyveHpet {
     fn type_name(&self) -> &'static str {
         "lpc-bhyve-hpet"
     }
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         Migrator::Single(self)
     }
 }

@@ -117,7 +117,7 @@ impl Lifecycle for BhyveRtc {
     fn type_name(&self) -> &'static str {
         "lpc-bhyve-rtc"
     }
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         Migrator::Multi(self)
     }
 }

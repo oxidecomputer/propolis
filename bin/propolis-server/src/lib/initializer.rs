@@ -53,6 +53,10 @@ use slog::info;
 use strum::IntoEnumIterator;
 use thiserror::Error;
 
+// XXX: completely arb for now
+const MAX_FILE_WORKERS: usize = 32;
+const DEFAULT_WORKER_COUNT: usize = 8;
+
 /// An error that can arise while initializing a new machine.
 #[derive(Debug, Error)]
 pub enum MachineInitError {
@@ -538,11 +542,28 @@ impl MachineInitializer<'_> {
                     );
                 }
 
-                let nworkers = NonZeroUsize::new(8).unwrap();
+                let nworkers: NonZeroUsize = match spec.workers {
+                    Some(workers) => {
+                        if workers.get() <= MAX_FILE_WORKERS {
+                            workers
+                        } else {
+                            slog::warn!(
+                                self.log,
+                                "workers must be between 1 and {} \
+                                    Using default value of {}.",
+                                MAX_FILE_WORKERS,
+                                DEFAULT_WORKER_COUNT
+                            );
+                            NonZeroUsize::new(DEFAULT_WORKER_COUNT).unwrap()
+                        }
+                    }
+                    None => NonZeroUsize::new(DEFAULT_WORKER_COUNT).unwrap(),
+                };
                 let be = propolis::block::FileBackend::create(
                     &spec.path,
                     propolis::block::BackendOpts {
                         read_only: Some(spec.readonly),
+                        block_size: Some(spec.block_size),
                         ..Default::default()
                     },
                     nworkers,
@@ -758,16 +779,16 @@ impl MachineInitializer<'_> {
                 >= virtio::viona::ApiVersion::V3
             {
                 Some(virtio::viona::DeviceParams {
-                    // Allocate and copy entire packets, rather than loaning
-                    // guest data during transmission.
-                    copy_data: true,
+                    // Loan guest packet data, rather than allocating fresh
+                    // buffers and copying it.
+                    copy_data: false,
                     // Leave room for underlay encapsulation:
                     // - ethernet: 14
                     // - IPv6: 40
                     // - UDP: 8
-                    // - Geneve: 8
+                    // - Geneve: 8–16 (due to options)
                     // - (and then round up to nearest 8)
-                    header_pad: 72,
+                    header_pad: 80,
                 })
             } else {
                 None

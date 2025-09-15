@@ -58,7 +58,7 @@ impl Lifecycle for MigrationFailureDevice {
     fn type_name(&self) -> &'static str {
         MigrationFailureDevice::NAME
     }
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         Migrator::Single(self)
     }
 }

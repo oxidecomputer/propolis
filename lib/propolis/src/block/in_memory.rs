@@ -252,7 +252,7 @@ impl Lifecycle for InMemoryBackend {
         "in-memory-storage"
     }
 
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         Migrator::Single(self)
     }
 }

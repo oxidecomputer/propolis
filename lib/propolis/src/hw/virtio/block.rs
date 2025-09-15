@@ -321,7 +321,7 @@ impl Lifecycle for PciVirtioBlock {
     fn paused(&self) -> BoxFuture<'static, ()> {
         Box::pin(self.block_tracking.none_outstanding())
     }
-    fn migrate(&self) -> Migrator {
+    fn migrate(&self) -> Migrator<'_> {
         Migrator::Multi(self)
     }
 }
