@@ -151,7 +151,7 @@ impl CpuidMap {
 
     /// Check if a leaf is present, either as a sole entry or with subleaves.
     pub fn contains_leaf(&self, leaf: u32) -> bool {
-        self.0.get(&leaf).is_some()
+        self.0.contains_key(&leaf)
     }
 
     fn insert_leaf_no_subleaf(

@@ -3,13 +3,13 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
+use itertools::Itertools;
 use phd_framework::{test_vm::MigrationTimeout, TestVm};
 use phd_testcase::*;
 use propolis_client::{
     instance_spec::{CpuidEntry, VersionedInstanceSpec},
     types::InstanceSpecStatus,
 };
-use itertools::Itertools;
 use tracing::info;
 use uuid::Uuid;
 
@@ -170,7 +170,7 @@ async fn cpuid_migrate_smoke_test(ctx: &Framework) {
 }
 
 struct LinuxGuestTopo<'a> {
-    vm: &'a TestVm
+    vm: &'a TestVm,
 }
 
 impl<'a> LinuxGuestTopo<'a> {
@@ -179,27 +179,35 @@ impl<'a> LinuxGuestTopo<'a> {
     }
 
     async fn new(vm: &'a TestVm) -> Self {
-        let this = Self {
-            vm
-        };
+        let this = Self { vm };
         // Expect Linux numbers CPUs as 0 through vCPU-1 (inclusive).
         //
         // cpu0 should always exist (if it does not, /sys/devices/system is not
         // what we expect), and cpu<vCPU> should not (if it does, again,
         // /sys/devices/system is not what we expect).
-        let out = this.vm.run_shell_command(
-            &format!("ls {}", Self::cpu_stem(0))).await.expect("can run ls of a directory that exists");
+        let out = this
+            .vm
+            .run_shell_command(&format!("ls {}", Self::cpu_stem(0)))
+            .await
+            .expect("can run ls of a directory that exists");
         assert!(out.contains("thread_siblings"));
 
-        let out = this.vm.run_shell_command(
-            &format!("ls {}", Self::cpu_stem(this.cpus().await))).await.expect("can run ls of a directory that doesn't exist");
+        let out = this
+            .vm
+            .run_shell_command(&format!(
+                "ls {}",
+                Self::cpu_stem(this.cpus().await)
+            ))
+            .await
+            .expect("can run ls of a directory that doesn't exist");
         assert!(out.contains("No such file or directory"));
 
         this
     }
 
     async fn cpus(&self) -> u8 {
-        let spec_get_response = self.vm.get_spec().await.expect("can get the instance's spec back");
+        let spec_get_response =
+            self.vm.get_spec().await.expect("can get the instance's spec back");
         let InstanceSpecStatus::Present(VersionedInstanceSpec::V0(spec)) =
             spec_get_response.spec
         else {
@@ -209,16 +217,22 @@ impl<'a> LinuxGuestTopo<'a> {
         spec.board.cpus
     }
 
-    async fn physical_package_ids(&self) -> impl Iterator<Item=u32> {
+    async fn physical_package_ids(&self) -> impl Iterator<Item = u32> {
         let mut result = Vec::new();
         for cpu_num in 0..self.cpus().await {
-            let out = self.vm.run_shell_command(
-                &format!("cat {}/physical_package_id", Self::cpu_stem(cpu_num))
-            ).await.expect("can get cores' physical package ID");
+            let out = self
+                .vm
+                .run_shell_command(&format!(
+                    "cat {}/physical_package_id",
+                    Self::cpu_stem(cpu_num)
+                ))
+                .await
+                .expect("can get cores' physical package ID");
             // Linux' `Documentation/API/stable/sysfs-devices-system-cpu` says
             // this is "integer" but drivers/base/topology.c says it is "%d"
             // specifically.
-            result.push(u32::from_str_radix(&out, 10).expect("physical package id parses"));
+            result
+                .push(out.parse::<u32>().expect("physical package id parses"));
         }
         result.into_iter()
     }
@@ -231,12 +245,17 @@ impl<'a> LinuxGuestTopo<'a> {
     /// for a 256-vCPU guest. So use `String` here instead of parsing into a
     /// numeric type so at least this "just works" when we get to larger core
     /// counts.
-    async fn thread_siblings(&self) -> impl Iterator<Item=String> {
+    async fn thread_siblings(&self) -> impl Iterator<Item = String> {
         let mut result = Vec::new();
         for cpu_num in 0..self.cpus().await {
-            let out = self.vm.run_shell_command(
-                &format!("cat {}/thread_siblings", Self::cpu_stem(cpu_num))
-            ).await.expect("can get thread siblings of a core that exists");
+            let out = self
+                .vm
+                .run_shell_command(&format!(
+                    "cat {}/thread_siblings",
+                    Self::cpu_stem(cpu_num)
+                ))
+                .await
+                .expect("can get thread siblings of a core that exists");
             let out = out.trim();
             // Linux' `Documentation/API/stable/sysfs-devices-system-cpu` says
             // this is "hexadecimal bitmask." This is kept a string for reasons

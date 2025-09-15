@@ -23,7 +23,6 @@ use tokio::runtime;
 
 use propolis::chardev::{BlockingSource, Sink, Source, UDSock};
 use propolis::common::{GB, MB};
-use propolis::cpuid::TopoKind;
 use propolis::firmware::smbios;
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ps2::ctrl::PS2Ctrl;
@@ -1387,35 +1386,6 @@ fn setup_instance(
 
     for vcpu in machine.vcpus.iter() {
         let vcpu_profile = if let Some(profile) = cpuid_profile.as_ref() {
-            static UNSUPPORTED_TOPO: &[TopoKind] = &[
-                // We shouldn't try producing specialized StdB leaves yet: if a
-                // guest has an odd number of vCPUs and we're asked to indicate
-                // SMT is present, the specializer produces a somewhat bogus
-                // topology including a core with cache shared between two
-                // processors where the second processor is missing. Guests (at
-                // least, Linux) seems to tolerate this by giving up and saying
-                // all processors are threads on the same single processor core.
-                // Other guests' behavior is untested.
-                TopoKind::StdB,
-                // `fix_cpu_topo` doesn't know how to produce specialized leaf
-                // 1Fh entries yet.
-                TopoKind::Std1F,
-                // `fix_cpu_topo` doesn't know how to produce specialized leaf
-                // 8000_001Eh entries yet.
-                TopoKind::Ext1E,
-            ];
-
-            let mut leaves_to_fix = Vec::new();
-            for kind in TopoKind::iter() {
-                let has_leaf = set.get(CpuidIdent::leaf(kind as u32)).is_some();
-                let has_subleaf =
-                    set.get(CpuidIdent::subleaf(kind as u32, 0)).is_some();
-                let any_present = has_leaf || has_subleaf;
-                if any_present && !UNSUPPORTED_TOPO.contains(&kind) {
-                    leaves_to_fix.push(kind);
-                }
-            }
-
             propolis::cpuid::Specializer::new()
                 .with_vcpu_count(
                     std::num::NonZeroU8::new(config.main.cpus).unwrap(),

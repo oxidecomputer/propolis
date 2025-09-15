@@ -277,8 +277,8 @@ impl Specializer {
                             leaf: 4,
                             num_vcpu,
                             why: Some(
-                                "Cannot specialize CPUID leaf 4 for 0 vproc VM"
-                            )
+                                "Cannot specialize CPUID leaf 4 for 0 vproc VM",
+                            ),
                         });
                     }
 
@@ -435,7 +435,9 @@ impl Specializer {
 }
 
 /// Flavors of CPU topology information
-#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, strum::EnumIter)]
+#[derive(
+    Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, strum::EnumIter,
+)]
 pub enum TopoKind {
     /// Leaf 0x4 (legacy Intel cache topology with some CPU information)
     Std4 = 0x4,
