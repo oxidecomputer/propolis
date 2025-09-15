@@ -1316,7 +1316,7 @@ impl MachineInitializer<'_> {
                 .with_vcpuid(vcpu.id)
                 .with_cache_topo()
                 .clear_cpu_topo(TopoKind::iter())
-                .with_cpu_topo(cpu_topo_leaves)
+                .with_cpu_topo(cpu_topo_leaves.into_iter())
                 .execute(set)
                 .map_err(|e| {
                     MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
