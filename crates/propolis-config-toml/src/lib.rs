@@ -10,7 +10,9 @@ use std::str::FromStr;
 use serde_derive::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub use cpuid_profile_config::CpuidProfile;
+pub use cpuid_profile_config::{
+    CpuVendor, CpuidEntry, CpuidParseError, CpuidProfile,
+};
 
 pub mod spec;
 
