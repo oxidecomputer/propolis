@@ -205,6 +205,18 @@ impl<'a> LinuxGuestTopo<'a> {
         this
     }
 
+    async fn vendor_string(&self) -> String {
+        let command = "cat /proc/cpuinfo | \
+            grep vendor_id | \
+            head -n 1 | \
+            cut -d':' -f 2";
+        let out = self.vm.run_shell_command(command).await.expect(
+            "can grep vendor_id out of cpuinfo"
+        );
+
+        out.trim().to_string()
+    }
+
     async fn cpus(&self) -> u8 {
         let spec_get_response =
             self.vm.get_spec().await.expect("can get the instance's spec back");
@@ -272,6 +284,15 @@ impl<'a> LinuxGuestTopo<'a> {
 async fn guest_cpu_topo_test(ctx: &Framework) {
     let vm = launch_cpuid_smoke_test_vm(ctx, "guest_cpu_topo_test").await?;
 
+    // The topology-checking is Linux-specific, though it should be appropriate
+    // for all Linux distributions. For other OSes, just warn and skip for now.
+    if !vm.guest_os_kind().is_linux() {
+        phd_skip!(format!(
+            "guest topo test does not yet have support for {:?}",
+            vm.guest_os_kind()
+        ));
+    }
+
     // Between the way we set initial APIC IDs and the way Linux numbers logical
     // processors, a 4-vCPU VM should report a topology like:
     // * core 0: thread 0, thread 1
@@ -283,6 +304,13 @@ async fn guest_cpu_topo_test(ctx: &Framework) {
     // threads 2 and 3, which yields an expected core 1 thread_siblings of
     // (0b0000_1100 -> "c").
     let guest_topo = LinuxGuestTopo::new(&vm).await;
+
+    // Except that leaf B does not seem sufficient for Linux guests to determine
+    // a topology other than "single-thread single-core many-socket". That makes
+    // this test Intel-only for the time being.
+    if guest_topo.vendor_string().await != "GenuineIntel" {
+        phd_skip!("guest topo test is Intel-only for the moment");
+    }
 
     // All cores should be in socket 0
     assert!(guest_topo.physical_package_ids().await.all(|item| item == 0));

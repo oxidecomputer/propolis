@@ -210,17 +210,22 @@ impl Specializer {
         // of sibling threads on vproc-many processors.
         let num_vproc = if self.has_smt {
             // If vCPUs are not even but we're asked to indicate SMT, we'll have
-            // one leftover core which won't have an SMT sibling. Reject this
-            // situation outright for the time being.
-            if num_vcpu % 2 != 0 {
-                return Err(SpecializeError::IncompatibleTopology {
-                    leaf: 0,
-                    num_vcpu,
-                    why: Some("Can't have SMT and odd vCPU count!"),
-                });
+            // one leftover core which won't have an SMT sibling. We should
+            // reject this situation, but we're in a bit of a pickle: guests are
+            // set up with `has_smt: true`, with no even-vCPUs constraint, which
+            // seems to have been OK in practice due to #940.
+            //
+            // One remaining question here is: what topology information is
+            // communicated for a single-processor system?  There have not been
+            // single-processor x86 systems since at *least* Zen, so there's no
+            // hardware to compare against here.
+            if num_vcpu == 1 {
+                // Round up to one virtual processor and hope that guest OSes
+                // handle this cleanly.
+                1
+            } else {
+                num_vcpu >> 1
             }
-
-            num_vcpu >> 1
         } else {
             num_vcpu
         };
