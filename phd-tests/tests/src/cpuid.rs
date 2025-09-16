@@ -210,9 +210,11 @@ impl<'a> LinuxGuestTopo<'a> {
             grep vendor_id | \
             head -n 1 | \
             cut -d':' -f 2";
-        let out = self.vm.run_shell_command(command).await.expect(
-            "can grep vendor_id out of cpuinfo"
-        );
+        let out = self
+            .vm
+            .run_shell_command(command)
+            .await
+            .expect("can grep vendor_id out of cpuinfo");
 
         out.trim().to_string()
     }
