@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::{
     bits::{
         AmdExtLeaf1DCacheType, AmdExtLeaf1DEax, Leaf1Ecx, Leaf7Sub0Ebx,
-        EXTENDED_BASE_LEAF, STANDARD_BASE_LEAF,
+        EXTENDED_BASE_LEAF, MAX_REASONABLE_SUBLEAVES, STANDARD_BASE_LEAF,
     },
     CpuidMapInsertError, CpuidSet,
 };
@@ -119,8 +119,6 @@ fn collect_cpuid(
             // subleaves but we'll gather them until there an unreasonable
             // number or we find an invalid leaf.
             0x4 => {
-                const MAX_REASONABLE_SUBLEAVES: u32 = 0x20;
-
                 for i in 0..MAX_REASONABLE_SUBLEAVES {
                     let data = query(leaf, i)?;
                     if data.eax & 0x1f == 0 {
@@ -209,8 +207,6 @@ fn collect_cpuid(
             // (at least on Ice Lake).
             0x18 => {
                 let top_subleaf = query(leaf, 0)?;
-
-                const MAX_REASONABLE_SUBLEAVES: u32 = 0x20;
 
                 let limit =
                     std::cmp::min(MAX_REASONABLE_SUBLEAVES, top_subleaf.eax);

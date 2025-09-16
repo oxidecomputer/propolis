@@ -12,6 +12,14 @@ pub const STANDARD_BASE_LEAF: u32 = 0;
 pub const HYPERVISOR_BASE_LEAF: u32 = 0x4000_0000;
 pub const EXTENDED_BASE_LEAF: u32 = 0x8000_0000;
 
+/// For leaves with subleaves we don't know ahead of time how many subleaves
+/// *are* present. In some cases the top subleaf indicates the maximum subleaf,
+/// in other cases there is a leaf-specific maximum described in manuals or
+/// implicitly by a sentinel bit pattern. In all cases, we'll use this limit as
+/// a backstop so that bogus CPUID leaves don't have us copy gigabytes of
+/// subleaves around.
+pub const MAX_REASONABLE_SUBLEAVES: u32 = 0x20;
+
 bitflags::bitflags! {
     /// Leaf 1 ecx: instruction feature identifiers.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]

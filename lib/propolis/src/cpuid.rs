@@ -275,7 +275,7 @@ impl Specializer {
                     // bail out here and demand someone take a look.
                     if num_vproc >= 0b100_0000 {
                         return Err(SpecializeError::IncompatibleTopology {
-                            leaf: 4,
+                            leaf,
                             num_vcpu,
                             why: Some(
                                 "Don't know how to set CPUID leaf 4 processor \
@@ -284,10 +284,11 @@ impl Specializer {
                         });
                     } else if num_vproc == 0 {
                         return Err(SpecializeError::IncompatibleTopology {
-                            leaf: 4,
+                            leaf,
                             num_vcpu,
                             why: Some(
-                                "Cannot specialize CPUID leaf 4 for 0 vproc VM",
+                                "Cannot specialize CPUID leaf 4 \
+                                 for 0 processor VM",
                             ),
                         });
                     }
@@ -295,17 +296,22 @@ impl Specializer {
                     // Cache types come in any order, but type 0 means there are
                     // no more caches, so iterate and adjust as needed until we
                     // see that.
-                    const MAX_REASONABLE_LEVEL: u32 = 0x20;
-                    for i in 0..32 {
-                        let leaf = set.get(CpuidIdent::subleaf(4, i)).cloned();
-                        let Some(mut leaf) = leaf else {
+                    for i in 0..cpuid_utils::bits::MAX_REASONABLE_SUBLEAVES {
+                        let subleaf = set.get_mut(CpuidIdent::subleaf(4, i));
+                        let Some(mut subleaf) = subleaf else {
                             // We've reached the end of provided subleaves, so
                             // we're done here.
                             break;
                         };
 
-                        let ty = leaf.eax & 0b11111;
-                        let level = (leaf.eax >> 5) & 0b111;
+                        const LEAF4_EAX_CACHE_TYPE: u32 = 0x00_00_00_1f;
+                        const LEAF4_EAX_CACHE_LEVEL: u32 = 0x00_00_00_e0;
+                        // EAX bits 13-8 are reserved or not consulted here.
+                        const LEAF4_EAX_VCPU_MASK: u32 = 0x03_ff_c0_00;
+                        const LEAF4_EAX_VPROC_MASK: u32 = 0xfc_00_00_00;
+
+                        let ty = subleaf.eax & LEAF4_EAX_CACHE_TYPE;
+                        let level = (subleaf.eax & LEAF4_EAX_CACHE_LEVEL) >> 5;
 
                         if ty == 0 {
                             // "Null" cache. This is not a cache, and there are
@@ -313,38 +319,33 @@ impl Specializer {
                             break;
                         }
 
-                        const LEAF4_EAX_VPROC_MASK: u32 = 0xfc_00_00_00;
-                        const LEAF4_EAX_VCPU_MASK: u32 = 0x03_ff_c0_00;
                         // Zero out the prior processor core count.
-                        leaf.eax &= !LEAF4_EAX_VPROC_MASK;
+                        subleaf.eax &= !LEAF4_EAX_VPROC_MASK;
                         // The processor count is encoded as one less than the
                         // real count (e.g. 0x3f is 64 processors, 0x00 is 1
                         // processor)
-                        leaf.eax |= (num_vproc - 1) << 26;
+                        subleaf.eax |= (num_vproc - 1) << 26;
 
                         // Present L1 and L2 caches as per-thread, L3 is across
                         // the whole VM.
                         if level < 3 {
-                            leaf.eax &= !LEAF4_EAX_VCPU_MASK;
+                            subleaf.eax &= !LEAF4_EAX_VCPU_MASK;
                             // And leave that range 0: this means only one
                             // vCPU shares the cache.
                         } else {
-                            leaf.eax &= !LEAF4_EAX_VCPU_MASK;
+                            subleaf.eax &= !LEAF4_EAX_VCPU_MASK;
                             let shifted_vcpu = (num_vcpu - 1) << 14;
                             if shifted_vcpu & !LEAF4_EAX_VCPU_MASK != 0 {
                                 return Err(
                                     SpecializeError::IncompatibleTopology {
-                                        leaf: 4,
+                                        leaf,
                                         num_vcpu,
                                         why: Some("too many vCPUs"),
                                     },
                                 );
                             }
-                            leaf.eax |= shifted_vcpu;
+                            subleaf.eax |= shifted_vcpu;
                         }
-
-                        set.insert(CpuidIdent::subleaf(4, i), leaf)
-                            .expect("can put the leaf back where we got it");
                     }
                 }
                 TopoKind::StdB => {
@@ -383,7 +384,7 @@ impl Specializer {
                         // disabled SMT siblings? Whatever hardware does here is
                         // least likely to surprise guest OSes.
                         return Err(SpecializeError::IncompatibleTopology {
-                            leaf: 0xB,
+                            leaf,
                             num_vcpu,
                             why: Some("Leaf B.1 would have EAX=0"),
                         });
@@ -399,7 +400,7 @@ impl Specializer {
                     // that point.
                     if num_vcpu >= 256 {
                         return Err(SpecializeError::IncompatibleTopology {
-                            leaf: 4,
+                            leaf,
                             num_vcpu,
                             why: Some(
                                 "Don't know how to specialize CPUID leaf \
@@ -463,10 +464,10 @@ impl TopoKind {
     /// Return an iterator of the CPU topology information that Propolis
     /// supports specializing. This is intended as a "reasonable default" for
     /// CPUID profile specialization.
-    pub fn supported() -> std::iter::Cloned<std::slice::Iter<'static, Self>> {
+    pub fn supported() -> std::array::IntoIter<Self, 2> {
         // Topology leaves 1Fh and 8000_001E are partially or entirely TODO, so
         // we can't specialize them.
-        [TopoKind::Std4, TopoKind::StdB].as_slice().into_iter().cloned()
+        [TopoKind::Std4, TopoKind::StdB].into_iter()
     }
 }
 

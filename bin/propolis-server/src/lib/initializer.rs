@@ -1302,11 +1302,11 @@ impl MachineInitializer<'_> {
             // The initial CPU platform defined in Nexus (Omicron#8728) hews to
             // the pre-specialization topology, which won't have leaf B at all.
             // Before that is sent, though, we'll see the present-but-zero
-            // leaves from Bhyve, which we would happily specialize into
+            // leaves from bhyve, which we would happily specialize into
             // something reflecting the guest if requested here. Once
             // Omicron#8728 lands and propolis-server receives explicit CPUID
             // profiles, we can add AMD leaves here too.
-            let cpu_topo_leaves = vec![TopoKind::Std4];
+            let cpu_topo_leaves = [TopoKind::Std4];
 
             let specialized = propolis::cpuid::Specializer::new()
                 .with_vcpu_count(
