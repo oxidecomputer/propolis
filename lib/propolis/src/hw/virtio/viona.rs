@@ -156,7 +156,8 @@ pub struct PciVirtioViona {
 impl PciVirtioViona {
     pub fn new(
         vnic_name: &str,
-        queue_size: u16,
+        rx_queue_size: NonZeroU16,
+        tx_queue_size: NonZeroU16,
         vm: &VmmHdl,
         viona_params: Option<DeviceParams>,
     ) -> io::Result<Arc<PciVirtioViona>> {
@@ -178,8 +179,6 @@ impl PciVirtioViona {
             vp.set(&hdl)?;
         }
 
-        // TX and RX
-        let queue_count = NonZeroU16::new(2).unwrap();
         // interrupts for TX, RX, and device config
         let msix_count = Some(3);
         let dev_features = hdl.get_avail_features()?;
@@ -197,8 +196,11 @@ impl PciVirtioViona {
             }
         }
 
-        let queues =
-            VirtQueues::new(NonZeroU16::new(queue_size).unwrap(), queue_count);
+        let queues = VirtQueues::new(
+            [rx_queue_size, tx_queue_size]
+                .map(|sz| VirtQueue::new(sz.try_into().unwrap())),
+        )
+        .unwrap();
         let (virtio_state, pci_state) = PciVirtioState::create(
             queues,
             msix_count,
@@ -331,7 +333,7 @@ impl PciVirtioViona {
             *rs = VRingState::Init;
             let info = vq.get_state();
             if info.mapping.valid {
-                if self.hdl.ring_set_state(vq.id, vq.size, &info).is_err() {
+                if self.hdl.ring_set_state(vq.id, vq.size(), &info).is_err() {
                     *rs = VRingState::Error;
                     continue;
                 }
@@ -483,7 +485,7 @@ impl VirtioDevice for PciVirtioViona {
 
                 if self
                     .hdl
-                    .ring_init(vq.id, vq.size, info.mapping.desc_addr)
+                    .ring_init(vq.id, vq.size(), info.mapping.desc_addr)
                     .is_err()
                 {
                     // Bad virtqueue configuration is not fatal.  While the
