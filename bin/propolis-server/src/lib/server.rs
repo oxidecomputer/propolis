@@ -27,9 +27,9 @@ use crate::{
 };
 
 use dropshot::{
-    channel, endpoint, ApiDescription, ClientErrorStatusCode, HttpError,
-    HttpResponseCreated, HttpResponseOk, HttpResponseUpdatedNoContent, Path,
-    Query, RequestContext, TypedBody, WebsocketConnection,
+    ApiDescription, ClientErrorStatusCode, HttpError, HttpResponseCreated,
+    HttpResponseOk, HttpResponseUpdatedNoContent, Path, Query, RequestContext,
+    TypedBody, WebsocketConnection,
 };
 use futures::SinkExt;
 use internal_dns_resolver::{ResolveError, Resolver};
@@ -39,6 +39,7 @@ use oximeter::types::ProducerRegistry;
 use propolis_api_types as api;
 use propolis_api_types::instance_spec::SpecKey;
 use propolis_api_types::InstanceInitializationMethod;
+use propolis_server_api::PropolisServerApi;
 use rfb::tungstenite::BinaryWs;
 use slog::{error, warn, Logger};
 use tokio::sync::MutexGuard;
@@ -189,91 +190,6 @@ async fn find_local_nexus_client(
     }
 }
 
-#[endpoint {
-    method = PUT,
-    path = "/instance",
-}]
-async fn instance_ensure(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    request: TypedBody<api::InstanceEnsureRequest>,
-) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError> {
-    let server_context = rqctx.context();
-    let api::InstanceEnsureRequest { properties, init } = request.into_inner();
-    let oximeter_registry = server_context
-        .static_config
-        .metrics
-        .as_ref()
-        .map(|_| ProducerRegistry::with_id(properties.id));
-
-    let nexus_client =
-        find_local_nexus_client(rqctx.server.local_addr, rqctx.log.clone())
-            .await;
-
-    let ensure_options = crate::vm::EnsureOptions {
-        bootrom_path: server_context.static_config.bootrom_path.clone(),
-        bootrom_version: server_context.static_config.bootrom_version.clone(),
-        use_reservoir: server_context.static_config.use_reservoir,
-        metrics_config: server_context.static_config.metrics.clone(),
-        oximeter_registry,
-        nexus_client,
-        vnc_server: server_context.vnc_server.clone(),
-        local_server_addr: rqctx.server.local_addr,
-    };
-
-    let vm_init = match init {
-        InstanceInitializationMethod::Spec { spec } => spec
-            .try_into()
-            .map(|s| VmInitializationMethod::Spec(Box::new(s)))
-            .map_err(|e| {
-                if let Some(s) = e.source() {
-                    format!("{e}: {s}")
-                } else {
-                    e.to_string()
-                }
-            }),
-        InstanceInitializationMethod::MigrationTarget {
-            migration_id,
-            src_addr,
-            replace_components,
-        } => Ok(VmInitializationMethod::Migration(MigrationTargetInfo {
-            migration_id,
-            src_addr,
-            replace_components,
-        })),
-    }
-    .map_err(|e| {
-        HttpError::for_bad_request(
-            None,
-            format!("failed to generate internal instance spec: {e}"),
-        )
-    })?;
-
-    let request = VmEnsureRequest { properties, init: vm_init };
-    server_context
-        .vm
-        .ensure(&server_context.log, request, ensure_options)
-        .await
-        .map(HttpResponseCreated)
-        .map_err(|e| match e {
-            VmError::ResultChannelClosed => HttpError::for_internal_error(
-                "state driver unexpectedly dropped result channel".to_string(),
-            ),
-            VmError::WaitingToInitialize
-            | VmError::AlreadyInitialized
-            | VmError::RundownInProgress => HttpError::for_client_error(
-                Some(api::ErrorCode::AlreadyInitialized.to_string()),
-                ClientErrorStatusCode::CONFLICT,
-                "instance already initialized".to_string(),
-            ),
-            VmError::InitializationFailed(e) => HttpError::for_internal_error(
-                format!("VM initialization failed: {e}"),
-            ),
-            _ => HttpError::for_internal_error(format!(
-                "unexpected error from VM controller: {e}"
-            )),
-        })
-}
-
 async fn instance_get_common(
     rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<api::InstanceSpecGetResponse, HttpError> {
@@ -281,87 +197,402 @@ async fn instance_get_common(
     ctx.vm.get().await.ok_or_else(not_created_error)
 }
 
-#[endpoint {
-    method = GET,
-    path = "/instance/spec",
-}]
-async fn instance_spec_get(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-) -> Result<HttpResponseOk<api::InstanceSpecGetResponse>, HttpError> {
-    Ok(HttpResponseOk(instance_get_common(&rqctx).await?))
-}
+enum PropolisServerImpl {}
 
-#[endpoint {
-    method = GET,
-    path = "/instance",
-}]
-async fn instance_get(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-) -> Result<HttpResponseOk<api::InstanceGetResponse>, HttpError> {
-    instance_get_common(&rqctx).await.map(|full| {
-        HttpResponseOk(api::InstanceGetResponse {
-            instance: api::Instance {
-                properties: full.properties,
-                state: full.state,
-            },
-        })
-    })
-}
+impl PropolisServerApi for PropolisServerImpl {
+    type Context = Arc<DropshotEndpointContext>;
 
-#[endpoint {
-    method = GET,
-    path = "/instance/state-monitor",
-}]
-async fn instance_state_monitor(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    request: TypedBody<api::InstanceStateMonitorRequest>,
-) -> Result<HttpResponseOk<api::InstanceStateMonitorResponse>, HttpError> {
-    let ctx = rqctx.context();
-    let gen = request.into_inner().gen;
-    let mut state_watcher =
-        ctx.vm.state_watcher().await.ok_or_else(not_created_error)?;
+    async fn instance_ensure(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<api::InstanceEnsureRequest>,
+    ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError>
+    {
+        let server_context = rqctx.context();
+        let api::InstanceEnsureRequest { properties, init } =
+            request.into_inner();
+        let oximeter_registry = server_context
+            .static_config
+            .metrics
+            .as_ref()
+            .map(|_| ProducerRegistry::with_id(properties.id));
 
-    loop {
-        let last = state_watcher.borrow().clone();
-        if gen <= last.gen {
-            return Ok(HttpResponseOk(last));
+        let nexus_client =
+            find_local_nexus_client(rqctx.server.local_addr, rqctx.log.clone())
+                .await;
+
+        let ensure_options = crate::vm::EnsureOptions {
+            bootrom_path: server_context.static_config.bootrom_path.clone(),
+            bootrom_version: server_context
+                .static_config
+                .bootrom_version
+                .clone(),
+            use_reservoir: server_context.static_config.use_reservoir,
+            metrics_config: server_context.static_config.metrics.clone(),
+            oximeter_registry,
+            nexus_client,
+            vnc_server: server_context.vnc_server.clone(),
+            local_server_addr: rqctx.server.local_addr,
+        };
+
+        let vm_init = match init {
+            InstanceInitializationMethod::Spec { spec } => spec
+                .try_into()
+                .map(|s| VmInitializationMethod::Spec(Box::new(s)))
+                .map_err(|e| {
+                    if let Some(s) = e.source() {
+                        format!("{e}: {s}")
+                    } else {
+                        e.to_string()
+                    }
+                }),
+            InstanceInitializationMethod::MigrationTarget {
+                migration_id,
+                src_addr,
+                replace_components,
+            } => Ok(VmInitializationMethod::Migration(MigrationTargetInfo {
+                migration_id,
+                src_addr,
+                replace_components,
+            })),
         }
-
-        // An error from `changed` indicates that the sender was destroyed,
-        // which means that the generation number will never change again, which
-        // means it will never reach the number the client wants it to reach.
-        // Inform the client of this condition so it doesn't wait forever.
-        state_watcher.changed().await.map_err(|_| {
-            HttpError::for_client_error(
-                Some(api::ErrorCode::NoInstance.to_string()),
-                ClientErrorStatusCode::GONE,
-                format!(
-                    "No instance present; will never reach generation {gen}",
-                ),
+        .map_err(|e| {
+            HttpError::for_bad_request(
+                None,
+                format!("failed to generate internal instance spec: {e}"),
             )
         })?;
-    }
-}
 
-#[endpoint {
-    method = PUT,
-    path = "/instance/state",
-}]
-async fn instance_state_put(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    request: TypedBody<api::InstanceStateRequested>,
-) -> Result<HttpResponseUpdatedNoContent, HttpError> {
-    let ctx = rqctx.context();
-    let requested_state = request.into_inner();
-    let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
-    let result = vm
-        .put_state(requested_state)
-        .map(|_| HttpResponseUpdatedNoContent {})
+        let request = VmEnsureRequest { properties, init: vm_init };
+        server_context
+            .vm
+            .ensure(&server_context.log, request, ensure_options)
+            .await
+            .map(HttpResponseCreated)
+            .map_err(|e| match e {
+                VmError::ResultChannelClosed => HttpError::for_internal_error(
+                    "state driver unexpectedly dropped result channel"
+                        .to_string(),
+                ),
+                VmError::WaitingToInitialize
+                | VmError::AlreadyInitialized
+                | VmError::RundownInProgress => HttpError::for_client_error(
+                    Some(api::ErrorCode::AlreadyInitialized.to_string()),
+                    ClientErrorStatusCode::CONFLICT,
+                    "instance already initialized".to_string(),
+                ),
+                VmError::InitializationFailed(e) => {
+                    HttpError::for_internal_error(format!(
+                        "VM initialization failed: {e}"
+                    ))
+                }
+                _ => HttpError::for_internal_error(format!(
+                    "unexpected error from VM controller: {e}"
+                )),
+            })
+    }
+
+    async fn instance_spec_get(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<HttpResponseOk<api::InstanceSpecGetResponse>, HttpError> {
+        Ok(HttpResponseOk(instance_get_common(&rqctx).await?))
+    }
+
+    async fn instance_get(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<HttpResponseOk<api::InstanceGetResponse>, HttpError> {
+        instance_get_common(&rqctx).await.map(|full| {
+            HttpResponseOk(api::InstanceGetResponse {
+                instance: api::Instance {
+                    properties: full.properties,
+                    state: full.state,
+                },
+            })
+        })
+    }
+
+    async fn instance_state_monitor(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<api::InstanceStateMonitorRequest>,
+    ) -> Result<HttpResponseOk<api::InstanceStateMonitorResponse>, HttpError>
+    {
+        let ctx = rqctx.context();
+        let gen = request.into_inner().gen;
+        let mut state_watcher =
+            ctx.vm.state_watcher().await.ok_or_else(not_created_error)?;
+
+        loop {
+            let last = state_watcher.borrow().clone();
+            if gen <= last.gen {
+                return Ok(HttpResponseOk(last));
+            }
+
+            // An error from `changed` indicates that the sender was destroyed,
+            // which means that the generation number will never change again, which
+            // means it will never reach the number the client wants it to reach.
+            // Inform the client of this condition so it doesn't wait forever.
+            state_watcher.changed().await.map_err(|_| {
+                HttpError::for_client_error(
+                    Some(api::ErrorCode::NoInstance.to_string()),
+                    ClientErrorStatusCode::GONE,
+                    format!(
+                        "No instance present; will never reach generation {gen}",
+                    ),
+                )
+            })?;
+        }
+    }
+
+    async fn instance_state_put(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<api::InstanceStateRequested>,
+    ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
+        let ctx = rqctx.context();
+        let requested_state = request.into_inner();
+        let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
+        let result = vm
+            .put_state(requested_state)
+            .map(|_| HttpResponseUpdatedNoContent {})
+            .map_err(|e| match e {
+                VmError::WaitingToInitialize => HttpError::for_unavail(
+                    None,
+                    "instance is still initializing".to_string(),
+                ),
+                VmError::ForbiddenStateChange(reason) => {
+                    HttpError::for_client_error_with_status(
+                        Some(format!(
+                            "instance state change not allowed: {reason}"
+                        )),
+                        ClientErrorStatusCode::FORBIDDEN,
+                    )
+                }
+                _ => HttpError::for_internal_error(format!(
+                    "unexpected error from VM controller: {e}"
+                )),
+            });
+
+        if result.is_ok() {
+            if let api::InstanceStateRequested::Reboot = requested_state {
+                let stats = MutexGuard::map(
+                    vm.services().oximeter.lock().await,
+                    |state| &mut state.stats,
+                );
+                if let Some(stats) = stats.as_ref() {
+                    stats.count_reset();
+                }
+            }
+        }
+
+        result
+    }
+
+    async fn instance_serial_history_get(
+        rqctx: RequestContext<Self::Context>,
+        query: Query<api::InstanceSerialConsoleHistoryRequest>,
+    ) -> Result<
+        HttpResponseOk<api::InstanceSerialConsoleHistoryResponse>,
+        HttpError,
+    > {
+        let ctx = rqctx.context();
+        let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
+        let serial = vm.objects().lock_shared().await.com1().clone();
+        let query_params = query.into_inner();
+
+        let byte_offset = SerialHistoryOffset::try_from(&query_params)?;
+
+        let max_bytes = query_params.max_bytes.map(|x| x as usize);
+        let (data, end) = serial
+            .history_vec(byte_offset, max_bytes)
+            .await
+            .map_err(|e| HttpError::for_bad_request(None, e.to_string()))?;
+
+        Ok(HttpResponseOk(api::InstanceSerialConsoleHistoryResponse {
+            data,
+            last_byte_offset: end as u64,
+        }))
+    }
+
+    async fn instance_serial(
+        rqctx: RequestContext<Self::Context>,
+        query: Query<api::InstanceSerialConsoleStreamRequest>,
+        websock: WebsocketConnection,
+    ) -> dropshot::WebsocketChannelResult {
+        let ctx = rqctx.context();
+        let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
+        let serial = vm.objects().lock_shared().await.com1().clone();
+
+        // Use the default buffering paramters for the websocket configuration
+        //
+        // Because messages are written with [`StreamExt::send`], the buffer on the
+        // websocket is flushed for every message, preventing both unecessary delays
+        // of messages and the potential for the buffer to grow without bound.
+        let config = WebSocketConfig::default();
+
+        let mut ws_stream = WebSocketStream::from_raw_socket(
+            websock.into_inner(),
+            Role::Server,
+            Some(config),
+        )
+        .await;
+
+        let byte_offset =
+            SerialHistoryOffset::try_from(&query.into_inner()).ok();
+        if let Some(mut byte_offset) = byte_offset {
+            loop {
+                let (data, offset) =
+                    serial.history_vec(byte_offset, None).await?;
+                if data.is_empty() {
+                    break;
+                }
+                ws_stream
+                    .send(tokio_tungstenite::tungstenite::Message::Binary(data))
+                    .await?;
+                byte_offset = SerialHistoryOffset::FromStart(offset);
+            }
+        }
+
+        // Get serial task's handle and send it the websocket stream
+        let serial_task = vm.services().serial_task.lock().await;
+        serial_task
+            .as_ref()
+            .ok_or("Instance has no serial task")?
+            .websocks_ch
+            .send(ws_stream)
+            .await
+            .map_err(|e| format!("Serial socket hand-off failed: {e}").into())
+    }
+
+    async fn instance_vnc(
+        rqctx: RequestContext<Self::Context>,
+        _query: Query<()>,
+        websock: WebsocketConnection,
+    ) -> dropshot::WebsocketChannelResult {
+        let ctx = rqctx.context();
+
+        let ws_stream = WebSocketStream::from_raw_socket(
+            websock.into_inner(),
+            Role::Server,
+            None,
+        )
+        .await;
+
+        if let Err(e) = ctx
+            .vnc_server
+            .connect(
+                Box::new(BinaryWs::new(ws_stream)) as Box<dyn vnc::Connection>,
+                rqctx.request_id.clone(),
+            )
+            .await
+        {
+            // Log the error, but since the request has already been upgraded, there
+            // is no sense in trying to emit a formal error to the client
+            error!(rqctx.log, "VNC initialization failed: {:?}", e);
+        }
+
+        Ok(())
+    }
+
+    async fn instance_migrate_start(
+        rqctx: RequestContext<Self::Context>,
+        path_params: Path<api::InstanceMigrateStartRequest>,
+        websock: WebsocketConnection,
+    ) -> dropshot::WebsocketChannelResult {
+        let ctx = rqctx.context();
+        let migration_id = path_params.into_inner().migration_id;
+        let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
+        Ok(vm.request_migration_out(migration_id, websock).await?)
+    }
+
+    async fn instance_migrate_status(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<HttpResponseOk<api::InstanceMigrateStatusResponse>, HttpError>
+    {
+        let ctx = rqctx.context();
+        ctx.vm
+            .state_watcher()
+            .await
+            .map(|rx| HttpResponseOk(rx.borrow().migration.clone()))
+            .ok_or_else(not_created_error)
+    }
+
+    async fn instance_issue_crucible_snapshot_request(
+        rqctx: RequestContext<Self::Context>,
+        path_params: Path<api::SnapshotRequestPathParams>,
+    ) -> Result<HttpResponseOk<()>, HttpError> {
+        let vm = rqctx
+            .context()
+            .vm
+            .active_vm()
+            .await
+            .ok_or_else(not_created_error)?;
+        let objects = vm.objects().lock_shared().await;
+        let path_params = path_params.into_inner();
+
+        let backend = objects
+            .crucible_backends()
+            .get(&SpecKey::from(path_params.id.clone()))
+            .ok_or_else(|| {
+                let s = format!("no disk with id {}!", path_params.id);
+                HttpError::for_not_found(Some(s.clone()), s)
+            })?;
+        backend.snapshot(path_params.snapshot_id).await.map_err(|e| {
+            HttpError::for_bad_request(Some(e.to_string()), e.to_string())
+        })?;
+
+        Ok(HttpResponseOk(()))
+    }
+
+    async fn disk_volume_status(
+        rqctx: RequestContext<Self::Context>,
+        path_params: Path<api::VolumeStatusPathParams>,
+    ) -> Result<HttpResponseOk<api::VolumeStatus>, HttpError> {
+        let path_params = path_params.into_inner();
+        let vm = rqctx
+            .context()
+            .vm
+            .active_vm()
+            .await
+            .ok_or_else(not_created_error)?;
+        let objects = vm.objects().lock_shared().await;
+        let backend = objects
+            .crucible_backends()
+            .get(&SpecKey::from(path_params.id.clone()))
+            .ok_or_else(|| {
+                let s =
+                    format!("No crucible backend for id {}", path_params.id);
+                HttpError::for_not_found(Some(s.clone()), s)
+            })?;
+
+        Ok(HttpResponseOk(api::VolumeStatus {
+            active: backend.volume_is_active().await.map_err(|e| {
+                HttpError::for_bad_request(Some(e.to_string()), e.to_string())
+            })?,
+        }))
+    }
+
+    async fn instance_issue_crucible_vcr_request(
+        rqctx: RequestContext<Self::Context>,
+        path_params: Path<api::VCRRequestPathParams>,
+        request: TypedBody<api::InstanceVCRReplace>,
+    ) -> Result<HttpResponseOk<crucible_client_types::ReplaceResult>, HttpError>
+    {
+        let path_params = path_params.into_inner();
+        let request = request.into_inner();
+        let new_vcr_json = request.vcr_json;
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let vm = rqctx
+            .context()
+            .vm
+            .active_vm()
+            .await
+            .ok_or_else(not_created_error)?;
+
+        vm.reconfigure_crucible_volume(
+            SpecKey::from(path_params.id),
+            new_vcr_json,
+            tx,
+        )
         .map_err(|e| match e {
-            VmError::WaitingToInitialize => HttpError::for_unavail(
-                None,
-                "instance is still initializing".to_string(),
-            ),
             VmError::ForbiddenStateChange(reason) => {
                 HttpError::for_client_error_with_status(
                     Some(format!(
@@ -373,307 +604,39 @@ async fn instance_state_put(
             _ => HttpError::for_internal_error(format!(
                 "unexpected error from VM controller: {e}"
             )),
-        });
-
-    if result.is_ok() {
-        if let api::InstanceStateRequested::Reboot = requested_state {
-            let stats =
-                MutexGuard::map(vm.services().oximeter.lock().await, |state| {
-                    &mut state.stats
-                });
-            if let Some(stats) = stats.as_ref() {
-                stats.count_reset();
-            }
-        }
-    }
-
-    result
-}
-
-#[endpoint {
-    method = GET,
-    path = "/instance/serial/history",
-}]
-async fn instance_serial_history_get(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    query: Query<api::InstanceSerialConsoleHistoryRequest>,
-) -> Result<HttpResponseOk<api::InstanceSerialConsoleHistoryResponse>, HttpError>
-{
-    let ctx = rqctx.context();
-    let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
-    let serial = vm.objects().lock_shared().await.com1().clone();
-    let query_params = query.into_inner();
-
-    let byte_offset = SerialHistoryOffset::try_from(&query_params)?;
-
-    let max_bytes = query_params.max_bytes.map(|x| x as usize);
-    let (data, end) = serial
-        .history_vec(byte_offset, max_bytes)
-        .await
-        .map_err(|e| HttpError::for_bad_request(None, e.to_string()))?;
-
-    Ok(HttpResponseOk(api::InstanceSerialConsoleHistoryResponse {
-        data,
-        last_byte_offset: end as u64,
-    }))
-}
-
-#[channel {
-    protocol = WEBSOCKETS,
-    path = "/instance/serial",
-}]
-async fn instance_serial(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    query: Query<api::InstanceSerialConsoleStreamRequest>,
-    websock: WebsocketConnection,
-) -> dropshot::WebsocketChannelResult {
-    let ctx = rqctx.context();
-    let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
-    let serial = vm.objects().lock_shared().await.com1().clone();
-
-    // Use the default buffering paramters for the websocket configuration
-    //
-    // Because messages are written with [`StreamExt::send`], the buffer on the
-    // websocket is flushed for every message, preventing both unecessary delays
-    // of messages and the potential for the buffer to grow without bound.
-    let config = WebSocketConfig::default();
-
-    let mut ws_stream = WebSocketStream::from_raw_socket(
-        websock.into_inner(),
-        Role::Server,
-        Some(config),
-    )
-    .await;
-
-    let byte_offset = SerialHistoryOffset::try_from(&query.into_inner()).ok();
-    if let Some(mut byte_offset) = byte_offset {
-        loop {
-            let (data, offset) = serial.history_vec(byte_offset, None).await?;
-            if data.is_empty() {
-                break;
-            }
-            ws_stream
-                .send(tokio_tungstenite::tungstenite::Message::Binary(data))
-                .await?;
-            byte_offset = SerialHistoryOffset::FromStart(offset);
-        }
-    }
-
-    // Get serial task's handle and send it the websocket stream
-    let serial_task = vm.services().serial_task.lock().await;
-    serial_task
-        .as_ref()
-        .ok_or("Instance has no serial task")?
-        .websocks_ch
-        .send(ws_stream)
-        .await
-        .map_err(|e| format!("Serial socket hand-off failed: {e}").into())
-}
-
-#[channel {
-    protocol = WEBSOCKETS,
-    path = "/instance/vnc",
-    unpublished = true,
-}]
-async fn instance_vnc(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    _query: Query<()>,
-    websock: WebsocketConnection,
-) -> dropshot::WebsocketChannelResult {
-    let ctx = rqctx.context();
-
-    let ws_stream = WebSocketStream::from_raw_socket(
-        websock.into_inner(),
-        Role::Server,
-        None,
-    )
-    .await;
-
-    if let Err(e) = ctx
-        .vnc_server
-        .connect(
-            Box::new(BinaryWs::new(ws_stream)) as Box<dyn vnc::Connection>,
-            rqctx.request_id.clone(),
-        )
-        .await
-    {
-        // Log the error, but since the request has already been upgraded, there
-        // is no sense in trying to emit a formal error to the client
-        error!(rqctx.log, "VNC initialization failed: {:?}", e);
-    }
-
-    Ok(())
-}
-
-// This endpoint is meant to only be called during a migration from the
-// destination instance to the source instance as part of the HTTP connection
-// upgrade used to establish the migration link. We don't actually want this
-// exported via OpenAPI clients.
-#[channel {
-    protocol = WEBSOCKETS,
-    path = "/instance/migrate/{migration_id}/start",
-    unpublished = true,
-}]
-async fn instance_migrate_start(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    path_params: Path<api::InstanceMigrateStartRequest>,
-    websock: WebsocketConnection,
-) -> dropshot::WebsocketChannelResult {
-    let ctx = rqctx.context();
-    let migration_id = path_params.into_inner().migration_id;
-    let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
-    Ok(vm.request_migration_out(migration_id, websock).await?)
-}
-
-#[endpoint {
-    method = GET,
-    path = "/instance/migration-status"
-}]
-async fn instance_migrate_status(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-) -> Result<HttpResponseOk<api::InstanceMigrateStatusResponse>, HttpError> {
-    let ctx = rqctx.context();
-    ctx.vm
-        .state_watcher()
-        .await
-        .map(|rx| HttpResponseOk(rx.borrow().migration.clone()))
-        .ok_or_else(not_created_error)
-}
-
-/// Issues a snapshot request to a crucible backend.
-#[endpoint {
-    method = POST,
-    path = "/instance/disk/{id}/snapshot/{snapshot_id}",
-}]
-async fn instance_issue_crucible_snapshot_request(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    path_params: Path<api::SnapshotRequestPathParams>,
-) -> Result<HttpResponseOk<()>, HttpError> {
-    let vm =
-        rqctx.context().vm.active_vm().await.ok_or_else(not_created_error)?;
-    let objects = vm.objects().lock_shared().await;
-    let path_params = path_params.into_inner();
-
-    let backend = objects
-        .crucible_backends()
-        .get(&SpecKey::from(path_params.id.clone()))
-        .ok_or_else(|| {
-            let s = format!("no disk with id {}!", path_params.id);
-            HttpError::for_not_found(Some(s.clone()), s)
-        })?;
-    backend.snapshot(path_params.snapshot_id).await.map_err(|e| {
-        HttpError::for_bad_request(Some(e.to_string()), e.to_string())
-    })?;
-
-    Ok(HttpResponseOk(()))
-}
-
-/// Gets the status of a Crucible volume backing a disk
-#[endpoint {
-    method = GET,
-    path = "/instance/disk/{id}/status",
-}]
-async fn disk_volume_status(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    path_params: Path<api::VolumeStatusPathParams>,
-) -> Result<HttpResponseOk<api::VolumeStatus>, HttpError> {
-    let path_params = path_params.into_inner();
-    let vm =
-        rqctx.context().vm.active_vm().await.ok_or_else(not_created_error)?;
-    let objects = vm.objects().lock_shared().await;
-    let backend = objects
-        .crucible_backends()
-        .get(&SpecKey::from(path_params.id.clone()))
-        .ok_or_else(|| {
-            let s = format!("No crucible backend for id {}", path_params.id);
-            HttpError::for_not_found(Some(s.clone()), s)
         })?;
 
-    Ok(HttpResponseOk(api::VolumeStatus {
-        active: backend.volume_is_active().await.map_err(|e| {
-            HttpError::for_bad_request(Some(e.to_string()), e.to_string())
-        })?,
-    }))
-}
-
-/// Issues a volume_construction_request replace to a crucible backend.
-#[endpoint {
-    method = PUT,
-    path = "/instance/disk/{id}/vcr",
-}]
-async fn instance_issue_crucible_vcr_request(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-    path_params: Path<api::VCRRequestPathParams>,
-    request: TypedBody<api::InstanceVCRReplace>,
-) -> Result<HttpResponseOk<crucible_client_types::ReplaceResult>, HttpError> {
-    let path_params = path_params.into_inner();
-    let request = request.into_inner();
-    let new_vcr_json = request.vcr_json;
-
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let vm =
-        rqctx.context().vm.active_vm().await.ok_or_else(not_created_error)?;
-
-    vm.reconfigure_crucible_volume(
-        SpecKey::from(path_params.id),
-        new_vcr_json,
-        tx,
-    )
-    .map_err(|e| match e {
-        VmError::ForbiddenStateChange(reason) => {
-            HttpError::for_client_error_with_status(
-                Some(format!("instance state change not allowed: {reason}")),
-                ClientErrorStatusCode::FORBIDDEN,
+        let result = rx.await.map_err(|_| {
+            HttpError::for_internal_error(
+                "VM worker task unexpectedly dropped result channel"
+                    .to_string(),
             )
-        }
-        _ => HttpError::for_internal_error(format!(
-            "unexpected error from VM controller: {e}"
-        )),
-    })?;
+        })?;
 
-    let result = rx.await.map_err(|_| {
-        HttpError::for_internal_error(
-            "VM worker task unexpectedly dropped result channel".to_string(),
-        )
-    })?;
+        result.map(HttpResponseOk)
+    }
 
-    result.map(HttpResponseOk)
-}
+    async fn instance_issue_nmi(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<HttpResponseOk<()>, HttpError> {
+        let vm = rqctx
+            .context()
+            .vm
+            .active_vm()
+            .await
+            .ok_or_else(not_created_error)?;
+        let _ = vm.objects().lock_shared().await.machine().inject_nmi();
 
-/// Issues an NMI to the instance.
-#[endpoint {
-    method = POST,
-    path = "/instance/nmi",
-}]
-async fn instance_issue_nmi(
-    rqctx: RequestContext<Arc<DropshotEndpointContext>>,
-) -> Result<HttpResponseOk<()>, HttpError> {
-    let vm =
-        rqctx.context().vm.active_vm().await.ok_or_else(not_created_error)?;
-    let _ = vm.objects().lock_shared().await.machine().inject_nmi();
-
-    Ok(HttpResponseOk(()))
+        Ok(HttpResponseOk(()))
+    }
 }
 
 /// Returns a Dropshot [`ApiDescription`] object to launch a server.
 pub fn api() -> ApiDescription<Arc<DropshotEndpointContext>> {
-    let mut api = ApiDescription::new();
-    api.register(instance_ensure).unwrap();
-    api.register(instance_get).unwrap();
-    api.register(instance_spec_get).unwrap();
-    api.register(instance_state_monitor).unwrap();
-    api.register(instance_state_put).unwrap();
-    api.register(instance_serial).unwrap();
-    api.register(instance_serial_history_get).unwrap();
-    api.register(instance_migrate_start).unwrap();
-    api.register(instance_migrate_status).unwrap();
-    api.register(instance_issue_crucible_snapshot_request).unwrap();
-    api.register(disk_volume_status).unwrap();
-    api.register(instance_issue_crucible_vcr_request).unwrap();
-    api.register(instance_issue_nmi).unwrap();
-    api.register(instance_vnc).unwrap();
-
-    api
+    propolis_server_api::propolis_server_api_mod::api_description::<
+        PropolisServerImpl,
+    >()
+    .unwrap()
 }
 
 fn not_created_error() -> HttpError {
@@ -689,7 +652,8 @@ mod test {
     #[test]
     fn test_propolis_server_openapi() {
         let mut buf: Vec<u8> = vec![];
-        super::api()
+        propolis_server_api::propolis_server_api_mod::stub_api_description()
+            .unwrap()
             .openapi("Oxide Propolis Server API", semver::Version::new(0, 0, 1))
             .description(
                 "API for interacting with the Propolis hypervisor frontend.",

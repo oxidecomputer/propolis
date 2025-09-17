@@ -4791,6 +4791,7 @@ dependencies = [
  "oximeter-instruments",
  "oximeter-producer",
  "propolis",
+ "propolis-server-api",
  "propolis_api_types",
  "propolis_types",
  "proptest",
@@ -4817,6 +4818,15 @@ dependencies = [
  "toml 0.7.8",
  "usdt 0.5.0",
  "uuid",
+]
+
+[[package]]
+name = "propolis-server-api"
+version = "0.1.0"
+dependencies = [
+ "crucible-client-types",
+ "dropshot",
+ "propolis_api_types",
 ]
 
 [[package]]
