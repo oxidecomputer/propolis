@@ -307,9 +307,11 @@ async fn guest_cpu_topo_test(ctx: &Framework) {
     // (0b0000_1100 -> "c").
     let guest_topo = LinuxGuestTopo::new(&vm).await;
 
-    // Except that leaf B does not seem sufficient for Linux guests to determine
-    // a topology other than "single-thread single-core many-socket". That makes
-    // this test Intel-only for the time being.
+    // Except that for the time being we exclude leaf B from specialization (see
+    // the comment over in `propolis-server/src/lib/initializer.rs`), meaning
+    // that on AMD there isn't enough topology information for Linux to
+    // determine anything other than "single-thread single-core many-socket".
+    // That makes this test Intel-only for the time being.
     if guest_topo.vendor_string().await != "GenuineIntel" {
         phd_skip!("guest topo test is Intel-only for the moment");
     }
