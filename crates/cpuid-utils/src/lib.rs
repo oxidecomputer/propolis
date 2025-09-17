@@ -149,6 +149,11 @@ impl CpuidMap {
         .flatten()
     }
 
+    /// Check if a leaf is present, either as a sole entry or with subleaves.
+    pub fn contains_leaf(&self, leaf: u32) -> bool {
+        self.0.contains_key(&leaf)
+    }
+
     fn insert_leaf_no_subleaf(
         &mut self,
         leaf: u32,
@@ -449,6 +454,11 @@ impl CpuidSet {
     /// See [`CpuidMap::get_mut`].
     pub fn get_mut(&mut self, ident: CpuidIdent) -> Option<&mut CpuidValues> {
         self.map.get_mut(ident)
+    }
+
+    /// See [`CpuidMap::contains_leaf`].
+    pub fn contains_leaf(&self, leaf: u32) -> bool {
+        self.map.contains_leaf(leaf)
     }
 
     /// See [`CpuidMap::remove_leaf`].

@@ -1395,6 +1395,7 @@ fn setup_instance(
                 .with_vcpuid(vcpu.id)
                 .with_cache_topo()
                 .clear_cpu_topo(cpuid::TopoKind::iter())
+                .with_cpu_topo(cpuid::TopoKind::supported())
                 .execute(profile.clone())
                 .context("failed to specialize cpuid profile")?
         } else {

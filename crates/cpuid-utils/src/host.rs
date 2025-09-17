@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::{
     bits::{
         AmdExtLeaf1DCacheType, AmdExtLeaf1DEax, Leaf1Ecx, Leaf7Sub0Ebx,
-        EXTENDED_BASE_LEAF, STANDARD_BASE_LEAF,
+        EXTENDED_BASE_LEAF, MAX_REASONABLE_SUBLEAVES, STANDARD_BASE_LEAF,
     },
     CpuidMapInsertError, CpuidSet,
 };
@@ -114,6 +114,20 @@ fn collect_cpuid(
                     != 0;
                 set.insert(CpuidIdent::leaf(leaf), data)?;
             }
+            // Leaf 0x4 is a series of subleaves terminated by a subleaf with
+            // "type" (EAX bits 4-0) of 0. In practice there are typically four
+            // subleaves but we'll gather them until there an unreasonable
+            // number or we find an invalid leaf.
+            0x4 => {
+                for i in 0..MAX_REASONABLE_SUBLEAVES {
+                    let data = query(leaf, i)?;
+                    if data.eax & 0x1f == 0 {
+                        break;
+                    }
+
+                    set.insert(CpuidIdent::subleaf(leaf, i), data)?;
+                }
+            }
             // Leaf 0x7 subleaf 0 eax indicates the total number of leaf-7
             // subleaves.
             0x7 => {
@@ -184,6 +198,23 @@ fn collect_cpuid(
             0x10 => {
                 // Since we're hiding PQE, provide an empty leaf here.
                 set.insert(CpuidIdent::leaf(leaf), CpuidValues::default())?;
+            }
+            // Leaf 0x18 is similar to leaf 0x4: Intel-only, it is a series of
+            // subleaves describing potentially-shared processor structures.
+            // Unlike leaf 0x4, subleaf 0 EAX describes the maximum valid
+            // subleaf, and subleaves are not guaranteed to be contiguous up to
+            // that level. On real systems there are upwards of eight subleaves
+            // (at least on Ice Lake).
+            0x18 => {
+                let top_subleaf = query(leaf, 0)?;
+
+                let limit =
+                    std::cmp::min(MAX_REASONABLE_SUBLEAVES, top_subleaf.eax);
+
+                for i in 0..limit {
+                    let data = query(leaf, i)?;
+                    set.insert(CpuidIdent::subleaf(leaf, i), data)?;
+                }
             }
             _ => {
                 set.insert(CpuidIdent::leaf(leaf), query(leaf, 0)?)?;
