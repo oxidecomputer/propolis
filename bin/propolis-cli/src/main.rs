@@ -67,6 +67,9 @@ struct Opt {
     cmd: Command,
 }
 
+// `New`, via `VmConfig`, is large enough to trip this lint. This enum is
+// created exactly once, so we don't need to be picky about the layout..
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Create a new propolis instance
