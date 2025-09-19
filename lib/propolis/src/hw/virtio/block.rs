@@ -166,7 +166,7 @@ impl PciVirtioBlock {
                 }
             }
             VIRTIO_BLK_T_FLUSH => {
-                probes::vioblk_flush_enqueue!(|| (rid));
+                probes::vioblk_flush_enqueue!(|| rid);
                 Ok(self.block_tracking.track(
                     block::Request::new_flush(),
                     CompletionPayload { rid, chain },

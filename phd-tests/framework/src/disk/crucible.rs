@@ -219,7 +219,7 @@ impl Inner {
         const GIBIBYTE: u64 = 1 << 30;
 
         assert!(EXTENT_SIZE > block_size.bytes());
-        assert!(EXTENT_SIZE % block_size.bytes() == 0);
+        assert!(EXTENT_SIZE.is_multiple_of(block_size.bytes()));
 
         let disk_size_gib = match read_only_parent {
             // If there's a read-only parent, ensure the disk is large enough to
