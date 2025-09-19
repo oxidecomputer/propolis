@@ -27,9 +27,9 @@ use crate::{
 };
 
 use dropshot::{
-    channel, endpoint, ApiDescription, ClientErrorStatusCode, HttpError,
-    HttpResponseCreated, HttpResponseOk, HttpResponseUpdatedNoContent, Path,
-    Query, RequestContext, TypedBody, WebsocketConnection,
+    ApiDescription, ClientErrorStatusCode, HttpError, HttpResponseCreated,
+    HttpResponseOk, HttpResponseUpdatedNoContent, Path, Query, RequestContext,
+    TypedBody, WebsocketConnection,
 };
 use futures::SinkExt;
 use internal_dns_resolver::{ResolveError, Resolver};
@@ -39,6 +39,7 @@ use oximeter::types::ProducerRegistry;
 use propolis_api_types as api;
 use propolis_api_types::instance_spec::SpecKey;
 use propolis_api_types::InstanceInitializationMethod;
+use propolis_server_api::PropolisServerApi;
 use rfb::tungstenite::BinaryWs;
 use slog::{error, warn, Logger};
 use tokio::sync::MutexGuard;
@@ -189,16 +190,20 @@ async fn find_local_nexus_client(
     }
 }
 
-// Temporary module to preserve blame.
-mod imp {
-    use super::*;
+async fn instance_get_common(
+    rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
+) -> Result<api::InstanceSpecGetResponse, HttpError> {
+    let ctx = rqctx.context();
+    ctx.vm.get().await.ok_or_else(not_created_error)
+}
 
-    #[endpoint {
-        method = PUT,
-        path = "/instance",
-    }]
-    pub(super) async fn instance_ensure(
-        rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+enum PropolisServerImpl {}
+
+impl PropolisServerApi for PropolisServerImpl {
+    type Context = Arc<DropshotEndpointContext>;
+
+    async fn instance_ensure(
+        rqctx: RequestContext<Self::Context>,
         request: TypedBody<api::InstanceEnsureRequest>,
     ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError>
     {
@@ -286,29 +291,14 @@ mod imp {
             })
     }
 
-    async fn instance_get_common(
-        rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
-    ) -> Result<api::InstanceSpecGetResponse, HttpError> {
-        let ctx = rqctx.context();
-        ctx.vm.get().await.ok_or_else(not_created_error)
-    }
-
-    #[endpoint {
-        method = GET,
-        path = "/instance/spec",
-    }]
-    pub(super) async fn instance_spec_get(
-        rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    async fn instance_spec_get(
+        rqctx: RequestContext<Self::Context>,
     ) -> Result<HttpResponseOk<api::InstanceSpecGetResponse>, HttpError> {
         Ok(HttpResponseOk(instance_get_common(&rqctx).await?))
     }
 
-    #[endpoint {
-        method = GET,
-        path = "/instance",
-    }]
-    pub(super) async fn instance_get(
-        rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    async fn instance_get(
+        rqctx: RequestContext<Self::Context>,
     ) -> Result<HttpResponseOk<api::InstanceGetResponse>, HttpError> {
         instance_get_common(&rqctx).await.map(|full| {
             HttpResponseOk(api::InstanceGetResponse {
@@ -320,12 +310,8 @@ mod imp {
         })
     }
 
-    #[endpoint {
-        method = GET,
-        path = "/instance/state-monitor",
-    }]
-    pub(super) async fn instance_state_monitor(
-        rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    async fn instance_state_monitor(
+        rqctx: RequestContext<Self::Context>,
         request: TypedBody<api::InstanceStateMonitorRequest>,
     ) -> Result<HttpResponseOk<api::InstanceStateMonitorResponse>, HttpError>
     {
@@ -356,12 +342,8 @@ mod imp {
         }
     }
 
-    #[endpoint {
-        method = PUT,
-        path = "/instance/state",
-    }]
-    pub(super) async fn instance_state_put(
-        rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    async fn instance_state_put(
+        rqctx: RequestContext<Self::Context>,
         request: TypedBody<api::InstanceStateRequested>,
     ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
         let ctx = rqctx.context();
@@ -403,12 +385,8 @@ mod imp {
         result
     }
 
-    #[endpoint {
-        method = GET,
-        path = "/instance/serial/history",
-    }]
-    pub(super) async fn instance_serial_history_get(
-        rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    async fn instance_serial_history_get(
+        rqctx: RequestContext<Self::Context>,
         query: Query<api::InstanceSerialConsoleHistoryRequest>,
     ) -> Result<
         HttpResponseOk<api::InstanceSerialConsoleHistoryResponse>,
@@ -433,12 +411,8 @@ mod imp {
         }))
     }
 
-    #[channel {
-        protocol = WEBSOCKETS,
-        path = "/instance/serial",
-    }]
-    pub(super) async fn instance_serial(
-        rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    async fn instance_serial(
+        rqctx: RequestContext<Self::Context>,
         query: Query<api::InstanceSerialConsoleStreamRequest>,
         websock: WebsocketConnection,
     ) -> dropshot::WebsocketChannelResult {
@@ -487,13 +461,8 @@ mod imp {
             .map_err(|e| format!("Serial socket hand-off failed: {e}").into())
     }
 
-    #[channel {
-        protocol = WEBSOCKETS,
-        path = "/instance/vnc",
-        unpublished = true,
-    }]
-    pub(super) async fn instance_vnc(
-        rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    async fn instance_vnc(
+        rqctx: RequestContext<Self::Context>,
         _query: Query<()>,
         websock: WebsocketConnection,
     ) -> dropshot::WebsocketChannelResult {
@@ -522,17 +491,8 @@ mod imp {
         Ok(())
     }
 
-    // This endpoint is meant to only be called during a migration from the
-    // destination instance to the source instance as part of the HTTP connection
-    // upgrade used to establish the migration link. We don't actually want this
-    // exported via OpenAPI clients.
-    #[channel {
-        protocol = WEBSOCKETS,
-        path = "/instance/migrate/{migration_id}/start",
-        unpublished = true,
-    }]
-    pub(super) async fn instance_migrate_start(
-        rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    async fn instance_migrate_start(
+        rqctx: RequestContext<Self::Context>,
         path_params: Path<api::InstanceMigrateStartRequest>,
         websock: WebsocketConnection,
     ) -> dropshot::WebsocketChannelResult {
@@ -542,12 +502,8 @@ mod imp {
         Ok(vm.request_migration_out(migration_id, websock).await?)
     }
 
-    #[endpoint {
-        method = GET,
-        path = "/instance/migration-status"
-    }]
-    pub(super) async fn instance_migrate_status(
-        rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    async fn instance_migrate_status(
+        rqctx: RequestContext<Self::Context>,
     ) -> Result<HttpResponseOk<api::InstanceMigrateStatusResponse>, HttpError>
     {
         let ctx = rqctx.context();
@@ -558,13 +514,8 @@ mod imp {
             .ok_or_else(not_created_error)
     }
 
-    /// Issues a snapshot request to a crucible backend.
-    #[endpoint {
-        method = POST,
-        path = "/instance/disk/{id}/snapshot/{snapshot_id}",
-    }]
-    pub(super) async fn instance_issue_crucible_snapshot_request(
-        rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    async fn instance_issue_crucible_snapshot_request(
+        rqctx: RequestContext<Self::Context>,
         path_params: Path<api::SnapshotRequestPathParams>,
     ) -> Result<HttpResponseOk<()>, HttpError> {
         let vm = rqctx
@@ -590,13 +541,8 @@ mod imp {
         Ok(HttpResponseOk(()))
     }
 
-    /// Gets the status of a Crucible volume backing a disk
-    #[endpoint {
-        method = GET,
-        path = "/instance/disk/{id}/status",
-    }]
-    pub(super) async fn disk_volume_status(
-        rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    async fn disk_volume_status(
+        rqctx: RequestContext<Self::Context>,
         path_params: Path<api::VolumeStatusPathParams>,
     ) -> Result<HttpResponseOk<api::VolumeStatus>, HttpError> {
         let path_params = path_params.into_inner();
@@ -623,13 +569,8 @@ mod imp {
         }))
     }
 
-    /// Issues a volume_construction_request replace to a crucible backend.
-    #[endpoint {
-        method = PUT,
-        path = "/instance/disk/{id}/vcr",
-    }]
-    pub(super) async fn instance_issue_crucible_vcr_request(
-        rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    async fn instance_issue_crucible_vcr_request(
+        rqctx: RequestContext<Self::Context>,
         path_params: Path<api::VCRRequestPathParams>,
         request: TypedBody<api::InstanceVCRReplace>,
     ) -> Result<HttpResponseOk<crucible_client_types::ReplaceResult>, HttpError>
@@ -675,13 +616,8 @@ mod imp {
         result.map(HttpResponseOk)
     }
 
-    /// Issues an NMI to the instance.
-    #[endpoint {
-        method = POST,
-        path = "/instance/nmi",
-    }]
-    pub(super) async fn instance_issue_nmi(
-        rqctx: RequestContext<Arc<DropshotEndpointContext>>,
+    async fn instance_issue_nmi(
+        rqctx: RequestContext<Self::Context>,
     ) -> Result<HttpResponseOk<()>, HttpError> {
         let vm = rqctx
             .context()
@@ -695,27 +631,12 @@ mod imp {
     }
 }
 
-use imp::*;
-
 /// Returns a Dropshot [`ApiDescription`] object to launch a server.
 pub fn api() -> ApiDescription<Arc<DropshotEndpointContext>> {
-    let mut api = ApiDescription::new();
-    api.register(instance_ensure).unwrap();
-    api.register(instance_get).unwrap();
-    api.register(instance_spec_get).unwrap();
-    api.register(instance_state_monitor).unwrap();
-    api.register(instance_state_put).unwrap();
-    api.register(instance_serial).unwrap();
-    api.register(instance_serial_history_get).unwrap();
-    api.register(instance_migrate_start).unwrap();
-    api.register(instance_migrate_status).unwrap();
-    api.register(instance_issue_crucible_snapshot_request).unwrap();
-    api.register(disk_volume_status).unwrap();
-    api.register(instance_issue_crucible_vcr_request).unwrap();
-    api.register(instance_issue_nmi).unwrap();
-    api.register(instance_vnc).unwrap();
-
-    api
+    propolis_server_api::propolis_server_api_mod::api_description::<
+        PropolisServerImpl,
+    >()
+    .unwrap()
 }
 
 fn not_created_error() -> HttpError {
@@ -731,7 +652,8 @@ mod test {
     #[test]
     fn test_propolis_server_openapi() {
         let mut buf: Vec<u8> = vec![];
-        super::api()
+        propolis_server_api::propolis_server_api_mod::stub_api_description()
+            .unwrap()
             .openapi("Oxide Propolis Server API", semver::Version::new(0, 0, 1))
             .description(
                 "API for interacting with the Propolis hypervisor frontend.",
