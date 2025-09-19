@@ -77,6 +77,49 @@ impl From<VmTimeData> for bhyve_api::vdi_time_info_v1 {
     }
 }
 
+/// Boot-time-relative timestamps for use in device states (which are migrated
+/// after time data, at which point adjustments have been made and communicated
+/// to the VMM)
+#[derive(
+    Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Deserialize, Serialize,
+)]
+pub struct VmGuestInstant(i64);
+
+impl VmGuestInstant {
+    pub fn now(vmm_hdl: &VmmHdl) -> std::io::Result<Self> {
+        let td = export_time_data(vmm_hdl)?;
+        let normalized_ns =
+            td.hrtime.checked_sub(td.boot_hrtime).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    TimeAdjustError::GuestUptimeOverflow {
+                        desc: "hrtime - boot_hrtime",
+                        src_hrt: td.hrtime,
+                        boot_hrtime: td.boot_hrtime,
+                    },
+                )
+            })?;
+        Ok(Self(normalized_ns))
+    }
+
+    pub fn checked_add(&self, dur: Duration) -> Option<Self> {
+        self.0.checked_add(dur.as_nanos().try_into().ok()?).map(Self)
+    }
+
+    pub fn checked_duration_since(&self, then: Self) -> Option<Duration> {
+        let diff_ns = self.0.checked_sub(then.0)?;
+        if diff_ns > 0 {
+            Some(Duration::from_nanos(diff_ns as u64))
+        } else {
+            None
+        }
+    }
+
+    pub fn saturating_duration_since(&self, then: Self) -> Duration {
+        self.checked_duration_since(then).unwrap_or_default()
+    }
+}
+
 pub fn import_time_data(
     hdl: &VmmHdl,
     time_info: VmTimeData,

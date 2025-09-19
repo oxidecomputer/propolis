@@ -190,6 +190,33 @@ pub struct P9fs {
     pub pci_path: PciPath,
 }
 
+/// Describes a PCI device implementing the eXtensible Host Controller Interface
+/// for the purpose of attaching USB devices.
+///
+/// (Note that at present no functional USB devices have yet been implemented.)
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct XhciController {
+    /// The PCI path at which to attach the guest to this xHC.
+    pub pci_path: PciPath,
+}
+
+/// Describes a USB device, requires the presence of an XhciController.
+///
+/// (Note that at present no USB devices have yet been implemented
+/// outside of a null device for testing purposes.)
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UsbDevice {
+    /// The name of the xHC to which this USB device shall be attached.
+    pub xhc_device: SpecKey,
+    /// The root hub port number to which this USB device shall be attached.
+    /// For USB 2.0 devices, valid values are 1-4, inclusive.
+    /// For USB 3.0 devices, valid values are 5-8, inclusive.
+    pub root_hub_port_num: u8,
+    // TODO(lif): a field for device type (e.g. HID tablet, mass storage...)
+}
+
 /// Describes a synthetic device that registers for VM lifecycle notifications
 /// and returns errors during attempts to migrate.
 ///
