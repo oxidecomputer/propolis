@@ -27,6 +27,7 @@ use oximeter_instruments::kstat::KstatSampler;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::{Lifecycle, GB, MB, PAGE_SIZE};
+use propolis::cpuid::TopoKind;
 use propolis::enlightenment::Enlightenment;
 use propolis::firmware::smbios;
 use propolis::hw::bhyve::BhyveHpet;
@@ -1294,6 +1295,20 @@ impl MachineInitializer<'_> {
                     requests to set hypervisor leaves",
             );
 
+            // Instead of `TopoKind::supported`, we use an intentionally-reduced
+            // list of Intel-only leaves for the moment. This is because if we
+            // specialize leaves used by AMD (or just both vendors), we'll
+            // change the topology a guest sees.
+            //
+            // The initial CPU platform defined in Nexus (Omicron#8728) hews to
+            // the pre-specialization topology, which won't have leaf B at all.
+            // Before that is sent, though, we'll see the present-but-zero
+            // leaves from bhyve, which we would happily specialize into
+            // something reflecting the guest if requested here. Once
+            // Omicron#8728 lands and propolis-server receives explicit CPUID
+            // profiles, we can add AMD leaves here too.
+            let cpu_topo_leaves = [TopoKind::Std4];
+
             let specialized = propolis::cpuid::Specializer::new()
                 .with_vcpu_count(
                     NonZeroU8::new(self.spec.board.cpus).unwrap(),
@@ -1301,7 +1316,8 @@ impl MachineInitializer<'_> {
                 )
                 .with_vcpuid(vcpu.id)
                 .with_cache_topo()
-                .clear_cpu_topo(propolis::cpuid::TopoKind::iter())
+                .clear_cpu_topo(TopoKind::iter())
+                .with_cpu_topo(cpu_topo_leaves.into_iter())
                 .execute(set)
                 .map_err(|e| {
                     MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
