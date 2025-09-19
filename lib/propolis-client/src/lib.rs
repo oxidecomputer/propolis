@@ -43,6 +43,7 @@ progenitor::generate_api!(
         ReplacementComponent = crate::instance_spec::ReplacementComponent,
         InstanceSpecV0 = crate::instance_spec::InstanceSpecV0,
         VersionedInstanceSpec = crate::instance_spec::VersionedInstanceSpec,
+        CpuidEntry = crate::instance_spec::CpuidEntry,
     },
     // Automatically derive JsonSchema for instance spec-related types so that
     // they can be reused in sled-agent's API. This can't be done with a
