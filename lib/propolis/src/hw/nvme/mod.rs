@@ -766,7 +766,7 @@ impl PciNvme {
             CtrlrReg::DoorBellAdminSQ => {
                 // 32-bit register but ignore reserved top 16-bits
                 let val = wo.read_u32() as u16;
-                probes::nvme_doorbell_admin_sq!(|| (val));
+                probes::nvme_doorbell_admin_sq!(|| val);
                 let state = self.state.lock().unwrap();
 
                 if !state.ctrl.cc.enabled() {
@@ -788,7 +788,7 @@ impl PciNvme {
             CtrlrReg::DoorBellAdminCQ => {
                 // 32-bit register but ignore reserved top 16-bits
                 let val = wo.read_u32() as u16;
-                probes::nvme_doorbell_admin_cq!(|| (val));
+                probes::nvme_doorbell_admin_cq!(|| val);
                 let state = self.state.lock().unwrap();
 
                 if !state.ctrl.cc.enabled() {

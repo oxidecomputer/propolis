@@ -942,7 +942,7 @@ impl Iterator for PrpIter<'_> {
         match self.get_next() {
             Ok(res) => Some(res),
             Err(e) => {
-                probes::nvme_prp_error!(|| (e));
+                probes::nvme_prp_error!(|| e);
                 self.error = Some(e);
                 None
             }
