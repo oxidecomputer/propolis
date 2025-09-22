@@ -370,7 +370,7 @@ impl Inner {
                 &base64::engine::general_purpose::STANDARD,
                 {
                     let mut bytes: [u8; 32] = [0; 32];
-                    StdRng::from_entropy().fill_bytes(&mut bytes);
+                    StdRng::from_os_rng().fill_bytes(&mut bytes);
                     bytes
                 },
             ),
