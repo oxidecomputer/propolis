@@ -1152,8 +1152,8 @@ mod test {
         // size to exercise the "kick" conditions where we have some
         // request available in the SQ but can't pop it until there's
         // space available in the CQ.
-        let mut rng = rand::thread_rng();
-        let sq_size = rng.gen_range(512..2048);
+        let mut rng = rand::rng();
+        let sq_size = rng.random_range(512..2048);
         let cq =
             Arc::new(CompQueue::new(1, 0, 4, write_base, hdl, &mem).unwrap());
         let sq = Arc::new(
@@ -1161,7 +1161,7 @@ mod test {
         );
 
         // We'll be generating a random number of submissions
-        let submissions_rand = rng.gen_range(2..sq.state.size - 1);
+        let submissions_rand = rng.random_range(2..sq.state.size - 1);
 
         let (doorbell_tx, doorbell_rx) =
             crossbeam_channel::unbounded::<Doorbell>();
@@ -1229,7 +1229,7 @@ mod test {
                     let mut submissions = 0;
                     let mem = child_acc.access().unwrap();
 
-                    let mut rng = rand::thread_rng();
+                    let mut rng = rand::rng();
                     while let Ok(()) = worker_rx.recv() {
                         while let Some((_, cqe_permit, _)) = worker_sq.pop(&mem)
                         {
@@ -1237,7 +1237,9 @@ mod test {
 
                             // Sleep for a bit to mimic actually doing
                             // some work before we complete the IO
-                            sleep(Duration::from_micros(rng.gen_range(0..500)));
+                            sleep(Duration::from_micros(
+                                rng.random_range(0..500),
+                            ));
 
                             cqe_permit.test_complete(&worker_sq, &mem);
 
@@ -1283,7 +1285,7 @@ mod test {
             assert!(doorbell_tx.send(Doorbell::Sq(1)).is_ok());
 
             // Sleep up to 100us in between
-            sleep(Duration::from_micros(rng.gen_range(0..100)));
+            sleep(Duration::from_micros(rng.random_range(0..100)));
         }
         drop(doorbell_tx);
 

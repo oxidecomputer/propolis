@@ -203,8 +203,8 @@ impl SoftNpu {
     /// Generate a mac address with the Oxide OUI for the leading bits and then
     /// something random in the range of 0xf00000 - 0xf00000 per RFD 174.
     fn generate_mac() -> [u8; 6] {
-        let mut rng = rand::thread_rng();
-        let m = rng.gen_range::<u32, _>(0xf00000..0xffffff).to_le_bytes();
+        let mut rng = rand::rng();
+        let m = rng.random_range::<u32, _>(0xf00000..0xffffff).to_le_bytes();
         [0xa8, 0x40, 0x25, m[0], m[1], m[2]]
     }
 
