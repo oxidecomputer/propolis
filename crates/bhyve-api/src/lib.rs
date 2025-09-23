@@ -481,7 +481,9 @@ static VERSION_CACHE: AtomicI64 = AtomicI64::new(0);
 
 /// Query the API version from the kernel VMM component on the system.
 ///
-/// Caches said version (or any emitted error) for later calls.
+/// Caches said version (or any emitted error) for later calls. The API version
+/// may be used at runtime in operating the virtual machine, where the delay to
+/// query again would be more directly guest-impactful.
 pub fn api_version() -> Result<u32> {
     cache_api_version(|| -> Result<u32> {
         let ctl = VmmCtlFd::open()?;
