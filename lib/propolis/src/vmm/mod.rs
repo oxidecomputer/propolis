@@ -22,11 +22,7 @@ pub(crate) fn check_api_version() -> Result<(), crate::api_version::Error> {
     let compare = bhyve_api::ApiVersion::V8;
 
     if vers < compare {
-        return Err(crate::api_version::Error::Mismatch(
-            "vmm",
-            vers,
-            compare as u32,
-        ));
+        return Err(crate::api_version::Error::Mismatch(vers, compare as u32));
     }
 
     Ok(())

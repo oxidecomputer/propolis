@@ -956,7 +956,7 @@ pub(crate) fn check_api_version() -> Result<(), crate::api_version::Error> {
     let compare = viona_api::ApiVersion::V2;
 
     if vers < compare {
-        Err(crate::api_version::Error::Mismatch("viona", vers, compare as u32))
+        Err(crate::api_version::Error::Mismatch(vers, compare as u32))
     } else {
         Ok(())
     }
