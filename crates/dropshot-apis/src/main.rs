@@ -62,7 +62,7 @@ fn main() -> anyhow::Result<ExitCode> {
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use dropshot_api_manager::test_util::check_apis_up_to_date;
 
     use super::*;

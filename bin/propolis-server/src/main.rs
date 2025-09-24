@@ -117,9 +117,12 @@ fn run_server(
 
     // Check that devices conform to expected API version
     if let Err(e) = api_version::check() {
-        if let api_version::Error::Io(ioe) = &e {
+        use api_version::{Error, VersionCheckError};
+        if let VersionCheckError { component: _, path, err: Error::Io(ioe) } =
+            &e
+        {
             if ioe.kind() == std::io::ErrorKind::NotFound {
-                slog::error!(log, "Failed to open /dev/vmmctl");
+                slog::error!(log, "Failed to open {path}");
             }
         }
 
