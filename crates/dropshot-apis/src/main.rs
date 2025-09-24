@@ -8,7 +8,7 @@ use anyhow::Context;
 use camino::Utf8PathBuf;
 use clap::Parser;
 use dropshot_api_manager::{Environment, ManagedApiConfig, ManagedApis};
-use dropshot_api_manager_types::{ApiBoundary, ManagedApiMetadata, Versions};
+use dropshot_api_manager_types::{ManagedApiMetadata, Versions};
 use propolis_server_api::*;
 
 pub fn environment() -> anyhow::Result<Environment> {
@@ -43,8 +43,8 @@ pub fn all_apis() -> anyhow::Result<ManagedApis> {
             ),
             contact_url: Some("https://oxide.computer"),
             contact_email: Some("api@oxide.computer"),
+            ..Default::default()
         },
-        boundary: ApiBoundary::Internal,
         api_description: propolis_server_api_mod::stub_api_description,
         extra_validation: None,
     }];
