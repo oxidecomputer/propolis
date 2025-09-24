@@ -1415,22 +1415,27 @@ fn setup_instance(
 /// expectations, but ultimately still allowing forward progress since
 /// propolis-standalone lives in the Thunderdome.
 fn api_version_checks(log: &slog::Logger) -> std::io::Result<()> {
+    use api_version::{Error, VersionCheckError};
     match api_version::check() {
-        Err(api_version::Error::Io(e)) => {
+        Err(VersionCheckError { component: _, path, err: Error::Io(e) }) => {
             if e.kind() == ErrorKind::NotFound {
-                slog::error!(log, "Failed to open /dev/vmmctl");
+                slog::error!(log, "Failed to open {}", path);
             }
 
             // IO errors _are_ fatal
             Err(e)
         }
-        Err(api_version::Error::Mismatch(comp, act, exp)) => {
+        Err(VersionCheckError {
+            component,
+            path: _,
+            err: Error::Mismatch(act, exp),
+        }) => {
             // Make noise about version mismatch, but soldier on and let the
             // user decide if they want to quit
             slog::error!(
                 log,
                 "{} API version mismatch {} != {}",
-                comp,
+                component,
                 act,
                 exp
             );
