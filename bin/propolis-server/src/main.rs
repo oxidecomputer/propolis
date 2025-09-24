@@ -70,8 +70,6 @@ fn parse_log_level(s: &str) -> anyhow::Result<slog::Level> {
 #[clap(about, version)]
 /// An HTTP server providing access to Propolis
 enum Args {
-    /// Generates the OpenAPI specification.
-    OpenApi,
     /// Runs the Propolis server.
     Run {
         #[clap(action)]
@@ -105,18 +103,6 @@ enum Args {
         #[clap(long, default_value_t = slog::Level::Info, value_parser = parse_log_level)]
         log_level: slog::Level,
     },
-}
-
-pub fn run_openapi() -> Result<(), String> {
-    server::api()
-        .openapi("Oxide Propolis Server API", semver::Version::new(0, 0, 1))
-        .description(
-            "API for interacting with the Propolis hypervisor frontend.",
-        )
-        .contact_url("https://oxide.computer")
-        .contact_email("api@oxide.computer")
-        .write(&mut std::io::stdout())
-        .map_err(|e| e.to_string())
 }
 
 fn run_server(
@@ -295,8 +281,6 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     match args {
-        Args::OpenApi => run_openapi()
-            .map_err(|e| anyhow!("Cannot generate OpenAPI spec: {}", e)),
         Args::Run {
             bootrom_path,
             bootrom_version,

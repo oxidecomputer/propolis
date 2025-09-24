@@ -5,6 +5,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+mod external;
 mod task_clippy;
 mod task_fmt;
 mod task_license;
@@ -37,6 +38,8 @@ enum Cmds {
     Fmt,
     /// (Crudely) Check for appropriate license headers
     License,
+    /// Manage OpenAPI documents
+    Openapi(external::External),
     /// Preform pre-push checks (clippy, license, fmt, etc)
     Prepush {
         /// Suppress non-essential output
@@ -64,6 +67,8 @@ fn main() -> Result<()> {
             println!("License checks pass");
             Ok(())
         }
+        Cmds::Openapi(external) => external
+            .exec_bin("propolis-dropshot-apis", "propolis-dropshot-apis"),
         Cmds::Phd { cmd } => cmd.run(),
         Cmds::Prepush { quiet } => {
             task_prepush::cmd_prepush(quiet)?;

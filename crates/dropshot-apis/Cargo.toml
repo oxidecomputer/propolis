@@ -1,0 +1,17 @@
+[package]
+name = "propolis-dropshot-apis"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+
+[dependencies]
+anyhow.workspace = true
+camino.workspace = true
+clap.workspace = true
+dropshot-api-manager-types.workspace = true
+dropshot-api-manager.workspace = true
+propolis-server-api.workspace = true
+semver.workspace = true
+
+[lints]
+workspace = true
