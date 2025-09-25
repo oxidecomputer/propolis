@@ -374,7 +374,7 @@ impl Vcpu {
                 // that can be done.
             }
         }
-        probes::vm_entry!(|| (self.id as u32));
+        probes::vm_entry!(|| self.id as u32);
         let _res = unsafe { self.hdl.ioctl(bhyve_api::VM_RUN, &mut entry)? };
         probes::vm_exit!(|| (self.id as u32, exit.rip, exit.exitcode as u32));
 
