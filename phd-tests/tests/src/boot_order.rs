@@ -196,9 +196,7 @@ async fn unbootable_disk_skipped(ctx: &Framework) {
                     continue;
                 } else {
                     bail!(
-                        "Did not expect to find {:?} yet (test state = {:?})",
-                        load_option,
-                        state
+                        "Did not expect to find {load_option:?} yet (test state = {state:?})"
                     );
                 }
             }
@@ -208,9 +206,7 @@ async fn unbootable_disk_skipped(ctx: &Framework) {
                     continue;
                 } else {
                     bail!(
-                        "Did not expect to find {:?} (test state = {:?})",
-                        load_option,
-                        state
+                        "Did not expect to find {load_option:?} (test state = {state:?})"
                     );
                 }
             }
@@ -224,9 +220,7 @@ async fn unbootable_disk_skipped(ctx: &Framework) {
                 );
                 if !is_ui_app && !is_efi_shell {
                     bail!(
-                        "Did not expect to find {:?} (test state = {:?})",
-                        load_option,
-                        state
+                        "Did not expect to find {load_option:?} (test state = {state:?})"
                     );
                 }
             }

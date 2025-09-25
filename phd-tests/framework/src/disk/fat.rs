@@ -213,8 +213,7 @@ impl FatFilesystem {
         // this by ensuring there's one track containing all the sectors.
         let sectors_per_track: u16 = sectors.try_into().map_err(|_| {
             anyhow::anyhow!(
-                "disk has {} sectors, which is too many for one FAT track",
-                sectors
+                "disk has {sectors} sectors, which is too many for one FAT track"
             )
         })?;
 

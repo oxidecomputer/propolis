@@ -15,6 +15,7 @@ default-members = [
   "crates/*",
   "crates/*/sys",
   "lib/*",
+  "bin/dropshot-apis",
   "bin/propolis-cli",
   "bin/propolis-server",
   "bin/propolis-standalone",
@@ -181,12 +182,6 @@ zerocopy = "0.8.25"
 #
 # It's common during development to use a local copy of various complex
 # dependencies.  If you want to use those, uncomment one of these blocks.
-#
-# [patch.crates-io]
-# dropshot = { path = "../dropshot/dropshot" }
-# dropshot_endpoint = { path = "../dropshot/dropshot_endpoint" }
-# dropshot-api-manager = { path = "../dropshot-api-manager/crates/dropshot-api-manager" }
-# dropshot-api-manager-types = { path = "../dropshot-api-manager/crates/dropshot-api-manager-types" }
 #
 # [patch."https://github.com/oxidecomputer/omicron"]
 # internal-dns = { path = "../omicron/internal-dns" }

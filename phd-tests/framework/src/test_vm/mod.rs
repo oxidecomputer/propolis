@@ -698,9 +698,7 @@ impl TestVm {
                 Ok(())
             } else {
                 Err(backoff::Error::transient(anyhow!(
-                    "not in desired state yet: current {:?}, target {:?}",
-                    current,
-                    target
+                    "not in desired state yet: current {current:?}, target {target:?}"
                 )))
             }
         };
@@ -1102,8 +1100,7 @@ async fn try_ensure_vm_destroyed(client: &Client) {
         match client.instance_get().send().await.map(|r| r.instance.state) {
             Ok(InstanceState::Destroyed) => Ok(()),
             Ok(state) => Err(backoff::Error::transient(anyhow::anyhow!(
-                "instance not destroyed yet (state: {:?})",
-                state
+                "instance not destroyed yet (state: {state:?})"
             ))),
             Err(error) => {
                 error!(
