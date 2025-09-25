@@ -2629,12 +2629,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "inventory"
-version = "0.3.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f958d3d68f4167080a18141e10381e7634563984a537f2a49a30fd8e53ac5767"
-
-[[package]]
 name = "io-uring"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2904,6 +2898,26 @@ name = "linked-hash-map"
 version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0717cef1bc8b636c6e1c1bbdefc09e6322da8a9321966e8928ef80d20f7f770f"
+
+[[package]]
+name = "linkme"
+version = "0.3.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1b1703c00b2a6a70738920544aa51652532cacddfec2e162d2e29eae01e665c"
+dependencies = [
+ "linkme-impl",
+]
+
+[[package]]
+name = "linkme-impl"
+version = "0.3.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04d55ca5d5a14363da83bf3c33874b8feaa34653e760d5216d7ef9829c88001a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.101",
+]
 
 [[package]]
 name = "linux-raw-sys"
@@ -4172,7 +4186,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures",
- "inventory",
+ "linkme",
  "phd-framework",
  "phd-testcase-macros",
  "thiserror 1.0.64",
@@ -4182,6 +4196,7 @@ dependencies = [
 name = "phd-testcase-macros"
 version = "0.1.0"
 dependencies = [
+ "heck 0.5.0",
  "proc-macro-error",
  "proc-macro2",
  "quote",
@@ -4201,6 +4216,7 @@ dependencies = [
  "futures",
  "http",
  "itertools 0.13.0",
+ "linkme",
  "omicron-common",
  "oximeter",
  "oximeter-producer",

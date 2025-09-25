@@ -2,9 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use heck::ToShoutySnakeCase;
 use proc_macro::TokenStream;
 use proc_macro_error::{abort, proc_macro_error};
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{parse_macro_input, spanned::Spanned, ItemFn};
 
 /// The macro for labeling PHD testcases.
@@ -24,14 +25,14 @@ pub fn phd_testcase(_attrib: TokenStream, input: TokenStream) -> TokenStream {
     // itself regardless of where it's located.
     let fn_ident = item_fn.sig.ident.clone();
     let fn_name = fn_ident.to_string();
+    let static_ident = format_ident!("{}", fn_name.to_shouty_snake_case());
     let submit: proc_macro2::TokenStream = quote! {
-        phd_testcase::inventory_submit! {
-            phd_testcase::TestCase::new(
-                module_path!(),
-                #fn_name,
-                phd_testcase::TestFunction { f: |ctx| Box::pin(#fn_ident(ctx)) }
-            )
-        }
+        #[linkme::distributed_slice(phd_testcase::TEST_CASES)]
+        static #static_ident: phd_testcase::TestCase = phd_testcase::TestCase::new(
+            module_path!(),
+            #fn_name,
+            phd_testcase::TestFunction { f: |ctx| Box::pin(#fn_ident(ctx)) }
+        );
     };
 
     if item_fn.sig.asyncness.is_none() {

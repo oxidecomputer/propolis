@@ -17,6 +17,7 @@ dropshot.workspace = true
 futures.workspace = true
 http.workspace = true
 itertools.workspace = true
+linkme.workspace = true
 omicron-common.workspace = true
 oximeter-producer.workspace = true
 oximeter.workspace = true
