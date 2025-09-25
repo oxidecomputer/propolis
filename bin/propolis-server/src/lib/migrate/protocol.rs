@@ -43,8 +43,7 @@ impl TryFrom<ProtocolParts> for Protocol {
                 Self::RonV0
             }
             _ => anyhow::bail!(format!(
-                "no protocol matching definition: {:?}",
-                value
+                "no protocol matching definition: {value:?}"
             )),
         };
 

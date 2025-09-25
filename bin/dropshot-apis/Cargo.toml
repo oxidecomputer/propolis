@@ -12,6 +12,3 @@ dropshot-api-manager-types.workspace = true
 dropshot-api-manager.workspace = true
 propolis-server-api.workspace = true
 semver.workspace = true
-
-[lints]
-workspace = true

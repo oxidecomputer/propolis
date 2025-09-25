@@ -40,8 +40,6 @@ panic = "abort"
 [profile.release]
 panic = "abort"
 
-[workspace.lints]
-
 [workspace.dependencies]
 # Internal crates
 bhyve_api = { path = "crates/bhyve-api" }

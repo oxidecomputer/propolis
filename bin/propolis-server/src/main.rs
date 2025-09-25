@@ -173,7 +173,7 @@ fn run_server(
         Arc::new(context),
         &log,
     )
-    .map_err(|error| anyhow!("Failed to start server: {}", error))?
+    .map_err(|error| anyhow!("Failed to start server: {error}"))?
     .start();
 
     let result = api_runtime.block_on(server);
@@ -183,7 +183,7 @@ fn run_server(
         api_runtime.block_on(async { vnc.halt().await });
     }
 
-    result.map_err(|e| anyhow!("Server exited with an error: {}", e))
+    result.map_err(|e| anyhow!("Server exited with an error: {e}"))
 }
 
 fn build_logger(level: slog::Level) -> slog::Logger {
