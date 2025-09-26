@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashSet};
 use propolis_api_types::instance_spec::{
     components::{
         board::Board as InstanceSpecBoard,
-        devices::{PciPciBridge, SerialPortNumber},
+        devices::{PciPciBridge, SerialPortNumber, UsbDevice, XhciController},
     },
     PciPath, SpecKey,
 };
@@ -65,6 +65,9 @@ pub(crate) enum SpecBuilderError {
 
     #[error("failed to read default CPUID settings from the host")]
     DefaultCpuidReadFailed(#[from] cpuid_utils::host::GetHostCpuidError),
+
+    #[error("a USB device is already attached to xHC {0} root hub port {1}")]
+    UsbPortInUse(SpecKey, u8),
 }
 
 #[derive(Debug, Default)]
@@ -72,6 +75,7 @@ pub(crate) struct SpecBuilder {
     spec: super::Spec,
     pci_paths: BTreeSet<PciPath>,
     serial_ports: HashSet<SerialPortNumber>,
+    xhc_usb_ports: BTreeSet<(SpecKey, u8)>,
     component_names: BTreeSet<SpecKey>,
 }
 
@@ -150,6 +154,23 @@ impl SpecBuilder {
             Err(SpecBuilderError::PciPathInUse(pci_path))
         } else {
             self.pci_paths.insert(pci_path);
+            Ok(())
+        }
+    }
+
+    fn register_usb_device(
+        &mut self,
+        usbdev: &UsbDevice,
+    ) -> Result<(), SpecBuilderError> {
+        // slightly awkward: we have to take a ref of an owned tuple for
+        // .contains() below, and in either case we need an owned SpecKey,
+        // so we'll just clone it once here
+        let xhc_and_port =
+            (usbdev.xhc_device.to_owned(), usbdev.root_hub_port_num);
+        if self.xhc_usb_ports.contains(&xhc_and_port) {
+            Err(SpecBuilderError::UsbPortInUse(xhc_and_port.0, xhc_and_port.1))
+        } else {
+            self.xhc_usb_ports.insert(xhc_and_port);
             Ok(())
         }
     }
@@ -352,6 +373,26 @@ impl SpecBuilder {
 
         let _old = self.spec.softnpu.ports.insert(port_name, port);
         assert!(_old.is_none());
+        Ok(self)
+    }
+
+    pub fn add_xhci_controller(
+        &mut self,
+        device_id: SpecKey,
+        xhc: XhciController,
+    ) -> Result<&Self, SpecBuilderError> {
+        self.register_pci_device(xhc.pci_path)?;
+        self.spec.xhcs.insert(device_id, xhc);
+        Ok(self)
+    }
+
+    pub fn add_usb_device(
+        &mut self,
+        device_id: SpecKey,
+        usbdev: UsbDevice,
+    ) -> Result<&Self, SpecBuilderError> {
+        self.register_usb_device(&usbdev)?;
+        self.spec.usbdevs.insert(device_id, usbdev);
         Ok(self)
     }
 
