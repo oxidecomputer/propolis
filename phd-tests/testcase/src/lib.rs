@@ -3,7 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 pub use anyhow::{Context, Result};
-pub use inventory::submit as inventory_submit;
 pub use phd_framework;
 pub use phd_testcase_macros::*;
 use thiserror::Error;
@@ -80,10 +79,11 @@ impl TestCase {
     }
 }
 
-inventory::collect!(TestCase);
+#[linkme::distributed_slice]
+pub static TEST_CASES: [TestCase];
 
 pub fn all_test_cases() -> impl Iterator<Item = &'static TestCase> {
-    inventory::iter::<TestCase>.into_iter()
+    TEST_CASES.into_iter()
 }
 
 /// Returns an iterator over the subset of tests for which (a) the fully
@@ -93,7 +93,7 @@ pub fn filtered_test_cases<'rule>(
     must_include: &'rule [String],
     must_exclude: &'rule [String],
 ) -> impl Iterator<Item = &'static TestCase> + 'rule {
-    inventory::iter::<TestCase>.into_iter().filter(|tc| {
+    TEST_CASES.into_iter().filter(|tc| {
         must_include.iter().all(|inc| tc.fully_qualified_name().contains(inc))
             && must_exclude
                 .iter()

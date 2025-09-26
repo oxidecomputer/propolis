@@ -9,7 +9,7 @@ doctest = false
 
 [dependencies]
 futures.workspace = true
-inventory.workspace = true
+linkme.workspace = true
 thiserror.workspace = true
 phd-framework.workspace = true
 phd-testcase-macros.workspace = true

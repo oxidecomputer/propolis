@@ -28,7 +28,7 @@ use crate::migrate::codec;
 
 // Validates the parameters from a fetch, offer, or xfer.
 pub(crate) fn validate_bitmap(start: u64, end: u64, bits: &[u8]) -> bool {
-    if start % 4096 != 0 || end % 4096 != 0 {
+    if !start.is_multiple_of(4096) || !end.is_multiple_of(4096) {
         return false;
     }
     if end <= start {
