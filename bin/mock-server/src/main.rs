@@ -91,11 +91,11 @@ async fn run_server(
         Arc::new(context),
         &log,
     )
-    .map_err(|error| anyhow!("Failed to start server: {}", error))?
+    .map_err(|error| anyhow!("Failed to start server: {error}"))?
     .start();
 
     let server_res = server.await;
-    server_res.map_err(|e| anyhow!("Server exited with an error: {}", e))
+    server_res.map_err(|e| anyhow!("Server exited with an error: {e}"))
 }
 
 #[tokio::main]
@@ -105,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
 
     match args {
         Args::OpenApi => run_openapi()
-            .map_err(|e| anyhow!("Cannot generate OpenAPI spec: {}", e)),
+            .map_err(|e| anyhow!("Cannot generate OpenAPI spec: {e}")),
         Args::Run { cfg: _cfg, propolis_addr, metric_addr } => {
             // Dropshot configuration.
             let config_dropshot = ConfigDropshot {
