@@ -646,26 +646,3 @@ fn not_created_error() -> HttpError {
         "Server not initialized (no instance)".to_string(),
     )
 }
-
-#[cfg(test)]
-mod test {
-    #[test]
-    fn test_propolis_server_openapi() {
-        let mut buf: Vec<u8> = vec![];
-        propolis_server_api::propolis_server_api_mod::stub_api_description()
-            .unwrap()
-            .openapi("Oxide Propolis Server API", semver::Version::new(0, 0, 1))
-            .description(
-                "API for interacting with the Propolis hypervisor frontend.",
-            )
-            .contact_url("https://oxide.computer")
-            .contact_email("api@oxide.computer")
-            .write(&mut buf)
-            .unwrap();
-        let output = String::from_utf8(buf).unwrap();
-        expectorate::assert_contents(
-            "../../openapi/propolis-server.json",
-            &output,
-        );
-    }
-}

@@ -114,8 +114,7 @@ pub(crate) fn save(
         let device_data = match dev.migrate() {
             Migrator::NonMigratable => {
                 anyhow::bail!(
-                    "Can't snapshot instance with non-migratable device ({})",
-                    name
+                    "Can't snapshot instance with non-migratable device ({name})"
                 );
             }
             Migrator::Empty => continue,
@@ -343,13 +342,12 @@ pub(crate) fn restore(
     for snap_dev in device_data {
         let name = &snap_dev.instance_name;
         let dev = guard.inventory.devs.get(name).ok_or_else(|| {
-            anyhow::anyhow!("unknown device in snapshot {}", name)
+            anyhow::anyhow!("unknown device in snapshot {name}")
         })?;
 
         match dev.migrate() {
             Migrator::NonMigratable => anyhow::bail!(
-                "can't restore snapshot with non-migratable device ({})",
-                name
+                "can't restore snapshot with non-migratable device ({name})"
             ),
             Migrator::Empty => {
                 // There really shouldn't be a payload for this
@@ -413,9 +411,7 @@ pub(crate) fn restore(
                 let remain = offer.remaining().count();
                 if remain > 0 {
                     return Err(anyhow::anyhow!(
-                        "Device {} had {} remaining payload(s)",
-                        name,
-                        remain
+                        "Device {name} had {remain} remaining payload(s)"
                     ));
                 }
             }

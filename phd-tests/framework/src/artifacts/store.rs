@@ -61,7 +61,7 @@ impl StoredArtifact {
             if let Some(digest) = sha256 {
                 file_hash_equals(&path, digest)?;
             } else if !path.is_file() {
-                anyhow::bail!("artifact path {} is not a file", path);
+                anyhow::bail!("artifact path {path} is not a file");
             }
 
             // The file is in the right place and has the right hash (if that
@@ -98,8 +98,7 @@ impl StoredArtifact {
             }
         } else if maybe_path.exists() {
             anyhow::bail!(
-                "artifact path {} already exists but isn't a file",
-                maybe_path
+                "artifact path {maybe_path} already exists but isn't a file"
             );
         }
 
@@ -152,8 +151,7 @@ impl StoredArtifact {
             // This artifact is a tarball, and a file must be extracted from it.
             let filename = untar_path.file_name().ok_or_else(|| {
                 anyhow::anyhow!(
-                    "untar path '{}' has no file name component",
-                    untar_path
+                    "untar path '{untar_path}' has no file name component"
                 )
             })?;
             let extracted_path = path.with_file_name(filename);
@@ -358,8 +356,7 @@ impl Store {
                 Ok((path, kind))
             }
             _ => Err(anyhow::anyhow!(
-                "artifact {} is not a guest OS image",
-                artifact_name
+                "artifact {artifact_name} is not a guest OS image"
             )),
         }
     }
@@ -375,8 +372,7 @@ impl Store {
                 guard.ensure(&self.local_dir, &self.downloader).await
             }
             _ => Err(anyhow::anyhow!(
-                "artifact {} is not a bootrom",
-                artifact_name
+                "artifact {artifact_name} is not a bootrom"
             )),
         }
     }
@@ -392,8 +388,7 @@ impl Store {
                 guard.ensure(&self.local_dir, &self.downloader).await
             }
             _ => Err(anyhow::anyhow!(
-                "artifact {} is not a Propolis server",
-                artifact_name
+                "artifact {artifact_name} is not a Propolis server"
             )),
         }
     }
@@ -416,7 +411,7 @@ impl Store {
         name: &str,
     ) -> anyhow::Result<&Mutex<StoredArtifact>> {
         self.artifacts.get(name).ok_or_else(|| {
-            anyhow::anyhow!("artifact {} not found in store", name)
+            anyhow::anyhow!("artifact {name} not found in store")
         })
     }
 
@@ -435,14 +430,12 @@ impl Store {
         let full_path = cmd.canonicalize_utf8()?;
         let filename = full_path.file_name().ok_or_else(|| {
             anyhow::anyhow!(
-                "local artifact command '{}' contains no file component",
-                cmd
+                "local artifact command '{cmd}' contains no file component"
             )
         })?;
         let dir = full_path.parent().ok_or_else(|| {
             anyhow::anyhow!(
-                "canonicalized local artifact path '{}' has no directory component",
-                full_path
+                "canonicalized local artifact path '{full_path}' has no directory component"
             )
         })?;
 
