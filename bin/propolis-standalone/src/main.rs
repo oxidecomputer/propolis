@@ -234,7 +234,7 @@ impl Inventory {
     fn destroy(&mut self) {
         // Detach all block backends from their devices
         for backend in self.block.values() {
-            let _ = backend.attachment().detach();
+            backend.attachment().detach();
         }
 
         // Drop all refs in the hopes that things can clean up after themselves
@@ -321,7 +321,7 @@ impl Instance {
         state: State,
         guard: &MutexGuard<InstState>,
         first_boot: bool,
-        log: &slog::Logger,
+        _log: &slog::Logger,
     ) {
         for (name, device) in guard.inventory.devs.iter() {
             match state {
@@ -368,16 +368,9 @@ impl Instance {
             }
             State::Halt => {
                 tokio::runtime::Handle::current().block_on(async {
-                    for (name, be) in guard.inventory.block.iter() {
+                    for (_name, be) in guard.inventory.block.iter() {
                         be.stop().await;
-                        if let Err(err) = be.detach() {
-                            slog::error!(
-                                log,
-                                "Error during detach of block backend {}: {:?}",
-                                name,
-                                err
-                            );
-                        }
+                        be.attachment().detach();
                     }
                 });
             }
@@ -1213,7 +1206,8 @@ fn setup_instance(
                         .register_instance(&vioblk, &bdf.to_string());
                     guard.inventory.register_block(&backend, name);
 
-                    block::attach(vioblk.clone(), backend).unwrap();
+                    block::attach(&vioblk.block_attach, backend.attachment())
+                        .unwrap();
                     chipset_pci_attach(bdf, vioblk);
                 }
                 "pci-virtio-viona" => {
@@ -1272,7 +1266,8 @@ fn setup_instance(
                     guard.inventory.register_instance(&nvme, &bdf.to_string());
                     guard.inventory.register_block(&backend, name);
 
-                    block::attach(nvme.clone(), backend).unwrap();
+                    block::attach(&nvme.block_attach, backend.attachment())
+                        .unwrap();
                     chipset_pci_attach(bdf, nvme);
                 }
                 qemu::pvpanic::DEVICE_NAME => {
