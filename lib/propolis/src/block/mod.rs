@@ -136,16 +136,22 @@ impl Result {
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 pub struct QueueId(u8);
 impl QueueId {
+    /// Arbitrary limit for per-device queues.
+    /// Sized to match [attachment::Bitmap] capacity
     pub const MAX_QUEUES: usize = 64;
+
     pub const MAX: Self = Self(Self::MAX_QUEUES as u8);
 
     /// Get the next sequential QueueId, wrapping around at a maximum
     fn next(self, max: usize) -> Self {
-        assert!(max != 0 && max <= Self::MAX_QUEUES);
-        if self.0 + 1 >= max as u8 {
+        let max: u8 = max.try_into().expect("max should be in-range");
+        assert!(max != 0 && max <= Self::MAX.0);
+
+        let next = self.0.wrapping_add(1);
+        if next >= max {
             Self(0)
         } else {
-            Self(self.0 + 1)
+            Self(next)
         }
     }
 }

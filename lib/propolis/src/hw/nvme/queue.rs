@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::collections::{HashMap, HashSet};
-use std::fmt::Debug;
+use std::fmt::{self, Debug};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -648,14 +648,8 @@ impl CompQueue {
     }
 
     /// Add a new entry to the Completion Queue while consuming a `Permit`.
-    fn push(
-        &self,
-        comp: Completion,
-        permit: Permit,
-        sq: &SubQueue,
-        mem: &MemCtx,
-    ) {
-        let mut cqe = CompletionQueueEntry::new(comp, permit.cid);
+    fn push(&self, comp: Completion, cid: u16, sq: &SubQueue, mem: &MemCtx) {
+        let mut cqe = CompletionQueueEntry::new(comp, cid);
         sq.annotate_completion(&mut cqe);
 
         let mut guard = self.state.lock();
@@ -776,7 +770,7 @@ impl ProtoPermit {
             sq: self.sq,
             sqid: self.sqid,
             cid,
-            completed: false,
+            _nodrop: NoDropPermit,
         }
     }
 
@@ -794,7 +788,6 @@ impl ProtoPermit {
 
 /// A permit reserving capacity to push a [CompletionQueueEntry] into a
 /// Completion Queue for a command submitted to the device.
-#[derive(Debug)]
 pub struct Permit {
     /// The corresponding Completion Queue for which we have a permit.
     cq: Weak<CompQueue>,
@@ -809,28 +802,28 @@ pub struct Permit {
     /// Completion Queue Entry.
     cid: u16,
 
-    /// Track that `complete()` was actually called
-    completed: bool,
+    /// Marker to ensure holder calls [Permit::complete()].
+    _nodrop: NoDropPermit,
 }
 
 impl Permit {
     /// Consume the permit by placing an entry into the Completion Queue.
-    pub fn complete(mut self, comp: Completion, mem: Option<&MemCtx>) {
-        assert!(!self.completed);
-        self.completed = true;
+    pub fn complete(self, comp: Completion, mem: Option<&MemCtx>) {
+        let Permit { cq, sq, cid, _nodrop, .. } = self;
+        std::mem::forget(_nodrop);
 
-        let cq = match self.cq.upgrade() {
+        let cq = match cq.upgrade() {
             Some(cq) => cq,
             None => {
                 // The CQ has since been deleted so no way to complete this
                 // request nor to return the permit.
-                debug_assert!(self.sq.upgrade().is_none());
+                debug_assert!(sq.upgrade().is_none());
                 return;
             }
         };
 
-        if let (Some(sq), Some(mem)) = (self.sq.upgrade(), mem) {
-            cq.push(comp, self, &sq, mem);
+        if let (Some(sq), Some(mem)) = (sq.upgrade(), mem) {
+            cq.push(comp, cid, &sq, mem);
             cq.fire_interrupt();
         } else {
             // The SQ has since been deleted (so the request has already
@@ -861,10 +854,12 @@ impl Permit {
     /// only to be used for excercising the Submission and Completion Queues in
     /// unit tests.
     #[cfg(test)]
-    fn test_complete(mut self, sq: &SubQueue, mem: &MemCtx) {
-        self.completed = true;
-        if let Some(cq) = self.cq.upgrade() {
-            cq.push(Completion::success(), self, sq, mem);
+    fn test_complete(self, sq: &SubQueue, mem: &MemCtx) {
+        let Permit { cq, cid, _nodrop, .. } = self;
+        std::mem::forget(_nodrop);
+
+        if let Some(cq) = cq.upgrade() {
+            cq.push(Completion::success(), cid, sq, mem);
         }
     }
 
@@ -872,17 +867,28 @@ impl Permit {
     /// drive them through to completion.  Allow them to bypass the
     /// ensure-this-permit-is-completed check in [`Drop`].
     #[cfg(test)]
-    fn ignore(mut self) -> Self {
-        self.completed = true;
-        self
+    fn ignore(self) {
+        let Permit { _nodrop, .. } = self;
+        std::mem::forget(_nodrop);
     }
 }
-impl Drop for Permit {
+impl Debug for Permit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Permit")
+            .field("sq", &self.sq)
+            .field("cq", &self.cq)
+            .field("sqid", &self.sqid)
+            .field("cid", &self.cid)
+            .finish()
+    }
+}
+
+/// Marker struct to ensure that [Permit] consumers call
+/// [complete()](Permit::complete()), rather than silently dropping it.
+struct NoDropPermit;
+impl Drop for NoDropPermit {
     fn drop(&mut self) {
-        assert!(
-            self.completed,
-            "permit was dropped without calling complete()"
-        );
+        panic!("Permit should be complete()-ed before drop");
     }
 }
 

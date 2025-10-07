@@ -187,6 +187,7 @@ impl NvmeCtrl {
                 // Convert from 0's based
                 size: u32::from(self.ctrl.aqa.acqs()) + 1,
             },
+            true,
             0,
             nvme,
             mem,
@@ -198,6 +199,7 @@ impl NvmeCtrl {
                 // Convert from 0's based
                 size: u32::from(self.ctrl.aqa.asqs()) + 1,
             },
+            true,
             queue::ADMIN_QUEUE_ID,
             nvme,
             mem,
@@ -205,18 +207,29 @@ impl NvmeCtrl {
         Ok(())
     }
 
-    /// Creates and stores a new completion queue ([`CompQueue`]) for the controller.
+    /// Creates a new [completion queue](CompQueue) for the controller.
     ///
-    /// The specified `cqid` must not already be in use by another completion queue.
+    /// The CQ ID must not already be in use.  For the admin queue, it must be
+    /// 0, while for IO queues, it must _not_ be 0.  This is explicitly enforced
+    /// through the `is_admin` argument.
     fn create_cq(
         &mut self,
         params: queue::CreateParams,
+        is_admin: bool,
         iv: u16,
         nvme: &PciNvme,
         mem: &MemCtx,
     ) -> Result<Arc<CompQueue>, NvmeError> {
         let cqid = params.id;
         if (cqid as usize) >= MAX_NUM_QUEUES {
+            return Err(NvmeError::InvalidCompQueue(cqid));
+        }
+        if is_admin {
+            // Creating admin queue(s) with wrong ID is programmer error
+            assert_eq!(cqid, 0);
+        } else if cqid == 0 {
+            // Guest requests to create an IO queue with the ID belonging to the
+            // admin queue is explicitly disallowed.
             return Err(NvmeError::InvalidCompQueue(cqid));
         }
         if self.cqs[cqid as usize].is_some() {
@@ -233,13 +246,16 @@ impl NvmeCtrl {
         Ok(cq)
     }
 
-    /// Creates and stores a new submission queue ([`SubQueue`]) for the controller.
+    /// Creates a new [submission queue](SubQueue) for the controller.
     ///
-    /// The specified `sqid` must not already be in use by another submission queue.
-    /// The corresponding completion queue specified (`cqid`) must already exist.
+    /// The SQ ID must not already be in use.  For the admin queue, it must be
+    /// 0, while for IO queues, it must _not_ be 0.  This is explicitly enforced
+    /// through the `is_admin` argument.  The `cqid` to which this SQ will be
+    /// associated must correspond to an existing CQ.
     fn create_sq(
         &mut self,
         params: queue::CreateParams,
+        is_admin: bool,
         cqid: QueueId,
         nvme: &PciNvme,
         mem: &MemCtx,
@@ -247,6 +263,23 @@ impl NvmeCtrl {
         let sqid = params.id;
         if (sqid as usize) >= MAX_NUM_QUEUES {
             return Err(NvmeError::InvalidSubQueue(sqid));
+        }
+        if is_admin {
+            // Creating admin queue(s) with wrong ID is programmer error
+            assert_eq!(sqid, 0);
+            // So too is associating an admin SQ to an IO CQ
+            assert_eq!(cqid, 0);
+        } else {
+            if sqid == 0 {
+                // Guest requests to create an IO queue with the ID belonging to
+                // the admin queue is not allowed.
+                return Err(NvmeError::InvalidSubQueue(cqid));
+            }
+            if cqid == 0 {
+                // Guest requests to associate the to-be-created IO SQ with an
+                // admin CQ is not allowed.
+                return Err(NvmeError::InvalidCompQueue(cqid));
+            }
         }
         if self.sqs[sqid as usize].is_some() {
             return Err(NvmeError::SubQueueAlreadyExists(sqid));
@@ -329,6 +362,20 @@ impl NvmeCtrl {
     /// Returns a reference to the Admin [`SubQueue`].
     fn get_admin_sq(&self) -> Result<Arc<SubQueue>, NvmeError> {
         self.get_sq(queue::ADMIN_QUEUE_ID)
+    }
+
+    /// Perform necessary setup tasks after an IO SQ has been created.
+    fn io_sq_post_create(&self, nvme: &PciNvme, sq: Arc<SubQueue>) {
+        let sqid = sq.id();
+        assert!(sqid != 0, "attempting IO SQ setup on admin SQ");
+        sq.update_params(self.transfer_params());
+        nvme.block_attach.queue_associate(
+            queue::sqid_to_block_qid(sqid),
+            requests::NvmeBlockQueue::new(
+                sq,
+                nvme.pci_state.acc_mem.child(Some(format!("SubQueue-{sqid}"))),
+            ),
+        );
     }
 
     /// Configure Controller
@@ -510,14 +557,16 @@ impl NvmeCtrl {
         self.ctrl.admin_cq_base = state.acq_base;
         self.ctrl.admin_sq_base = state.asq_base;
 
-        for cq in state.cqs {
+        for cqi in state.cqs {
+            let is_admin_queue = cqi.id == 0;
             self.create_cq(
                 queue::CreateParams {
-                    id: cq.id,
-                    base: GuestAddr(cq.base),
-                    size: cq.size,
+                    id: cqi.id,
+                    base: GuestAddr(cqi.base),
+                    size: cqi.size,
                 },
-                cq.iv,
+                is_admin_queue,
+                cqi.iv,
                 nvme,
                 mem,
             )
@@ -527,27 +576,34 @@ impl NvmeCtrl {
                     e
                 ))
             })?
-            .import(cq)?;
+            .import(cqi)?;
         }
 
-        for sq in state.sqs {
-            self.create_sq(
-                queue::CreateParams {
-                    id: sq.id,
-                    base: GuestAddr(sq.base),
-                    size: sq.size,
-                },
-                sq.cq_id,
-                nvme,
-                mem,
-            )
-            .map_err(|e| {
-                MigrateStateError::ImportFailed(format!(
-                    "NVMe: failed to create SQ: {}",
-                    e
-                ))
-            })?
-            .import(sq)?;
+        for sqi in state.sqs {
+            let is_admin_queue = sqi.id == 0;
+            let sq = self
+                .create_sq(
+                    queue::CreateParams {
+                        id: sqi.id,
+                        base: GuestAddr(sqi.base),
+                        size: sqi.size,
+                    },
+                    is_admin_queue,
+                    sqi.cq_id,
+                    nvme,
+                    mem,
+                )
+                .map_err(|e| {
+                    MigrateStateError::ImportFailed(format!(
+                        "NVMe: failed to create SQ: {}",
+                        e
+                    ))
+                })?;
+            sq.import(sqi)?;
+
+            if !is_admin_queue {
+                self.io_sq_post_create(nvme, sq);
+            }
         }
 
         Ok(())
@@ -574,6 +630,11 @@ impl NvmeQueues {
             queue,
         );
 
+        // We should either be filling an empty slot with a new SQ (during queue
+        // creation) or vacating a populated slot (during queue deletion).
+        //
+        // Swapping an existing SQ for a differing one in a single step would be
+        // an unexpected operation.
         if replace_some {
             assert!(old.is_none(), "SQ slot should be empty");
         } else {
@@ -595,6 +656,7 @@ impl NvmeQueues {
             queue,
         );
 
+        // Same justification in set_sq_slot() above applies to CQs as well
         if replace_some {
             assert!(old.is_none(), "CQ slot should be empty");
         } else {
@@ -632,8 +694,9 @@ pub struct PciNvme {
     /// NVMe Controller
     state: Mutex<NvmeCtrl>,
 
-    /// Controller-enabled state, duplicated outside the protection of the
-    /// [NvmeCtrl] lock.
+    /// Duplicate of the controller-enabled state, but not requiring locking
+    /// [NvmeCtrl] to read.  It is used to gate per-queue doorbell accesses
+    /// without stacking them up behind one central lock.
     is_enabled: AtomicBool,
 
     /// Access to NVMe Submission and Completion queues.

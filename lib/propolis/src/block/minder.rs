@@ -49,17 +49,17 @@ pub trait DeviceQueue: Send + Sync + 'static {
 /// A wrapper for an IO [Request] bearing necessary tracking information to
 /// issue its completion back to the [queue](DeviceQueue) from which it came.
 ///
-/// A panic will occur an [DeviceRequest] instance is dropped without calling
+/// A panic will occur a `DeviceRequest` instance is dropped without calling
 /// [complete()](DeviceRequest::complete()).
 pub struct DeviceRequest {
     req: Request,
     id: ReqId,
-    completed: bool,
     source: Weak<QueueMinder>,
+    _nodrop: NoDropDevReq,
 }
 impl DeviceRequest {
     fn new(id: ReqId, req: Request, source: Weak<QueueMinder>) -> Self {
-        Self { req, id, completed: false, source }
+        Self { req, id, source, _nodrop: NoDropDevReq }
     }
 
     /// Get the underlying block [Request]
@@ -68,19 +68,22 @@ impl DeviceRequest {
     }
 
     /// Issue a completion for this [Request].
-    pub fn complete(mut self, result: super::Result) {
-        self.completed = true;
-        if let Some(src) = self.source.upgrade() {
-            src.complete(self.id, result);
+    pub fn complete(self, result: super::Result) {
+        let DeviceRequest { id, source, _nodrop, .. } = self;
+        std::mem::forget(_nodrop);
+
+        if let Some(src) = source.upgrade() {
+            src.complete(id, result);
         }
     }
 }
-impl Drop for DeviceRequest {
+
+/// Marker struct to ensure that [DeviceRequest] consumers call
+/// [complete()](DeviceRequest::complete()), rather than silently dropping it.
+struct NoDropDevReq;
+impl Drop for NoDropDevReq {
     fn drop(&mut self) {
-        assert!(
-            self.completed,
-            "DeviceRequest should be completed before drop"
-        );
+        panic!("DeviceRequest should be complete()-ed before drop");
     }
 }
 
@@ -346,16 +349,14 @@ impl QueueMinder {
         self.notify.notify_waiters();
     }
 
-    /// Emit [NoneInFlight] [Future] which waits until there are no requests
-    /// being processed by an attached backend.  An [Ok] result from this future
-    /// indicates that all requests have finished their
-    /// [DeviceQueue::complete()] call.
     pub(crate) fn none_in_flight(&self) -> NoneInFlight<'_> {
         NoneInFlight { minder: self, wait: self.notify.notified() }
     }
 }
 
 pin_project! {
+    /// A [Future] which resolves to [Ready](Poll::Ready) when there are no
+    /// requests being processed by an attached backend.
     pub(crate) struct NoneInFlight<'a> {
         minder: &'a QueueMinder,
         #[pin]
@@ -387,7 +388,7 @@ impl Future for NoneInFlight<'_> {
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord)]
 pub struct ReqId(u64);
 impl ReqId {
-    const START: Self = ReqId(1);
+    const START: Self = ReqId(0);
 
     fn advance(&mut self) {
         self.0 += 1;

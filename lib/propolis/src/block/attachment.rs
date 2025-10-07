@@ -40,7 +40,7 @@ use tokio::sync::futures::Notified;
 use tokio::sync::Notify;
 
 /// Static for generating unique block [DeviceId]s with a process
-static NEXT_DEVICE_ID: AtomicU32 = AtomicU32::new(1);
+static NEXT_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
 
 pub const MAX_WORKERS: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 
@@ -122,7 +122,7 @@ struct QueueCollection {
 impl QueueCollection {
     fn new(max_queues: NonZeroUsize, devid: DeviceId) -> Arc<Self> {
         let count = max_queues.get();
-        assert!(count < MAX_WORKERS.get());
+        assert!(count <= MAX_WORKERS.get());
         let queues =
             (0..count).map(|n| QueueSlot::new(QueueId::from(n))).collect();
 
@@ -270,6 +270,15 @@ pin_project! {
         unordered: FuturesUnordered<NoneInFlight<'static>>,
         loaded: bool,
     }
+    impl PinnedDrop for NoneProcessing {
+        fn drop(this: Pin<&mut Self>) {
+            let mut this = this.project();
+
+            // Ensure that all references into `minders` held by NoneInFlight
+            // futures are dropped before the `minders` contents themselves.
+            this.unordered.clear();
+        }
+    }
 }
 impl Future for NoneProcessing {
     type Output = ();
@@ -285,6 +294,12 @@ impl Future for NoneProcessing {
                 // lifetime of this future.  With that promised to us, we can
                 // extend the lifetime of the QueueMinder references long enough
                 // to run the NoneInFlight futures.
+                //
+                // The contents of `minders` will remain pinned and untouched
+                // until NoneProcessing is dropped.  At that point, any
+                // lingering references held by the FuturesUnordered will be
+                // explicitly released in PinnedDrop::drop(), ensuring they do
+                // not outlive MinderRefs.
                 let extended: &'static QueueMinder =
                     unsafe { std::mem::transmute(minder) };
 
@@ -308,6 +323,11 @@ impl Future for NoneProcessing {
     }
 }
 
+/// A pair of weak references to inner state of a device and backend which are
+/// attached to one another.
+///
+/// Attachment and detachment requires taking locks in both the device and
+/// backend, and such lock is done in that specific order to avoid deadlock.
 #[derive(Clone)]
 struct AttachPair {
     dev_attach: Weak<DeviceAttachInner>,
@@ -355,6 +375,9 @@ impl AttachPair {
         let (Some(dev), Some(be)) =
             (self.dev_attach.upgrade(), self.backend_attach.upgrade())
         else {
+            // If the drop handler has run for the device or backend, resulting
+            // in its Weak pointer being unable to upgrade, then a detach is
+            // already in progress, and we can let that run to completion.
             return;
         };
 
@@ -872,7 +895,7 @@ pub(crate) struct WorkerCollection {
 impl WorkerCollection {
     fn new(max_workers: NonZeroUsize) -> Arc<Self> {
         let max_workers = max_workers.get();
-        assert!(max_workers < MAX_WORKERS.get());
+        assert!(max_workers <= MAX_WORKERS.get());
         let workers: Vec<_> = (0..max_workers)
             .map(|id| WorkerSlot::new(WorkerId::from(id)))
             .collect();

@@ -9,7 +9,6 @@ use crate::vmm::MemCtx;
 
 use super::bits::*;
 use super::queue::{sqid_to_block_qid, QueueId, ADMIN_QUEUE_ID};
-use super::requests::NvmeBlockQueue;
 use super::{
     cmds, NvmeCtrl, NvmeError, PciNvme, MAX_NUM_IO_QUEUES, MAX_NUM_QUEUES,
 };
@@ -77,6 +76,7 @@ impl NvmeCtrl {
                 base: GuestAddr(cmd.prp),
                 size: cmd.qsize,
             },
+            false,
             cmd.intr_vector,
             nvme,
             mem,
@@ -123,21 +123,13 @@ impl NvmeCtrl {
                 base: GuestAddr(cmd.prp),
                 size: cmd.qsize,
             },
+            false,
             cmd.cqid,
             nvme,
             mem,
         ) {
             Ok(sq) => {
-                sq.update_params(self.transfer_params());
-                nvme.block_attach.queue_associate(
-                    sqid_to_block_qid(cmd.qid),
-                    NvmeBlockQueue::new(
-                        sq,
-                        nvme.pci_state
-                            .acc_mem
-                            .child(Some(format!("SubQueue-{}", cmd.qid))),
-                    ),
-                );
+                self.io_sq_post_create(nvme, sq);
                 cmds::Completion::success()
             }
             Err(NvmeError::InvalidCompQueue(_)) => {
