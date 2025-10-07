@@ -198,9 +198,7 @@ impl DevicePath {
             }
             (ty, subtype) => {
                 bail!(
-                    "Device path type/subtype unsupported: ({:#02x}/{:#02x})",
-                    ty,
-                    subtype
+                    "Device path type/subtype unsupported: ({ty:#02x}/{subtype:#02x})"
                 );
             }
         }
@@ -238,7 +236,7 @@ impl EfiLoadOption {
 
         let path_entry = DevicePath::parse_from(&mut device_path_cursor)
             .map_err(|e| {
-                anyhow::anyhow!("unable to parse device path element: {:?}", e)
+                anyhow::anyhow!("unable to parse device path element: {e:?}")
             })?;
         let load_path = match path_entry {
             acpi_root @ DevicePath::Acpi { .. } => {
@@ -248,8 +246,7 @@ impl EfiLoadOption {
                 if !matches!(pci_device, DevicePath::Pci { .. }) {
                     bail!(
                         "expected ACPI Device Path entry to be followed by \
-                        a PCI Device Path, but was {:?}",
-                        pci_device
+                        a PCI Device Path, but was {pci_device:?}"
                     );
                 }
 
@@ -261,15 +258,14 @@ impl EfiLoadOption {
                 if !matches!(file, DevicePath::FirmwareFile { .. }) {
                     bail!(
                         "expected Firmware Volume entry to be followed by \
-                        a Firmware File, but was {:?}",
-                        file
+                        a Firmware File, but was {file:?}"
                     );
                 }
 
                 EfiLoadPath::FirmwareFile { volume, file }
             }
             other => {
-                bail!("unexpected root EFI Load Option path item: {:?}", other);
+                bail!("unexpected root EFI Load Option path item: {other:?}");
             }
         };
 
@@ -392,7 +388,7 @@ pub(crate) async fn write_efivar(
     // If something went sideways and the write failed with something like
     // `invalid argument`...
     if !res.is_empty() {
-        bail!("writing efi produced unexpected output: {}", res);
+        bail!("writing efi produced unexpected output: {res}");
     }
 
     Ok(())

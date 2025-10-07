@@ -15,6 +15,7 @@ default-members = [
   "crates/*",
   "crates/*/sys",
   "lib/*",
+  "bin/dropshot-apis",
   "bin/propolis-cli",
   "bin/propolis-server",
   "bin/propolis-standalone",
@@ -113,6 +114,8 @@ const_format = "0.2"
 crossbeam-channel = "0.5"
 ctrlc = "3.2"
 dropshot = "0.16.4"
+dropshot-api-manager = "0.2.2"
+dropshot-api-manager-types = "0.2.2"
 erased-serde = "0.4"
 errno = "0.2.8"
 escargot = "0.5.8"

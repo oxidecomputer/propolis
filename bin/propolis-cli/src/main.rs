@@ -443,9 +443,7 @@ fn resolve_host(server: &str) -> anyhow::Result<IpAddr> {
         .to_socket_addrs()?
         .map(|sock_addr| sock_addr.ip())
         .next()
-        .ok_or_else(|| {
-            anyhow!("failed to resolve server argument '{}'", server)
-        })
+        .ok_or_else(|| anyhow!("failed to resolve server argument '{server}'"))
 }
 
 /// Create a top-level logger that outputs to stderr
@@ -689,7 +687,7 @@ async fn serial(
                                     | CloseCode::Protocol
                                     | CloseCode::Size
                                     | CloseCode::Unsupported => {
-                                        anyhow::bail!("{}", reason);
+                                        anyhow::bail!("{reason}");
                                     }
                                     _ => break,
                                 }
