@@ -5546,6 +5546,7 @@ version = "0.1.0"
 dependencies = [
  "crucible-client-types",
  "dropshot",
+ "dropshot-api-manager-types",
  "propolis_api_types",
 ]
 

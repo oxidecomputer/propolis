@@ -17,7 +17,10 @@ use propolis_server::{
 
 use anyhow::{anyhow, Context};
 use clap::Parser;
-use dropshot::{ConfigDropshot, HandlerTaskMode, HttpServerStarter};
+use dropshot::{
+    ClientSpecifiesVersionInHeader, ConfigDropshot, HandlerTaskMode,
+    VersionPolicy,
+};
 use slog::{info, Logger};
 
 /// Threads to spawn for tokio runtime handling the API (dropshot, etc)
@@ -167,12 +170,19 @@ fn run_server(
 
     info!(log, "Starting server...");
 
-    let server = HttpServerStarter::new(
-        &config_dropshot,
+    let server = dropshot::ServerBuilder::new(
         server::api(),
         Arc::new(context),
-        &log,
+        log.clone(),
     )
+    .config(config_dropshot)
+    .version_policy(VersionPolicy::Dynamic(Box::new(
+        ClientSpecifiesVersionInHeader::new(
+            omicron_common::api::VERSION_HEADER,
+            propolis_server_api::latest_version(),
+        ),
+    )))
+    .build_starter()
     .map_err(|error| anyhow!("Failed to start server: {error}"))?
     .start();
 

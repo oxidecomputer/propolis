@@ -35,7 +35,9 @@ pub fn environment() -> anyhow::Result<Environment> {
 pub fn all_apis() -> anyhow::Result<ManagedApis> {
     let apis = vec![ManagedApiConfig {
         ident: "propolis-server",
-        versions: Versions::Lockstep { version: semver::Version::new(0, 0, 1) },
+        versions: Versions::Versioned {
+            supported_versions: propolis_server_api::supported_versions(),
+        },
         title: "Oxide Propolis Server API",
         metadata: ManagedApiMetadata {
             description: Some(

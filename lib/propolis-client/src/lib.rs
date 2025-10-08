@@ -35,7 +35,7 @@ pub mod instance_spec {
 pub use crucible_client_types::{CrucibleOpts, VolumeConstructionRequest};
 
 progenitor::generate_api!(
-    spec = "../../openapi/propolis-server.json",
+    spec = "../../openapi/propolis-server/propolis-server-latest.json",
     interface = Builder,
     tags = Separate,
     replace = {
