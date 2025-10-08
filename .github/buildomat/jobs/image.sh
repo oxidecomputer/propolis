@@ -26,6 +26,9 @@ set -o xtrace
 cargo --version
 rustc --version
 
+banner prerequisites
+ptime -m ./tools/install_builder_prerequisites.sh -y
+
 banner build
 
 # Enable the "omicron-build" feature to indicate this is an artifact destined

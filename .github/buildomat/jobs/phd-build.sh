@@ -27,6 +27,9 @@ outdir="/out"
 cargo --version
 rustc --version
 
+banner prerequisites
+ptime -m ./tools/install_builder_prerequisites.sh -y
+
 # Build the Propolis server binary with 'dev' profile to enable assertions that
 # should fire during tests.
 banner build-propolis

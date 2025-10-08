@@ -12,7 +12,7 @@
 #: series = "falcon"
 #: name = "propolis-server"
 #: from_output = "/work/release/propolis-server"
-#: 
+#:
 #: [[publish]]
 #: series = "falcon"
 #: name = "propolis-server.sha256.txt"
@@ -34,6 +34,9 @@ set -o xtrace
 
 cargo --version
 rustc --version
+
+banner prerequisites
+ptime -m ./tools/install_builder_prerequisites.sh -y
 
 banner check
 ptime -m cargo check --features falcon
