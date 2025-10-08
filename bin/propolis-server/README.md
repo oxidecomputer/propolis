@@ -21,4 +21,4 @@ pfexec target/debug/propolis-server <path_to_bootrom> <ip:port> <vnc_ip:port>
 The API will be served on `ip:port`. The easiest way to interact with the server
 is to use [`propolis-cli`](../propolis-cli), but you can also use tools like
 cURL to interact with the API directly. The server's OpenAPI specification is
-[checked into the repo](../../openapi/propolis-server.json).
+[checked into the repo](../../openapi/propolis-server).

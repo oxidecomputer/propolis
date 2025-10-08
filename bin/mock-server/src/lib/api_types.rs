@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 progenitor::generate_api!(
-    spec = "../../openapi/propolis-server.json",
+    spec = "../../openapi/propolis-server/propolis-server-latest.json",
     derives = [schemars::JsonSchema],
     replace = {
         SpecKey = propolis_api_types::instance_spec::SpecKey,
