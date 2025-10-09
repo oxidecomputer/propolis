@@ -7,4 +7,5 @@ edition = "2024"
 [dependencies]
 crucible-client-types.workspace = true
 dropshot.workspace = true
+dropshot-api-manager-types.workspace = true
 propolis_api_types.workspace = true
