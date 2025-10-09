@@ -189,6 +189,35 @@
         }
       }
     },
+    "/instance/migrate/{migration_id}/start": {
+      "get": {
+        "summary": "DO NOT USE THIS IF YOU'RE NOT PROPOLIS-SERVER.",
+        "description": "Internal API called during a migration from a destination instance to the source instance as part of the HTTP connection upgrade used to establish the migration link. This API is exported via OpenAPI purely to verify that its shape hasn't changed.",
+        "operationId": "instance_migrate_start",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "migration_id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "*/*": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "x-dropshot-websocket": {}
+      }
+    },
     "/instance/migration-status": {
       "get": {
         "operationId": "instance_migrate_status",

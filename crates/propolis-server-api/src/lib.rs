@@ -111,6 +111,10 @@ pub trait PropolisServerApi {
         websock: WebsocketConnection,
     ) -> WebsocketChannelResult;
 
+    // See the note on instance_migrate_start below. /instance/vnc is not
+    // currently used (as of 2025-10), but before it's used we'll want to think
+    // about versioning considerations for the WebSocket protocol, similar to
+    // instance_migrate_start.
     #[channel {
         protocol = WEBSOCKETS,
         path = "/instance/vnc",
@@ -122,14 +126,33 @@ pub trait PropolisServerApi {
         websock: WebsocketConnection,
     ) -> dropshot::WebsocketChannelResult;
 
-    // This endpoint is meant to only be called during a migration from the
-    // destination instance to the source instance as part of the HTTP connection
-    // upgrade used to establish the migration link. We don't actually want this
-    // exported via OpenAPI clients.
+    /// DO NOT USE THIS IF YOU'RE NOT PROPOLIS-SERVER.
+    ///
+    /// Internal API called during a migration from a destination instance to
+    /// the source instance as part of the HTTP connection upgrade used to
+    /// establish the migration link. This API is exported via OpenAPI purely
+    /// to verify that its shape hasn't changed.
+    //
+    // # Versioning notes
+    //
+    // This API is expected to work even if the source and destination
+    // propolis-server instances are on different versions. There are two parts
+    // to versioning:
+    //
+    // 1. The parameters passed into the initial request.
+    // 2. The protocol used for WebSocket communication.
+    //
+    // Part 1 is verified by the Dropshot API manager. For part 2,
+    // propolis-server has internal support for protocol negotiation.
+    //
+    // Note that we currently bypass Progenitor and always pass in
+    // VERSION_INITIAL. See `migration_start_connect` in
+    // propolis-server/src/lib/migrate/destination.rs for where we do it. If we
+    // introduce a change to this API, we'll have to carefully consider version
+    // skew between the source and destination servers.
     #[channel {
         protocol = WEBSOCKETS,
         path = "/instance/migrate/{migration_id}/start",
-        unpublished = true,
     }]
     async fn instance_migrate_start(
         rqctx: RequestContext<Self::Context>,
