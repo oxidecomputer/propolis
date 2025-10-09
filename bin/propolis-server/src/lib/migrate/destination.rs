@@ -80,7 +80,8 @@ pub(crate) async fn initiate(
     info!(log, "negotiating migration as destination");
 
     // Build upgrade request to the source instance
-    // (we do this by hand because it's hidden from the OpenAPI spec)
+    // (we do this by hand to avoid a dependency from propolis-server to
+    // propolis-client)
     // TODO(#165): https (wss)
     // TODO: We need to make sure the src_addr is a valid target
     let src_migrate_url = format!(
