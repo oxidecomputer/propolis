@@ -37,9 +37,9 @@ mod probes {
 #[cfg(not(feature = "omicron-build"))]
 pub const MAXCPU: usize = bhyve_api::VM_MAXCPU;
 
-// Helios (stlouis) is built with an expanded limit of 64
+// Helios (stlouis) is built with an expanded limit of 254
 #[cfg(feature = "omicron-build")]
-pub const MAXCPU: usize = 64;
+pub const MAXCPU: usize = 254;
 
 #[derive(Debug, Error)]
 pub enum GetCpuidError {
