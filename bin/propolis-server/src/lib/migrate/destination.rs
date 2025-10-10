@@ -4,6 +4,7 @@
 
 use bitvec::prelude as bv;
 use futures::{SinkExt, StreamExt};
+use hyper::header::HeaderValue;
 use propolis::common::{GuestAddr, Lifecycle, PAGE_SIZE};
 use propolis::migrate::{
     MigrateCtx, MigrateStateError, Migrator, PayloadOffer, PayloadOffers,
@@ -17,9 +18,11 @@ use std::convert::TryInto;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
-use tokio_tungstenite::{tungstenite, WebSocketStream};
+use tokio_tungstenite::{tungstenite, MaybeTlsStream, WebSocketStream};
 use uuid::Uuid;
 
 use crate::migrate::codec;
@@ -80,17 +83,9 @@ pub(crate) async fn initiate(
     info!(log, "negotiating migration as destination");
 
     // Build upgrade request to the source instance
-    // (we do this by hand to avoid a dependency from propolis-server to
-    // propolis-client)
-    // TODO(#165): https (wss)
-    // TODO: We need to make sure the src_addr is a valid target
-    let src_migrate_url = format!(
-        "ws://{}/instance/migrate/{}/start",
-        migrate_info.src_addr, migration_id,
-    );
-    info!(log, "Begin migration"; "src_migrate_url" => &src_migrate_url);
-    let (mut conn, _) =
-        tokio_tungstenite::connect_async(src_migrate_url).await?;
+    let mut conn =
+        migration_start_connect(&log, migrate_info.src_addr, migration_id)
+            .await?;
 
     // Generate a list of protocols that this target supports, then send them to
     // the source and allow it to choose its favorite.
@@ -151,6 +146,34 @@ pub(crate) async fn initiate(
     Ok(match selected {
         Protocol::RonV0 => RonV0::new(log, migration_id, conn, local_addr),
     })
+}
+
+async fn migration_start_connect(
+    log: &slog::Logger,
+    src_addr: SocketAddr,
+    migration_id: Uuid,
+) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, MigrateError> {
+    // We do this by hand to avoid a dependency from propolis-server to
+    // propolis-client.
+    // TODO(#165): https (wss)
+    // TODO: We need to make sure the src_addr is a valid target
+    let src_migrate_url =
+        format!("ws://{}/instance/migrate/{}/start", src_addr, migration_id);
+    info!(log, "Begin migration"; "src_migrate_url" => &src_migrate_url);
+    let mut req = src_migrate_url.into_client_request()?;
+
+    // Add the api-version header. This assumes the instance_migrate_start API
+    // hasn't changed. See the note in crates/propolis-server-api/src/lib.rs.
+    req.headers_mut().insert(
+        omicron_common::api::VERSION_HEADER,
+        HeaderValue::from_str(
+            &propolis_server_api::VERSION_INITIAL.to_string(),
+        )
+        .expect("VERSION_INITIAL is \"1.0.0\" which is a valid header value"),
+    );
+
+    let (conn, _) = tokio_tungstenite::connect_async(req).await?;
+    Ok(conn)
 }
 
 /// The runner for version 0 of the LM protocol, using RON encoding.
