@@ -2,13 +2,15 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::collections::HashMap;
-use std::fmt::Debug;
+use std::collections::{HashMap, HashSet};
+use std::fmt::{self, Debug};
 use std::mem::size_of;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use super::bits::{CompletionQueueEntry, SubmissionQueueEntry};
 use super::cmds::Completion;
+use crate::block;
 use crate::common::*;
 use crate::hw::pci;
 use crate::migrate::MigrateStateError;
@@ -65,17 +67,17 @@ struct CompQueueState {
     /// See NVMe 1.0e Section 4.5 Completion Queue Entry - Phase Tag (P)
     phase: bool,
 
-    /// Whether the CQ should kick its SQs due to no permits being available
-    /// previously.
-    ///
-    /// One may only pop something off the SQ if there's at least one space
-    /// available in the corresponding CQ. If there isn't, we set the kick flag.
-    kick: bool,
+    /// Collection of Submission Queues (IDs) which issue their completions to
+    /// this CQ, and which became "corked": unable to acquire a permit while
+    /// attempting to process a pending entry.
+    corked: HashSet<QueueId>,
 }
 
 /// Submission Queue State
 #[derive(Debug)]
-struct SubQueueState();
+struct SubQueueState {
+    params: TransferParams,
+}
 
 /// Helper for manipulating Completion/Submission Queues
 ///
@@ -182,18 +184,19 @@ impl<QS: Debug> QueueGuard<'_, QS> {
             || (state.head == 0 && state.tail == (*self.size - 1) as u16)
     }
 
-    fn head(&self) -> u16 {
-        self.state.head
+    /// How many queue entries are currently occupied?
+    fn num_occupied(&self) -> u16 {
+        wrap_sub(*self.size, self.state.tail, self.state.head)
     }
 
-    /// Helper method to calculate a positive offset for a given index, wrapping at
-    /// the size of the queue.
+    /// Helper method to calculate a positive offset for a given index, wrapping
+    /// at the size of the queue.
     fn idx_add(&self, idx: u16, off: u16) -> u16 {
         wrap_add(*self.size, idx, off)
     }
 
-    /// Helper method to calculate a negative offset for a given index, wrapping at
-    /// the size of the queue.
+    /// Helper method to calculate a negative offset for a given index, wrapping
+    /// at the size of the queue.
     fn idx_sub(&self, idx: u16, off: u16) -> u16 {
         wrap_sub(*self.size, idx, off)
     }
@@ -246,13 +249,13 @@ impl QueueGuard<'_, CompQueueState> {
         Ok(())
     }
 
-    fn take_avail(&mut self) -> bool {
+    fn take_avail(&mut self, sq: &Arc<SubQueue>) -> bool {
         if let Some(avail) = self.state.inner.avail.checked_sub(1) {
             self.state.inner.avail = avail;
             true
         } else {
             // Make sure we kick the SQs when we have space available again
-            self.state.inner.kick = true;
+            self.record_corked(sq);
             false
         }
     }
@@ -269,8 +272,18 @@ impl QueueGuard<'_, CompQueueState> {
         }
     }
 
-    fn kick(&mut self) -> bool {
-        std::mem::replace(&mut self.state.inner.kick, false)
+    /// Record an SQ as being corked on this CQ due to lack of permit capacity.
+    fn record_corked(&mut self, sq: &Arc<SubQueue>) {
+        self.state.inner.corked.insert(sq.id);
+    }
+
+    /// Get list of SQ IDs which were corked on this CQ
+    fn kick(&mut self) -> Option<Vec<QueueId>> {
+        if !self.state.inner.corked.is_empty() {
+            Some(self.state.inner.corked.drain().collect())
+        } else {
+            None
+        }
     }
 }
 
@@ -285,7 +298,7 @@ impl CompQueueState {
                 // since the host side (VM) will create all the Completion Queue
                 // entries with the phase initially zeroed out.
                 phase: true,
-                kick: false,
+                corked: HashSet::new(),
             },
         )
     }
@@ -294,7 +307,7 @@ impl CompQueueState {
 impl SubQueueState {
     /// Create a new `QueueState` for a Submission Queue
     fn new(size: u32) -> QueueState<SubQueueState> {
-        QueueState::new(size, SubQueueState())
+        QueueState::new(size, SubQueueState { params: Default::default() })
     }
 }
 impl QueueGuard<'_, SubQueueState> {
@@ -309,12 +322,13 @@ impl QueueGuard<'_, SubQueueState> {
     /// If the queue is empty this method returns [`None`].
     /// Otherwise, this method returns the current Head entry pointer and then
     /// increments the Head entry pointer by 1 (wrapping if necessary).
-    fn pop_head(&mut self) -> Option<u16> {
+    fn pop_head(&mut self, last_head: &AtomicU16) -> Option<u16> {
         if self.is_empty() {
             return None;
         } else {
             let old_head = self.state.head;
             self.state.head = self.idx_add(old_head, 1);
+            last_head.store(self.state.head, Ordering::Release);
             Some(old_head)
         }
     }
@@ -367,6 +381,14 @@ pub enum QueueUpdateError {
     TooManyEntries,
 }
 
+/// Basic parameters for Submission & Completion Queue creation
+#[derive(Copy, Clone)]
+pub struct CreateParams {
+    pub id: QueueId,
+    pub base: GuestAddr,
+    pub size: u32,
+}
+
 /// Type for manipulating Submission Queues.
 #[derive(Debug)]
 pub struct SubQueue {
@@ -378,6 +400,10 @@ pub struct SubQueue {
 
     /// Queue state such as the size and current head/tail entry pointers.
     state: QueueState<SubQueueState>,
+
+    /// Duplicate of head pointer value from inside [SubQueueState], kept in
+    /// sync for lockless access during [SubQueue::annotate_completion()] calls.
+    cur_head: AtomicU16,
 
     /// The [`GuestAddr`] at which the Queue is mapped.
     base: GuestAddr,
@@ -395,16 +421,21 @@ impl SubQueue {
     /// Create a Submission Queue object backed by the guest memory at the
     /// given base address.
     pub fn new(
-        id: QueueId,
+        params: CreateParams,
         cq: Arc<CompQueue>,
-        size: u32,
-        base: GuestAddr,
         mem: &MemCtx,
     ) -> Result<Arc<Self>, QueueCreateErr> {
-        use std::collections::hash_map::Entry;
+        let CreateParams { id, base, size } = params;
         Self::validate(id, base, size, mem)?;
-        let sq =
-            Arc::new(Self { id, cq, state: SubQueueState::new(size), base });
+        let sq = Arc::new(Self {
+            id,
+            cq,
+            state: SubQueueState::new(size),
+            cur_head: AtomicU16::new(0),
+            base,
+        });
+
+        use std::collections::hash_map::Entry;
         // Associate this SQ with the given CQ
         let mut cq_sqs = sq.cq.sqs.lock().unwrap();
         match cq_sqs.entry(id) {
@@ -420,9 +451,15 @@ impl SubQueue {
     }
 
     /// Attempt to move the Tail entry pointer forward to the given index.
-    pub fn notify_tail(&self, idx: u16) -> Result<(), QueueUpdateError> {
+    pub fn notify_tail(&self, idx: u16) -> Result<u16, QueueUpdateError> {
         let mut state = self.state.lock();
-        state.push_tail_to(idx)
+        state.push_tail_to(idx)?;
+
+        Ok(state.num_occupied())
+    }
+
+    pub fn num_occupied(&self) -> u16 {
+        self.state.lock().num_occupied()
     }
 
     /// Returns the next entry off of the Queue or [`None`] if it is empty.
@@ -433,7 +470,7 @@ impl SubQueue {
         // Attempt to reserve an entry on the Completion Queue
         let permit = self.cq.reserve_entry(&self)?;
         let mut state = self.state.lock();
-        if let Some(idx) = state.pop_head() {
+        if let Some(idx) = state.pop_head(&self.cur_head) {
             let addr = self.base.offset::<SubmissionQueueEntry>(idx as usize);
             let ent = mem.read::<SubmissionQueueEntry>(addr);
             // XXX: handle a guest addr that becomes unmapped later
@@ -453,11 +490,17 @@ impl SubQueue {
         self.id
     }
 
+    pub(super) fn update_params(&self, params: TransferParams) {
+        self.state.lock().state.inner.params = params;
+    }
+    pub(super) fn params(&self) -> TransferParams {
+        self.state.lock().state.inner.params
+    }
+
     /// Annotate a CQE with data (ID and head index) from this SQ
     fn annotate_completion(&self, cqe: &mut CompletionQueueEntry) {
-        let state = self.state.lock();
         cqe.sqid = self.id;
-        cqe.sqhd = state.head();
+        cqe.sqhd = self.cur_head.load(Ordering::Acquire);
     }
 
     /// Validates whether the given parameters may be used to create a
@@ -542,13 +585,12 @@ impl CompQueue {
     /// Creates a Completion Queue object backed by the guest memory at the
     /// given base address.
     pub fn new(
-        id: QueueId,
+        params: CreateParams,
         iv: u16,
-        size: u32,
-        base: GuestAddr,
         hdl: pci::MsixHdl,
         mem: &MemCtx,
     ) -> Result<Self, QueueCreateErr> {
+        let CreateParams { id, base, size } = params;
         Self::validate(id, base, size, mem)?;
         Ok(Self {
             id,
@@ -562,7 +604,8 @@ impl CompQueue {
 
     /// Attempt to move the Head entry pointer forward to the given index.
     pub fn notify_head(&self, idx: u16) -> Result<(), QueueUpdateError> {
-        self.state.lock().pop_head_to(idx)
+        let mut state = self.state.lock();
+        state.pop_head_to(idx)
     }
 
     /// Fires an interrupt to the guest with the associated interrupt vector
@@ -574,11 +617,11 @@ impl CompQueue {
         }
     }
 
-    /// Returns whether the SQs should be kicked due to no permits being
+    /// Returns whether the SQIDs should be kicked due to no permits being
     /// available previously.
     ///
     /// If the value was true, it will also get reset to false.
-    pub fn kick(&self) -> bool {
+    pub fn kick(&self) -> Option<Vec<QueueId>> {
         self.state.lock().kick()
     }
 
@@ -596,7 +639,7 @@ impl CompQueue {
         sq: &Arc<SubQueue>,
     ) -> Option<ProtoPermit> {
         let mut state = self.state.lock();
-        if state.take_avail() {
+        if state.take_avail(sq) {
             Some(ProtoPermit::new(self, sq))
         } else {
             // No more spots available.
@@ -605,14 +648,8 @@ impl CompQueue {
     }
 
     /// Add a new entry to the Completion Queue while consuming a `Permit`.
-    fn push(
-        &self,
-        comp: Completion,
-        permit: Permit,
-        sq: &SubQueue,
-        mem: &MemCtx,
-    ) {
-        let mut cqe = CompletionQueueEntry::new(comp, permit.cid);
+    fn push(&self, comp: Completion, cid: u16, sq: &SubQueue, mem: &MemCtx) {
+        let mut cqe = CompletionQueueEntry::new(comp, cid);
         sq.annotate_completion(&mut cqe);
 
         let mut guard = self.state.lock();
@@ -733,7 +770,7 @@ impl ProtoPermit {
             sq: self.sq,
             sqid: self.sqid,
             cid,
-            completed: false,
+            _nodrop: NoDropPermit,
         }
     }
 
@@ -751,7 +788,6 @@ impl ProtoPermit {
 
 /// A permit reserving capacity to push a [CompletionQueueEntry] into a
 /// Completion Queue for a command submitted to the device.
-#[derive(Debug)]
 pub struct Permit {
     /// The corresponding Completion Queue for which we have a permit.
     cq: Weak<CompQueue>,
@@ -766,30 +802,28 @@ pub struct Permit {
     /// Completion Queue Entry.
     cid: u16,
 
-    /// Track that `complete()` was actually called
-    completed: bool,
+    /// Marker to ensure holder calls [Permit::complete()].
+    _nodrop: NoDropPermit,
 }
 
 impl Permit {
     /// Consume the permit by placing an entry into the Completion Queue.
-    pub fn complete(mut self, comp: Completion, mem: Option<&MemCtx>) {
-        assert!(!self.completed);
-        self.completed = true;
+    pub fn complete(self, comp: Completion, mem: Option<&MemCtx>) {
+        let Permit { cq, sq, cid, _nodrop, .. } = self;
+        std::mem::forget(_nodrop);
 
-        let cq = match self.cq.upgrade() {
+        let cq = match cq.upgrade() {
             Some(cq) => cq,
             None => {
                 // The CQ has since been deleted so no way to complete this
                 // request nor to return the permit.
-                debug_assert!(self.sq.upgrade().is_none());
+                debug_assert!(sq.upgrade().is_none());
                 return;
             }
         };
 
-        if let (Some(sq), Some(mem)) = (self.sq.upgrade(), mem) {
-            cq.push(comp, self, &sq, mem);
-
-            // TODO: should this be done here?
+        if let (Some(sq), Some(mem)) = (sq.upgrade(), mem) {
+            cq.push(comp, cid, &sq, mem);
             cq.fire_interrupt();
         } else {
             // The SQ has since been deleted (so the request has already
@@ -820,10 +854,12 @@ impl Permit {
     /// only to be used for excercising the Submission and Completion Queues in
     /// unit tests.
     #[cfg(test)]
-    fn test_complete(mut self, sq: &SubQueue, mem: &MemCtx) {
-        self.completed = true;
-        if let Some(cq) = self.cq.upgrade() {
-            cq.push(Completion::success(), self, sq, mem);
+    fn test_complete(self, sq: &SubQueue, mem: &MemCtx) {
+        let Permit { cq, cid, _nodrop, .. } = self;
+        std::mem::forget(_nodrop);
+
+        if let Some(cq) = cq.upgrade() {
+            cq.push(Completion::success(), cid, sq, mem);
         }
     }
 
@@ -831,18 +867,42 @@ impl Permit {
     /// drive them through to completion.  Allow them to bypass the
     /// ensure-this-permit-is-completed check in [`Drop`].
     #[cfg(test)]
-    fn ignore(mut self) -> Self {
-        self.completed = true;
-        self
+    fn ignore(self) {
+        let Permit { _nodrop, .. } = self;
+        std::mem::forget(_nodrop);
     }
 }
-impl Drop for Permit {
-    fn drop(&mut self) {
-        assert!(
-            self.completed,
-            "permit was dropped without calling complete()"
-        );
+impl Debug for Permit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Permit")
+            .field("sq", &self.sq)
+            .field("cq", &self.cq)
+            .field("sqid", &self.sqid)
+            .field("cid", &self.cid)
+            .finish()
     }
+}
+
+/// Marker struct to ensure that [Permit] consumers call
+/// [complete()](Permit::complete()), rather than silently dropping it.
+struct NoDropPermit;
+impl Drop for NoDropPermit {
+    fn drop(&mut self) {
+        panic!("Permit should be complete()-ed before drop");
+    }
+}
+
+/// Convert IO SQID to block-layer [block::QueueId]
+pub fn sqid_to_block_qid(sqid: super::QueueId) -> block::QueueId {
+    // With the admin SQ occupying ID 0, the corresponding block-layer queue IDs
+    // are offset by 1
+    sqid.checked_sub(1).expect("IO SQID is non-zero").into()
+}
+
+#[derive(Copy, Clone, Debug, Default)]
+pub struct TransferParams {
+    pub lba_data_size: u64,
+    pub max_data_tranfser_size: u64,
 }
 
 pub(super) mod migrate {
@@ -893,48 +953,74 @@ mod test {
         let hdl = pci::MsixHdl::new_test();
         let read_base = GuestAddr(0);
         let write_base = GuestAddr(1024 * 1024);
+        let tmpl =
+            CreateParams { id: ADMIN_QUEUE_ID, base: write_base, size: 0 };
 
         let acc_mem = machine.acc_mem.child(None);
         let mem = acc_mem.access().unwrap();
 
         // Admin queues must be less than 4K
         let cq = CompQueue::new(
-            ADMIN_QUEUE_ID,
+            CreateParams { id: ADMIN_QUEUE_ID, size: 1024, ..tmpl },
             0,
-            1024,
-            write_base,
             hdl.clone(),
             &mem,
         );
         assert!(matches!(cq, Ok(_)));
         let cq = CompQueue::new(
-            ADMIN_QUEUE_ID,
+            CreateParams { id: ADMIN_QUEUE_ID, size: 5 * 1024, ..tmpl },
             0,
-            5 * 1024,
-            write_base,
             hdl.clone(),
             &mem,
         );
         assert!(matches!(cq, Err(QueueCreateErr::InvalidSize)));
 
         // I/O queues must be less than 64K
-        let cq = CompQueue::new(1, 0, 1024, write_base, hdl.clone(), &mem);
+        let cq = CompQueue::new(
+            CreateParams { id: 1, size: 1024, ..tmpl },
+            0,
+            hdl.clone(),
+            &mem,
+        );
         assert!(matches!(cq, Ok(_)));
-        let cq = CompQueue::new(1, 0, 65 * 1024, write_base, hdl.clone(), &mem);
+        let cq = CompQueue::new(
+            CreateParams { id: 1, size: 65 * 1024, ..tmpl },
+            0,
+            hdl.clone(),
+            &mem,
+        );
         assert!(matches!(cq, Err(QueueCreateErr::InvalidSize)));
 
         // Neither must be less than 2
-        let cq =
-            CompQueue::new(ADMIN_QUEUE_ID, 0, 1, write_base, hdl.clone(), &mem);
+        let cq = CompQueue::new(
+            CreateParams { id: ADMIN_QUEUE_ID, size: 1, ..tmpl },
+            0,
+            hdl.clone(),
+            &mem,
+        );
         assert!(matches!(cq, Err(QueueCreateErr::InvalidSize)));
-        let cq = CompQueue::new(1, 0, 1, write_base, hdl.clone(), &mem);
+        let cq = CompQueue::new(
+            CreateParams { id: 1, size: 1, ..tmpl },
+            0,
+            hdl.clone(),
+            &mem,
+        );
         assert!(matches!(cq, Err(QueueCreateErr::InvalidSize)));
 
         // Completion Queue's must be mapped to writable memory
-        let cq =
-            CompQueue::new(ADMIN_QUEUE_ID, 0, 2, read_base, hdl.clone(), &mem);
+        let cq = CompQueue::new(
+            CreateParams { id: ADMIN_QUEUE_ID, base: read_base, size: 2 },
+            0,
+            hdl.clone(),
+            &mem,
+        );
         assert!(matches!(cq, Err(QueueCreateErr::InvalidBaseAddr)));
-        let cq = CompQueue::new(1, 0, 2, read_base, hdl, &mem);
+        let cq = CompQueue::new(
+            CreateParams { id: 1, base: read_base, size: 2 },
+            0,
+            hdl,
+            &mem,
+        );
         assert!(matches!(cq, Err(QueueCreateErr::InvalidBaseAddr)));
 
         Ok(())
@@ -953,48 +1039,71 @@ mod test {
         // Create corresponding CQs
         let admin_cq = Arc::new(
             CompQueue::new(
-                ADMIN_QUEUE_ID,
+                CreateParams {
+                    id: ADMIN_QUEUE_ID,
+                    base: write_base,
+                    size: 1024,
+                },
                 0,
-                1024,
-                write_base,
                 hdl.clone(),
                 &mem,
             )
             .unwrap(),
         );
         let io_cq = Arc::new(
-            CompQueue::new(1, 0, 1024, write_base, hdl, &mem).unwrap(),
+            CompQueue::new(
+                CreateParams { id: 1, base: write_base, size: 1024 },
+                0,
+                hdl,
+                &mem,
+            )
+            .unwrap(),
         );
 
         // Admin queues must be less than 4K
         let sq = SubQueue::new(
-            ADMIN_QUEUE_ID,
+            CreateParams { id: ADMIN_QUEUE_ID, base: read_base, size: 1024 },
             admin_cq.clone(),
-            1024,
-            read_base,
             &mem,
         );
         assert!(matches!(sq, Ok(_)));
         let sq = SubQueue::new(
-            ADMIN_QUEUE_ID,
+            CreateParams {
+                id: ADMIN_QUEUE_ID,
+                base: read_base,
+                size: 5 * 1024,
+            },
             admin_cq.clone(),
-            5 * 1024,
-            read_base,
             &mem,
         );
         assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
 
         // I/O queues must be less than 64K
-        let sq = SubQueue::new(1, io_cq.clone(), 1024, read_base, &mem);
+        let sq = SubQueue::new(
+            CreateParams { id: 1, base: read_base, size: 1024 },
+            io_cq.clone(),
+            &mem,
+        );
         assert!(matches!(sq, Ok(_)));
-        let sq = SubQueue::new(1, io_cq, 65 * 1024, read_base, &mem);
+        let sq = SubQueue::new(
+            CreateParams { id: 1, base: read_base, size: 65 * 1024 },
+            io_cq,
+            &mem,
+        );
         assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
 
         // Neither must be less than 2
-        let sq =
-            SubQueue::new(ADMIN_QUEUE_ID, admin_cq.clone(), 1, read_base, &mem);
+        let sq = SubQueue::new(
+            CreateParams { id: ADMIN_QUEUE_ID, base: read_base, size: 1 },
+            admin_cq.clone(),
+            &mem,
+        );
         assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
-        let sq = SubQueue::new(1, admin_cq, 1, read_base, &mem);
+        let sq = SubQueue::new(
+            CreateParams { id: 1, base: read_base, size: 1 },
+            admin_cq,
+            &mem,
+        );
         assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
 
         // Completion Queue's must be mapped to readable memory
@@ -1028,10 +1137,23 @@ mod test {
         let mem = acc_mem.access().unwrap();
 
         // Create our queues
-        let cq =
-            Arc::new(CompQueue::new(1, 0, 4, write_base, hdl, &mem).unwrap());
-        let sq =
-            Arc::new(SubQueue::new(1, cq.clone(), 4, read_base, &mem).unwrap());
+        let cq = Arc::new(
+            CompQueue::new(
+                CreateParams { id: 1, base: write_base, size: 4 },
+                0,
+                hdl,
+                &mem,
+            )
+            .unwrap(),
+        );
+        let sq = Arc::new(
+            SubQueue::new(
+                CreateParams { id: 1, base: read_base, size: 4 },
+                cq.clone(),
+                &mem,
+            )
+            .unwrap(),
+        );
 
         // Replicate guest VM notifying us things were pushed to the SQ
         let mut sq_tail = 0;
@@ -1095,10 +1217,23 @@ mod test {
 
         // Create our queues
         // Purposely make the CQ smaller to test kicks
-        let cq =
-            Arc::new(CompQueue::new(1, 0, 2, write_base, hdl, &mem).unwrap());
-        let sq =
-            Arc::new(SubQueue::new(1, cq.clone(), 4, read_base, &mem).unwrap());
+        let cq = Arc::new(
+            CompQueue::new(
+                CreateParams { id: 1, base: write_base, size: 2 },
+                0,
+                hdl,
+                &mem,
+            )
+            .unwrap(),
+        );
+        let sq = Arc::new(
+            SubQueue::new(
+                CreateParams { id: 1, base: read_base, size: 4 },
+                cq.clone(),
+                &mem,
+            )
+            .unwrap(),
+        );
 
         // Replicate guest VM notifying us things were pushed to the SQ
         let mut sq_tail = 0;
@@ -1123,7 +1258,7 @@ mod test {
         assert!(matches!(cq.notify_head(1), Ok(_)));
 
         // Kick should've been set in the failed pop
-        assert!(cq.kick());
+        assert!(cq.kick().is_some());
 
         // We should have one more space now and should be able to pop 1 more
         assert!(matches!(
@@ -1154,10 +1289,22 @@ mod test {
         // space available in the CQ.
         let mut rng = rand::rng();
         let sq_size = rng.random_range(512..2048);
-        let cq =
-            Arc::new(CompQueue::new(1, 0, 4, write_base, hdl, &mem).unwrap());
+        let cq = Arc::new(
+            CompQueue::new(
+                CreateParams { id: 1, base: write_base, size: 4 },
+                0,
+                hdl,
+                &mem,
+            )
+            .unwrap(),
+        );
         let sq = Arc::new(
-            SubQueue::new(1, cq.clone(), sq_size, read_base, &mem).unwrap(),
+            SubQueue::new(
+                CreateParams { id: 1, base: read_base, size: sq_size },
+                cq.clone(),
+                &mem,
+            )
+            .unwrap(),
         );
 
         // We'll be generating a random number of submissions
@@ -1188,7 +1335,7 @@ mod test {
                             doorbell_cq.notify_head(cq_head),
                             Ok(_)
                         ));
-                        if doorbell_cq.kick() {
+                        if doorbell_cq.kick().is_some() {
                             assert!(workers_tx.send(()).is_ok());
                         }
                     }

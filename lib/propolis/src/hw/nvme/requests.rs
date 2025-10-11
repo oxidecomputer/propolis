@@ -2,17 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use crate::{
-    accessors::MemAccessor,
-    block::{
-        self, tracking::CompletionCallback, Operation, Request,
-        Result as BlockResult,
-    },
-    hw::nvme::{bits, cmds::Completion},
-    vmm::mem::MemCtx,
-};
+use std::sync::Arc;
+use std::time::Instant;
 
 use super::{cmds::NvmCmd, queue::Permit, PciNvme};
+use crate::accessors::MemAccessor;
+use crate::block::{self, Operation, Request};
+use crate::hw::nvme::{bits, cmds::Completion, queue::SubQueue};
+use crate::vmm::mem::MemCtx;
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
@@ -39,130 +36,108 @@ impl block::Device for PciNvme {
     fn attachment(&self) -> &block::DeviceAttachment {
         &self.block_attach
     }
-
-    fn on_attach(&self, info: block::DeviceInfo) {
-        self.state.lock().unwrap().update_block_info(info);
-    }
-
-    fn next(&self) -> Option<Request> {
-        let (req, permit) = self.next_req()?;
-        Some(self.block_tracking.track(req, permit))
-    }
-
-    fn complete(&self, res: BlockResult, id: block::ReqId) {
-        let (op, permit) = self.block_tracking.complete(id, res);
-        self.complete_req(op, res, permit);
-    }
-
-    fn on_completion(&self, cb: Box<dyn CompletionCallback>) -> bool {
-        self.block_tracking.set_completion_callback(cb)
-    }
-
-    fn accessor_mem(&self) -> MemAccessor {
-        self.pci_state.acc_mem.child(Some("block backend".to_string()))
-    }
 }
 
-impl PciNvme {
-    /// Pop an available I/O request off of a Submission Queue to begin
-    /// processing by the underlying Block Device.
-    fn next_req(&self) -> Option<(Request, Permit)> {
-        let state = self.state.lock().unwrap();
+pub(super) struct NvmeBlockQueue {
+    sq: Arc<SubQueue>,
+    acc_mem: MemAccessor,
+}
+impl NvmeBlockQueue {
+    pub(super) fn new(sq: Arc<SubQueue>, acc_mem: MemAccessor) -> Arc<Self> {
+        Arc::new(Self { sq, acc_mem })
+    }
+}
+impl block::DeviceQueue for NvmeBlockQueue {
+    type Token = Permit;
 
-        let mem = self.mem_access()?;
+    /// Pop an available I/O request off of the Submission Queue for hand-off to
+    /// the underlying block backend
+    fn next_req(&self) -> Option<(Request, Self::Token, Option<Instant>)> {
+        let sq = &self.sq;
+        let mem = self.acc_mem.access()?;
+        let params = self.sq.params();
 
-        // Go through all the queues (skip admin as we just want I/O queues)
-        // looking for a request to service
-        for sq in state.sqs.iter().skip(1).flatten() {
-            while let Some((sub, permit, idx)) = sq.pop(&mem) {
-                let qid = sq.id();
-                probes::nvme_raw_cmd!(|| {
-                    (
-                        qid,
-                        u64::from(sub.cdw0) | (u64::from(sub.nsid) << 32),
-                        sub.prp1,
-                        sub.prp2,
-                        (u64::from(sub.cdw10) | (u64::from(sub.cdw11) << 32)),
-                    )
-                });
-                let cid = sub.cid();
-                let cmd = NvmCmd::parse(sub);
+        while let Some((sub, permit, idx)) = sq.pop(&mem) {
+            let qid = sq.id();
+            probes::nvme_raw_cmd!(|| {
+                (
+                    qid,
+                    u64::from(sub.cdw0) | (u64::from(sub.nsid) << 32),
+                    sub.prp1,
+                    sub.prp2,
+                    (u64::from(sub.cdw10) | (u64::from(sub.cdw11) << 32)),
+                )
+            });
+            let cid = sub.cid();
+            let cmd = NvmCmd::parse(sub);
 
-                fn fail_mdts(permit: Permit, mem: &MemCtx) {
-                    permit.complete(
-                        Completion::generic_err(bits::STS_INVAL_FIELD).dnr(),
-                        Some(&mem),
-                    );
+            fn fail_mdts(permit: Permit, mem: &MemCtx) {
+                permit.complete(
+                    Completion::generic_err(bits::STS_INVAL_FIELD).dnr(),
+                    Some(&mem),
+                );
+            }
+
+            match cmd {
+                Ok(NvmCmd::Write(cmd)) => {
+                    let off = params.lba_data_size * cmd.slba;
+                    let size = params.lba_data_size * (cmd.nlb as u64);
+
+                    if size > params.max_data_tranfser_size {
+                        fail_mdts(permit, &mem);
+                        continue;
+                    }
+
+                    probes::nvme_write_enqueue!(|| (qid, idx, cid, off, size));
+
+                    let bufs = cmd.data(size, &mem).collect();
+                    let req =
+                        Request::new_write(off as usize, size as usize, bufs);
+                    return Some((req, permit, None));
                 }
+                Ok(NvmCmd::Read(cmd)) => {
+                    let off = params.lba_data_size * cmd.slba;
+                    let size = params.lba_data_size * (cmd.nlb as u64);
 
-                match cmd {
-                    Ok(NvmCmd::Write(cmd)) => {
-                        let off = state.nlb_to_size(cmd.slba as usize) as u64;
-                        let size = state.nlb_to_size(cmd.nlb as usize) as u64;
-
-                        if !state.valid_for_mdts(size) {
-                            fail_mdts(permit, &mem);
-                            continue;
-                        }
-
-                        probes::nvme_write_enqueue!(|| (
-                            qid, idx, cid, off, size
-                        ));
-
-                        let bufs = cmd.data(size, &mem).collect();
-                        let req = Request::new_write(
-                            off as usize,
-                            size as usize,
-                            bufs,
-                        );
-                        return Some((req, permit));
+                    if size > params.max_data_tranfser_size {
+                        fail_mdts(permit, &mem);
+                        continue;
                     }
-                    Ok(NvmCmd::Read(cmd)) => {
-                        let off = state.nlb_to_size(cmd.slba as usize) as u64;
-                        let size = state.nlb_to_size(cmd.nlb as usize) as u64;
 
-                        if !state.valid_for_mdts(size) {
-                            fail_mdts(permit, &mem);
-                            continue;
-                        }
+                    probes::nvme_read_enqueue!(|| (qid, idx, cid, off, size));
 
-                        probes::nvme_read_enqueue!(|| (
-                            qid, idx, cid, off, size
-                        ));
-
-                        let bufs = cmd.data(size, &mem).collect();
-                        let req = Request::new_read(
-                            off as usize,
-                            size as usize,
-                            bufs,
-                        );
-                        return Some((req, permit));
-                    }
-                    Ok(NvmCmd::Flush) => {
-                        probes::nvme_flush_enqueue!(|| (qid, idx, cid));
-                        let req = Request::new_flush();
-                        return Some((req, permit));
-                    }
-                    Ok(NvmCmd::Unknown(_)) | Err(_) => {
-                        // For any other unrecognized or malformed command,
-                        // just immediately complete it with an error
-                        let comp =
-                            Completion::generic_err(bits::STS_INTERNAL_ERR);
-                        permit.complete(comp, Some(&mem));
-                    }
+                    let bufs = cmd.data(size, &mem).collect();
+                    let req =
+                        Request::new_read(off as usize, size as usize, bufs);
+                    return Some((req, permit, None));
+                }
+                Ok(NvmCmd::Flush) => {
+                    probes::nvme_flush_enqueue!(|| (qid, idx, cid));
+                    let req = Request::new_flush();
+                    return Some((req, permit, None));
+                }
+                Ok(NvmCmd::Unknown(_)) | Err(_) => {
+                    // For any other unrecognized or malformed command,
+                    // just immediately complete it with an error
+                    let comp = Completion::generic_err(bits::STS_INTERNAL_ERR);
+                    permit.complete(comp, Some(&mem));
                 }
             }
         }
-
         None
     }
 
     /// Place the operation result (success or failure) onto the corresponding
     /// Completion Queue.
-    fn complete_req(&self, op: Operation, res: BlockResult, permit: Permit) {
+    fn complete(
+        &self,
+        op: block::Operation,
+        result: block::Result,
+        permit: Self::Token,
+    ) {
         let qid = permit.sqid();
         let cid = permit.cid();
-        let resnum = res as u8;
+        let resnum = result as u8;
         match op {
             Operation::Read(..) => {
                 probes::nvme_read_complete!(|| (qid, cid, resnum));
@@ -178,7 +153,9 @@ impl PciNvme {
             }
         }
 
-        let guard = self.mem_access();
-        permit.complete(Completion::from(res), guard.as_deref());
+        permit.complete(
+            Completion::from(result),
+            self.acc_mem.access().as_deref(),
+        );
     }
 }
