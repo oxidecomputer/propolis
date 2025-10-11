@@ -11,10 +11,10 @@ use std::{
 
 use propolis_client::{
     instance_spec::{
-        ComponentV0, DlpiNetworkBackend, FileStorageBackend,
-        MigrationFailureInjector, NvmeDisk, P9fs, PciPath, PciPciBridge,
-        SoftNpuP9, SoftNpuPciPort, SoftNpuPort, SpecKey, VirtioDisk,
-        VirtioNetworkBackend, VirtioNic,
+        ComponentV0, Cpuid, CpuidVendor, DlpiNetworkBackend,
+        FileStorageBackend, MigrationFailureInjector, NvmeDisk, P9fs, PciPath,
+        PciPciBridge, SoftNpuP9, SoftNpuPciPort, SoftNpuPort, SpecKey,
+        VirtioDisk, VirtioNetworkBackend, VirtioNic,
     },
     support::nvme_serial_from_str,
 };
@@ -429,4 +429,41 @@ fn parse_p9fs_from_config(
         chunk_size,
         pci_path,
     })
+}
+
+/// Translate a parsed TOML-provided `CpuidEntry` into a `propolis-server`
+/// API-style `CpuidEntry`.
+///
+/// The transformation here is trivial. Using the API-style `CpuidEntry` for the
+/// TOML definition would make for clumsier text, though, so they're defined
+/// slightly differently for the different use cases.
+fn translate_cpuid_entry(
+    toml_entry: super::CpuidEntry,
+) -> propolis_client::instance_spec::CpuidEntry {
+    let super::CpuidEntry { func, idx, values: [eax, ebx, ecx, edx] } =
+        toml_entry;
+
+    propolis_client::instance_spec::CpuidEntry {
+        leaf: func,
+        subleaf: idx,
+        eax,
+        ebx,
+        ecx,
+        edx,
+    }
+}
+
+/// Not a `TryFrom` or `TryInto` because we're re-exporting types from
+/// `cpuid-profile-config`, so they're actually defined in a foreign crate.
+pub fn toml_cpuid_to_spec_cpuid(
+    profile: &super::CpuidProfile,
+) -> Result<Cpuid, super::CpuidParseError> {
+    let entries = Vec::<super::CpuidEntry>::try_from(profile)?;
+    let entries = entries.into_iter().map(translate_cpuid_entry).collect();
+
+    let vendor = match profile.vendor {
+        super::CpuVendor::Amd => CpuidVendor::Amd,
+        super::CpuVendor::Intel => CpuidVendor::Intel,
+    };
+    Ok(Cpuid { entries, vendor })
 }
