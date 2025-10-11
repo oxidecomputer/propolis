@@ -239,11 +239,17 @@ impl Specializer {
                 set.remove_leaf(leaf);
 
                 if *topo == TopoKind::Ext1E {
-                    // TODO: clear the TopologyExtensions bit in leaf 8000_0001
-                    // since we've just discarded the leaf. Change this *after*
-                    // the wholesale move to fixed CPUID leaves (Omicron#8728)
-                    // so the typical case just never has this bit set and a
-                    // change here is not an additional guest-visible change.
+                    let ext_features = CpuidIdent::leaf(0x8000_0001);
+                    // If the CPUID profile defines leaf 0x8000_0001, Extended
+                    // Processor and Feature Identifier, make sure the bit that
+                    // would indicate leaf Ext1E support is clear. We've just
+                    // discarded the leaf, so there's no meaningful data here.
+                    if let Some(features) = set.get_mut(ext_features) {
+                        // APM volume 3, "CPUID Fn8000_0001_ECX Feature
+                        // Identifiers"
+                        const TOPO_EXTENSIONS_BIT: u32 = 1 << 22;
+                        features.ecx &= !TOPO_EXTENSIONS_BIT;
+                    }
                 }
 
                 continue;
@@ -438,7 +444,11 @@ impl Specializer {
                         CpuidValues {
                             eax: id,
                             ebx,
-                            // TODO: populate ecx info?
+                            // ECX set to 0 indicates that there is one node in
+                            // the virtual CPU socket, and that the current
+                            // logical processor is in node 0. Until we support
+                            // core scheduling and can meaningfully communicate
+                            // NUMA topology to guests this is an OK default.
                             ecx: 0,
                             edx: 0,
                         },
