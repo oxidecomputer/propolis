@@ -794,6 +794,44 @@
             "type": "object",
             "properties": {
               "component": {
+                "$ref": "#/components/schemas/XhciController"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "xhci"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/UsbDevice"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "usb_placeholder"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
                 "$ref": "#/components/schemas/MigrationFailureInjector"
               },
               "type": {
@@ -1925,6 +1963,31 @@
           }
         ]
       },
+      "UsbDevice": {
+        "description": "Describes a USB device, requires the presence of an XhciController.\n\n(Note that at present no USB devices have yet been implemented outside of a null device for testing purposes.)",
+        "type": "object",
+        "properties": {
+          "root_hub_port_num": {
+            "description": "The root hub port number to which this USB device shall be attached. For USB 2.0 devices, valid values are 1-4, inclusive. For USB 3.0 devices, valid values are 5-8, inclusive.",
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0
+          },
+          "xhc_device": {
+            "description": "The name of the xHC to which this USB device shall be attached.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SpecKey"
+              }
+            ]
+          }
+        },
+        "required": [
+          "root_hub_port_num",
+          "xhc_device"
+        ],
+        "additionalProperties": false
+      },
       "VersionedInstanceSpec": {
         "description": "A versioned instance spec.",
         "oneOf": [
@@ -2033,6 +2096,24 @@
         "required": [
           "active"
         ]
+      },
+      "XhciController": {
+        "description": "Describes a PCI device implementing the eXtensible Host Controller Interface for the purpose of attaching USB devices.\n\n(Note that at present no functional USB devices have yet been implemented.)",
+        "type": "object",
+        "properties": {
+          "pci_path": {
+            "description": "The PCI path at which to attach the guest to this xHC.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PciPath"
+              }
+            ]
+          }
+        },
+        "required": [
+          "pci_path"
+        ],
+        "additionalProperties": false
       }
     },
     "responses": {
