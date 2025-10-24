@@ -82,7 +82,8 @@ impl Machine {
             self.bus_mmio.clear();
 
             // Clear all of the entries from the physmem map so their associated
-            // mappings in the process address space are munmapped.
+            // mappings in the process address space are munmapped.  This relies
+            // on acc_mem being poisoned already in order to succeed.
             // TODO: more verification
             self.map_physmem.destroy();
 
@@ -132,7 +133,7 @@ impl Machine {
             guest_hv_interface.clone(),
         )];
 
-        let acc_mem = MemAccessor::new(map.memctx());
+        let acc_mem = map.finalize();
         let acc_msi = MsiAccessor::new(hdl.clone());
 
         Ok(Machine {
@@ -264,7 +265,7 @@ impl Builder {
 
         let bus_mmio = Arc::new(MmioBus::new(MAX_PHYSMEM));
         let bus_pio = Arc::new(PioBus::new());
-        let acc_mem = MemAccessor::new(map.memctx());
+        let acc_mem = map.finalize();
         let acc_msi = MsiAccessor::new(hdl.clone());
 
         let guest_hv_interface = self
