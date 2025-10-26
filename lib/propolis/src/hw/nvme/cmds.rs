@@ -985,7 +985,7 @@ impl Completion {
     /// Create an error Completion result with a specific type and status
     pub fn specific_err(sct: StatusCodeType, status: u8) -> Self {
         // success doesn't belong in an error
-        assert_ne!(status, bits::STS_SUCCESS);
+        assert_ne!((sct, status), (StatusCodeType::Generic, bits::STS_SUCCESS));
 
         Self { dw0: 0, status: Self::status_field(sct, status) }
     }

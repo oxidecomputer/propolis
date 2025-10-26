@@ -714,7 +714,7 @@ pub const IDENT_CNS_CONTROLLER: u8 = 0x1;
 /// The type of value specified in the Status Field (SF) of a command completion.
 ///
 /// See NVMe 1.0e Section 4.5.1.1 Status Code Type (SCT)
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(u8)]
 pub enum StatusCodeType {
     Generic = 0,
