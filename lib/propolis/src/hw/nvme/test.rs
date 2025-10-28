@@ -83,7 +83,7 @@ impl FuzzCtx {
     const SQE_SIZE: usize = std::mem::size_of::<SubmissionQueueEntry>();
 
     const ADMIN_SQ_ENTRIES: u16 = 1024;
-    const ADMIN_SQ_BASE: GuestAddr = GuestAddr(1 * MB as u64);
+    const ADMIN_SQ_BASE: GuestAddr = GuestAddr(MB as u64);
     const ADMIN_SQ_SIZE: usize =
         Self::ADMIN_SQ_ENTRIES as usize * Self::SQE_SIZE;
 
