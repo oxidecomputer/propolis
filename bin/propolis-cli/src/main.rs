@@ -314,14 +314,16 @@ impl VmConfig {
             .as_ref()
             .and_then(|cfg| {
                 self.cpuid_profile.as_ref().map(|profile| {
-                    let profile = cfg.cpuid_profiles
-                        .get(profile)
-                        .ok_or_else(|| {
-                            anyhow!("CPUID profile not defined: {profile}")
+                    let profile =
+                        cfg.cpuid_profiles.get(profile).ok_or_else(|| {
+                            anyhow!(
+                                "CPUID profile not defined in {}: {profile}",
+                                self.config_toml.as_ref().unwrap().display()
+                            )
                         })?;
 
-                        toml_cpuid_to_spec_cpuid(profile)
-                            .map_err(Into::<anyhow::Error>::into)
+                    toml_cpuid_to_spec_cpuid(profile)
+                        .map_err(Into::<anyhow::Error>::into)
                 })
             })
             .transpose()?;
