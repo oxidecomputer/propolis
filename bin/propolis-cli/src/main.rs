@@ -27,6 +27,7 @@ use propolis_client::types::{
     InstanceEnsureRequest, InstanceInitializationMethod, InstanceMetadata,
     InstanceSpecGetResponse,
 };
+use propolis_config_toml::spec::toml_cpuid_to_spec_cpuid;
 use propolis_config_toml::spec::SpecConfig;
 use serde::{Deserialize, Serialize};
 use slog::{o, Drain, Level, Logger};
@@ -66,6 +67,9 @@ struct Opt {
     cmd: Command,
 }
 
+// `New`, via `VmConfig`, is large enough to trip this lint. This enum is
+// created exactly once, so we don't need to be picky about the layout..
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Create a new propolis instance
@@ -180,6 +184,12 @@ struct VmConfig {
     #[clap(short, default_value = "1024", action, requires = "config_toml")]
     memory: u64,
 
+    /// CPUID profile to use.
+    ///
+    /// The named profile must be defined in `config_toml`.
+    #[clap(long, requires = "config_toml")]
+    cpuid_profile: Option<String>,
+
     /// A path to a file containing a config TOML
     #[clap(short = 't', long, action, group = "config_group", requires_all = ["vcpus", "memory"])]
     config_toml: Option<PathBuf>,
@@ -288,22 +298,40 @@ impl VmConfig {
             return parse_json_file(path);
         }
 
-        let from_toml = &self
+        let parsed_toml = self
             .config_toml
             .as_ref()
             .map(propolis_config_toml::parse)
-            .transpose()?
-            .as_ref()
-            .map(SpecConfig::try_from)
             .transpose()?;
+
+        let from_toml =
+            parsed_toml.as_ref().map(SpecConfig::try_from).transpose()?;
 
         let enable_pcie =
             from_toml.as_ref().map(|cfg| cfg.enable_pcie).unwrap_or(false);
 
+        let cpuid_profile = parsed_toml
+            .as_ref()
+            .and_then(|cfg| {
+                self.cpuid_profile.as_ref().map(|profile| {
+                    let profile =
+                        cfg.cpuid_profiles.get(profile).ok_or_else(|| {
+                            anyhow!(
+                                "CPUID profile not defined in {}: {profile}",
+                                self.config_toml.as_ref().unwrap().display()
+                            )
+                        })?;
+
+                    toml_cpuid_to_spec_cpuid(profile)
+                        .map_err(Into::<anyhow::Error>::into)
+                })
+            })
+            .transpose()?;
+
         let mut spec = InstanceSpecV0 {
             board: Board {
                 chipset: Chipset::I440Fx(I440Fx { enable_pcie }),
-                cpuid: None,
+                cpuid: cpuid_profile,
                 cpus: self.vcpus,
                 memory_mb: self.memory,
                 guest_hv_interface: if self.hyperv {
