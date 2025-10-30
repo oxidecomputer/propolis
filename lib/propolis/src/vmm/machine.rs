@@ -72,9 +72,11 @@ impl Machine {
 
     fn do_destroy(&mut self) -> Option<Arc<VmmHdl>> {
         if !self.destroyed.swap(true, Ordering::Relaxed) {
-            // Poison the accessor roots so they may not be used further.
-            self.acc_mem.poison().expect("memory accessor not poisoned");
-            self.acc_msi.poison().expect("MSI accessor not poisoned");
+            // Remove the accessor roots so they may not be used further.
+            self.acc_mem
+                .remove_resource()
+                .expect("memory accessor not vacated");
+            self.acc_msi.remove_resource().expect("MSI accessor not vacated");
 
             // Clear out registrations in the PIO/MMIO buses to reduce the
             // chances that they perpetuate a cyclic reference.
@@ -82,7 +84,8 @@ impl Machine {
             self.bus_mmio.clear();
 
             // Clear all of the entries from the physmem map so their associated
-            // mappings in the process address space are munmapped.
+            // mappings in the process address space are munmapped.  This relies
+            // on acc_mem being removed already in order to succeed.
             // TODO: more verification
             self.map_physmem.destroy();
 
@@ -132,7 +135,7 @@ impl Machine {
             guest_hv_interface.clone(),
         )];
 
-        let acc_mem = MemAccessor::new(map.memctx());
+        let acc_mem = map.finalize();
         let acc_msi = MsiAccessor::new(hdl.clone());
 
         Ok(Machine {
@@ -264,7 +267,7 @@ impl Builder {
 
         let bus_mmio = Arc::new(MmioBus::new(MAX_PHYSMEM));
         let bus_pio = Arc::new(PioBus::new());
-        let acc_mem = MemAccessor::new(map.memctx());
+        let acc_mem = map.finalize();
         let acc_msi = MsiAccessor::new(hdl.clone());
 
         let guest_hv_interface = self

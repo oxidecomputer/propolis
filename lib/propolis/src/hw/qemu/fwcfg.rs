@@ -880,7 +880,7 @@ mod bits {
 mod test {
     use super::*;
 
-    use crate::accessors::Accessor;
+    use crate::accessors::MemAccessor;
     use crate::common::GuestAddr;
     use crate::vmm::Machine;
 
@@ -950,7 +950,7 @@ mod test {
         assert_eq!(version, FW_CFG_VER_BASE | FW_CFG_VER_DMA);
     }
 
-    fn machine_setup() -> (Machine, Arc<FwCfg>, Accessor<MemCtx>) {
+    fn machine_setup() -> (Machine, Arc<FwCfg>, MemAccessor) {
         let machine = Machine::new_test().unwrap();
 
         let dev = FwCfg::new();

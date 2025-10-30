@@ -53,6 +53,8 @@ pub enum AdminCmd {
     GetFeatures(GetFeaturesCmd),
     /// Asynchronous Event Request Command
     AsyncEventReq,
+    /// Doorbell Buffer Config Command
+    DoorbellBufCfg(DoorbellBufCfgCmd),
     /// An unknown admin command
     Unknown(#[allow(dead_code)] GuestData<SubmissionQueueEntry>),
 }
@@ -130,6 +132,12 @@ impl AdminCmd {
                 })
             }
             bits::ADMIN_OPC_ASYNC_EVENT_REQ => AdminCmd::AsyncEventReq,
+            bits::ADMIN_OPC_DOORBELL_BUF_CFG => {
+                AdminCmd::DoorbellBufCfg(DoorbellBufCfgCmd {
+                    shadow_doorbell_buffer: raw.prp1,
+                    eventidx_buffer: raw.prp2,
+                })
+            }
             _ => AdminCmd::Unknown(raw),
         };
         let _fuse = match (raw.cdw0 >> 8) & 0b11 {
@@ -376,6 +384,13 @@ pub struct SetFeaturesCmd {
     pub fid: FeatureIdent,
 
     pub cdw11: u32,
+}
+
+/// Doorbell Buffer Config Comannd Parameters
+#[derive(Debug)]
+pub struct DoorbellBufCfgCmd {
+    pub shadow_doorbell_buffer: u64,
+    pub eventidx_buffer: u64,
 }
 
 /// Feature Identifiers
@@ -1060,23 +1075,22 @@ impl From<block::Result> for Completion {
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
-
+    use crate::accessors::MemAccessor;
     use crate::common::*;
-    use crate::vmm::mem::{MemCtx, PhysMap};
+    use crate::vmm::mem::PhysMap;
 
     use super::PrpIter;
 
     const VM_SIZE: usize = 256 * PAGE_SIZE;
     const PRP_PER_PAGE: usize = PAGE_SIZE / 8;
 
-    fn setup() -> (PhysMap, Arc<MemCtx>) {
+    fn setup() -> (PhysMap, MemAccessor) {
         let mut pmap = PhysMap::new_test(VM_SIZE);
         pmap.add_test_mem("lowmem".to_string(), 0, VM_SIZE)
             .expect("lowmem seg creation should succeed");
 
-        let memctx = pmap.memctx();
-        (pmap, memctx)
+        let acc_mem = pmap.finalize();
+        (pmap, acc_mem)
     }
 
     // Simple helpers to make math below more terse
@@ -1089,7 +1103,8 @@ mod test {
 
     #[test]
     fn test_prp_single() {
-        let (_pmap, memctx) = setup();
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
 
         // Basic single page
         let mut iter = PrpIter::new(pages(1), 0x1000, 0, &memctx);
@@ -1110,7 +1125,8 @@ mod test {
 
     #[test]
     fn test_prp_dual() {
-        let (_pmap, memctx) = setup();
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
 
         // Basic dual page
         let mut iter = PrpIter::new(pages(2), 0x1000, 0x2000, &memctx);
@@ -1137,7 +1153,9 @@ mod test {
     #[test]
     fn test_prp_list() {
         // Basic triple page (aligned prplist)
-        let (_pmap, memctx) = setup();
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
+
         let listprps: [u64; 2] = [0x2000, 0x3000];
         let listaddr = 0x80000;
         memctx.write(GuestAddr(listaddr), &listprps);
@@ -1148,7 +1166,9 @@ mod test {
         assert_eq!(iter.next(), None);
 
         // Basic triple page (offset prplist)
-        let (_pmap, memctx) = setup();
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
+
         let listprps: [u64; 2] = [0x2000, 0x3000];
         let listaddr = 0x80010;
         memctx.write(GuestAddr(listaddr), &listprps);
@@ -1159,7 +1179,9 @@ mod test {
         assert_eq!(iter.next(), None);
 
         // Offset triple page
-        let (_pmap, memctx) = setup();
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
+
         let listprps: [u64; 3] = [0x2000, 0x3000, 0x4000];
         let listaddr = 0x80000;
         let off = 0x200;
@@ -1175,7 +1197,9 @@ mod test {
     #[test]
     fn test_prp_list_offset_last() {
         // List with offset, where last entry covers less than one page
-        let (_pmap, memctx) = setup();
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
+
         let listaddr = 0x80000u64;
         let mut prps: Vec<u64> = Vec::with_capacity(PRP_PER_PAGE);
         let mut bufaddr = 0x2000u64;
@@ -1214,7 +1238,9 @@ mod test {
     #[test]
     fn test_prp_multiple() {
         // Basic multiple-page prplist
-        let (_pmap, memctx) = setup();
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
+
         let listaddrs = [0x80000u64, 0x81000u64];
         let mut prps: Vec<u64> = Vec::with_capacity(PRP_PER_PAGE);
         let mut bufaddr = 0x2000u64;
