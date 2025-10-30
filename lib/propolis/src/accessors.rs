@@ -293,7 +293,7 @@ impl<T: AccessedResource> Tree<T> {
         // Swap out the existing root resource
         let old = std::mem::replace(&mut self.res_root, new_root);
 
-        // ... and poison all nodes too
+        // ... and invalidate all nodes too
         for tnode in self.nodes.values() {
             if let Some(node) = tnode.node_ref.upgrade() {
                 let _ = node.0.lock().unwrap().res_leaf.take();
@@ -404,6 +404,11 @@ type TreeBackref<T> = Arc<Mutex<Tree<T>>>;
 
 struct NodeEntry<T: AccessedResource> {
     tree: TreeBackref<T>,
+    /// Leaf resource for this node in the tree.
+    ///
+    /// The contents of the leaf resource may differ between nodes, as it is
+    /// effectively a cache of the [AccessedResource::derive()] output, when not
+    /// cleared as part of invalidation from the root.
     res_leaf: Option<T::Leaf>,
     // TODO: store enable/disable state here for evaluation and propagation
 }
@@ -551,18 +556,18 @@ impl<T: AccessedResource> Accessor<T> {
         });
     }
 
-    /// Poison (remove the underlying resource) from the root node of a
-    /// hierarchy.  This is meant to provide the root holder of the resource the
-    /// means to promptly remove access to it during events such as tear-down.
+    /// Remove the underlying resource from the root node of a hierarchy.  This
+    /// is meant to provide the root holder of the resource the means to
+    /// promptly remove access to it during events such as tear-down.
     ///
     /// # Panics
     ///
     /// If this is called on a non-root node.
-    pub fn poison(&self) -> Option<T::Root> {
+    pub fn remove_resource(&self) -> Option<T::Root> {
         self.0.lock_tree(|mut guard| {
             if !guard.node_is_root(&self.0) {
                 drop(guard);
-                panic!("poisoning of root resource only allowed at root node");
+                panic!("removal of root resource only allowed at root node");
             }
 
             guard.set_root_resource(None)
@@ -647,9 +652,9 @@ impl MsiAccessor {
     pub fn adopt(&self, child: &Self, name: Option<String>) {
         self.0.adopt(&child.0, name)
     }
-    /// See: [`Accessor::poison()`]
-    pub fn poison(&self) -> Option<Arc<VmmHdl>> {
-        self.0.poison()
+    /// See: [Accessor::remove_resource()]
+    pub fn remove_resource(&self) -> Option<Arc<VmmHdl>> {
+        self.0.remove_resource()
     }
 
     /// Attempt to send an MSI with the resource held by this accessor
@@ -732,7 +737,7 @@ mod test {
         let guard = guard.unwrap();
         drop(guard);
 
-        let res = root.poison();
+        let res = root.remove_resource();
         assert!(res.is_some());
 
         assert!(root.access().is_none())
@@ -752,14 +757,14 @@ mod test {
 
     #[test]
     #[should_panic]
-    fn only_root_can_poison() {
+    fn only_root_can_remove_resource() {
         let root = new_root();
         let child = root.child(None);
 
         assert!(root.access().is_some());
         assert!(child.access().is_some());
 
-        child.poison();
+        child.remove_resource();
     }
 
     #[test]
@@ -791,7 +796,7 @@ mod test {
             assert_eq!(child.access().unwrap().load(Ordering::Relaxed), tval);
         }
 
-        root.poison();
+        root.remove_resource();
         for node in children.iter() {
             assert!(node.access().is_none());
         }

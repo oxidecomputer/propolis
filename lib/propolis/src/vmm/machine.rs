@@ -72,9 +72,11 @@ impl Machine {
 
     fn do_destroy(&mut self) -> Option<Arc<VmmHdl>> {
         if !self.destroyed.swap(true, Ordering::Relaxed) {
-            // Poison the accessor roots so they may not be used further.
-            self.acc_mem.poison().expect("memory accessor not poisoned");
-            self.acc_msi.poison().expect("MSI accessor not poisoned");
+            // Remove the accessor roots so they may not be used further.
+            self.acc_mem
+                .remove_resource()
+                .expect("memory accessor not vacated");
+            self.acc_msi.remove_resource().expect("MSI accessor not vacated");
 
             // Clear out registrations in the PIO/MMIO buses to reduce the
             // chances that they perpetuate a cyclic reference.
@@ -83,7 +85,7 @@ impl Machine {
 
             // Clear all of the entries from the physmem map so their associated
             // mappings in the process address space are munmapped.  This relies
-            // on acc_mem being poisoned already in order to succeed.
+            // on acc_mem being removed already in order to succeed.
             // TODO: more verification
             self.map_physmem.destroy();
 
