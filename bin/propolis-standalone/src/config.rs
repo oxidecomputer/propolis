@@ -376,7 +376,7 @@ fn create_crucible_backend(
             control,
             read_only,
         },
-        gen: parsed.generation,
+        generation: parsed.generation,
     };
     info!(log, "Creating Crucible disk from request {:?}", req);
     // QUESTION: is producer_registry: None correct here?

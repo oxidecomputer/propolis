@@ -414,7 +414,7 @@ impl Inner {
                     control: None,
                     read_only: false,
                 },
-                r#gen: self.generation,
+                generation: self.generation,
             }],
             read_only_parent: self.read_only_parent.as_ref().map(|p| {
                 Box::new(VolumeConstructionRequest::File {
