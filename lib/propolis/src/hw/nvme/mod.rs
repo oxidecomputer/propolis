@@ -28,6 +28,9 @@ mod cmds;
 mod queue;
 mod requests;
 
+#[cfg(test)]
+mod test;
+
 use bits::*;
 use queue::{CompQueue, QueueId, SubQueue};
 
