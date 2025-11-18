@@ -170,6 +170,20 @@ impl VionaDeviceParams {
     }
 }
 
+#[derive(Deserialize)]
+pub struct VsockDevice {
+    pub guest_cid: u32,
+    pub uds_path: String,
+}
+
+impl VsockDevice {
+    pub fn from_opts(
+        opts: &BTreeMap<String, toml::Value>,
+    ) -> Result<VsockDevice, anyhow::Error> {
+        opt_deser(opts)
+    }
+}
+
 // Try to turn unmatched flattened options into a config struct
 fn opt_deser<'de, T: Deserialize<'de>>(
     value: &BTreeMap<String, toml::Value>,
