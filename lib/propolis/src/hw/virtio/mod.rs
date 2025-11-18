@@ -21,6 +21,7 @@ mod queue;
 #[cfg(feature = "falcon")]
 pub mod softnpu;
 pub mod viona;
+pub mod vsock;
 
 use crate::common::RWOp;
 use crate::hw::pci as pci_hw;
@@ -29,6 +30,7 @@ use queue::VirtQueue;
 
 pub use block::PciVirtioBlock;
 pub use viona::PciVirtioViona;
+pub use vsock::PciVirtioSock;
 
 bitflags! {
     pub struct LegacyFeatures: u64 {
@@ -165,6 +167,7 @@ impl DeviceId {
         match self {
             Self::Network => Ok(pci_hw::bits::CLASS_NETWORK),
             Self::Block | Self::NineP => Ok(pci_hw::bits::CLASS_STORAGE),
+            Self::Socket => Ok(pci_hw::bits::CLASS_UNCLASSIFIED),
             _ => Err(self),
         }
     }
@@ -228,6 +231,7 @@ pub trait VirtioIntr: Send + 'static {
     fn read(&self) -> VqIntr;
 }
 
+#[derive(Debug)]
 pub enum VqChange {
     /// Underlying virtio device has been reset
     Reset,

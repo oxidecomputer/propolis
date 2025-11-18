@@ -1314,6 +1314,15 @@ fn setup_instance(
                         guard.inventory.register(&pvpanic);
                     }
                 }
+                "pci-virtio-vsock" => {
+                    // XXX MTZ: add the vsock device
+                    let config = config::VsockDevice::from_opts(&dev.options)?;
+                    let bdf = bdf.unwrap();
+                    let vsock =
+                        hw::virtio::PciVirtioSock::new(512, config.guest_cid);
+                    guard.inventory.register(&vsock);
+                    chipset_pci_attach(bdf, vsock);
+                }
                 _ => {
                     slog::error!(log, "unrecognized driver {driver}"; "name" => name);
                     return Err(Error::new(
