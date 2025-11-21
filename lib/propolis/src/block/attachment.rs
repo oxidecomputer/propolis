@@ -115,8 +115,6 @@ impl QueueSlot {
             workers.wake(wake_wids, pending, Some(self.queue_id));
 
         if !remaining_wids.is_empty() {
-            probes::block_worker_collection_wake_remainder!(|| wake_wids.0);
-
             let state = self.state.lock().unwrap();
             let Some(minder) = state.minder.as_ref() else {
                 // The queue no longer has a minder. This is unfortunate, but it
@@ -1029,7 +1027,11 @@ impl WorkerCollection {
             }
         }
 
-        idle_wids.remainder()
+        let remainder = idle_wids.remainder();
+
+        probes::block_worker_collection_woken!(|| (remainder.0, num_woken));
+
+        remainder
     }
     fn update_queue_associations(&self, queues_associated: Versioned<Bitmap>) {
         let mut state = self.state.lock().unwrap();
