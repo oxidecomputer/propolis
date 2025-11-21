@@ -102,7 +102,7 @@ impl QueueSlot {
         // here, or returning the idle-and-interested bit to `minder`.
         let Some(wake_wids) = minder.take_notifications() else {
             // `notify_count` was non-zero, but between checking the notify
-            // count and getting idle workers, we staretd pausing devices.
+            // count and getting idle workers, we started pausing devices.
             // Bummer. Request notification of as many workers as we were
             // going to, and let a future `flush_notifications()` take care of
             // it.
@@ -112,7 +112,7 @@ impl QueueSlot {
         drop(state);
 
         let remaining_wids =
-            workers.wake(wake_wids, Some(pending), Some(self.queue_id));
+            workers.wake(wake_wids, pending, Some(self.queue_id));
 
         if !remaining_wids.is_empty() {
             probes::block_worker_collection_wake_remainder!(|| wake_wids.0);
@@ -1007,13 +1007,10 @@ impl WorkerCollection {
     fn wake(
         &self,
         wake_wids: Bitmap,
-        limit: Option<NonZeroUsize>,
+        limit: NonZeroUsize,
         qid_hint: Option<QueueId>,
     ) -> Bitmap {
-        probes::block_worker_collection_wake!(|| (
-            wake_wids.0,
-            limit.map(|v| v.get()).unwrap_or(0)
-        ));
+        probes::block_worker_collection_wake!(|| (wake_wids.0, limit.get()));
 
         let mut num_woken = 0;
         let mut idle_wids = wake_wids.iter();
@@ -1027,7 +1024,7 @@ impl WorkerCollection {
                 num_woken += 1;
             }
 
-            if NonZeroUsize::new(num_woken) == limit {
+            if num_woken == limit.get() {
                 break;
             }
         }

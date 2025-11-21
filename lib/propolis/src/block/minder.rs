@@ -331,8 +331,8 @@ impl QueueMinder {
     /// available.
     ///
     /// This should only be called with the remaining parts of a bitmap obtained
-    /// from an ealier `take_notifications`. Using other bit patterns may result
-    /// in wakeups to out-of-range worker IDs and subsequent panic.
+    /// from an ealier [`take_notifications`]. Using other bit patterns may
+    /// result in wakeups to out-of-range worker IDs and subsequent panic.
     pub(crate) fn add_notifications(&self, worker_ids: Bitmap) {
         let mut state = self.state.lock().unwrap();
 
