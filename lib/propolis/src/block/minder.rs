@@ -194,7 +194,7 @@ impl QueueMinder {
     /// that more requests are available.
     pub fn next_req(&self, wid: WorkerId) -> Option<DeviceRequest> {
         let mut state = self.state.lock().unwrap();
-        if state.paused || !state.notify_workers.is_empty() {
+        if state.paused {
             state.notify_workers.set(wid);
             return None;
         }
@@ -325,6 +325,18 @@ impl QueueMinder {
         } else {
             Some(state.notify_workers.take())
         }
+    }
+
+    /// Add a set of workers to be notified when this queue may have requests
+    /// available.
+    ///
+    /// This should only be called with the remaining parts of a bitmap obtained
+    /// from an ealier `take_notifications`. Using other bit patterns may result
+    /// in wakeups to out-of-range worker IDs and subsequent panic.
+    pub(crate) fn add_notifications(&self, worker_ids: Bitmap) {
+        let mut state = self.state.lock().unwrap();
+
+        state.notify_workers.set_all(worker_ids);
     }
 
     /// Associate a [MetricConsumer] with this queue.

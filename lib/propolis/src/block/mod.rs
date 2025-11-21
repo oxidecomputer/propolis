@@ -86,6 +86,9 @@ mod probes {
     fn block_wake(dev_id: u32, worker_id: u64) {}
     fn block_notify(devq_id: u64) {}
     fn block_strategy(dev_id: u32, strat: String, generation: u64) {}
+
+    fn block_worker_collection_wake(wake_wids: u64, limit: usize) {}
+    fn block_worker_collection_wake_remainder(wake_wids: u64) {}
 }
 
 /// Type of operations which may be issued to a virtual block device.
