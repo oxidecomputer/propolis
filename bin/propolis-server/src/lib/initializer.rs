@@ -1004,14 +1004,28 @@ impl MachineInitializer<'_> {
 
         let smb_type1 = smbios::table::Type1 {
             manufacturer: "Oxide".try_into().unwrap(),
-            product_name: "OxVM".try_into().unwrap(),
+            product_name: self
+                .properties
+                .metadata
+                .sled_model
+                .clone()
+                .try_into()
+                .unwrap_or_else(|_| "OxVM".try_into().unwrap()),
 
             serial_number: self
                 .properties
-                .id
-                .to_string()
+                .metadata
+                .sled_serial
+                .clone()
                 .try_into()
-                .unwrap_or_default(),
+                .unwrap_or_else(|_| {
+                    self.properties
+                        .id
+                        .to_string()
+                        .try_into()
+                        .unwrap_or_default()
+                }),
+
             uuid: self.properties.id.to_bytes_le(),
 
             wake_up_type: type1::WakeUpType::PowerSwitch,
