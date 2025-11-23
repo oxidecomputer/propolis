@@ -30,6 +30,7 @@ use propolis_api_types::instance_spec::{
         },
     },
     v0::ComponentV0,
+    v1::SmbiosType1Input,
     PciPath, SpecKey,
 };
 use thiserror::Error;
@@ -45,6 +46,7 @@ use propolis_api_types::instance_spec::components::{
 
 // mod api_request;
 pub(crate) mod api_spec_v0;
+pub(crate) mod api_spec_v1;
 pub(crate) mod builder;
 
 #[derive(Debug, Error)]
@@ -78,6 +80,18 @@ pub(crate) struct Spec {
 
     #[cfg(feature = "falcon")]
     pub softnpu: SoftNpu,
+
+    // TODO: This is an option because there is no good way to generate a
+    // default implementation of `SmbiosType1Input`. The default `serial_number`
+    // field of `SmbiosType1Input` should be equivalent to the VM UUID for
+    // backwards compatibility, but that isn't currently possible.
+    //
+    // One way to fix this would be to remove the `Builder` and directly
+    // construct `Spec` from a function that takes an `InstanceSpecV0` and the
+    // VM UUID. This would replace `impl TryFrom<InstanceSpecV0> for Spec`, and
+    // would allow removing the `Default` derive on `Spec`, and the `Option`
+    // from the `smbios_type1_input` field.
+    pub smbios_type1_input: Option<SmbiosType1Input>,
 }
 
 /// The VM's mainboard.

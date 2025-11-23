@@ -1002,21 +1002,26 @@ impl MachineInitializer<'_> {
             ..Default::default()
         };
 
-        let smb_type1 = smbios::table::Type1 {
-            manufacturer: "Oxide".try_into().unwrap(),
-            product_name: "OxVM".try_into().unwrap(),
-
-            serial_number: self
-                .properties
-                .id
-                .to_string()
-                .try_into()
-                .unwrap_or_default(),
-            uuid: self.properties.id.to_bytes_le(),
-
-            wake_up_type: type1::WakeUpType::PowerSwitch,
-            ..Default::default()
+        // If `spec` contains smbios_type1_input then use it. Otherwise use
+        // defaults.
+        let mut smb_type1 = smbios::table::Type1::default();
+        if let Some(smbios) = self.spec.smbios_type1_input.clone() {
+            smb_type1.manufacturer =
+                smbios.manufacturer.try_into().unwrap_or_default();
+            smb_type1.product_name =
+                smbios.product_name.try_into().unwrap_or_default();
+            smb_type1.serial_number =
+                smbios.serial_number.try_into().unwrap_or_default();
+            smb_type1.version =
+                smbios.version.to_string().try_into().unwrap_or_default();
+        } else {
+            smb_type1.manufacturer = "Oxide".try_into().unwrap();
+            smb_type1.product_name = "OxVM".try_into().unwrap();
+            smb_type1.serial_number =
+                self.properties.id.to_string().try_into().unwrap_or_default();
         };
+        smb_type1.uuid = self.properties.id.to_bytes_le();
+        smb_type1.wake_up_type = type1::WakeUpType::PowerSwitch;
 
         // The processor vendor, family/model/stepping, and brand string should
         // correspond to the values the guest will see if it queries CPUID.

@@ -6,18 +6,20 @@
 
 use std::{collections::BTreeMap, fmt, net::SocketAddr};
 
-use instance_spec::{v0::InstanceSpecV0, SpecKey};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+pub mod v0;
 
 // Re-export the instance spec boot settings types so they can also be used in
 // legacy instance ensure requests.
 pub use crate::instance_spec::components::devices::{
     BootOrderEntry, BootSettings,
 };
-use crate::instance_spec::{
-    components, v0::ComponentV0, VersionedInstanceSpec,
+use instance_spec::{
+    components, v0::ComponentV0, v1::InstanceSpecV1, SpecKey,
+    VersionedInstanceSpec,
 };
 
 // Re-export volume construction requests since they're part of a disk request.
@@ -103,7 +105,7 @@ impl From<ReplacementComponent> for instance_spec::v0::ComponentV0 {
 #[serde(tag = "method", content = "value")]
 pub enum InstanceInitializationMethod {
     Spec {
-        spec: InstanceSpecV0,
+        spec: InstanceSpecV1,
     },
     MigrationTarget {
         migration_id: Uuid,

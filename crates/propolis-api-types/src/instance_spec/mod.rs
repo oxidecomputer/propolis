@@ -161,6 +161,7 @@ use uuid::Uuid;
 
 pub mod components;
 pub mod v0;
+pub mod v1;
 
 /// A key identifying a component in an instance spec.
 //
@@ -306,6 +307,7 @@ impl JsonSchema for SpecKey {
 #[serde(deny_unknown_fields, tag = "version", content = "spec")]
 pub enum VersionedInstanceSpec {
     V0(v0::InstanceSpecV0),
+    V1(v1::InstanceSpecV1),
 }
 
 #[cfg(test)]

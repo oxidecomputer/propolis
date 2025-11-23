@@ -5,7 +5,11 @@
 use std::collections::BTreeMap;
 
 use propolis_api_types::{
-    instance_spec::{v0::ComponentV0, SpecKey, VersionedInstanceSpec},
+    instance_spec::{
+        v0::{ComponentV0, InstanceSpecV0},
+        v1::InstanceSpecV1,
+        SpecKey, VersionedInstanceSpec,
+    },
     ReplacementComponent,
 };
 use serde::{Deserialize, Serialize};
@@ -43,9 +47,17 @@ impl Preamble {
             MigrateError::InstanceSpecsIncompatible(msg)
         }
 
-        let VersionedInstanceSpec::V0(mut source_spec) = self.instance_spec;
+        let (mut v0_source_spec, smbios) = match self.instance_spec {
+            VersionedInstanceSpec::V0(v0_source_spec) => (v0_source_spec, None),
+            VersionedInstanceSpec::V1(InstanceSpecV1 {
+                board,
+                components,
+                smbios,
+            }) => (InstanceSpecV0 { board, components }, Some(smbios)),
+        };
+
         for (id, comp) in replacements {
-            let Some(to_amend) = source_spec.components.get_mut(id) else {
+            let Some(to_amend) = v0_source_spec.components.get_mut(id) else {
                 return Err(MigrateError::InstanceSpecsIncompatible(format!(
                     "replacement component {id} not in source spec",
                 )));
@@ -93,10 +105,12 @@ impl Preamble {
             }
         }
 
-        let amended_spec =
-            source_spec.try_into().map_err(|e: ApiSpecError| {
+        let mut amended_spec: Spec =
+            v0_source_spec.try_into().map_err(|e: ApiSpecError| {
                 MigrateError::PreambleParse(e.to_string())
             })?;
+
+        amended_spec.smbios_type1_input = smbios;
 
         // TODO: Compare opaque blobs.
 
