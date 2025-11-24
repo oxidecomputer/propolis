@@ -74,27 +74,57 @@ impl QueueSlot {
             let _ = self.notify_count.fetch_add(count.get(), Ordering::Release);
         }
     }
-    fn take_notifications(&self) -> Option<(NonZeroUsize, Bitmap)> {
-        let state = self.state.lock().unwrap();
-        let minder = state.minder.as_ref()?;
-
-        if self.notify_count.load(Ordering::Relaxed) == 0 {
-            return None;
-        }
-        let wake_wids = minder.take_notifications()?;
-
-        let pending = self.notify_count.swap(0, Ordering::Acquire);
-        let count =
-            NonZeroUsize::new(pending).expect("notify count is non-zero");
-        Some((count, wake_wids))
-    }
     fn flush_notifications(&self) {
         let guard = self.workers.lock().unwrap();
         let Some(workers) = guard.as_ref() else {
             return;
         };
-        if let Some((count, wake_wids)) = self.take_notifications() {
-            workers.wake(wake_wids, Some(count), Some(self.queue_id));
+
+        let state = self.state.lock().unwrap();
+        let Some(minder) = state.minder.as_ref() else {
+            // The queue isn't associated with anything yet, so there are no
+            // interested workers to wake.
+            return;
+        };
+
+        let pending = self.notify_count.swap(0, Ordering::AcqRel);
+
+        let Some(pending) = NonZeroUsize::new(pending) else {
+            // We have not been asked to wake any workers since the last
+            // `flush_notifications`. This is relatively unlikely but
+            // legitimate, such as if this `QueueSlot` paused and resumed (as
+            // for migrations) repeatedly.
+            return;
+        };
+
+        // Take the full set of workers that may be idle and interested in this
+        // queue. At this point we are responsible for either waking workers
+        // here, or returning the idle-and-interested bit to `minder`.
+        let Some(wake_wids) = minder.take_notifications() else {
+            // `notify_count` was non-zero, but between checking the notify
+            // count and getting idle workers, we started pausing devices.
+            // Bummer. Request notification of as many workers as we were
+            // going to, and let a future `flush_notifications()` take care of
+            // it.
+            self.request_notify(Some(pending));
+            return;
+        };
+        drop(state);
+
+        let remaining_wids =
+            workers.wake(wake_wids, pending, Some(self.queue_id));
+
+        if !remaining_wids.is_empty() {
+            let state = self.state.lock().unwrap();
+            let Some(minder) = state.minder.as_ref() else {
+                // The queue no longer has a minder. This is unfortunate, but it
+                // is at least OK to discard `remaining_wids` here: if this
+                // queue is reassociated later, updating the queue collection's
+                // associations will wake all queues.
+                return;
+            };
+
+            minder.add_notifications(remaining_wids);
         }
     }
 }
@@ -975,17 +1005,33 @@ impl WorkerCollection {
     fn wake(
         &self,
         wake_wids: Bitmap,
-        limit: Option<NonZeroUsize>,
+        limit: NonZeroUsize,
         qid_hint: Option<QueueId>,
-    ) {
-        let _num_woke = wake_wids
-            .iter()
-            .take(limit.unwrap_or(MAX_WORKERS).get())
-            .filter_map(|wid| {
-                let slot = self.workers.get(wid)?;
-                slot.wake(None, qid_hint).then_some(())
-            })
-            .count();
+    ) -> Bitmap {
+        probes::block_worker_collection_wake!(|| (wake_wids.0, limit.get()));
+
+        let mut num_woken = 0;
+        let mut idle_wids = wake_wids.iter();
+
+        for wid in &mut idle_wids {
+            let Some(slot) = self.workers.get(wid) else {
+                continue;
+            };
+
+            if slot.wake(None, qid_hint) {
+                num_woken += 1;
+            }
+
+            if num_woken == limit.get() {
+                break;
+            }
+        }
+
+        let remainder = idle_wids.remainder();
+
+        probes::block_worker_collection_woken!(|| (remainder.0, num_woken));
+
+        remainder
     }
     fn update_queue_associations(&self, queues_associated: Versioned<Bitmap>) {
         let mut state = self.state.lock().unwrap();
@@ -1314,6 +1360,9 @@ impl Bitmap {
         assert!(idx < Self::TOP_BIT);
         self.0 &= !(1u64 << idx);
     }
+    pub fn set_all(&mut self, other: Bitmap) {
+        self.0 |= other.0;
+    }
     pub fn lowest_set(&self) -> Option<usize> {
         if self.0.count_ones() == 0 {
             None
@@ -1350,6 +1399,11 @@ impl Iterator for BitIter {
         let idx = self.0.lowest_set()?;
         self.0.unset(idx);
         Some(idx)
+    }
+}
+impl BitIter {
+    fn remainder(self) -> Bitmap {
+        self.0
     }
 }
 pub struct LoopIter {

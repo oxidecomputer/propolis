@@ -37,6 +37,7 @@ mod probes {
     fn nvme_doorbell_admin_cq(val: u16) {}
     fn nvme_doorbell_admin_sq(val: u16) {}
     fn nvme_admin_cmd(opcode: u8, prp1: u64, prp2: u64) {}
+    fn nvme_block_notify(sqid: u16, block_qid: u16, occupied_hint: u16) {}
 }
 
 /// The max number of MSI-X interrupts we support
@@ -1186,8 +1187,14 @@ impl PciNvme {
                     Some((sqid, sq.num_occupied()))
                 })
             {
+                let block_qid = queue::sqid_to_block_qid(sqid);
+                probes::nvme_block_notify!(|| (
+                    sqid,
+                    u16::from(block_qid),
+                    num_occupied
+                ));
                 self.block_attach.notify(
-                    queue::sqid_to_block_qid(sqid),
+                    block_qid,
                     NonZeroUsize::new(num_occupied as usize),
                 );
             }
@@ -1204,10 +1211,14 @@ impl PciNvme {
             drop(guard);
 
             assert_ne!(qid, queue::ADMIN_QUEUE_ID);
-            self.block_attach.notify(
-                queue::sqid_to_block_qid(qid),
-                NonZeroUsize::new(num_occupied as usize),
-            );
+            let block_qid = queue::sqid_to_block_qid(qid);
+            probes::nvme_block_notify!(|| (
+                qid,
+                u16::from(block_qid),
+                num_occupied
+            ));
+            self.block_attach
+                .notify(block_qid, NonZeroUsize::new(num_occupied as usize));
         };
         Ok(())
     }
