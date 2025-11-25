@@ -16,6 +16,8 @@ use propolis_api_types::instance_spec::{
     v0::{ComponentV0, InstanceSpecV0},
     SpecKey,
 };
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[cfg(feature = "falcon")]
@@ -23,8 +25,8 @@ use propolis_api_types::instance_spec::components::devices::SoftNpuPort as SoftN
 
 use super::{
     builder::{SpecBuilder, SpecBuilderError},
-    Disk, Nic, QemuPvpanic, SerialPortDevice, Spec, StorageBackend,
-    StorageDevice,
+    Disk, InstanceProperties, InstanceState, Nic, QemuPvpanic,
+    SerialPortDevice, Spec, StorageBackend, StorageDevice,
 };
 
 #[cfg(feature = "failure-injection")]
@@ -401,4 +403,18 @@ impl TryFrom<InstanceSpecV0> for Spec {
 
         Ok(builder.finish())
     }
+}
+
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceSpecGetResponseV0 {
+    pub properties: InstanceProperties,
+    pub state: InstanceState,
+    pub spec: InstanceSpecStatusV0,
+}
+
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "type", content = "value")]
+pub enum InstanceSpecStatusV0 {
+    WaitingForMigrationSource,
+    Present(VersionedInstanceSpec),
 }

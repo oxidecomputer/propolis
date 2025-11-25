@@ -30,8 +30,7 @@ use propolis_api_types::instance_spec::{
         },
     },
     v0::ComponentV0,
-    v1::SmbiosType1Input,
-    PciPath, SpecKey,
+    InstanceSpec, PciPath, SmbiosType1Input, SpecKey,
 };
 use thiserror::Error;
 
@@ -46,8 +45,38 @@ use propolis_api_types::instance_spec::components::{
 
 // mod api_request;
 pub(crate) mod api_spec_v0;
-pub(crate) mod api_spec_v1;
 pub(crate) mod builder;
+
+#[derive(Debug, Error)]
+#[error("missing smbios_type1_input")]
+pub(crate) struct MissingSmbiosError;
+
+/// The code related to latest types does not go into a versioned module
+impl TryFrom<Spec> for InstanceSpec {
+    type Error = MissingSmbiosError;
+
+    fn try_from(val: Spec) -> Result<Self, Self::Error> {
+        let Some(smbios) = val.smbios_type1_input.clone() else {
+            return Err(MissingSmbiosError);
+        };
+
+        let InstanceSpecV0 { board, components } = InstanceSpecV0::from(val);
+        Ok(InstanceSpec { board, components, smbios })
+    }
+}
+
+/// The code related to latest types does not go into a versioned module
+impl TryFrom<InstanceSpec> for Spec {
+    type Error = ApiSpecError;
+
+    fn try_from(value: InstanceSpec) -> Result<Self, Self::Error> {
+        let InstanceSpecV1 { board, components, smbios } = value;
+        let v0 = InstanceSpecV0 { board, components };
+        let mut spec: Spec = v0.try_into()?;
+        spec.smbios_type1_input = Some(smbios);
+        Ok(spec)
+    }
+}
 
 #[derive(Debug, Error)]
 #[error("input component type can't convert to output type")]

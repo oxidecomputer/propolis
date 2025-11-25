@@ -12,7 +12,7 @@ use propolis_api_types::{
     InstanceEnsureRequest, InstanceEnsureResponse, InstanceGetResponse,
     InstanceMigrateStartRequest, InstanceMigrateStatusResponse,
     InstanceSerialConsoleHistoryRequest, InstanceSerialConsoleHistoryResponse,
-    InstanceSerialConsoleStreamRequest, InstanceSpecGetResponse,
+    InstanceSerialConsoleStreamRequest, InstanceSpecGetResponseV0,
     InstanceStateMonitorRequest, InstanceStateMonitorResponse,
     InstanceStateRequested, InstanceVCRReplace, SnapshotRequestPathParams,
     VCRRequestPathParams, VolumeStatus, VolumeStatusPathParams,
@@ -64,7 +64,7 @@ pub trait PropolisServerApi {
     #[endpoint {
         method = PUT,
         path = "/instance",
-        versions = VERSION_INITIAL..VERSION_PROGRAMMABLE_SMBIOS
+        versions = ..VERSION_PROGRAMMABLE_SMBIOS
     }]
     async fn v0_instance_ensure(
         rqctx: RequestContext<Self::Context>,
@@ -74,11 +74,20 @@ pub trait PropolisServerApi {
     #[endpoint {
         method = GET,
         path = "/instance/spec",
-        versions = ..VERSION_PROGRAMMABLE_SMBIOS
+        versions = VERSION_PROGRAMMABLE_SMBIOS..
     }]
     async fn instance_spec_get(
         rqctx: RequestContext<Self::Context>,
     ) -> Result<HttpResponseOk<InstanceSpecGetResponse>, HttpError>;
+
+    #[endpoint {
+        method = GET,
+        path = "/instance/spec",
+        versions = ..VERSION_PROGRAMMABLE_SMBIOS
+    }]
+    async fn v0_instance_spec_get(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<HttpResponseOk<InstanceSpecGetResponseV0>, HttpError>;
 
     #[endpoint {
         method = GET,
