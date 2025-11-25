@@ -28,6 +28,7 @@ pub mod instance_spec {
     pub use propolis_api_types::{
         InstanceMetadata, InstanceProperties, InstanceSpec,
         InstanceSpecGetResponse, InstanceSpecStatus, ReplacementComponent,
+        SmbiosType1Input,
     };
 }
 
@@ -50,6 +51,7 @@ progenitor::generate_api!(
         InstanceProperties = crate::instance_spec::InstanceProperties,
         InstanceMetadata = crate::instance_spec::InstanceMetadata,
         InstanceSpecGetResponse = crate::instance_spec::InstanceSpecGetResponse,
+        SmbiosType1Input = crate::instance_spec::SmbiosType1Input,
         VersionedInstanceSpec = crate::instance_spec::VersionedInstanceSpec,
         CpuidEntry = crate::instance_spec::CpuidEntry,
     },
