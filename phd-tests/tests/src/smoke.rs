@@ -4,10 +4,7 @@
 
 use phd_testcase::*;
 use propolis_client::{
-    instance_spec::{
-        v1::InstanceSpecV1, InstanceSpecV0, VersionedInstanceSpec,
-    },
-    types::InstanceSpecStatus,
+    instance_spec::VersionedInstanceSpec, types::InstanceSpecStatus,
 };
 
 #[phd_testcase]
@@ -56,10 +53,7 @@ async fn instance_spec_get_test(ctx: &Framework) {
         panic!("launched instance should have a spec");
     };
 
-    let board = match spec {
-        VersionedInstanceSpec::V0(InstanceSpecV0 { board, .. }) => board,
-        VersionedInstanceSpec::V1(InstanceSpecV1 { board, .. }) => board,
-    };
-    assert_eq!(board.cpus, 4);
-    assert_eq!(board.memory_mb, 3072);
+    let VersionedInstanceSpec::V0(spec) = spec;
+    assert_eq!(spec.board.cpus, 4);
+    assert_eq!(spec.board.memory_mb, 3072);
 }

@@ -18,14 +18,14 @@ use futures::{future, SinkExt};
 use newtype_uuid::{GenericUuid, TypedUuid, TypedUuidKind, TypedUuidTag};
 use propolis_client::instance_spec::{
     BlobStorageBackend, Board, Chipset, ComponentV0, CrucibleStorageBackend,
-    GuestHypervisorInterface, HyperVFeatureFlag, I440Fx, InstanceSpecV0,
+    GuestHypervisorInterface, HyperVFeatureFlag, I440Fx, InstanceSpecV1,
     NvmeDisk, PciPath, QemuPvpanic, ReplacementComponent, SerialPort,
-    SerialPortNumber, SpecKey, VirtioDisk,
+    SerialPortNumber, SmbiosType1Input, SpecKey, VirtioDisk,
 };
 use propolis_client::support::nvme_serial_from_str;
 use propolis_client::types::{
-    InstanceEnsureRequest, InstanceInitializationMethod, InstanceMetadata,
-    InstanceSpecGetResponse,
+    Instance, InstanceEnsureRequest, InstanceGetResponse,
+    InstanceInitializationMethod, InstanceMetadata,
 };
 use propolis_config_toml::spec::toml_cpuid_to_spec_cpuid;
 use propolis_config_toml::spec::SpecConfig;
@@ -208,7 +208,7 @@ struct VmConfig {
 }
 
 fn add_component_to_spec(
-    spec: &mut InstanceSpecV0,
+    spec: &mut InstanceSpecV1,
     id: SpecKey,
     component: ComponentV0,
 ) -> anyhow::Result<()> {
@@ -290,7 +290,7 @@ impl DiskRequest {
 }
 
 impl VmConfig {
-    fn instance_spec(&self) -> anyhow::Result<InstanceSpecV0> {
+    fn instance_spec(&self) -> anyhow::Result<InstanceSpecV1> {
         // If the configuration specifies an instance spec path, just read the
         // spec from that path and return it. Otherwise, construct a spec from
         // this configuration's component parts.
@@ -328,7 +328,7 @@ impl VmConfig {
             })
             .transpose()?;
 
-        let mut spec = InstanceSpecV0 {
+        let mut spec = InstanceSpecV1 {
             board: Board {
                 chipset: Chipset::I440Fx(I440Fx { enable_pcie }),
                 cpuid: cpuid_profile,
@@ -345,6 +345,12 @@ impl VmConfig {
                 },
             },
             components: Default::default(),
+            smbios: SmbiosType1Input {
+                manufacturer: "Oxide".to_string(),
+                product_name: "OxVM".to_string(),
+                serial_number: "REPLACE WITH VM UUID".to_string(),
+                version: 0,
+            },
         };
 
         if let Some(from_toml) = from_toml {
@@ -519,7 +525,7 @@ async fn new_instance(
     client: &Client,
     name: String,
     id: Uuid,
-    spec: InstanceSpecV0,
+    spec: InstanceSpecV1,
     metadata: InstanceMetadata,
 ) -> anyhow::Result<()> {
     let properties = InstanceProperties {
@@ -766,12 +772,13 @@ async fn migrate_instance(
     disks: Vec<DiskRequest>,
 ) -> anyhow::Result<()> {
     // Grab the instance details
-    let InstanceSpecGetResponse { mut properties, .. } = src_client
-        .instance_spec_get()
-        .send()
-        .await
-        .with_context(|| anyhow!("failed to get src instance properties"))?
-        .into_inner();
+    let InstanceGetResponse { instance: Instance { mut properties, .. } } =
+        src_client
+            .instance_get()
+            .send()
+            .await
+            .with_context(|| anyhow!("failed to get src instance properties"))?
+            .into_inner();
     let src_uuid = properties.id;
     properties.id = dst_uuid;
 

@@ -22,6 +22,7 @@ pub mod instance_spec {
     pub use propolis_api_types::instance_spec::{
         components::{backends::*, board::*, devices::*},
         v0::*,
+        v1::*,
         *,
     };
 
@@ -42,6 +43,7 @@ progenitor::generate_api!(
         PciPath = crate::instance_spec::PciPath,
         ReplacementComponent = crate::instance_spec::ReplacementComponent,
         InstanceSpecV0 = crate::instance_spec::InstanceSpecV0,
+        InstanceSpecV1 = crate::instance_spec::InstanceSpecV1,
         VersionedInstanceSpec = crate::instance_spec::VersionedInstanceSpec,
         CpuidEntry = crate::instance_spec::CpuidEntry,
     },

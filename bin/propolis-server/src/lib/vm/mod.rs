@@ -86,7 +86,7 @@ use ensure::VmEnsureRequest;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types::{
     instance_spec::{SpecKey, VersionedInstanceSpec},
-    InstanceEnsureResponse, InstanceMigrateStatusResponse,
+    InstanceEnsureResponse, InstanceGetResponse, InstanceMigrateStatusResponse,
     InstanceMigrationStatus, InstanceProperties, InstanceSpecGetResponse,
     InstanceSpecStatus, InstanceState, InstanceStateMonitorResponse,
     MigrationState,
@@ -333,6 +333,42 @@ impl Vm {
         .ok()
     }
 
+    pub(super) async fn get(&self) -> Option<InstanceGetResponse> {
+        let guard = self.inner.read().await;
+        match &guard.state {
+            // If no VM has ever been created, there's nothing to get.
+            VmState::NoVm => None,
+
+            // If the VM is active, pull the required data out of its objects.
+            VmState::Active(vm) => {
+                let state = vm.external_state_rx.borrow().clone();
+                Some(InstanceGetResponse {
+                    instance: propolis_api_types::Instance {
+                        properties: vm.properties.clone(),
+                        state: state.state,
+                    },
+                })
+            }
+            VmState::WaitingForInit { vm, .. }
+            | VmState::RundownComplete { vm, .. } => {
+                Some(InstanceGetResponse {
+                    instance: propolis_api_types::Instance {
+                        properties: vm.properties.clone(),
+                        state: vm.external_state_rx.borrow().state,
+                    },
+                })
+            }
+            VmState::Rundown { vm, .. } => Some(InstanceGetResponse {
+                instance: propolis_api_types::Instance {
+                    properties: vm.properties.clone(),
+                    state: vm.external_state_rx.borrow().state,
+                },
+            }),
+        }
+    }
+
+    /// DEPRECATED, because returning a `VersionedInstanceSpec` is deprecated.
+    ///
     /// Returns the state, properties, and instance spec for the instance most
     /// recently wrapped by this `Vm`.
     ///
@@ -340,7 +376,7 @@ impl Vm {
     ///
     /// - `Some` if the VM has been created.
     /// - `None` if no VM has ever been created.
-    pub(super) async fn get(&self) -> Option<InstanceSpecGetResponse> {
+    pub(super) async fn get_v0(&self) -> Option<InstanceSpecGetResponse> {
         let guard = self.inner.read().await;
         match &guard.state {
             // If no VM has ever been created, there's nothing to get.

@@ -74,6 +74,7 @@ pub trait PropolisServerApi {
     #[endpoint {
         method = GET,
         path = "/instance/spec",
+        versions = ..VERSION_PROGRAMMABLE_SMBIOS
     }]
     async fn instance_spec_get(
         rqctx: RequestContext<Self::Context>,

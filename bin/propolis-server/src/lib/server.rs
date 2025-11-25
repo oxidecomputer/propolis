@@ -191,9 +191,17 @@ async fn find_local_nexus_client(
     }
 }
 
-async fn instance_get_common(
+// DEPRECATED
+async fn instance_get_v0(
     rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<api::InstanceSpecGetResponse, HttpError> {
+    let ctx = rqctx.context();
+    ctx.vm.get_v0().await.ok_or_else(not_created_error)
+}
+
+async fn instance_get(
+    rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
+) -> Result<api::InstanceGetResponse, HttpError> {
     let ctx = rqctx.context();
     ctx.vm.get().await.ok_or_else(not_created_error)
 }
@@ -384,20 +392,13 @@ impl PropolisServerApi for PropolisServerImpl {
     async fn instance_spec_get(
         rqctx: RequestContext<Self::Context>,
     ) -> Result<HttpResponseOk<api::InstanceSpecGetResponse>, HttpError> {
-        Ok(HttpResponseOk(instance_get_common(&rqctx).await?))
+        Ok(HttpResponseOk(instance_get_v0(&rqctx).await?))
     }
 
     async fn instance_get(
         rqctx: RequestContext<Self::Context>,
     ) -> Result<HttpResponseOk<api::InstanceGetResponse>, HttpError> {
-        instance_get_common(&rqctx).await.map(|full| {
-            HttpResponseOk(api::InstanceGetResponse {
-                instance: api::Instance {
-                    properties: full.properties,
-                    state: full.state,
-                },
-            })
-        })
+        instance_get(&rqctx).await.map(HttpResponseOk)
     }
 
     async fn instance_state_monitor(
