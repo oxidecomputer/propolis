@@ -27,7 +27,7 @@ pub mod instance_spec {
 
     pub use propolis_api_types::{
         InstanceMetadata, InstanceProperties, InstanceSpec,
-        InstanceSpecGetResponse, ReplacementComponent,
+        InstanceSpecGetResponse, InstanceSpecStatus, ReplacementComponent,
     };
 }
 
@@ -46,6 +46,7 @@ progenitor::generate_api!(
         ReplacementComponent = crate::instance_spec::ReplacementComponent,
         InstanceSpecV0 = crate::instance_spec::InstanceSpecV0,
         InstanceSpec = crate::instance_spec::InstanceSpec,
+        InstanceSpecStatus = crate::instance_spec::InstanceSpecStatus,
         InstanceProperties = crate::instance_spec::InstanceProperties,
         InstanceMetadata = crate::instance_spec::InstanceMetadata,
         InstanceSpecGetResponse = crate::instance_spec::InstanceSpecGetResponse,
