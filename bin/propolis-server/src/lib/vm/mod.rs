@@ -84,6 +84,9 @@ use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, sync::Arc};
 use active::ActiveVm;
 use ensure::VmEnsureRequest;
 use oximeter::types::ProducerRegistry;
+use propolis_api_types::instance_spec::v0::{
+    InstanceSpecGetResponseV0, InstanceSpecStatusV0,
+};
 use propolis_api_types::{
     instance_spec::{SpecKey, VersionedInstanceSpec},
     InstanceEnsureResponse, InstanceMigrateStatusResponse,
@@ -96,14 +99,7 @@ use state_driver::StateDriverOutput;
 use state_publisher::StatePublisher;
 use tokio::sync::{oneshot, watch, RwLock, RwLockReadGuard};
 
-use crate::{
-    server::MetricsEndpointConfig,
-    spec::{
-        api_spec_v0::{InstanceSpecGetResponseV0, InstanceSpecStatusV0},
-        Spec,
-    },
-    vnc::VncServer,
-};
+use crate::{server::MetricsEndpointConfig, spec::Spec, vnc::VncServer};
 
 mod active;
 pub(crate) mod ensure;
@@ -223,6 +219,17 @@ enum MaybeSpec {
 }
 
 impl From<MaybeSpec> for InstanceSpecStatus {
+    fn from(value: MaybeSpec) -> Self {
+        match value {
+            MaybeSpec::WaitingForMigrationSource => {
+                Self::WaitingForMigrationSource
+            }
+            MaybeSpec::Present(spec) => Self::Present((*spec).into()),
+        }
+    }
+}
+
+impl From<MaybeSpec> for InstanceSpecStatusV0 {
     fn from(value: MaybeSpec) -> Self {
         match value {
             MaybeSpec::WaitingForMigrationSource => {
@@ -374,7 +381,7 @@ impl Vm {
                     spec: spec.clone().into(),
                 })
             }
-            VmState::Rundown { vm, spec } => Some(InstanceSpecGetResponse {
+            VmState::Rundown { vm, spec } => Some(InstanceSpecGetResponseV0 {
                 properties: vm.properties.clone(),
                 state: vm.external_state_rx.borrow().state,
                 spec: InstanceSpecStatusV0::Present(VersionedInstanceSpec::V0(

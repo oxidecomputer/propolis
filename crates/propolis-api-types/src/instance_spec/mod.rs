@@ -161,7 +161,6 @@ use uuid::Uuid;
 
 pub mod components;
 pub mod v0;
-pub mod v1;
 
 /// A key identifying a component in an instance spec.
 //

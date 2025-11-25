@@ -37,7 +37,9 @@ use internal_dns_types::names::ServiceName;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types as api;
-use propolis_api_types::instance_spec::SpecKey;
+use propolis_api_types::instance_spec::{
+    v0::InstanceSpecGetResponseV0, SpecKey,
+};
 use propolis_api_types::v0::InstanceInitializationMethodV0;
 use propolis_api_types::InstanceInitializationMethod;
 use propolis_server_api::PropolisServerApi;
@@ -194,14 +196,14 @@ async fn find_local_nexus_client(
 // DEPRECATED
 async fn v0_instance_get(
     rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
-) -> Result<api::InstanceSpecGetResponseV0, HttpError> {
+) -> Result<InstanceSpecGetResponseV0, HttpError> {
     let ctx = rqctx.context();
     ctx.vm.v0_get().await.ok_or_else(not_created_error)
 }
 
 async fn instance_get(
     rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
-) -> Result<api::InstanceGetResponse, HttpError> {
+) -> Result<api::InstanceSpecGetResponse, HttpError> {
     let ctx = rqctx.context();
     ctx.vm.get().await.ok_or_else(not_created_error)
 }
@@ -397,7 +399,7 @@ impl PropolisServerApi for PropolisServerImpl {
 
     async fn v0_instance_spec_get(
         rqctx: RequestContext<Self::Context>,
-    ) -> Result<HttpResponseOk<api::InstanceSpecGetResponseV0>, HttpError> {
+    ) -> Result<HttpResponseOk<InstanceSpecGetResponseV0>, HttpError> {
         Ok(HttpResponseOk(v0_instance_get(&rqctx).await?))
     }
 

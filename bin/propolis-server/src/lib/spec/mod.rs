@@ -16,6 +16,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::spec::api_spec_v0::ApiSpecError;
 use cpuid_utils::CpuidSet;
 use propolis_api_types::instance_spec::{
     components::{
@@ -29,9 +30,10 @@ use propolis_api_types::instance_spec::{
             SerialPortNumber, VirtioDisk, VirtioNic,
         },
     },
-    v0::ComponentV0,
-    InstanceSpec, PciPath, SmbiosType1Input, SpecKey,
+    v0::{ComponentV0, InstanceSpecV0},
+    PciPath, SpecKey,
 };
+use propolis_api_types::{InstanceSpec, SmbiosType1Input};
 use thiserror::Error;
 
 #[cfg(feature = "failure-injection")]
@@ -47,21 +49,12 @@ use propolis_api_types::instance_spec::components::{
 pub(crate) mod api_spec_v0;
 pub(crate) mod builder;
 
-#[derive(Debug, Error)]
-#[error("missing smbios_type1_input")]
-pub(crate) struct MissingSmbiosError;
-
 /// The code related to latest types does not go into a versioned module
-impl TryFrom<Spec> for InstanceSpec {
-    type Error = MissingSmbiosError;
-
-    fn try_from(val: Spec) -> Result<Self, Self::Error> {
-        let Some(smbios) = val.smbios_type1_input.clone() else {
-            return Err(MissingSmbiosError);
-        };
-
+impl From<Spec> for InstanceSpec {
+    fn from(val: Spec) -> Self {
+        let smbios = val.smbios_type1_input.clone();
         let InstanceSpecV0 { board, components } = InstanceSpecV0::from(val);
-        Ok(InstanceSpec { board, components, smbios })
+        InstanceSpec { board, components, smbios }
     }
 }
 
@@ -70,10 +63,10 @@ impl TryFrom<InstanceSpec> for Spec {
     type Error = ApiSpecError;
 
     fn try_from(value: InstanceSpec) -> Result<Self, Self::Error> {
-        let InstanceSpecV1 { board, components, smbios } = value;
+        let InstanceSpec { board, components, smbios } = value;
         let v0 = InstanceSpecV0 { board, components };
         let mut spec: Spec = v0.try_into()?;
-        spec.smbios_type1_input = Some(smbios);
+        spec.smbios_type1_input = smbios;
         Ok(spec)
     }
 }

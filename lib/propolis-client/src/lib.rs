@@ -22,11 +22,13 @@ pub mod instance_spec {
     pub use propolis_api_types::instance_spec::{
         components::{backends::*, board::*, devices::*},
         v0::*,
-        v1::*,
         *,
     };
 
-    pub use propolis_api_types::ReplacementComponent;
+    pub use propolis_api_types::{
+        InstanceMetadata, InstanceProperties, InstanceSpec,
+        InstanceSpecGetResponse, ReplacementComponent,
+    };
 }
 
 // Re-export Crucible client types that appear in their serialized forms in
@@ -43,7 +45,10 @@ progenitor::generate_api!(
         PciPath = crate::instance_spec::PciPath,
         ReplacementComponent = crate::instance_spec::ReplacementComponent,
         InstanceSpecV0 = crate::instance_spec::InstanceSpecV0,
-        InstanceSpecV1 = crate::instance_spec::InstanceSpecV1,
+        InstanceSpec = crate::instance_spec::InstanceSpec,
+        InstanceProperties = crate::instance_spec::InstanceProperties,
+        InstanceMetadata = crate::instance_spec::InstanceMetadata,
+        InstanceSpecGetResponse = crate::instance_spec::InstanceSpecGetResponse,
         VersionedInstanceSpec = crate::instance_spec::VersionedInstanceSpec,
         CpuidEntry = crate::instance_spec::CpuidEntry,
     },

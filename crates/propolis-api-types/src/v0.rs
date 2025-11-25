@@ -6,6 +6,7 @@
 
 use std::{collections::BTreeMap, net::SocketAddr};
 
+use crate::instance_spec::VersionedInstanceSpec;
 use crate::instance_spec::{v0::InstanceSpecV0, SpecKey};
 use crate::{InstanceProperties, ReplacementComponent};
 use schemars::JsonSchema;
@@ -29,4 +30,11 @@ pub enum InstanceInitializationMethodV0 {
 pub struct InstanceEnsureRequestV0 {
     pub properties: InstanceProperties,
     pub init: InstanceInitializationMethodV0,
+}
+
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "type", content = "value")]
+pub enum InstanceSpecStatusV0 {
+    WaitingForMigrationSource,
+    Present(VersionedInstanceSpec),
 }

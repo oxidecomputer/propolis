@@ -367,6 +367,29 @@
         }
       }
     },
+    "/instance/spec": {
+      "get": {
+        "operationId": "instance_spec_get",
+        "responses": {
+          "200": {
+            "description": "successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceSpecGetResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/instance/state": {
       "put": {
         "operationId": "instance_state_put",
@@ -1197,7 +1220,7 @@
                 "type": "object",
                 "properties": {
                   "spec": {
-                    "$ref": "#/components/schemas/InstanceSpecV1"
+                    "$ref": "#/components/schemas/InstanceSpec"
                   }
                 },
                 "required": [
@@ -1402,7 +1425,7 @@
           "last_byte_offset"
         ]
       },
-      "InstanceSpecV1": {
+      "InstanceSpec": {
         "type": "object",
         "properties": {
           "board": {
@@ -1415,15 +1438,73 @@
             }
           },
           "smbios": {
-            "$ref": "#/components/schemas/SmbiosType1Input"
+            "nullable": true,
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SmbiosType1Input"
+              }
+            ]
           }
         },
         "required": [
           "board",
-          "components",
-          "smbios"
-        ],
-        "additionalProperties": false
+          "components"
+        ]
+      },
+      "InstanceSpecGetResponse": {
+        "type": "object",
+        "properties": {
+          "properties": {
+            "$ref": "#/components/schemas/InstanceProperties"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/InstanceSpecStatus"
+          },
+          "state": {
+            "$ref": "#/components/schemas/InstanceState"
+          }
+        },
+        "required": [
+          "properties",
+          "spec",
+          "state"
+        ]
+      },
+      "InstanceSpecStatus": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "WaitingForMigrationSource"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Present"
+                ]
+              },
+              "value": {
+                "$ref": "#/components/schemas/InstanceSpec"
+              }
+            },
+            "required": [
+              "type",
+              "value"
+            ]
+          }
+        ]
       },
       "InstanceState": {
         "description": "Current state of an Instance.",

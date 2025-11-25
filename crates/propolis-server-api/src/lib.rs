@@ -12,11 +12,11 @@ use propolis_api_types::{
     InstanceEnsureRequest, InstanceEnsureResponse, InstanceGetResponse,
     InstanceMigrateStartRequest, InstanceMigrateStatusResponse,
     InstanceSerialConsoleHistoryRequest, InstanceSerialConsoleHistoryResponse,
-    InstanceSerialConsoleStreamRequest, InstanceSpecGetResponseV0,
+    InstanceSerialConsoleStreamRequest, InstanceSpecGetResponse,
     InstanceStateMonitorRequest, InstanceStateMonitorResponse,
     InstanceStateRequested, InstanceVCRReplace, SnapshotRequestPathParams,
     VCRRequestPathParams, VolumeStatus, VolumeStatusPathParams,
-    v0::InstanceEnsureRequestV0,
+    instance_spec::v0::InstanceSpecGetResponseV0, v0::InstanceEnsureRequestV0,
 };
 
 api_versions!([
