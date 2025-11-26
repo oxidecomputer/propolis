@@ -27,14 +27,16 @@ use anyhow::{anyhow, Context, Result};
 use camino::Utf8PathBuf;
 use core::result::Result as StdResult;
 use propolis_client::{
-    instance_spec::{ComponentV0, ReplacementComponent},
+    instance_spec::{
+        ComponentV0, InstanceProperties, InstanceSpecGetResponse,
+        ReplacementComponent,
+    },
     support::{InstanceSerialConsoleHelper, WSClientOffset},
     types::{
         InstanceEnsureRequest, InstanceGetResponse,
         InstanceInitializationMethod, InstanceMigrateStatusResponse,
-        InstanceProperties, InstanceSerialConsoleHistoryResponse,
-        InstanceSpecGetResponse, InstanceState, InstanceStateRequested,
-        MigrationState,
+        InstanceSerialConsoleHistoryResponse, InstanceState,
+        InstanceStateRequested, MigrationState,
     },
 };
 use propolis_client::{Client, ResponseValue};

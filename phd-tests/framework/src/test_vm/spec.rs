@@ -9,9 +9,8 @@ use crate::{
     guest_os::GuestOsKind,
 };
 use camino::Utf8PathBuf;
-use propolis_client::{
-    instance_spec::{ComponentV0, InstanceSpecV0},
-    types::InstanceMetadata,
+use propolis_client::instance_spec::{
+    ComponentV0, InstanceMetadata, InstanceSpec,
 };
 use uuid::Uuid;
 
@@ -21,7 +20,7 @@ pub struct VmSpec {
     pub vm_name: String,
 
     /// The instance spec to pass to the VM when starting the guest.
-    base_instance_spec: InstanceSpecV0,
+    base_instance_spec: InstanceSpec,
 
     /// A set of handles to disk files that the VM's disk backends refer to.
     pub disk_handles: Vec<Arc<dyn disk::DiskConfig>>,
@@ -48,7 +47,7 @@ impl VmSpec {
 
     pub(crate) fn new(
         vm_name: String,
-        instance_spec: InstanceSpecV0,
+        instance_spec: InstanceSpec,
         disk_handles: Vec<Arc<dyn disk::DiskConfig>>,
         guest_os_kind: GuestOsKind,
         bootrom_path: Utf8PathBuf,
@@ -68,7 +67,7 @@ impl VmSpec {
         self.vm_name = name
     }
 
-    pub(crate) fn instance_spec(&self) -> InstanceSpecV0 {
+    pub(crate) fn instance_spec(&self) -> InstanceSpec {
         let mut spec = self.base_instance_spec.clone();
         self.set_crucible_backends(&mut spec);
         spec
@@ -76,7 +75,7 @@ impl VmSpec {
 
     /// Update the Crucible backend specs in the instance spec to match the
     /// current backend specs given by this specification's disk handles.
-    fn set_crucible_backends(&self, spec: &mut InstanceSpecV0) {
+    fn set_crucible_backends(&self, spec: &mut InstanceSpec) {
         for disk in &self.disk_handles {
             let disk = if let Some(disk) = disk.as_crucible() {
                 disk

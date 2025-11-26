@@ -9,12 +9,11 @@ use cpuid_utils::CpuidIdent;
 use propolis_client::{
     instance_spec::{
         Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
-        CpuidEntry, CpuidVendor, GuestHypervisorInterface, InstanceSpecV0,
-        MigrationFailureInjector, NvmeDisk, PciPath, SerialPort,
+        CpuidEntry, CpuidVendor, GuestHypervisorInterface, InstanceMetadata,
+        InstanceSpec, MigrationFailureInjector, NvmeDisk, PciPath, SerialPort,
         SerialPortNumber, SpecKey, VirtioDisk,
     },
     support::nvme_serial_from_str,
-    types::InstanceMetadata,
 };
 use uuid::Uuid;
 
@@ -287,7 +286,7 @@ impl<'dr> VmConfig<'dr> {
                 )
             })?;
 
-        let mut spec = InstanceSpecV0 {
+        let mut spec = InstanceSpec {
             board: Board {
                 cpus: *cpus,
                 memory_mb: *memory_mib,
@@ -305,6 +304,7 @@ impl<'dr> VmConfig<'dr> {
                     .unwrap_or_default(),
             },
             components: Default::default(),
+            smbios: None,
         };
 
         // Iterate over the collection of disks and handles and add spec

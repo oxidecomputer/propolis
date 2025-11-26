@@ -18,14 +18,14 @@ use futures::{future, SinkExt};
 use newtype_uuid::{GenericUuid, TypedUuid, TypedUuidKind, TypedUuidTag};
 use propolis_client::instance_spec::{
     BlobStorageBackend, Board, Chipset, ComponentV0, CrucibleStorageBackend,
-    GuestHypervisorInterface, HyperVFeatureFlag, I440Fx, InstanceSpecV0,
-    NvmeDisk, PciPath, QemuPvpanic, ReplacementComponent, SerialPort,
-    SerialPortNumber, SpecKey, VirtioDisk,
+    GuestHypervisorInterface, HyperVFeatureFlag, I440Fx, InstanceMetadata,
+    InstanceProperties, InstanceSpec, InstanceSpecGetResponse, NvmeDisk,
+    PciPath, QemuPvpanic, ReplacementComponent, SerialPort, SerialPortNumber,
+    SpecKey, VirtioDisk,
 };
 use propolis_client::support::nvme_serial_from_str;
 use propolis_client::types::{
-    InstanceEnsureRequest, InstanceInitializationMethod, InstanceMetadata,
-    InstanceSpecGetResponse,
+    InstanceEnsureRequest, InstanceInitializationMethod,
 };
 use propolis_config_toml::spec::toml_cpuid_to_spec_cpuid;
 use propolis_config_toml::spec::SpecConfig;
@@ -40,10 +40,7 @@ use uuid::Uuid;
 
 use propolis_client::{
     support::{InstanceSerialConsoleHelper, WSClientOffset},
-    types::{
-        InstanceProperties, InstanceStateRequested, InstanceVcrReplace,
-        MigrationState,
-    },
+    types::{InstanceStateRequested, InstanceVcrReplace, MigrationState},
     Client,
 };
 
@@ -208,7 +205,7 @@ struct VmConfig {
 }
 
 fn add_component_to_spec(
-    spec: &mut InstanceSpecV0,
+    spec: &mut InstanceSpec,
     id: SpecKey,
     component: ComponentV0,
 ) -> anyhow::Result<()> {
@@ -290,7 +287,7 @@ impl DiskRequest {
 }
 
 impl VmConfig {
-    fn instance_spec(&self) -> anyhow::Result<InstanceSpecV0> {
+    fn instance_spec(&self) -> anyhow::Result<InstanceSpec> {
         // If the configuration specifies an instance spec path, just read the
         // spec from that path and return it. Otherwise, construct a spec from
         // this configuration's component parts.
@@ -328,7 +325,7 @@ impl VmConfig {
             })
             .transpose()?;
 
-        let mut spec = InstanceSpecV0 {
+        let mut spec = InstanceSpec {
             board: Board {
                 chipset: Chipset::I440Fx(I440Fx { enable_pcie }),
                 cpuid: cpuid_profile,
@@ -345,6 +342,7 @@ impl VmConfig {
                 },
             },
             components: Default::default(),
+            smbios: None,
         };
 
         if let Some(from_toml) = from_toml {
@@ -519,7 +517,7 @@ async fn new_instance(
     client: &Client,
     name: String,
     id: Uuid,
-    spec: InstanceSpecV0,
+    spec: InstanceSpec,
     metadata: InstanceMetadata,
 ) -> anyhow::Result<()> {
     let properties = InstanceProperties {

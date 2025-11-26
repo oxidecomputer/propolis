@@ -84,6 +84,9 @@ use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, sync::Arc};
 use active::ActiveVm;
 use ensure::VmEnsureRequest;
 use oximeter::types::ProducerRegistry;
+use propolis_api_types::instance_spec::v0::{
+    InstanceSpecGetResponseV0, InstanceSpecStatusV0,
+};
 use propolis_api_types::{
     instance_spec::{SpecKey, VersionedInstanceSpec},
     InstanceEnsureResponse, InstanceMigrateStatusResponse,
@@ -221,6 +224,17 @@ impl From<MaybeSpec> for InstanceSpecStatus {
             MaybeSpec::WaitingForMigrationSource => {
                 Self::WaitingForMigrationSource
             }
+            MaybeSpec::Present(spec) => Self::Present((*spec).into()),
+        }
+    }
+}
+
+impl From<MaybeSpec> for InstanceSpecStatusV0 {
+    fn from(value: MaybeSpec) -> Self {
+        match value {
+            MaybeSpec::WaitingForMigrationSource => {
+                Self::WaitingForMigrationSource
+            }
             MaybeSpec::Present(spec) => {
                 Self::Present(VersionedInstanceSpec::V0((*spec).into()))
             }
@@ -340,6 +354,50 @@ impl Vm {
     ///
     /// - `Some` if the VM has been created.
     /// - `None` if no VM has ever been created.
+    pub(super) async fn v0_get(&self) -> Option<InstanceSpecGetResponseV0> {
+        let guard = self.inner.read().await;
+        match &guard.state {
+            // If no VM has ever been created, there's nothing to get.
+            VmState::NoVm => None,
+
+            // If the VM is active, pull the required data out of its objects.
+            VmState::Active(vm) => {
+                let spec =
+                    vm.objects().lock_shared().await.instance_spec().clone();
+                let state = vm.external_state_rx.borrow().clone();
+                Some(InstanceSpecGetResponseV0 {
+                    properties: vm.properties.clone(),
+                    spec: InstanceSpecStatusV0::Present(
+                        VersionedInstanceSpec::V0(spec.into()),
+                    ),
+                    state: state.state,
+                })
+            }
+            VmState::WaitingForInit { vm, spec }
+            | VmState::RundownComplete { vm, spec } => {
+                Some(InstanceSpecGetResponseV0 {
+                    properties: vm.properties.clone(),
+                    state: vm.external_state_rx.borrow().state,
+                    spec: spec.clone().into(),
+                })
+            }
+            VmState::Rundown { vm, spec } => Some(InstanceSpecGetResponseV0 {
+                properties: vm.properties.clone(),
+                state: vm.external_state_rx.borrow().state,
+                spec: InstanceSpecStatusV0::Present(VersionedInstanceSpec::V0(
+                    spec.as_ref().to_owned().into(),
+                )),
+            }),
+        }
+    }
+
+    /// Returns the state, properties, and instance spec for the instance most
+    /// recently wrapped by this `Vm`.
+    ///
+    /// # Returns
+    ///
+    /// - `Some` if the VM has been created.
+    /// - `None` if no VM has ever been created.
     pub(super) async fn get(&self) -> Option<InstanceSpecGetResponse> {
         let guard = self.inner.read().await;
         match &guard.state {
@@ -353,9 +411,7 @@ impl Vm {
                 let state = vm.external_state_rx.borrow().clone();
                 Some(InstanceSpecGetResponse {
                     properties: vm.properties.clone(),
-                    spec: InstanceSpecStatus::Present(
-                        VersionedInstanceSpec::V0(spec.into()),
-                    ),
+                    spec: InstanceSpecStatus::Present(spec.into()),
                     state: state.state,
                 })
             }
@@ -370,9 +426,9 @@ impl Vm {
             VmState::Rundown { vm, spec } => Some(InstanceSpecGetResponse {
                 properties: vm.properties.clone(),
                 state: vm.external_state_rx.borrow().state,
-                spec: InstanceSpecStatus::Present(VersionedInstanceSpec::V0(
+                spec: InstanceSpecStatus::Present(
                     spec.as_ref().to_owned().into(),
-                )),
+                ),
             }),
         }
     }

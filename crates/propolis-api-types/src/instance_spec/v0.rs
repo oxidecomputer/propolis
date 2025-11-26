@@ -4,7 +4,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::instance_spec::{components, SpecKey};
+use crate::instance_spec::{components, SpecKey, VersionedInstanceSpec};
+use crate::{InstanceProperties, InstanceState};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -40,4 +41,18 @@ pub enum ComponentV0 {
 pub struct InstanceSpecV0 {
     pub board: components::board::Board,
     pub components: BTreeMap<SpecKey, ComponentV0>,
+}
+
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceSpecGetResponseV0 {
+    pub properties: InstanceProperties,
+    pub state: InstanceState,
+    pub spec: InstanceSpecStatusV0,
+}
+
+#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(tag = "type", content = "value")]
+pub enum InstanceSpecStatusV0 {
+    WaitingForMigrationSource,
+    Present(VersionedInstanceSpec),
 }

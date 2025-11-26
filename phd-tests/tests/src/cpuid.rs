@@ -6,10 +6,7 @@ use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
 use itertools::Itertools;
 use phd_framework::{test_vm::MigrationTimeout, TestVm};
 use phd_testcase::*;
-use propolis_client::{
-    instance_spec::{CpuidEntry, VersionedInstanceSpec},
-    types::InstanceSpecStatus,
-};
+use propolis_client::instance_spec::{CpuidEntry, InstanceSpecStatus};
 use tracing::info;
 use uuid::Uuid;
 
@@ -40,9 +37,7 @@ async fn cpuid_instance_spec_round_trip_test(ctx: &Framework) {
     vm.launch().await?;
 
     let spec_get_response = vm.get_spec().await?;
-    let InstanceSpecStatus::Present(VersionedInstanceSpec::V0(spec)) =
-        spec_get_response.spec
-    else {
+    let InstanceSpecStatus::Present(spec) = spec_get_response.spec else {
         panic!("instance spec should be present for a running VM");
     };
 
@@ -222,9 +217,7 @@ impl<'a> LinuxGuestTopo<'a> {
     async fn cpus(&self) -> u8 {
         let spec_get_response =
             self.vm.get_spec().await.expect("can get the instance's spec back");
-        let InstanceSpecStatus::Present(VersionedInstanceSpec::V0(spec)) =
-            spec_get_response.spec
-        else {
+        let InstanceSpecStatus::Present(spec) = spec_get_response.spec else {
             panic!("instance spec should be present for a running VM");
         };
 
