@@ -25,6 +25,10 @@ pub use mem_async::MemAsyncBackend;
 
 mod noop;
 pub use noop::NoopBackend;
+
+mod noop_sync;
+pub use noop_sync::NoopSyncBackend;
+
 pub mod attachment;
 pub mod minder;
 

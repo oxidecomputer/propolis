@@ -243,6 +243,19 @@ pub fn block_backend(
             )
             .unwrap()
         }
+        "noop-sync" => {
+            let parsed: MemAsyncConfig = opt_deser(&be.options).unwrap();
+
+            block::NoopSyncBackend::create(
+                parsed.size,
+                opts,
+                NonZeroUsize::new(
+                    parsed.workers.unwrap_or(DEFAULT_WORKER_COUNT),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        }
         "cloudinit" => build_cidata_be(config).unwrap(),
         _ => {
             panic!("unrecognized block dev type {}!", be.bdtype);
