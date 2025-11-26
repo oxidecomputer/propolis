@@ -23,6 +23,8 @@ pub use in_memory::InMemoryBackend;
 mod mem_async;
 pub use mem_async::MemAsyncBackend;
 
+mod noop;
+pub use noop::NoopBackend;
 pub mod attachment;
 pub mod minder;
 
