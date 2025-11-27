@@ -788,7 +788,7 @@ impl PciNvme {
         let mn = {
             // Use all spaces for the model: otherwise, OVMF's boot order may be
             // affected.
-            let mn = [20u8; 40];
+            let mn = [0x20u8; 40];
             mn
         };
 
