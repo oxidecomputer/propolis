@@ -786,10 +786,9 @@ impl PciNvme {
         let sqes = size_of::<SubmissionQueueEntry>().trailing_zeros() as u8;
 
         let mn = {
-            let mut mn = [0u8; 40];
-            const MODEL: &'static str = "Oxide";
-            let sz = MODEL.len().min(40);
-            mn[..sz].clone_from_slice(&MODEL.as_bytes()[..sz]);
+            // Use all spaces for the model: otherwise, OVMF's boot order may be
+            // affected.
+            let mn = [20u8; 40];
             mn
         };
 
