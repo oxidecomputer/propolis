@@ -785,12 +785,30 @@ impl PciNvme {
         let cqes = size_of::<CompletionQueueEntry>().trailing_zeros() as u8;
         let sqes = size_of::<SubmissionQueueEntry>().trailing_zeros() as u8;
 
+        let mn = {
+            let mut mn = [0u8; 40];
+            const MODEL: &'static str = "Oxide";
+            let sz = MODEL.len().min(40);
+            mn[..sz].clone_from_slice(&MODEL.as_bytes()[..sz]);
+            mn
+        };
+
+        let fr = {
+            let mut fr = [0u8; 8];
+            const FW_REV: &'static str = "1.0";
+            let sz = FW_REV.len().min(40);
+            fr[..sz].clone_from_slice(&FW_REV.as_bytes()[..sz]);
+            fr
+        };
+
         // Initialize the Identify structure returned when the host issues
         // an Identify Controller command.
         let ctrl_ident = bits::IdentifyController {
             vid: VENDOR_OXIDE,
             ssvid: VENDOR_OXIDE,
             sn: *serial_number,
+            mn,
+            fr,
             ieee: OXIDE_OUI,
             mdts: mdts.unwrap_or(0),
             // We use standard Completion/Submission Queue Entry structures with no extra
