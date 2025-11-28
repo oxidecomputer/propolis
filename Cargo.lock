@@ -5,7 +5,7 @@ version = 3
 [[package]]
 name = "acpi_tables"
 version = "0.2.1"
-source = "git+https://github.com/oxidecomputer/acpi_tables.git#a4e63474d63ec81dbaacebebf41aefac743dc045"
+source = "git+https://github.com/oxidecomputer/acpi_tables.git#6c60487b8c5a4aacd5969e3bc2a20cc911d54146"
 dependencies = [
  "zerocopy 0.8.27",
 ]

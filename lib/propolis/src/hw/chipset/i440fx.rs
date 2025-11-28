@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::common::*;
+use crate::firmware::acpi;
 use crate::hw::bhyve::{
     BhyveAtPic, BhyveAtPit, BhyveIoApic, BhyvePmTimer, BhyveRtc,
 };
@@ -152,6 +153,7 @@ pub struct Opts {
     pub enable_pcie: bool,
     pub power_pin: Option<Arc<dyn IntrPin>>,
     pub reset_pin: Option<Arc<dyn IntrPin>>,
+    pub sci_pin: Option<Arc<dyn IntrPin>>,
 }
 
 pub struct I440FxHostBridge {
@@ -164,6 +166,8 @@ pub struct I440FxHostBridge {
 
     pin_power: Arc<dyn IntrPin>,
     pin_reset: Arc<dyn IntrPin>,
+
+    acpi: acpi::ACPI,
 }
 impl I440FxHostBridge {
     pub fn create(
@@ -183,11 +187,14 @@ impl I440FxHostBridge {
 
         let pin_power = opts.power_pin.unwrap_or_else(|| Arc::new(NoOpPin {}));
         let pin_reset = opts.reset_pin.unwrap_or_else(|| Arc::new(NoOpPin {}));
+        let pin_sci = opts.sci_pin.unwrap_or_else(|| Arc::new(NoOpPin {}));
 
         let pci_cfg = PioCfgDecoder::new();
         let pcie_cfg = opts.enable_pcie.then(|| {
             PcieCfgDecoder::new(pci::bits::PCIE_MAX_BUSES_PER_ECAM_REGION)
         });
+
+        let acpi = acpi::ACPI::new(Arc::clone(&pin_sci));
 
         Arc::new(Self {
             pci_state,
@@ -199,6 +206,8 @@ impl I440FxHostBridge {
 
             pin_power,
             pin_reset,
+
+            acpi,
         })
     }
 
@@ -218,6 +227,23 @@ impl I440FxHostBridge {
             pci::bits::PORT_PCI_CONFIG_DATA,
             pci::bits::LEN_PCI_CONFIG_DATA,
             piofn,
+        )
+        .unwrap();
+
+        let acpi_dev = Arc::clone(self);
+        let acpifn = Arc::new(move |port: u16, rwo: RWOp| {
+            acpi_dev.acpi.pio_rw(port, rwo)
+        }) as Arc<PioFn>;
+        pio.register(
+            acpi::GPE0_BLK_ADDR,
+            acpi::GPE0_BLK_LEN as u16,
+            Arc::clone(&acpifn),
+        )
+        .unwrap();
+        pio.register(
+            acpi::PCI_HOTPLUG_STATUS_ADDR,
+            acpi::PCI_HOTPLUG_STATUS_LEN as u16,
+            acpifn,
         )
         .unwrap();
 
@@ -311,6 +337,12 @@ impl Chipset for I440FxHostBridge {
                 lintr_cfg,
             )
             .unwrap();
+    }
+    fn pci_hot_attach(&self, device: u8) {
+        self.acpi.plug_device(device);
+    }
+    fn pci_hot_detach(&self, device: u8) {
+        self.acpi.unplug_device(device);
     }
     fn power_pin(&self) -> Arc<dyn IntrPin> {
         self.pin_power.clone()
@@ -465,6 +497,10 @@ impl Piix3Lpc {
             .pic
             .pin_handle(irq)
             .map(|pin| Box::new(pin) as Box<dyn IntrPin>)
+    }
+
+    pub fn sci_pin(&self) -> Arc<dyn IntrPin> {
+        Arc::clone(&self.irq_config.sci_pin) as Arc<dyn IntrPin>
     }
 }
 impl pci::Device for Piix3Lpc {

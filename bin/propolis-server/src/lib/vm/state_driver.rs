@@ -90,6 +90,8 @@
 //! [`ensure`]: crate::vm::ensure
 
 use std::{
+    num::NonZeroUsize,
+    path::Path,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -112,6 +114,9 @@ use crate::{
     spec::StorageBackend,
     vm::{state_publisher::ExternalStateUpdate, BlockBackendMap},
 };
+
+use propolis::block::Backend;
+use propolis::{block, hw::pci::Bdf, hw::virtio};
 
 use super::{
     ensure::{
@@ -753,6 +758,12 @@ impl StateDriver {
                         .await,
                     );
                 }
+                ExternalRequest::Component(
+                    ComponentChangeRequest::PlugDisk { device: _ },
+                ) => todo!(),
+                ExternalRequest::Component(
+                    ComponentChangeRequest::UnplugDisk { device: _ },
+                ) => todo!(),
                 // The request queue is expected to reject (or at least silently
                 // ignore) requests to migrate or reboot an instance that hasn't
                 // reported that it's fully started. Similarly, requests to
@@ -891,7 +902,64 @@ impl StateDriver {
                 );
                 HandleEventOutcome::Continue
             }
+            ExternalRequest::Component(ComponentChangeRequest::PlugDisk {
+                device,
+            }) => {
+                self.plug_disk(device).await;
+                HandleEventOutcome::Continue
+            }
+            ExternalRequest::Component(
+                ComponentChangeRequest::UnplugDisk { device },
+            ) => {
+                self.unplug_disk(device).await;
+                HandleEventOutcome::Continue
+            }
         }
+    }
+
+    async fn plug_disk(&self, device: u8) {
+        let mut objects = self.objects.lock_exclusive().await;
+
+        let backend = block::FileBackend::create(
+            Path::new("./test.raw"),
+            block::BackendOpts {
+                block_size: 512.into(),
+                read_only: false.into(),
+                skip_flush: false.into(),
+            },
+            NonZeroUsize::new(8).unwrap(),
+        )
+        .unwrap();
+        let bdf = Bdf::new(0, device, 0).unwrap();
+        let key = SpecKey::Uuid(Uuid::new_v4());
+
+        let vioblk = virtio::PciVirtioBlock::new(0x100);
+        objects.block_backend_map_mut().insert(key.clone(), backend.clone());
+        objects.device_map_mut().insert(key.clone(), vioblk.clone());
+
+        block::attach(&vioblk.block_attach, backend.attachment()).unwrap();
+
+        let chipset = objects.chipset();
+        chipset.pci_attach(bdf, vioblk.clone());
+
+        let res = backend.start().await;
+        if let Err(e) = &res {
+            error!(
+                self.log,
+                "block backend start() returned an error";
+                "error" => %e
+            );
+
+            return;
+        }
+
+        chipset.pci_hot_attach(device);
+    }
+
+    async fn unplug_disk(&self, device: u8) {
+        let objects = self.objects.lock_exclusive().await;
+        let chipset = objects.chipset();
+        chipset.pci_hot_detach(device);
     }
 
     async fn do_reboot(&mut self) {

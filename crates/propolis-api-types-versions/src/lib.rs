@@ -37,3 +37,5 @@ pub mod v1;
 pub mod v2;
 #[path = "add_vsock/mod.rs"]
 pub mod v3;
+#[path = "disk_hotplug/mod.rs"]
+pub mod v4;
