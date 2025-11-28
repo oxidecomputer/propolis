@@ -99,6 +99,14 @@ pub enum ComponentChangeRequest {
         /// The sink for the result of this operation.
         result_tx: super::CrucibleReplaceResultTx,
     },
+
+    PlugDisk {
+        device: u8,
+    },
+
+    UnplugDisk {
+        device: u8,
+    },
 }
 
 impl std::fmt::Debug for ComponentChangeRequest {
@@ -108,6 +116,8 @@ impl std::fmt::Debug for ComponentChangeRequest {
                 .debug_struct("ReconfigureCrucibleVolume")
                 .field("backend_id", backend_id)
                 .finish(),
+            Self::PlugDisk { device } => write!(f, "plug disk {}", device),
+            Self::UnplugDisk { device } => write!(f, "unplug disk {}", device),
         }
     }
 }
@@ -163,6 +173,14 @@ impl ExternalRequest {
             new_vcr_json,
             result_tx,
         })
+    }
+
+    pub fn plug_disk(device: u8) -> Self {
+        Self::Component(ComponentChangeRequest::PlugDisk { device })
+    }
+
+    pub fn unplug_disk(device: u8) -> Self {
+        Self::Component(ComponentChangeRequest::UnplugDisk { device })
     }
 
     fn is_stop(&self) -> bool {
@@ -486,6 +504,14 @@ impl ExternalRequestQueue {
                         ..
                     },
                 ) => {}
+
+                ExternalRequest::Component(
+                    ComponentChangeRequest::PlugDisk { device: _ },
+                ) => {}
+
+                ExternalRequest::Component(
+                    ComponentChangeRequest::UnplugDisk { device: _ },
+                ) => {}
             }
         };
 
@@ -576,6 +602,8 @@ impl Drop for ExternalRequestQueue {
                         ),
                     ));
                 }
+                ComponentChangeRequest::PlugDisk { device: _ } => todo!(),
+                ComponentChangeRequest::UnplugDisk { device: _ } => todo!(),
             }
         }
     }

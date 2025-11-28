@@ -16,6 +16,8 @@ pub trait Chipset: Send + Sync {
         dev: Arc<dyn Endpoint>,
         lintr_cfg: Option<LintrCfg>,
     );
+    fn pci_hot_attach(&self, device: u8);
+    fn pci_hot_detach(&self, device: u8);
     fn power_pin(&self) -> Arc<dyn IntrPin>;
     fn reset_pin(&self) -> Arc<dyn IntrPin>;
 }

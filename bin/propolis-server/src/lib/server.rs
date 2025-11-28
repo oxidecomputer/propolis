@@ -202,6 +202,44 @@ enum PropolisServerImpl {}
 impl PropolisServerApi for PropolisServerImpl {
     type Context = Arc<DropshotEndpointContext>;
 
+    async fn instance_disk_attach(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<api::InstanceDiskAttachRequest>,
+    ) -> Result<HttpResponseOk<()>, HttpError> {
+        let device = request.into_inner().device;
+
+        let vm = rqctx
+            .context()
+            .vm
+            .active_vm()
+            .await
+            .ok_or_else(not_created_error)?;
+
+        vm.plug_disk(device)
+            .map_err(|_| HttpError::for_internal_error("Error".to_string()))?;
+
+        Ok(HttpResponseOk(()))
+    }
+
+    async fn instance_disk_detach(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<api::InstanceDiskDetachRequest>,
+    ) -> Result<HttpResponseOk<()>, HttpError> {
+        let device = request.into_inner().device;
+
+        let vm = rqctx
+            .context()
+            .vm
+            .active_vm()
+            .await
+            .ok_or_else(not_created_error)?;
+
+        vm.unplug_disk(device)
+            .map_err(|_| HttpError::for_internal_error("Error".to_string()))?;
+
+        Ok(HttpResponseOk(()))
+    }
+
     async fn instance_ensure(
         rqctx: RequestContext<Self::Context>,
         request: TypedBody<api::InstanceEnsureRequest>,

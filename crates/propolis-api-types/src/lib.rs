@@ -113,6 +113,16 @@ pub enum InstanceInitializationMethod {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceDiskAttachRequest {
+    pub device: u8,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceDiskDetachRequest {
+    pub device: u8,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceEnsureRequest {
     pub properties: InstanceProperties,
     pub init: InstanceInitializationMethod,

@@ -8,6 +8,7 @@ use dropshot::{
     WebsocketChannelResult, WebsocketConnection,
 };
 use propolis_api_types::{
+    InstanceDiskAttachRequest, InstanceDiskDetachRequest,
     InstanceEnsureRequest, InstanceEnsureResponse, InstanceGetResponse,
     InstanceMigrateStartRequest, InstanceMigrateStatusResponse,
     InstanceSerialConsoleHistoryRequest, InstanceSerialConsoleHistoryResponse,
@@ -147,6 +148,24 @@ pub trait PropolisServerApi {
         path_params: Path<VCRRequestPathParams>,
         request: TypedBody<InstanceVCRReplace>,
     ) -> Result<HttpResponseOk<crucible_client_types::ReplaceResult>, HttpError>;
+
+    #[endpoint {
+        method = PUT,
+        path = "/instance/attach_disk",
+    }]
+    async fn instance_disk_attach(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<InstanceDiskAttachRequest>,
+    ) -> Result<HttpResponseOk<()>, HttpError>;
+
+    #[endpoint {
+        method = PUT,
+        path = "/instance/detach_disk",
+    }]
+    async fn instance_disk_detach(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<InstanceDiskDetachRequest>,
+    ) -> Result<HttpResponseOk<()>, HttpError>;
 
     /// Issues an NMI to the instance.
     #[endpoint {
