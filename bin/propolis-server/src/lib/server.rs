@@ -42,10 +42,10 @@ use propolis_api_types::disk::{
     VolumeStatus, VolumeStatusPathParams,
 };
 use propolis_api_types::instance::{
-    ErrorCode, Instance, InstanceEnsureRequest, InstanceEnsureResponse,
-    InstanceGetResponse, InstanceInitializationMethod,
-    InstanceStateMonitorRequest, InstanceStateMonitorResponse,
-    InstanceStateRequested,
+    ErrorCode, Instance, InstanceDiskAttachRequest, InstanceDiskDetachRequest,
+    InstanceEnsureRequest, InstanceEnsureResponse, InstanceGetResponse,
+    InstanceInitializationMethod, InstanceStateMonitorRequest,
+    InstanceStateMonitorResponse, InstanceStateRequested,
 };
 use propolis_api_types::instance_spec::{InstanceSpecGetResponse, SpecKey};
 use propolis_api_types::migration::{
@@ -222,6 +222,44 @@ enum PropolisServerImpl {}
 
 impl PropolisServerApi for PropolisServerImpl {
     type Context = Arc<DropshotEndpointContext>;
+
+    async fn instance_disk_attach(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<InstanceDiskAttachRequest>,
+    ) -> Result<HttpResponseOk<()>, HttpError> {
+        let device = request.into_inner().device;
+
+        let vm = rqctx
+            .context()
+            .vm
+            .active_vm()
+            .await
+            .ok_or_else(not_created_error)?;
+
+        vm.plug_disk(device)
+            .map_err(|_| HttpError::for_internal_error("Error".to_string()))?;
+
+        Ok(HttpResponseOk(()))
+    }
+
+    async fn instance_disk_detach(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<InstanceDiskDetachRequest>,
+    ) -> Result<HttpResponseOk<()>, HttpError> {
+        let device = request.into_inner().device;
+
+        let vm = rqctx
+            .context()
+            .vm
+            .active_vm()
+            .await
+            .ok_or_else(not_created_error)?;
+
+        vm.unplug_disk(device)
+            .map_err(|_| HttpError::for_internal_error("Error".to_string()))?;
+
+        Ok(HttpResponseOk(()))
+    }
 
     async fn instance_ensure(
         rqctx: RequestContext<Self::Context>,

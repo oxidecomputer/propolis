@@ -93,6 +93,20 @@ impl Topology {
         }
     }
 
+    pub fn pci_detach(
+        &self,
+        bus: LogicalBusId,
+        location: BusLocation,
+    ) -> Result<(), PciTopologyError> {
+        if let Some(bus_index) = self.logical_buses.get(&bus) {
+            let bus = &self.buses[bus_index.0];
+            bus.detach(location);
+            Ok(())
+        } else {
+            Err(PciTopologyError::LogicalBusNotFound(bus))
+        }
+    }
+
     /// Issues a configuration space I/O to a device at the supplied location.
     pub fn pci_cfg_rw(
         &self,

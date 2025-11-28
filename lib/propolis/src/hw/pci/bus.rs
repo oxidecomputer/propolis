@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::collections::BTreeMap;
+use std::ops::Bound::Included;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
@@ -50,6 +51,12 @@ impl Bus {
             acc_mem,
         };
         dev.attach(attached);
+    }
+
+    pub fn detach(&self, location: BusLocation) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.detach(location);
+        //dev.detach();
     }
 
     pub fn device_at(
@@ -125,6 +132,10 @@ impl Slot {
         }
         self.state.clone()
     }
+    fn detach(&mut self, location: BusLocation) {
+        self.funcs[location.func.get() as usize] = None;
+        self.state.is_multifunc.store(false, Ordering::Release);
+    }
 }
 
 struct BarState {
@@ -183,6 +194,20 @@ impl Inner {
             self.acc_msi.child(Some(acc_name.clone())),
             self.acc_mem.child(Some(acc_name)),
         )
+    }
+    fn detach(&mut self, location: BusLocation) {
+        self.slots[location.dev.get() as usize].detach(location);
+        let bars: Vec<BarN> = self
+            .bar_state
+            .range((
+                Included((location, BarN::BAR0)),
+                Included((location, BarN::BAR5)),
+            ))
+            .map(|(k, _v)| k.1)
+            .collect();
+        for bar in bars {
+            self.bar_unregister(location, bar);
+        }
     }
     fn bar_register(
         &mut self,

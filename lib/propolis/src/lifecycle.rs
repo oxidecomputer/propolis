@@ -108,6 +108,10 @@ pub trait Lifecycle: Send + Sync + 'static {
     fn as_dsdt_generator(&self) -> Option<&dyn acpi::DsdtGenerator> {
         None
     }
+
+    fn detach(&self) {
+        // TODO
+    }
 }
 
 /// Indicator for tracking [Lifecycle] states.

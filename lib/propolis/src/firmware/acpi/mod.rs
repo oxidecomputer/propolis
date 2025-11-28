@@ -7,19 +7,21 @@
 pub mod dsdt;
 pub mod facs;
 pub mod fadt;
+pub mod gpe;
 pub mod madt;
 pub mod rsdp;
 pub mod xsdt;
 
 pub use dsdt::{
-    Dsdt, DsdtConfig, DsdtGenerator, DsdtScope, Ssdt, SSDT_FWDT_ADDR_LEN,
-    SSDT_FWDT_ADDR_OFFSET,
+    Dsdt, DsdtConfig, DsdtGenerator, DsdtScope, Ssdt, SsdtPciHotplug,
+    SSDT_FWDT_ADDR_LEN, SSDT_FWDT_ADDR_OFFSET,
 };
 pub use facs::Facs;
 pub use fadt::{
     Fadt, FADT_DSDT_LEN, FADT_DSDT_OFFSET, FADT_FACS_LEN, FADT_FACS_OFFSET,
     FADT_X_DSDT_LEN, FADT_X_DSDT_OFFSET,
 };
+pub use gpe::ACPI;
 pub use madt::{Madt, MadtConfig};
 pub use rsdp::{
     Rsdp, RSDP_EXTENDED_CHECKSUM_OFFSET, RSDP_EXTENDED_TABLE_LEN,
@@ -49,5 +51,8 @@ const LOCAL_APIC_ADDR: u32 = 0xfee0_0000;
 
 const PM1A_EVT_BLK_ADDR: u16 = 0xb000;
 
-const GPE0_BLK_ADDR: u16 = 0xafe0;
-const GPE0_BLK_LEN: u8 = 4;
+pub const GPE0_BLK_ADDR: u16 = 0xafe0;
+pub const GPE0_BLK_LEN: u8 = 4;
+
+pub const PCI_HOTPLUG_STATUS_ADDR: u16 = 0xae00;
+pub const PCI_HOTPLUG_STATUS_LEN: u8 = 8;

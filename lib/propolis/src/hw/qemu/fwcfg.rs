@@ -1432,13 +1432,15 @@ pub mod formats {
 
             let madt_offset = self.add_madt();
             let ssdt_offset = self.add_ssdt();
+            let ssdt_pci_hotplug = self.add_ssdt_pci_hotplug();
 
             // OVMF actually ignores the XSDT and RSDP tables provided via
             // fw_cfg and always generates its own versions, but include them
             // here regardless for completeness.
             //
             // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/QemuFwCfgAcpi.c#L891-L899
-            let xsdt_entries = vec![fadt_offset, madt_offset, ssdt_offset];
+            let xsdt_entries =
+                vec![fadt_offset, madt_offset, ssdt_offset, ssdt_pci_hotplug];
             let xsdt_offset = self.add_xsdt(xsdt_entries);
 
             self.add_rsdp(xsdt_offset);
@@ -1502,6 +1504,14 @@ pub mod formats {
             self.reset_checksum(ssdt_offset);
 
             ssdt_offset
+        }
+
+        fn add_ssdt_pci_hotplug(&mut self) -> usize {
+            let table = acpi::SsdtPciHotplug::new();
+            let offset = self.tables.len();
+            table.to_aml_bytes(&mut self.tables);
+
+            offset
         }
 
         fn add_fadt(
