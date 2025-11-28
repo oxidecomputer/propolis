@@ -752,6 +752,9 @@ impl StateDriver {
                         .await,
                     );
                 }
+                ExternalRequest::Component(
+                    ComponentChangeRequest::PlugDisk,
+                ) => todo!(),
                 // The request queue is expected to reject (or at least silently
                 // ignore) requests to migrate or reboot an instance that hasn't
                 // reported that it's fully started. Similarly, requests to
@@ -890,7 +893,17 @@ impl StateDriver {
                 );
                 HandleEventOutcome::Continue
             }
+            ExternalRequest::Component(ComponentChangeRequest::PlugDisk) => {
+                self.plug_disk().await;
+                HandleEventOutcome::Continue
+            }
         }
+    }
+
+    async fn plug_disk(&self) {
+        let objects = self.objects.lock_exclusive().await;
+        let chipset = objects.chipset();
+        chipset.pci_hot_attach()
     }
 
     async fn do_reboot(&mut self) {

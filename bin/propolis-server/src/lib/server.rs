@@ -202,6 +202,24 @@ enum PropolisServerImpl {}
 impl PropolisServerApi for PropolisServerImpl {
     type Context = Arc<DropshotEndpointContext>;
 
+    async fn instance_disk_attach(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<HttpResponseOk<()>, HttpError> {
+        println!("hello");
+
+        let vm = rqctx
+            .context()
+            .vm
+            .active_vm()
+            .await
+            .ok_or_else(not_created_error)?;
+
+        vm.plug_disk()
+            .map_err(|_| HttpError::for_internal_error("Error".to_string()))?;
+
+        Ok(HttpResponseOk(()))
+    }
+
     async fn instance_ensure(
         rqctx: RequestContext<Self::Context>,
         request: TypedBody<api::InstanceEnsureRequest>,

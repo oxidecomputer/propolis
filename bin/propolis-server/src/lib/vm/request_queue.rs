@@ -99,6 +99,8 @@ pub enum ComponentChangeRequest {
         /// The sink for the result of this operation.
         result_tx: super::CrucibleReplaceResultTx,
     },
+
+    PlugDisk,
 }
 
 impl std::fmt::Debug for ComponentChangeRequest {
@@ -108,6 +110,7 @@ impl std::fmt::Debug for ComponentChangeRequest {
                 .debug_struct("ReconfigureCrucibleVolume")
                 .field("backend_id", backend_id)
                 .finish(),
+            Self::PlugDisk => write!(f, "plug disk"),
         }
     }
 }
@@ -163,6 +166,10 @@ impl ExternalRequest {
             new_vcr_json,
             result_tx,
         })
+    }
+
+    pub fn plug_disk() -> Self {
+        Self::Component(ComponentChangeRequest::PlugDisk)
     }
 
     fn is_stop(&self) -> bool {
@@ -486,6 +493,10 @@ impl ExternalRequestQueue {
                         ..
                     },
                 ) => {}
+
+                ExternalRequest::Component(
+                    ComponentChangeRequest::PlugDisk,
+                ) => {}
             }
         };
 
@@ -576,6 +587,7 @@ impl Drop for ExternalRequestQueue {
                         ),
                     ));
                 }
+                ComponentChangeRequest::PlugDisk => todo!(),
             }
         }
     }

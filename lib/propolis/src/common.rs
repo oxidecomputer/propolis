@@ -170,6 +170,7 @@ fn numeric_bounds(
     }
 }
 
+#[derive(Debug)]
 enum ROInner<'a> {
     Buf(&'a mut [u8]),
     Map(SubMapping<'a>),
@@ -178,6 +179,7 @@ enum ROInner<'a> {
 /// Represents an abstract requested read operation.
 ///
 /// Exposes an API with various "write" methods, which fulfill the request.
+#[derive(Debug)]
 pub struct ReadOp<'a> {
     inner: ROInner<'a>,
     offset: usize,
@@ -310,6 +312,7 @@ impl<'a> ReadOp<'a> {
     }
 }
 
+#[derive(Debug)]
 enum WOInner<'a> {
     Buf(&'a [u8]),
     Map(SubMapping<'a>),
@@ -318,6 +321,7 @@ enum WOInner<'a> {
 /// Represents an abstract requested write operation.
 ///
 /// Exposes an API with various "read" methods, which fulfill the request.
+#[derive(Debug)]
 pub struct WriteOp<'a> {
     inner: WOInner<'a>,
     offset: usize,

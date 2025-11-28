@@ -113,6 +113,12 @@ impl ActiveVm {
             .map_err(Into::into)
     }
 
+    pub(crate) fn plug_disk(&self) -> Result<(), VmError> {
+        self.state_driver_queue
+            .queue_external_request(ExternalRequest::plug_disk())
+            .map_err(Into::into)
+    }
+
     /// Yields a reference to this VM's services.
     pub(crate) fn services(&self) -> &VmServices {
         &self.services

@@ -148,6 +148,14 @@ pub trait PropolisServerApi {
         request: TypedBody<InstanceVCRReplace>,
     ) -> Result<HttpResponseOk<crucible_client_types::ReplaceResult>, HttpError>;
 
+    #[endpoint {
+        method = PUT,
+        path = "/instance/attach_disk",
+    }]
+    async fn instance_disk_attach(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<HttpResponseOk<()>, HttpError>;
+
     /// Issues an NMI to the instance.
     #[endpoint {
         method = POST,
