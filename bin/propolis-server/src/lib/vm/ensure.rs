@@ -656,6 +656,7 @@ async fn initialize_vm_objects(
         com1,
         framebuffer: Some(ramfb),
         ps2ctrl,
+        chipset: chipset.into(),
         attest_handle,
     };
 

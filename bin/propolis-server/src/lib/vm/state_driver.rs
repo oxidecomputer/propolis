@@ -90,11 +90,15 @@
 //! [`ensure`]: crate::vm::ensure
 
 use std::{
+    num::NonZeroUsize,
+    path::Path,
     sync::{Arc, Mutex},
     time::Duration,
 };
+use std::{thread, time};
 
 use anyhow::Context;
+use crucible_client_types::VolumeConstructionRequest;
 use dropshot::HttpError;
 use propolis_api_types::instance::InstanceState;
 use propolis_api_types::instance_spec::{
@@ -109,8 +113,15 @@ use crate::{
     migrate::{
         destination::DestinationProtocol, source::SourceProtocol, MigrateRole,
     },
-    spec::StorageBackend,
+    spec::{Disk, StorageBackend, StorageDevice},
     vm::{state_publisher::ExternalStateUpdate, BlockBackendMap},
+};
+
+use propolis::block::Backend;
+use propolis::{
+    block,
+    hw::pci::{Bdf, BlockDevice},
+    hw::{nvme, virtio},
 };
 
 use super::{
@@ -754,6 +765,12 @@ impl StateDriver {
                         .await,
                     );
                 }
+                ExternalRequest::Component(
+                    ComponentChangeRequest::PlugDisk { disk: _ },
+                ) => todo!(),
+                ExternalRequest::Component(
+                    ComponentChangeRequest::UnplugDisk { device: _ },
+                ) => todo!(),
                 // The request queue is expected to reject (or at least silently
                 // ignore) requests to migrate or reboot an instance that hasn't
                 // reported that it's fully started. Similarly, requests to
@@ -892,7 +909,157 @@ impl StateDriver {
                 );
                 HandleEventOutcome::Continue
             }
+            ExternalRequest::Component(ComponentChangeRequest::PlugDisk {
+                disk,
+            }) => {
+                self.plug_disk(disk).await;
+                HandleEventOutcome::Continue
+            }
+            ExternalRequest::Component(
+                ComponentChangeRequest::UnplugDisk { device },
+            ) => {
+                self.unplug_disk(device).await;
+                HandleEventOutcome::Continue
+            }
         }
+    }
+
+    async fn plug_disk(&self, disk: Disk) {
+        let pci_path = disk.device_spec.pci_path();
+        let key = SpecKey::Name(format!("hotplug-{:02}", pci_path.device()));
+
+        let backend: Arc<dyn Backend> = match &disk.backend_spec {
+            StorageBackend::File(spec) => {
+                let workers: NonZeroUsize = match spec.workers {
+                    Some(n) => n,
+                    None => NonZeroUsize::new(8).unwrap(),
+                };
+                block::FileBackend::create(
+                    Path::new(&spec.path),
+                    block::BackendOpts {
+                        block_size: Some(spec.block_size),
+                        read_only: Some(spec.readonly),
+                        ..Default::default()
+                    },
+                    workers,
+                    self.log.clone(),
+                )
+                .unwrap()
+            }
+            StorageBackend::Blob(spec) => {
+                let bytes = base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    &spec.base64,
+                )
+                .unwrap();
+                block::InMemoryBackend::create(
+                    bytes,
+                    propolis::block::BackendOpts {
+                        block_size: Some(512),
+                        read_only: Some(spec.readonly),
+                        ..Default::default()
+                    },
+                    NonZeroUsize::new(8).unwrap(),
+                )
+                .unwrap()
+            }
+            StorageBackend::Crucible(spec) => {
+                let vcr: VolumeConstructionRequest =
+                    serde_json::from_str(&spec.request_json).unwrap();
+
+                let cru_id = match vcr {
+                    VolumeConstructionRequest::Volume { id, .. } => {
+                        id.to_string()
+                    }
+                    VolumeConstructionRequest::File { id, .. } => {
+                        id.to_string()
+                    }
+                    VolumeConstructionRequest::Url { id, .. } => id.to_string(),
+                    VolumeConstructionRequest::Region { .. } => {
+                        "Region".to_string()
+                    }
+                };
+
+                propolis::block::CrucibleBackend::create(
+                    vcr,
+                    propolis::block::BackendOpts {
+                        read_only: Some(spec.readonly),
+                        ..Default::default()
+                    },
+                    None, // TODO: wire metrics
+                    None, // TODO: wire Nexus client
+                    self.log.new(
+                        slog::o!("component" => format!("crucible-{cru_id}")),
+                    ),
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        let dev: Arc<dyn BlockDevice> = match &disk.device_spec {
+            StorageDevice::Virtio(_) => virtio::PciVirtioBlock::new(0x100),
+            StorageDevice::Nvme(disk) => nvme::PciNvme::create(
+                &disk.serial_number,
+                Some(8),
+                self.log.new(slog::o!("component" => key.to_string())),
+            ),
+        };
+        block::attach(dev.attachment(), backend.attachment()).unwrap();
+
+        let mut objects = self.objects.lock_exclusive().await;
+        assert!(objects
+            .block_backend_map_mut()
+            .insert(disk.device_spec.backend_id().clone(), backend.clone())
+            .is_none());
+        assert!(objects
+            .device_map_mut()
+            .insert(key.clone(), dev.clone())
+            .is_none());
+
+        dev.start().unwrap();
+        backend.start().await.unwrap();
+
+        let chipset = objects.chipset();
+        chipset.pci_hot_attach(Bdf::from(pci_path), dev.clone());
+
+        assert!(objects.instance_spec_mut().disks.insert(key, disk).is_none());
+    }
+
+    async fn unplug_disk(&self, device: u8) {
+        let key = SpecKey::Name(format!("hotplug-{:02}", device));
+        let bdf = Bdf::new(0, device, 0).unwrap();
+
+        let mut objects = self.objects.lock_exclusive().await;
+
+        let dev = objects.device_map().get(&key).unwrap();
+        dev.pause();
+        dev.paused().await;
+        // TODO: probably not a good idea.
+        dev.halt();
+
+        let chipset = objects.chipset();
+        chipset.pci_hot_detach(device);
+        // TODO: wait until ACPI unplug is confirmed by the guest.
+        thread::sleep(time::Duration::from_secs(1));
+        chipset.pci_detach(bdf);
+
+        let backend_id = {
+            let (_, disk) = objects
+                .instance_spec()
+                .disks
+                .iter()
+                .find(|(_, d)| d.device_spec.pci_path().device() == device)
+                .unwrap();
+            disk.device_spec.backend_id().clone()
+        };
+        let backend = objects.block_backend_map().get(&backend_id).unwrap();
+        backend.stop().await;
+        backend.attachment().detach();
+
+        assert!(objects.device_map_mut().remove(&key).is_some());
+        assert!(objects.block_backend_map_mut().remove(&backend_id).is_some());
+        assert!(objects.instance_spec_mut().disks.remove(&key).is_some());
     }
 
     async fn do_reboot(&mut self) {

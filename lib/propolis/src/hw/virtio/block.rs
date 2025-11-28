@@ -65,6 +65,7 @@ impl PciVirtioBlock {
 
     fn block_cfg_read(&self, id: &BlockReg, ro: &mut ReadOp) {
         let info = self.block_attach.info().unwrap_or_else(Default::default);
+        probes::vioblk_cfg_read!(|| format!("{:?}", info));
 
         let total_bytes = info.total_size * u64::from(info.block_size);
         match id {
@@ -334,7 +335,11 @@ impl Lifecycle for PciVirtioBlock {
     fn migrate(&self) -> Migrator<'_> {
         Migrator::Multi(self)
     }
+    fn detach(&self) {}
 }
+
+impl pci::BlockDevice for PciVirtioBlock {}
+
 impl MigrateMulti for PciVirtioBlock {
     fn export(
         &self,
@@ -441,6 +446,8 @@ mod bits {
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
+    fn vioblk_cfg_read(info: &str) {}
+
     fn vioblk_read_enqueue(id: u16, off: u64, sz: u64) {}
     fn vioblk_read_complete(id: u16, res: u8) {}
 

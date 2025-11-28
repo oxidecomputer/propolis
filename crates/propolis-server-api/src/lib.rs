@@ -22,6 +22,7 @@ api_versions!([
     // |  example for the next person.
     // v
     // (next_int, IDENT),
+    (6, DISK_HOTPLUG),
     (5, CRUCIBLE_VOLUME_INFO),
     (4, DROPSHOT_BUMP_WEBSOCKET),
     (3, ADD_VSOCK),
@@ -44,6 +45,26 @@ api_versions!([
 #[dropshot::api_description]
 pub trait PropolisServerApi {
     type Context;
+
+    #[endpoint {
+        method = PUT,
+        path = "/instance/attach_disk",
+        versions = VERSION_DISK_HOTPLUG..
+    }]
+    async fn instance_disk_attach(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<latest::instance::InstanceDiskAttachRequest>,
+    ) -> Result<HttpResponseOk<()>, HttpError>;
+
+    #[endpoint {
+        method = PUT,
+        path = "/instance/detach_disk",
+        versions = VERSION_DISK_HOTPLUG..
+    }]
+    async fn instance_disk_detach(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<latest::instance::InstanceDiskDetachRequest>,
+    ) -> Result<HttpResponseOk<()>, HttpError>;
 
     #[endpoint {
         method = PUT,

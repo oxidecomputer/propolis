@@ -2044,6 +2044,7 @@ mod test {
             i440fx::Opts {
                 power_pin: None,
                 reset_pin: None,
+                sci_pin: None,
                 enable_pcie: false,
             },
         );

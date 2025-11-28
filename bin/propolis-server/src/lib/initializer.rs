@@ -194,8 +194,17 @@ impl RegisteredChipset {
     pub fn pci_attach(&self, bdf: pci::Bdf, dev: Arc<dyn pci::Endpoint>) {
         self.chipset.pci_attach(bdf, dev, self.isa.route_lintr(bdf));
     }
+    pub fn pci_detach(&self, bdf: pci::Bdf) {
+        self.chipset.pci_detach(bdf);
+    }
     pub fn irq_pin(&self, irq: u8) -> Option<Box<dyn intr_pins::IntrPin>> {
         self.isa.irq_pin(irq)
+    }
+    pub fn pci_hot_attach(&self, bdf: pci::Bdf, dev: Arc<dyn pci::Endpoint>) {
+        self.chipset.pci_hot_attach(bdf, dev, self.isa.route_lintr(bdf));
+    }
+    pub fn pci_hot_detach(&self, device: u8) {
+        self.chipset.pci_hot_detach(device);
     }
     fn reset_pin(&self) -> Arc<dyn intr_pins::IntrPin> {
         self.chipset.reset_pin()
@@ -342,16 +351,18 @@ impl MachineInitializer<'_> {
                     }),
                 ));
 
+                let chipset_lpc =
+                    i440fx::Piix3Lpc::create(self.machine.hdl.clone());
+
                 let chipset_hb = i440fx::I440FxHostBridge::create(
                     pci_topology,
                     i440fx::Opts {
                         power_pin: Some(power_pin),
                         reset_pin: Some(reset_pin),
+                        sci_pin: Some(chipset_lpc.sci_pin()),
                         enable_pcie: i440fx.enable_pcie,
                     },
                 );
-                let chipset_lpc =
-                    i440fx::Piix3Lpc::create(self.machine.hdl.clone());
 
                 let chipset_pm = i440fx::Piix3PM::create(
                     self.machine.hdl.clone(),

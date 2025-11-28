@@ -27,9 +27,11 @@ pub mod dsdt;
 pub mod facs;
 pub mod fadt;
 pub mod file_sink;
+pub mod gpe;
 pub mod madt;
 pub mod rsdp;
 pub mod ssdt_edk2;
+pub mod ssdt_pci_hotplug;
 pub mod xsdt;
 
 pub use dsdt::{Dsdt, DsdtConfig, DsdtGenerator, DsdtScope};
@@ -39,6 +41,7 @@ pub use fadt::{
     FADT_FACS_OFFSET, FADT_X_DSDT_LEN, FADT_X_DSDT_OFFSET,
 };
 pub use file_sink::FileSink;
+pub use gpe::ACPI;
 pub use madt::{Madt, MadtConfig};
 pub use rsdp::{
     Rsdp, RsdpConfig, RSDP_EXTENDED_CHECKSUM_OFFSET, RSDP_EXTENDED_TABLE_LEN,
@@ -46,6 +49,7 @@ pub use rsdp::{
     RSDP_XSDT_ADDR_OFFSET,
 };
 pub use ssdt_edk2::{SsdtEdk2, SsdtEdk2Config};
+pub use ssdt_pci_hotplug::SsdtPciHotplug;
 pub use xsdt::{Xsdt, XsdtConfig, XSDT_HEADER_LEN};
 
 // Values used to reference table checksums to recompute them after values are
@@ -87,5 +91,8 @@ const LOCAL_APIC_LEN: u32 = 0x10_0000;
 //
 // Refer to the `piix4_acpi_system_hot_add_init` function in QEMU for more
 // information.
-const GPE0_BLK_ADDR: u16 = 0xafe0;
-const GPE0_BLK_LEN: u8 = 4;
+pub const GPE0_BLK_ADDR: u16 = 0xafe0;
+pub const GPE0_BLK_LEN: u8 = 4;
+
+pub const PCI_HOTPLUG_STATUS_ADDR: u16 = 0xae00;
+pub const PCI_HOTPLUG_STATUS_LEN: u8 = 8;

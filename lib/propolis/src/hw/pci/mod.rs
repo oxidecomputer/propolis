@@ -8,6 +8,7 @@ use std::io::{Error, ErrorKind};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
+use crate::block;
 use crate::common::*;
 use crate::intr_pins::IntrPin;
 
@@ -297,8 +298,13 @@ pub enum INTxPinID {
 
 pub type LintrCfg = (INTxPinID, Arc<dyn IntrPin>);
 
+pub trait BlockDevice: Endpoint + Lifecycle + block::Device {}
+
 pub trait Endpoint: Send + Sync {
     fn attach(&self, attachment: bus::Attachment);
+    fn detach(&self) {
+        // TODO
+    }
     fn cfg_rw(&self, op: RWOp<'_, '_>);
     fn bar_rw(&self, bar: BarN, rwo: RWOp);
 }

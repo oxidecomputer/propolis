@@ -49,6 +49,7 @@ pub trait Device: Send + Sync + 'static {
 
     /// Attaches the device to the virtual machine.
     fn attach(&self) {}
+    fn detach(&self) {}
 
     /// Notification that the interrupt mode has changed.  For
     /// example, we might change from MSI-X to MSI.
@@ -74,6 +75,10 @@ impl<D: Device + Send + Sync + 'static> Endpoint for D {
         let ds = self.device_state();
         ds.attach(attachment);
         self.attach();
+    }
+    fn detach(&self) {
+        // TODO: undo DeviceState::attach
+        self.detach();
     }
     fn cfg_rw(&self, mut rwo: RWOp) {
         let ds = self.device_state();

@@ -13,6 +13,7 @@ use propolis_api_types::instance_spec::SpecKey;
 use slog::info;
 use uuid::Uuid;
 
+use crate::spec::Disk;
 use crate::vm::request_queue::ExternalRequest;
 
 use super::{
@@ -111,6 +112,18 @@ impl ActiveVm {
                     result_tx,
                 ),
             )
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn plug_disk(&self, disk: Disk) -> Result<(), VmError> {
+        self.state_driver_queue
+            .queue_external_request(ExternalRequest::plug_disk(disk))
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn unplug_disk(&self, device: u8) -> Result<(), VmError> {
+        self.state_driver_queue
+            .queue_external_request(ExternalRequest::unplug_disk(device))
             .map_err(Into::into)
     }
 

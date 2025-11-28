@@ -16,6 +16,7 @@
 
 use std::collections::VecDeque;
 
+use crate::spec::Disk;
 use propolis_api_types::instance_spec::SpecKey;
 use slog::{info, Logger};
 use thiserror::Error;
@@ -99,6 +100,14 @@ pub enum ComponentChangeRequest {
         /// The sink for the result of this operation.
         result_tx: super::CrucibleReplaceResultTx,
     },
+
+    PlugDisk {
+        disk: Disk,
+    },
+
+    UnplugDisk {
+        device: u8,
+    },
 }
 
 impl std::fmt::Debug for ComponentChangeRequest {
@@ -108,6 +117,8 @@ impl std::fmt::Debug for ComponentChangeRequest {
                 .debug_struct("ReconfigureCrucibleVolume")
                 .field("backend_id", backend_id)
                 .finish(),
+            Self::PlugDisk { disk } => write!(f, "plug disk {:?}", disk),
+            Self::UnplugDisk { device } => write!(f, "unplug disk {}", device),
         }
     }
 }
@@ -163,6 +174,14 @@ impl ExternalRequest {
             new_vcr_json,
             result_tx,
         })
+    }
+
+    pub fn plug_disk(disk: Disk) -> Self {
+        Self::Component(ComponentChangeRequest::PlugDisk { disk })
+    }
+
+    pub fn unplug_disk(device: u8) -> Self {
+        Self::Component(ComponentChangeRequest::UnplugDisk { device })
     }
 
     fn is_stop(&self) -> bool {
@@ -486,6 +505,14 @@ impl ExternalRequestQueue {
                         ..
                     },
                 ) => {}
+
+                ExternalRequest::Component(
+                    ComponentChangeRequest::PlugDisk { disk: _ },
+                ) => {}
+
+                ExternalRequest::Component(
+                    ComponentChangeRequest::UnplugDisk { device: _ },
+                ) => {}
             }
         };
 
@@ -576,6 +603,8 @@ impl Drop for ExternalRequestQueue {
                         ),
                     ));
                 }
+                ComponentChangeRequest::PlugDisk { disk: _ } => todo!(),
+                ComponentChangeRequest::UnplugDisk { device: _ } => todo!(),
             }
         }
     }

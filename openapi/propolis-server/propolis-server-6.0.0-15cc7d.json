@@ -7,7 +7,7 @@
       "url": "https://oxide.computer",
       "email": "api@oxide.computer"
     },
-    "version": "5.0.0"
+    "version": "6.0.0"
   },
   "paths": {
     "/instance": {
@@ -51,6 +51,80 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/InstanceEnsureResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/instance/attach_disk": {
+      "put": {
+        "operationId": "instance_disk_attach",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstanceDiskAttachRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Null",
+                  "type": "string",
+                  "enum": [
+                    null
+                  ]
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/instance/detach_disk": {
+      "put": {
+        "operationId": "instance_disk_detach",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstanceDiskDetachRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Null",
+                  "type": "string",
+                  "enum": [
+                    null
+                  ]
                 }
               }
             }
@@ -927,6 +1001,333 @@
           }
         ]
       },
+      "ComponentV0": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/VirtioDisk"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "virtio_disk"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/NvmeDisk"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "nvme_disk"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/VirtioNic"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "virtio_nic"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/SerialPort"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "serial_port"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/PciPciBridge"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "pci_pci_bridge"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/QemuPvpanic"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "qemu_pvpanic"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/BootSettings"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "boot_settings"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/SoftNpuPciPort"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "soft_npu_pci_port"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/SoftNpuPort"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "soft_npu_port"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/SoftNpuP9"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "soft_npu_p9"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/P9fs"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "p9fs"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/MigrationFailureInjector"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "migration_failure_injector"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/CrucibleStorageBackend"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "crucible_storage_backend"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/FileStorageBackend"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "file_storage_backend"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/BlobStorageBackend"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "blob_storage_backend"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/VirtioNetworkBackend"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "virtio_network_backend"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/DlpiNetworkBackend"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "dlpi_network_backend"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
       "Cpuid": {
         "description": "A set of CPUID values to expose to a guest.",
         "type": "object",
@@ -1296,6 +1697,33 @@
         "required": [
           "properties",
           "state"
+        ]
+      },
+      "InstanceDiskAttachRequest": {
+        "type": "object",
+        "properties": {
+          "components": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ComponentV0"
+            }
+          }
+        },
+        "required": [
+          "components"
+        ]
+      },
+      "InstanceDiskDetachRequest": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "device"
         ]
       },
       "InstanceEnsureRequest": {

@@ -1468,6 +1468,8 @@ impl Lifecycle for PciNvme {
     }
 }
 
+impl pci::BlockDevice for PciNvme {}
+
 pub mod migrate {
     use crate::migrate::*;
 
