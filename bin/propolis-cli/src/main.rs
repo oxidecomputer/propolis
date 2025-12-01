@@ -21,7 +21,7 @@ use propolis_client::instance_spec::{
     GuestHypervisorInterface, HyperVFeatureFlag, I440Fx, InstanceMetadata,
     InstanceProperties, InstanceSpec, InstanceSpecGetResponse, NvmeDisk,
     PciPath, QemuPvpanic, ReplacementComponent, SerialPort, SerialPortNumber,
-    SpecKey, VirtioDisk,
+    SmbiosType1Input, SpecKey, VirtioDisk,
 };
 use propolis_client::support::nvme_serial_from_str;
 use propolis_client::types::{
@@ -342,7 +342,12 @@ impl VmConfig {
                 },
             },
             components: Default::default(),
-            smbios: None,
+            smbios: SmbiosType1Input {
+                manufacturer: "Oxide".to_string(),
+                product_name: "OxVM".to_string(),
+                serial_number: "test_vm_name".to_string(),
+                version: 0,
+            },
         };
 
         if let Some(from_toml) = from_toml {

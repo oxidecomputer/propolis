@@ -206,7 +206,7 @@ pub struct InstanceGetResponse {
 pub struct InstanceSpec {
     pub board: components::board::Board,
     pub components: BTreeMap<SpecKey, ComponentV0>,
-    pub smbios: Option<SmbiosType1Input>,
+    pub smbios: SmbiosType1Input,
 }
 
 // Information put into the SMBIOS type 1 table in a VM
@@ -217,6 +217,23 @@ pub struct SmbiosType1Input {
     pub product_name: String,
     pub serial_number: String,
     pub version: u64,
+}
+
+impl SmbiosType1Input {
+    /// Build the defaults for the SMBIOS Type 1 table as used for an Oxide VM.
+    ///
+    /// This corresponds to the values for this table initially encoded in
+    /// `propolis-server` directly.
+    // Since the instance name is part of the defaults, we can't simply
+    // implement `Default`.
+    pub fn ox_vm_v0(serial_number: &str) -> Self {
+        SmbiosType1Input {
+            manufacturer: "Oxide".to_string(),
+            product_name: "OxVm".to_string(),
+            serial_number: serial_number.to_string(),
+            version: 0,
+        }
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]

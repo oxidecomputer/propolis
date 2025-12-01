@@ -52,7 +52,9 @@ pub(crate) mod builder;
 /// The code related to latest types does not go into a versioned module
 impl From<Spec> for InstanceSpec {
     fn from(val: Spec) -> Self {
-        let smbios = val.smbios_type1_input.clone();
+        let smbios = val.smbios_type1_input.clone()
+            .expect("smbios_type1_input is optional only in support of
+                SpecBuilder and always Some in practice");
         let InstanceSpecV0 { board, components } = InstanceSpecV0::from(val);
         InstanceSpec { board, components, smbios }
     }
@@ -66,7 +68,7 @@ impl TryFrom<InstanceSpec> for Spec {
         let InstanceSpec { board, components, smbios } = value;
         let v0 = InstanceSpecV0 { board, components };
         let mut spec: Spec = v0.try_into()?;
-        spec.smbios_type1_input = smbios;
+        spec.smbios_type1_input = Some(smbios);
         Ok(spec)
     }
 }

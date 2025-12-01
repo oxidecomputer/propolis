@@ -11,7 +11,7 @@ use propolis_client::{
         Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
         CpuidEntry, CpuidVendor, GuestHypervisorInterface, InstanceMetadata,
         InstanceSpec, MigrationFailureInjector, NvmeDisk, PciPath, SerialPort,
-        SerialPortNumber, SpecKey, VirtioDisk,
+        SerialPortNumber, SmbiosType1Input, SpecKey, VirtioDisk,
     },
     support::nvme_serial_from_str,
 };
@@ -304,7 +304,7 @@ impl<'dr> VmConfig<'dr> {
                     .unwrap_or_default(),
             },
             components: Default::default(),
-            smbios: None,
+            smbios: SmbiosType1Input::ox_vm_v0(vm_name),
         };
 
         // Iterate over the collection of disks and handles and add spec
