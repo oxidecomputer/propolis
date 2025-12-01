@@ -382,6 +382,23 @@ impl<T: MigrateConn> RonV0<T> {
         }?;
         info!(self.log(), "Destination read Preamble: {:?}", preamble);
 
+        // XXX: gross hack, fix me, etc
+        // !!! this is where I realized we need to have a RonV1. !!!
+        // Preamble includes a `VersionedInstanceSpec`, which only represents one kind of spec: the
+        // `V0` variant, which itself holds an `InstanceSpecV0`. `VersionedInstanceSpec`, then, is
+        // in the `propolis-server` API by virtue of
+        // `InstanceSpecGetResponseV0 -> InstanceSpecStatusV0 -> VersionedInstanceSpec`.
+        // This means we can't add a `V1` variant to `VersionedInstanceSpec` without breaking the
+        // API. In the context of our dropshot versioning, `VersionedInstanceSpec` unfortunately
+        // doesn't quite fit the bill. We'll probably want to just offer up a distinct enum of
+        // `InstanceSpec`, `InstanceSpecV0`, etc here, unrelated to anything in the API.
+        // That, then, means we need to version the migration protocol and preamble.
+        //
+        // And so we arrive at the gross hack: there is a means to select a new `RonV1`, but we can
+        // pretty seamlessly convert an `InstanceSpecV0` up to an `InstanceSpec` anyway - the only
+        // new data is the SMBIOS Type 1 UUID that's communicated in InstanceProperties before
+        // doing a migration anyway. So we'll amend the spec, grab that, and insert it into the
+        // `Spec` as if we had it all along.
         let spec = match preamble.amend_spec(
             &ensure_ctx
                 .migration_info()

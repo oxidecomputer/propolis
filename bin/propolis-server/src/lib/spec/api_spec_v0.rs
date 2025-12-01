@@ -52,6 +52,7 @@ pub(crate) enum ApiSpecError {
     BackendNotUsed(SpecKey),
 }
 
+// TODO: should be in terms of InstanceSpec instead?
 impl From<Spec> for InstanceSpecV0 {
     fn from(val: Spec) -> Self {
         // Exhaustively destructure the input spec so that adding a new field
@@ -221,6 +222,7 @@ impl From<Spec> for InstanceSpecV0 {
     }
 }
 
+/*
 impl TryFrom<InstanceSpecV0> for Spec {
     type Error = ApiSpecError;
 
@@ -403,3 +405,4 @@ impl TryFrom<InstanceSpecV0> for Spec {
         Ok(builder.finish())
     }
 }
+*/

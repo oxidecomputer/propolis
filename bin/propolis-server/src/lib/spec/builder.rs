@@ -24,6 +24,7 @@ use crate::spec::SerialPortDevice;
 
 use super::{
     Board, BootOrderEntry, BootSettings, Disk, Nic, QemuPvpanic, SerialPort,
+    SmbiosType1Input,
 };
 
 #[cfg(feature = "failure-injection")]
@@ -67,6 +68,7 @@ pub(crate) enum SpecBuilderError {
     DefaultCpuidReadFailed(#[from] cpuid_utils::host::GetHostCpuidError),
 }
 
+// TODO: maybe remove this default
 #[derive(Debug, Default)]
 pub(crate) struct SpecBuilder {
     spec: super::Spec,
@@ -102,6 +104,15 @@ impl SpecBuilder {
             },
             ..Default::default()
         })
+    }
+
+    pub fn add_smbios_type1(
+        &mut self,
+        smbios: SmbiosType1Input,
+    ) -> Result<(), SpecBuilderError> {
+        self.spec.smbios_type1_input = Some(smbios);
+
+        Ok(())
     }
 
     /// Sets the spec's boot order to the list of disk devices specified in

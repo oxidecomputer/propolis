@@ -336,6 +336,7 @@ impl PropolisServerApi for PropolisServerImpl {
 
         let vm_init = match init {
             InstanceInitializationMethodV0::Spec { spec } => spec
+                .into_instance_spec(&properties.id.to_string())
                 .try_into()
                 .map(|s| VmInitializationMethod::Spec(Box::new(s)))
                 .map_err(|e| {
