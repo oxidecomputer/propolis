@@ -194,7 +194,7 @@ impl QueueMinder {
     /// that more requests are available.
     pub fn next_req(&self, wid: WorkerId) -> Option<DeviceRequest> {
         let mut state = self.state.lock().unwrap();
-        if state.paused || !state.notify_workers.is_empty() {
+        if state.paused {
             state.notify_workers.set(wid);
             return None;
         }
@@ -315,9 +315,14 @@ impl QueueMinder {
         }
     }
 
-    /// Get a bitmap of the workers which should be notified that this queue may
-    /// now have requests available.
-    pub(crate) fn take_notifications(&self) -> Option<Bitmap> {
+    /// Take the bitmap of the workers which should be notified that this queue
+    /// may now have requests available.
+    ///
+    /// Bits in this map correspond to workers that either should be
+    /// [`WorkerSlot::wake`]'d or returned to this `QueueMinder` via
+    /// [`add_notifications`]. Failure to do so will result in idle workers
+    /// never being woken for future work.
+    pub(in crate::block) fn take_notifications(&self) -> Option<Bitmap> {
         let mut state = self.state.lock().unwrap();
         if state.paused {
             state.notify_workers = Bitmap::ALL;
@@ -325,6 +330,18 @@ impl QueueMinder {
         } else {
             Some(state.notify_workers.take())
         }
+    }
+
+    /// Add a set of workers to be notified when this queue may have requests
+    /// available.
+    ///
+    /// This should only be called with the remaining parts of a bitmap obtained
+    /// from an ealier [`take_notifications`]. Using other bit patterns may
+    /// result in wakeups to out-of-range worker IDs and subsequent panic.
+    pub(in crate::block) fn add_notifications(&self, worker_ids: Bitmap) {
+        let mut state = self.state.lock().unwrap();
+
+        state.notify_workers.set_all(worker_ids);
     }
 
     /// Associate a [MetricConsumer] with this queue.
