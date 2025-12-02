@@ -43,32 +43,6 @@ pub struct InstanceSpecV0 {
     pub components: BTreeMap<SpecKey, ComponentV0>,
 }
 
-impl InstanceSpecV0 {
-    /// Convert this [`InstanceSpecV0`] into an [`InstanceSpec`], the following
-    /// version of this type as used in the API.
-    ///
-    /// This is not a `TryFrom`, `InstanceSpec` includes a new
-    /// `SmbiosType1Input` field which moves the UUID included in that table
-    /// into the instance spec. Previously, this had been ambiently provided by
-    /// `propolis-server`, which set it to the same ID as provided by
-    /// `InstanceProperties`.
-    ///
-    /// In typical use of `propolis-server` (deployed in a rack, operated by
-    /// sled-agent and Nexus, etc), this UUID will be set the same as
-    /// `propolis-server` had bee defaulting. But other use of `propolis-server`
-    /// (falcon, a4x2) may vary it for testing and emulating non-rack
-    /// VM configurations.
-    pub fn into_instance_spec(self, smbios_uuid: &str) -> crate::InstanceSpec {
-        let Self { board, components } = self;
-
-        crate::InstanceSpec {
-            board,
-            components,
-            smbios: crate::SmbiosType1Input::ox_vm_v0(smbios_uuid),
-        }
-    }
-}
-
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceSpecGetResponseV0 {
     pub properties: InstanceProperties,

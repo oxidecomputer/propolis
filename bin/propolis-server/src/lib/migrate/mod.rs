@@ -5,7 +5,10 @@
 use bit_field::BitField;
 use dropshot::HttpError;
 use propolis::migrate::MigrateStateError;
-use propolis_api_types::MigrationState;
+use propolis_api_types::{
+    instance_spec::v0::InstanceSpecV0,
+    InstanceSpec, MigrationState
+};
 use serde::{Deserialize, Serialize};
 use slog::error;
 use thiserror::Error;
@@ -26,6 +29,27 @@ pub(crate) trait MigrateConn:
 
 impl MigrateConn for tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream> {}
 impl MigrateConn for dropshot::WebsocketConnectionRaw {}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+enum MigrationInstanceSpec {
+    V0(InstanceSpecV0),
+    V1(InstanceSpec),
+}
+
+impl MigrationInstanceSpec {
+    fn minimum_version(spec: crate::spec::Spec) -> Self {
+        if let Ok(v0_spec) = spec.clone().try_into() {
+            return MigrationInstanceSpec::V0(v0_spec);
+        }
+
+        if let Ok(v1_spec) = spec.clone().try_into() {
+            return MigrationInstanceSpec::V1(v1_spec);
+        }
+
+        panic!("infallible because at the very least `Spec` should be
+            convertable to the latest instance spec...");
+    }
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum MigrateRole {

@@ -1019,6 +1019,8 @@ impl MachineInitializer<'_> {
             smb_type1.product_name = "OxVM".try_into().unwrap();
             smb_type1.serial_number =
                 self.properties.id.to_string().try_into().unwrap_or_default();
+            // TODO:
+            // smb_type1.version = 0;
         };
         smb_type1.uuid = self.properties.id.to_bytes_le();
         smb_type1.wake_up_type = type1::WakeUpType::PowerSwitch;

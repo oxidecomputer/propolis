@@ -11,17 +11,18 @@ use propolis_api_types::{
 use serde::{Deserialize, Serialize};
 
 use crate::spec::{api_spec_v0::ApiSpecError, Spec};
+use crate::migrate::MigrationInstanceSpec;
 
 use super::MigrateError;
 
 #[derive(Deserialize, Serialize, Debug)]
 pub(crate) struct Preamble {
-    pub instance_spec: VersionedInstanceSpec,
+    pub instance_spec: MigrationInstanceSpec,
     pub blobs: Vec<Vec<u8>>,
 }
 
 impl Preamble {
-    pub fn new(instance_spec: VersionedInstanceSpec) -> Preamble {
+    pub fn new(instance_spec: MigrationInstanceSpec) -> Preamble {
         Preamble { instance_spec, blobs: Vec::new() }
     }
 
@@ -43,7 +44,27 @@ impl Preamble {
             MigrateError::InstanceSpecsIncompatible(msg)
         }
 
-        let VersionedInstanceSpec::V0(mut source_spec) = self.instance_spec;
+        // TODO: all that's left is amending the spec..!
+        let maybe_source_spec: Result<Spec, ApiSpecError> = match self.instance_spec {
+            MigrationInstanceSpec::V0(source_spec) => source_spec.try_into(),
+            MigrationInstanceSpec::V1(source_spec) => source_spec.try_into(),
+        };
+
+        let source_spec = maybe_source_spec.map_err(|api_err| {
+            let msg =
+                format!("instance spec cannot be migrated?! {api_err}");
+            // TODO: This really should be impossible, perhaps a panic is in
+            // order here. If the instance is being migrated in, the source
+            // Propolis should have had a Spec which was at some point
+            // constructed from an `InstanceSpecV*`.
+            //
+            // Before providing an `InstanceSpecV*` to us for migration, that
+            // Propolis would have been able to convert back into an API type,
+            // and at the bare minimum we should be able to round-trip a Spec to
+            // an API InstanceSpecV<N> and back to a Spec.
+            MigrateError::InstanceSpecsIncompatible(msg)
+        })?;
+
         for (id, comp) in replacements {
             let Some(to_amend) = source_spec.components.get_mut(id) else {
                 return Err(MigrateError::InstanceSpecsIncompatible(format!(

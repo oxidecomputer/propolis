@@ -55,15 +55,28 @@ use propolis_api_types::instance_spec::components::devices::{
 pub(crate) mod api_spec_v0;
 pub(crate) mod builder;
 
+#[derive(Debug, Error)]
+pub(crate) enum SpecToApiError {
+    #[error("unable to convert to InstanceSpecV{0}: {1}")]
+    IncompatibleSpecVersion(u32, String),
+
+}
+
 /// The code related to latest types does not go into a versioned module
-impl From<Spec> for InstanceSpec {
-    fn from(val: Spec) -> Self {
-        let smbios = val.smbios_type1_input.clone().expect(
-            "smbios_type1_input is optional only in support of
-                SpecBuilder and always Some in practice",
-        );
-        let InstanceSpecV0 { board, components } = InstanceSpecV0::from(val);
-        InstanceSpec { board, components, smbios }
+impl TryFrom<Spec> for InstanceSpec {
+    type Error = SpecToApiError;
+
+    fn try_from(mut val: Spec) -> Result<Self, Self::Error> {
+        // An InstanceSpecV1 is really just an InstanceSpecV0 plus SMBIOS type 1
+        // data. Take that from the spec, use that `Into`, and reconstitute an
+        // InstanceSpecV1 assuming that succeeds.
+        let Some(smbios) = val.smbios_type1_input.take() else {
+            return Err(SpecToApiError::IncompatibleSpecVersion(1,
+                "Spec does not have smbios data".to_string()));
+        };
+
+        let InstanceSpecV0 { board, components } = InstanceSpecV0::try_from(val)?;
+        Ok(InstanceSpec { board, components, smbios })
     }
 }
 

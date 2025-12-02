@@ -383,7 +383,6 @@ impl<T: MigrateConn> RonV0<T> {
         info!(self.log(), "Destination read Preamble: {:?}", preamble);
 
         // XXX: gross hack, fix me, etc
-        // !!! this is where I realized we need to have a RonV1. !!!
         // Preamble includes a `VersionedInstanceSpec`, which only represents one kind of spec: the
         // `V0` variant, which itself holds an `InstanceSpecV0`. `VersionedInstanceSpec`, then, is
         // in the `propolis-server` API by virtue of

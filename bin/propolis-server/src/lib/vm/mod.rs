@@ -99,7 +99,7 @@ use state_driver::StateDriverOutput;
 use state_publisher::StatePublisher;
 use tokio::sync::{oneshot, watch, RwLock, RwLockReadGuard};
 
-use crate::{server::MetricsEndpointConfig, spec::Spec, vnc::VncServer};
+use crate::{server::MetricsEndpointConfig, spec::{Spec, SpecToApiError}, vnc::VncServer};
 
 mod active;
 pub(crate) mod ensure;
@@ -218,25 +218,29 @@ enum MaybeSpec {
     WaitingForMigrationSource,
 }
 
-impl From<MaybeSpec> for InstanceSpecStatus {
-    fn from(value: MaybeSpec) -> Self {
+impl TryFrom<MaybeSpec> for InstanceSpecStatus {
+    type Error = SpecToApiError;
+
+    fn try_from(value: MaybeSpec) -> Result<Self, SpecToApiError> {
         match value {
             MaybeSpec::WaitingForMigrationSource => {
-                Self::WaitingForMigrationSource
+                Ok(Self::WaitingForMigrationSource)
             }
-            MaybeSpec::Present(spec) => Self::Present((*spec).into()),
+            MaybeSpec::Present(spec) => Ok(Self::Present((*spec).try_into()?)),
         }
     }
 }
 
-impl From<MaybeSpec> for InstanceSpecStatusV0 {
-    fn from(value: MaybeSpec) -> Self {
+impl TryFrom<MaybeSpec> for InstanceSpecStatusV0 {
+    type Error = SpecToApiError;
+
+    fn try_from(value: MaybeSpec) -> Result<Self, SpecToApiError> {
         match value {
             MaybeSpec::WaitingForMigrationSource => {
-                Self::WaitingForMigrationSource
+                Ok(Self::WaitingForMigrationSource)
             }
             MaybeSpec::Present(spec) => {
-                Self::Present(VersionedInstanceSpec::V0((*spec).into()))
+                Ok(Self::Present(VersionedInstanceSpec::V0((*spec).try_into()?)))
             }
         }
     }
@@ -348,13 +352,16 @@ impl Vm {
     }
 
     /// Returns the state, properties, and instance spec for the instance most
-    /// recently wrapped by this `Vm`.
+    /// recently wrapped by this `Vm`. The instance spec is returned as an
+    /// `InstanceSpecV0`.
     ///
     /// # Returns
     ///
-    /// - `Some` if the VM has been created.
+    /// - `Some(Ok)` if the VM has been created.
     /// - `None` if no VM has ever been created.
-    pub(super) async fn v0_get(&self) -> Option<InstanceSpecGetResponseV0> {
+    /// - `Some(Err(...))` if a VM has been created and is inexpressible as
+    ///     `InstanceSpecV0`.
+    pub(super) async fn v0_get(&self) -> Option<Result<InstanceSpecGetResponseV0, SpecToApiError>> {
         let guard = self.inner.read().await;
         match &guard.state {
             // If no VM has ever been created, there's nothing to get.
@@ -364,41 +371,67 @@ impl Vm {
             VmState::Active(vm) => {
                 let spec =
                     vm.objects().lock_shared().await.instance_spec().clone();
+                let spec_v0 = match spec.try_into() {
+                    Ok(spec) => spec,
+                    Err(e) => {
+                        return Some(Err(e));
+                    }
+                };
                 let state = vm.external_state_rx.borrow().clone();
-                Some(InstanceSpecGetResponseV0 {
+                Some(Ok(InstanceSpecGetResponseV0 {
                     properties: vm.properties.clone(),
                     spec: InstanceSpecStatusV0::Present(
-                        VersionedInstanceSpec::V0(spec.into()),
+                        VersionedInstanceSpec::V0(spec_v0),
                     ),
                     state: state.state,
-                })
+                }))
             }
             VmState::WaitingForInit { vm, spec }
             | VmState::RundownComplete { vm, spec } => {
-                Some(InstanceSpecGetResponseV0 {
+                let spec_status_v0 = match spec.to_owned().try_into() {
+                    Ok(spec) => spec,
+                    Err(e) => {
+                        return Some(Err(e));
+                    }
+                };
+
+                Some(Ok(InstanceSpecGetResponseV0 {
                     properties: vm.properties.clone(),
                     state: vm.external_state_rx.borrow().state,
-                    spec: spec.clone().into(),
-                })
+                    spec: spec_status_v0,
+                }))
             }
-            VmState::Rundown { vm, spec } => Some(InstanceSpecGetResponseV0 {
-                properties: vm.properties.clone(),
-                state: vm.external_state_rx.borrow().state,
-                spec: InstanceSpecStatusV0::Present(VersionedInstanceSpec::V0(
-                    spec.as_ref().to_owned().into(),
-                )),
-            }),
+            VmState::Rundown { vm, spec } => {
+                let spec = spec.as_ref().to_owned();
+                let spec_v0 = match spec.try_into() {
+                    Ok(spec) => spec,
+                    Err(e) => {
+                        return Some(Err(e));
+                    }
+                };
+
+                Some(Ok(InstanceSpecGetResponseV0 {
+                    properties: vm.properties.clone(),
+                    state: vm.external_state_rx.borrow().state,
+                    spec: InstanceSpecStatusV0::Present(VersionedInstanceSpec::V0(
+                        spec_v0
+                    )),
+                }))
+            }
         }
     }
 
     /// Returns the state, properties, and instance spec for the instance most
-    /// recently wrapped by this `Vm`.
+    /// recently wrapped by this `Vm`. The instance spec is returned as
+    /// `InstanceSpecV1`.
     ///
     /// # Returns
     ///
-    /// - `Some` if the VM has been created.
+    /// - `Some(Ok)` if the VM has been created.
     /// - `None` if no VM has ever been created.
-    pub(super) async fn get(&self) -> Option<InstanceSpecGetResponse> {
+    /// - `Some(Err(...))` if a VM has been created and is inexpressible as
+    ///     `InstanceSpecV1`.
+    pub(super) async fn get(&self) -> Option<Result<InstanceSpecGetResponse, SpecToApiError>> {
         let guard = self.inner.read().await;
         match &guard.state {
             // If no VM has ever been created, there's nothing to get.
@@ -408,28 +441,50 @@ impl Vm {
             VmState::Active(vm) => {
                 let spec =
                     vm.objects().lock_shared().await.instance_spec().clone();
+                let spec_v1 = match spec.try_into() {
+                    Ok(spec) => spec,
+                    Err(e) => {
+                        return Some(Err(e));
+                    }
+                };
                 let state = vm.external_state_rx.borrow().clone();
-                Some(InstanceSpecGetResponse {
+                Some(Ok(InstanceSpecGetResponse {
                     properties: vm.properties.clone(),
-                    spec: InstanceSpecStatus::Present(spec.into()),
+                    spec: InstanceSpecStatus::Present(spec_v1),
                     state: state.state,
-                })
+                }))
             }
             VmState::WaitingForInit { vm, spec }
             | VmState::RundownComplete { vm, spec } => {
-                Some(InstanceSpecGetResponse {
+                let spec = spec.clone();
+                let spec_status_v1 = match spec.try_into() {
+                    Ok(spec) => spec,
+                    Err(e) => {
+                        return Some(Err(e));
+                    }
+                };
+
+                Some(Ok(InstanceSpecGetResponse {
                     properties: vm.properties.clone(),
                     state: vm.external_state_rx.borrow().state,
-                    spec: spec.clone().into(),
-                })
+                    spec: spec_status_v1,
+                }))
             }
-            VmState::Rundown { vm, spec } => Some(InstanceSpecGetResponse {
-                properties: vm.properties.clone(),
-                state: vm.external_state_rx.borrow().state,
-                spec: InstanceSpecStatus::Present(
-                    spec.as_ref().to_owned().into(),
-                ),
-            }),
+            VmState::Rundown { vm, spec } => {
+                let spec = spec.as_ref().to_owned();
+                let spec_v1 = match spec.try_into() {
+                    Ok(spec) => spec,
+                    Err(e) => {
+                        return Some(Err(e));
+                    }
+                };
+
+                Some(Ok(InstanceSpecGetResponse {
+                    properties: vm.properties.clone(),
+                    state: vm.external_state_rx.borrow().state,
+                    spec: InstanceSpecStatus::Present(spec_v1),
+                }))
+            }
         }
     }
 

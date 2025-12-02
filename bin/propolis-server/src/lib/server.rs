@@ -198,14 +198,24 @@ async fn v0_instance_get(
     rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<InstanceSpecGetResponseV0, HttpError> {
     let ctx = rqctx.context();
-    ctx.vm.v0_get().await.ok_or_else(not_created_error)
+    let res = ctx.vm.v0_get().await;
+    match res {
+        Some(Ok(res)) => Ok(res),
+        Some(Err(e)) => Err(inconvertible_spec_error(e)),
+        None => Err(not_created_error())
+    }
 }
 
 async fn instance_get(
     rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<api::InstanceSpecGetResponse, HttpError> {
     let ctx = rqctx.context();
-    ctx.vm.get().await.ok_or_else(not_created_error)
+    let res = ctx.vm.get().await;
+    match res {
+        Some(Ok(res)) => Ok(res),
+        Some(Err(e)) => Err(inconvertible_spec_error(e)),
+        None => Err(not_created_error())
+    }
 }
 
 enum PropolisServerImpl {}
@@ -336,7 +346,6 @@ impl PropolisServerApi for PropolisServerImpl {
 
         let vm_init = match init {
             InstanceInitializationMethodV0::Spec { spec } => spec
-                .into_instance_spec(&properties.id.to_string())
                 .try_into()
                 .map(|s| VmInitializationMethod::Spec(Box::new(s)))
                 .map_err(|e| {
@@ -751,5 +760,13 @@ fn not_created_error() -> HttpError {
         Some(api::ErrorCode::NoInstance.to_string()),
         ClientErrorStatusCode::FAILED_DEPENDENCY,
         "Server not initialized (no instance)".to_string(),
+    )
+}
+
+fn inconvertible_spec_error(e: crate::spec::SpecToApiError) -> HttpError {
+    HttpError::for_client_error(
+        Some(api::ErrorCode::InconvertibleSpec.to_string()),
+        ClientErrorStatusCode::BAD_REQUEST,
+        e.to_string()
     )
 }

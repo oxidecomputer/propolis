@@ -33,6 +33,8 @@ use super::MigrationFailure;
 #[cfg(feature = "falcon")]
 use super::SoftNpuPort;
 
+use crate::spec::SpecToApiError;
+
 #[derive(Debug, Error)]
 pub(crate) enum ApiSpecError {
     #[error(transparent)]
@@ -53,8 +55,10 @@ pub(crate) enum ApiSpecError {
 }
 
 // TODO: should be in terms of InstanceSpec instead?
-impl From<Spec> for InstanceSpecV0 {
-    fn from(val: Spec) -> Self {
+impl TryFrom<Spec> for InstanceSpecV0 {
+    type Error = SpecToApiError;
+
+    fn try_from(val: Spec) -> Result<Self, Self::Error> {
         // Exhaustively destructure the input spec so that adding a new field
         // without considering it here will break the build.
         let Spec {
@@ -73,8 +77,13 @@ impl From<Spec> for InstanceSpecV0 {
 
             // Not part of `InstanceSpecV0`. Added in `InstanceSpec` in API
             // Version 2.0.0.
-            smbios_type1_input: _,
+            smbios_type1_input,
         } = val;
+
+        if smbios_type1_input.is_some() {
+            return Err(SpecToApiError::IncompatibleSpecVersion(0,
+                "Spec has smbios data".to_string()));
+        }
 
         // Inserts a component entry into the supplied map, asserting first that
         // the supplied key is not present in that map.
@@ -218,11 +227,10 @@ impl From<Spec> for InstanceSpecV0 {
             }
         }
 
-        spec
+        Ok(spec)
     }
 }
 
-/*
 impl TryFrom<InstanceSpecV0> for Spec {
     type Error = ApiSpecError;
 
@@ -405,4 +413,3 @@ impl TryFrom<InstanceSpecV0> for Spec {
         Ok(builder.finish())
     }
 }
-*/

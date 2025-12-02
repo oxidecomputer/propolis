@@ -408,6 +408,8 @@ pub enum ErrorCode {
     AlreadyRunning,
     /// Instance creation failed
     CreateFailed,
+    /// Can't convert the existing instance Spec to the requested API version.
+    InconvertibleSpec,
 }
 
 impl fmt::Display for ErrorCode {
@@ -429,6 +431,9 @@ impl std::str::FromStr for ErrorCode {
             }
             s if s.eq_ignore_ascii_case("CreateFailed") => {
                 Ok(ErrorCode::CreateFailed)
+            }
+            s if s.eq_ignore_ascii_case("InconvertibleSpec") => {
+                Ok(ErrorCode::InconvertibleSpec)
             }
             _ => Err("unknown error code, expected one of: \
                 'NoInstance', 'AlreadyInitialized', 'AlreadyRunning', \
