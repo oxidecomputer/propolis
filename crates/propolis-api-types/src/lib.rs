@@ -6,19 +6,18 @@
 
 use std::{collections::BTreeMap, fmt, net::SocketAddr};
 
-use instance_spec::{v0::InstanceSpecV0, SpecKey};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+pub mod v0;
 
 // Re-export the instance spec boot settings types so they can also be used in
 // legacy instance ensure requests.
 pub use crate::instance_spec::components::devices::{
     BootOrderEntry, BootSettings,
 };
-use crate::instance_spec::{
-    components, v0::ComponentV0, VersionedInstanceSpec,
-};
+use instance_spec::{components, v0::ComponentV0, SpecKey};
 
 // Re-export volume construction requests since they're part of a disk request.
 pub use crucible_client_types::VolumeConstructionRequest;
@@ -103,7 +102,7 @@ impl From<ReplacementComponent> for instance_spec::v0::ComponentV0 {
 #[serde(tag = "method", content = "value")]
 pub enum InstanceInitializationMethod {
     Spec {
-        spec: InstanceSpecV0,
+        spec: InstanceSpec,
     },
     MigrationTarget {
         migration_id: Uuid,
@@ -203,11 +202,28 @@ pub struct InstanceGetResponse {
     pub instance: Instance,
 }
 
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+pub struct InstanceSpec {
+    pub board: components::board::Board,
+    pub components: BTreeMap<SpecKey, ComponentV0>,
+    pub smbios: Option<SmbiosType1Input>,
+}
+
+// Information put into the SMBIOS type 1 table in a VM
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SmbiosType1Input {
+    pub manufacturer: String,
+    pub product_name: String,
+    pub serial_number: String,
+    pub version: u64,
+}
+
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "type", content = "value")]
 pub enum InstanceSpecStatus {
     WaitingForMigrationSource,
-    Present(VersionedInstanceSpec),
+    Present(InstanceSpec),
 }
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]

@@ -16,6 +16,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::spec::api_spec_v0::ApiSpecError;
 use cpuid_utils::CpuidSet;
 use propolis_api_types::instance_spec::{
     components::{
@@ -29,9 +30,10 @@ use propolis_api_types::instance_spec::{
             SerialPortNumber, VirtioDisk, VirtioNic,
         },
     },
-    v0::ComponentV0,
+    v0::{ComponentV0, InstanceSpecV0},
     PciPath, SpecKey,
 };
+use propolis_api_types::{InstanceSpec, SmbiosType1Input};
 use thiserror::Error;
 
 #[cfg(feature = "failure-injection")]
@@ -46,6 +48,28 @@ use propolis_api_types::instance_spec::components::{
 // mod api_request;
 pub(crate) mod api_spec_v0;
 pub(crate) mod builder;
+
+/// The code related to latest types does not go into a versioned module
+impl From<Spec> for InstanceSpec {
+    fn from(val: Spec) -> Self {
+        let smbios = val.smbios_type1_input.clone();
+        let InstanceSpecV0 { board, components } = InstanceSpecV0::from(val);
+        InstanceSpec { board, components, smbios }
+    }
+}
+
+/// The code related to latest types does not go into a versioned module
+impl TryFrom<InstanceSpec> for Spec {
+    type Error = ApiSpecError;
+
+    fn try_from(value: InstanceSpec) -> Result<Self, Self::Error> {
+        let InstanceSpec { board, components, smbios } = value;
+        let v0 = InstanceSpecV0 { board, components };
+        let mut spec: Spec = v0.try_into()?;
+        spec.smbios_type1_input = smbios;
+        Ok(spec)
+    }
+}
 
 #[derive(Debug, Error)]
 #[error("input component type can't convert to output type")]
@@ -78,6 +102,18 @@ pub(crate) struct Spec {
 
     #[cfg(feature = "falcon")]
     pub softnpu: SoftNpu,
+
+    // TODO: This is an option because there is no good way to generate a
+    // default implementation of `SmbiosType1Input`. The default `serial_number`
+    // field of `SmbiosType1Input` should be equivalent to the VM UUID for
+    // backwards compatibility, but that isn't currently possible.
+    //
+    // One way to fix this would be to remove the `Builder` and directly
+    // construct `Spec` from a function that takes an `InstanceSpecV0` and the
+    // VM UUID. This would replace `impl TryFrom<InstanceSpecV0> for Spec`, and
+    // would allow removing the `Default` derive on `Spec`, and the `Option`
+    // from the `smbios_type1_input` field.
+    pub smbios_type1_input: Option<SmbiosType1Input>,
 }
 
 /// The VM's mainboard.

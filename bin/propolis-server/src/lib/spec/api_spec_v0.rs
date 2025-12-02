@@ -69,6 +69,10 @@ impl From<Spec> for InstanceSpecV0 {
             migration_failure,
             #[cfg(feature = "falcon")]
             softnpu,
+
+            // Not part of `InstanceSpecV0`. Added in `InstanceSpec` in API
+            // Version 2.0.0.
+            smbios_type1_input: _,
         } = val;
 
         // Inserts a component entry into the supplied map, asserting first that

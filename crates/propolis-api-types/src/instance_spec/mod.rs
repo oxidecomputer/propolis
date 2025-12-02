@@ -301,7 +301,29 @@ impl JsonSchema for SpecKey {
     }
 }
 
-/// A versioned instance spec.
+/// DEPRECATED: A versioned instance spec.
+///
+/// This structure is deprecated. It is notionally incompatible with
+/// dropshot API versioning. If you wanted to add a `V1` variant to
+/// `VersionedInstanceSpec`, it would change the existing blessed V1 OpenAPI
+/// spec. Therefore you'd have to rename this to `VersionedInstanceSpecV0` and
+/// create a new type with the new variant. This makes little sense however,
+/// and is a remnant of an attempt at propolis versioning prior to dropshot
+/// API versioning.
+///
+/// Luckily this type is only exposed via `InstanceSpecGetResponse` which is not
+/// used in Omicron. Therefore we can limit that method to the V1 OpenAPI spec
+/// and stop any further use of this type.
+///
+/// In addition to the disparate versioning mechanisms, there is also a
+/// fundamental flaw in how this type was used in the existing code. It was
+/// constructed in some cases from a `MaybeSpec` which contains a `Box<Spec>`.
+/// Unfortunately, `Spec` is a type erased container of any version of an
+/// instance spec such as `InstanceSpecV0`,`InstanceSpecV1`, or future types.
+/// There is no guarantee that we could take a `Spec` and figure out which
+/// versioned spec it is supposed to convert to. This only worked in the initial
+/// code because the only versioned spec was `InstanceSpecV0`. It's best to stop
+/// using this type altogether.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields, tag = "version", content = "spec")]
 pub enum VersionedInstanceSpec {

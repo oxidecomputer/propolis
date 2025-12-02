@@ -37,7 +37,10 @@ use internal_dns_types::names::ServiceName;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis_api_types as api;
-use propolis_api_types::instance_spec::SpecKey;
+use propolis_api_types::instance_spec::{
+    v0::InstanceSpecGetResponseV0, SpecKey,
+};
+use propolis_api_types::v0::InstanceInitializationMethodV0;
 use propolis_api_types::InstanceInitializationMethod;
 use propolis_server_api::PropolisServerApi;
 use rfb::tungstenite::BinaryWs;
@@ -190,7 +193,15 @@ async fn find_local_nexus_client(
     }
 }
 
-async fn instance_get_common(
+// DEPRECATED
+async fn v0_instance_get(
+    rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
+) -> Result<InstanceSpecGetResponseV0, HttpError> {
+    let ctx = rqctx.context();
+    ctx.vm.v0_get().await.ok_or_else(not_created_error)
+}
+
+async fn instance_get(
     rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
 ) -> Result<api::InstanceSpecGetResponse, HttpError> {
     let ctx = rqctx.context();
@@ -291,16 +302,111 @@ impl PropolisServerApi for PropolisServerImpl {
             })
     }
 
+    async fn v0_instance_ensure(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<api::v0::InstanceEnsureRequestV0>,
+    ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError>
+    {
+        let server_context = rqctx.context();
+        let api::v0::InstanceEnsureRequestV0 { properties, init } =
+            request.into_inner();
+        let oximeter_registry = server_context
+            .static_config
+            .metrics
+            .as_ref()
+            .map(|_| ProducerRegistry::with_id(properties.id));
+
+        let nexus_client =
+            find_local_nexus_client(rqctx.server.local_addr, rqctx.log.clone())
+                .await;
+
+        let ensure_options = crate::vm::EnsureOptions {
+            bootrom_path: server_context.static_config.bootrom_path.clone(),
+            bootrom_version: server_context
+                .static_config
+                .bootrom_version
+                .clone(),
+            use_reservoir: server_context.static_config.use_reservoir,
+            metrics_config: server_context.static_config.metrics.clone(),
+            oximeter_registry,
+            nexus_client,
+            vnc_server: server_context.vnc_server.clone(),
+            local_server_addr: rqctx.server.local_addr,
+        };
+
+        let vm_init = match init {
+            InstanceInitializationMethodV0::Spec { spec } => spec
+                .try_into()
+                .map(|s| VmInitializationMethod::Spec(Box::new(s)))
+                .map_err(|e| {
+                    if let Some(s) = e.source() {
+                        format!("{e}: {s}")
+                    } else {
+                        e.to_string()
+                    }
+                }),
+            InstanceInitializationMethodV0::MigrationTarget {
+                migration_id,
+                src_addr,
+                replace_components,
+            } => Ok(VmInitializationMethod::Migration(MigrationTargetInfo {
+                migration_id,
+                src_addr,
+                replace_components,
+            })),
+        }
+        .map_err(|e| {
+            HttpError::for_bad_request(
+                None,
+                format!("failed to generate internal instance spec: {e}"),
+            )
+        })?;
+
+        let request = VmEnsureRequest { properties, init: vm_init };
+        server_context
+            .vm
+            .ensure(&server_context.log, request, ensure_options)
+            .await
+            .map(HttpResponseCreated)
+            .map_err(|e| match e {
+                VmError::ResultChannelClosed => HttpError::for_internal_error(
+                    "state driver unexpectedly dropped result channel"
+                        .to_string(),
+                ),
+                VmError::WaitingToInitialize
+                | VmError::AlreadyInitialized
+                | VmError::RundownInProgress => HttpError::for_client_error(
+                    Some(api::ErrorCode::AlreadyInitialized.to_string()),
+                    ClientErrorStatusCode::CONFLICT,
+                    "instance already initialized".to_string(),
+                ),
+                VmError::InitializationFailed(e) => {
+                    HttpError::for_internal_error(format!(
+                        "VM initialization failed: {e}"
+                    ))
+                }
+                _ => HttpError::for_internal_error(format!(
+                    "unexpected error from VM controller: {e}"
+                )),
+            })
+    }
+
     async fn instance_spec_get(
         rqctx: RequestContext<Self::Context>,
     ) -> Result<HttpResponseOk<api::InstanceSpecGetResponse>, HttpError> {
-        Ok(HttpResponseOk(instance_get_common(&rqctx).await?))
+        Ok(HttpResponseOk(instance_get(&rqctx).await?))
+    }
+
+    async fn v0_instance_spec_get(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<HttpResponseOk<InstanceSpecGetResponseV0>, HttpError> {
+        Ok(HttpResponseOk(v0_instance_get(&rqctx).await?))
     }
 
     async fn instance_get(
         rqctx: RequestContext<Self::Context>,
     ) -> Result<HttpResponseOk<api::InstanceGetResponse>, HttpError> {
-        instance_get_common(&rqctx).await.map(|full| {
+        instance_get(&rqctx).await.map(|full| {
             HttpResponseOk(api::InstanceGetResponse {
                 instance: api::Instance {
                     properties: full.properties,
