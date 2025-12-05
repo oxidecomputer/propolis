@@ -4,9 +4,10 @@ version = "0.0.0"
 license = "MPL-2.0"
 build = "build.rs"
 publish = false
+edition = "2021"
 
 [dependencies]
-viona_api_sys = { path = "../sys" }
+viona_api = { path = ".." }
 libc = "0.2"
 
 [build-dependencies]

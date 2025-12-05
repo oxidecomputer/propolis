@@ -19,10 +19,7 @@ fn main() {
         }
     };
 
-    let include_paths = [
-        "usr/src/uts/intel",
-        "usr/src/uts/common",
-    ];
+    let include_paths = ["usr/src/uts/intel", "usr/src/uts/common"];
     cfg.include("/usr/include");
     for p in include_paths {
         cfg.include(gate_dir.join(p));
@@ -53,5 +50,5 @@ fn main() {
         _ => false,
     });
 
-    cfg.generate("../sys/src/lib.rs", "main.rs");
+    cfg.generate("../src/ffi.rs", "main.rs");
 }

@@ -58,7 +58,6 @@ propolis_types = { path = "crates/propolis-types" }
 rfb = { path = "crates/rfb" }
 rgb_frame = { path = "crates/rgb-frame" }
 viona_api = { path = "crates/viona-api" }
-viona_api_sys = { path = "crates/viona-api/sys" }
 
 # PHD testing framework
 phd-framework = { path = "phd-tests/framework" }

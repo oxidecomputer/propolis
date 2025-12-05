@@ -814,8 +814,8 @@ impl PciNvme {
             device_id: PROPOLIS_NVME_DEV_ID,
             sub_vendor_id: VENDOR_OXIDE,
             sub_device_id: PROPOLIS_NVME_DEV_ID,
-            class: pci::bits::CLASS_STORAGE,
-            subclass: pci::bits::SUBCLASS_STORAGE_NVM,
+            device_class: pci::bits::CLASS_STORAGE,
+            device_subclass: pci::bits::SUBCLASS_STORAGE_NVM,
             prog_if: pci::bits::PROGIF_ENTERPRISE_NVME,
             ..Default::default()
         });
