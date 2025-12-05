@@ -250,6 +250,10 @@ impl block::Backend for FileBackend {
         self.block_attach.stop();
         self.workers.block_until_joined();
     }
+
+    fn device_info(&self) -> block::DeviceInfo {
+        self.state.info
+    }
 }
 
 mod dkioc {

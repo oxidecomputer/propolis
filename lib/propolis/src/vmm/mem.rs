@@ -78,6 +78,15 @@ pub enum MapType {
     Mmio,
 }
 
+pub fn blank_phys_map(size: usize) -> MemAccessor {
+    assert!(size != 0);
+    assert!(size & PAGE_SIZE == 0, "size must be page-aligned");
+
+    let map = Arc::new(ASpace::new(0, size - 1));
+
+    MemAccessor::new(Arc::new(MemCtx { map }))
+}
+
 pub struct PhysMap {
     map: Arc<ASpace<MapEnt>>,
     hdl: Arc<VmmHdl>,

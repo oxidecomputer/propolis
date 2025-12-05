@@ -533,6 +533,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "block-speed-of-light"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "atty",
+ "bhyve_api 0.0.0",
+ "clap",
+ "cpuid_profile_config",
+ "cpuid_utils",
+ "ctrlc",
+ "erased-serde",
+ "fatfs",
+ "futures",
+ "libc",
+ "oxide-tokio-rt",
+ "propolis",
+ "propolis_types",
+ "serde",
+ "serde_json",
+ "slog",
+ "slog-async",
+ "slog-bunyan",
+ "slog-dtrace",
+ "slog-term",
+ "strum 0.26.3",
+ "tokio",
+ "toml 0.7.8",
+ "uuid",
+]
+
+[[package]]
 name = "bstr"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

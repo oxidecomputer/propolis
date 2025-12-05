@@ -19,6 +19,7 @@ default-members = [
   "bin/propolis-cli",
   "bin/propolis-server",
   "bin/propolis-standalone",
+  "bin/block-speed-of-light",
   "xtask",
 ]
 

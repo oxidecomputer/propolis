@@ -1,0 +1,44 @@
+[package]
+name = "block-speed-of-light"
+version = "0.1.0"
+license = "MPL-2.0"
+edition = "2021"
+rust-version = "1.73"
+
+[[bin]]
+name = "block-speed-of-light"
+path = "src/main.rs"
+test = false
+doctest = false
+
+[dependencies]
+anyhow.workspace = true
+atty.workspace = true
+bhyve_api.workspace = true
+clap = { workspace = true, features = ["derive", "env"] }
+cpuid_utils.workspace = true
+ctrlc.workspace = true
+fatfs.workspace = true
+futures.workspace = true
+libc.workspace = true
+toml.workspace = true
+tokio = { workspace = true, features = ["io-util", "rt-multi-thread"] }
+serde = { workspace = true, features = ["derive"] }
+oxide-tokio-rt.workspace = true
+propolis.workspace = true
+propolis_types.workspace = true
+#crucible-client-types = { workspace = true, optional = true }
+cpuid_profile_config.workspace = true
+erased-serde.workspace = true
+serde_json.workspace = true
+slog.workspace = true
+slog-async.workspace = true
+slog-dtrace.workspace = true
+slog-bunyan.workspace = true
+slog-term.workspace = true
+strum = { workspace = true, features = ["derive"] }
+uuid.workspace = true
+
+#[features]
+#default = []
+#crucible = ["propolis/crucible-full", "propolis/oximeter", "crucible-client-types"]

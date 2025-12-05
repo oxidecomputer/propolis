@@ -172,6 +172,10 @@ impl block::Backend for InMemoryBackend {
         self.block_attach.stop();
         self.workers.block_until_joined();
     }
+
+    fn device_info(&self) -> block::DeviceInfo {
+        self.shared_state.info
+    }
 }
 
 /// Read from bytes into guest memory

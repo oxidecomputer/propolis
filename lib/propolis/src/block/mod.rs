@@ -315,6 +315,8 @@ pub trait Backend: Send + Sync + 'static {
     /// requests when they are told to pause (and will only report they are
     /// fully paused when all their in-flight requests have completed).
     async fn stop(&self);
+
+    fn device_info(&self) -> DeviceInfo;
 }
 
 /// Consumer of per-[Request] metrics

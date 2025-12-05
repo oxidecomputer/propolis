@@ -377,6 +377,9 @@ impl block::Backend for CrucibleBackend {
         self.block_attach.stop();
         self.workers.join_all().await;
     }
+    fn device_info(&self) -> block::DeviceInfo {
+        self.state.info
+    }
 }
 
 #[derive(Debug, Error)]

@@ -163,6 +163,9 @@ impl block::Backend for MemAsyncBackend {
         self.block_attach.stop();
         self.workers.join_all().await;
     }
+    fn device_info(&self) -> block::DeviceInfo {
+        self.shared_state.info
+    }
 }
 
 struct MmapSeg(NonNull<u8>, usize);
