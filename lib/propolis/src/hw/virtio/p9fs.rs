@@ -86,8 +86,7 @@ impl PciVirtio9pfs {
         let (virtio_state, pci_state) = PciVirtioState::create(
             queues,
             msix_count,
-            VIRTIO_DEV_9P,
-            VIRTIO_SUB_DEV_9P_TRANSPORT,
+            virtio::DeviceId::NineP,
             pci::bits::CLASS_STORAGE,
             VIRTIO_9P_CFG_SIZE,
         );

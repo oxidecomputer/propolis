@@ -12,6 +12,7 @@ use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use crate::common::*;
 use crate::hw::pci;
+use crate::hw::virtio;
 use crate::migrate::*;
 use crate::util::regmap::RegMap;
 use crate::vmm::VmmHdl;
@@ -147,7 +148,7 @@ impl Default for DeviceParams {
 pub struct PciVirtioViona {
     virtio_state: PciVirtioState,
     pci_state: pci::DeviceState,
-    dev_features: u32,
+    dev_features: u64,
     mac_addr: [u8; ETHERADDRL],
     mtu: Option<u16>,
     hdl: VionaHdl,
@@ -202,9 +203,10 @@ impl PciVirtioViona {
         )
         .unwrap();
         let (virtio_state, pci_state) = PciVirtioState::create(
+            virtio::Mode::Transitional,
             queues,
             msix_count,
-            VIRTIO_DEV_NET,
+            virtio::DeviceId::Network,
             VIRTIO_SUB_DEV_NET,
             pci::bits::CLASS_NETWORK,
             VIRTIO_NET_CFG_SIZE,
@@ -265,6 +267,11 @@ impl PciVirtioViona {
                 // (return zero) than unwrap and panic here.
                 ro.write_u16(self.mtu.unwrap_or(0));
             }
+            NetReg::Speed
+            | NetReg::Duplex
+            | NetReg::RssMaxKeySize
+            | NetReg::RssMaxIndirectionTableLen
+            | NetReg::SupportedHashTypes => {}
         }
     }
 
@@ -331,9 +338,8 @@ impl PciVirtioViona {
             }
 
             *rs = VRingState::Init;
-            let info = vq.get_state();
-            if info.mapping.valid {
-                if self.hdl.ring_set_state(vq.id, vq.size(), &info).is_err() {
+            if vq.is_mapped() {
+                if self.hdl.ring_set_state(vq.as_ref()).is_err() {
                     *rs = VRingState::Error;
                     continue;
                 }
@@ -404,7 +410,7 @@ impl PciVirtioViona {
     }
 }
 impl VirtioDevice for PciVirtioViona {
-    fn cfg_rw(&self, mut rwo: RWOp) {
+    fn rw_dev_config(&self, mut rwo: RWOp) {
         NET_DEV_REGS.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => self.net_cfg_read(id, ro),
             RWOp::Write(_) => {
@@ -412,8 +418,12 @@ impl VirtioDevice for PciVirtioViona {
             }
         });
     }
-    fn get_features(&self) -> u32 {
-        let mut feat = VIRTIO_NET_F_MAC;
+    fn mode(&self) -> virtio::Mode {
+        self.virtio_state.mode()
+    }
+
+    fn features(&self) -> u64 {
+        let mut feat = VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS;
         // We drop the "VIRTIO_NET_F_MTU" flag from feat if we are unable to
         // query it. This can happen when executing within a non-global Zone.
         //
@@ -425,7 +435,8 @@ impl VirtioDevice for PciVirtioViona {
 
         feat
     }
-    fn set_features(&self, feat: u32) -> Result<(), ()> {
+
+    fn set_features(&self, feat: u64) -> Result<(), ()> {
         self.hdl.set_features(feat).map_err(|_| ())
     }
 
@@ -478,16 +489,11 @@ impl VirtioDevice for PciVirtioViona {
                         return Err(());
                     }
                 }
-                let info = vq.get_state();
-                if !info.mapping.valid {
+                if !vq.is_mapped() {
                     return Ok(());
                 }
 
-                if self
-                    .hdl
-                    .ring_init(vq.id, vq.size(), info.mapping.desc_addr)
-                    .is_err()
-                {
+                if self.hdl.ring_init(vq.as_ref()).is_err() {
                     // Bad virtqueue configuration is not fatal.  While the
                     // vring will not transition to running, we will be content
                     // to wait for the guest to later provide a valid config.
@@ -590,6 +596,11 @@ enum NetReg {
     Status,
     MaxVqPairs,
     Mtu,
+    Speed,
+    Duplex,
+    RssMaxKeySize,
+    RssMaxIndirectionTableLen,
+    SupportedHashTypes,
 }
 lazy_static! {
     static ref NET_DEV_REGS: RegMap<NetReg> = {
@@ -598,12 +609,55 @@ lazy_static! {
             (NetReg::Status, 2),
             (NetReg::MaxVqPairs, 2),
             (NetReg::Mtu, 2),
+            (NetReg::Speed, 4),
+            (NetReg::Duplex, 1),
+            (NetReg::RssMaxKeySize, 1),
+            (NetReg::RssMaxIndirectionTableLen, 2),
+            (NetReg::SupportedHashTypes, 4),
         ];
         RegMap::create_packed(VIRTIO_NET_CFG_SIZE, &layout, None)
     };
 }
 
 use viona_api::VionaFd;
+
+impl From<&VirtQueue> for viona_api::vioc_ring_init {
+    fn from(vq: &VirtQueue) -> viona_api::vioc_ring_init {
+        let id = vq.id;
+        let size = vq.size();
+        let state = vq.get_state();
+        let desc_addr = state.mapping.desc_addr;
+        let avail_addr = state.mapping.avail_addr;
+        let used_addr = state.mapping.used_addr;
+        viona_api::vioc_ring_init {
+            ri_index: id,
+            ri_qsize: size,
+            ri_qaddr_desc: desc_addr,
+            ri_qaddr_avail: avail_addr,
+            ri_qaddr_used: used_addr,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<&VirtQueue> for viona_api::vioc_ring_state {
+    fn from(vq: &VirtQueue) -> viona_api::vioc_ring_state {
+        let id = vq.id;
+        let size = vq.size();
+        let state = vq.get_state();
+        let desc_addr = state.mapping.desc_addr;
+        let avail_addr = state.mapping.avail_addr;
+        let used_addr = state.mapping.used_addr;
+        viona_api::vioc_ring_state {
+            vrs_index: id,
+            vrs_qsize: size,
+            vrs_qaddr_desc: desc_addr,
+            vrs_qaddr_avail: avail_addr,
+            vrs_qaddr_used: used_addr,
+            ..Default::default()
+        }
+    }
+}
 
 struct VionaHdl(VionaFd);
 impl VionaHdl {
@@ -616,27 +670,21 @@ impl VionaHdl {
         self.0.ioctl_usize(viona_api::VNA_IOC_DELETE, 0)?;
         Ok(())
     }
-    fn get_avail_features(&self) -> io::Result<u32> {
-        let mut value = 0;
+    fn get_avail_features(&self) -> io::Result<u64> {
+        let mut features = 0;
         unsafe {
-            self.0.ioctl(viona_api::VNA_IOC_GET_FEATURES, &mut value)?;
+            self.0.ioctl(viona_api::VNA_IOC_GET_FEATURES, &mut features)?;
         }
-        Ok(value)
+        Ok(features)
     }
-    fn set_features(&self, feat: u32) -> io::Result<()> {
-        let mut value = feat;
+    fn set_features(&self, mut features: u64) -> io::Result<()> {
         unsafe {
-            self.0.ioctl(viona_api::VNA_IOC_SET_FEATURES, &mut value)?;
+            self.0.ioctl(viona_api::VNA_IOC_SET_FEATURES, &mut features)?;
         }
         Ok(())
     }
-    fn ring_init(&self, idx: u16, size: u16, addr: u64) -> io::Result<()> {
-        let mut vna_ring_init = viona_api::vioc_ring_init {
-            ri_index: idx,
-            ri_qsize: size,
-            _pad: [0; 2],
-            ri_qaddr: addr,
-        };
+    fn ring_init(&self, vq: &VirtQueue) -> io::Result<()> {
+        let mut vna_ring_init = viona_api::vioc_ring_init::from(vq);
         unsafe {
             self.0.ioctl(viona_api::VNA_IOC_RING_INIT, &mut vna_ring_init)?;
         }
@@ -654,19 +702,8 @@ impl VionaHdl {
         self.0.ioctl_usize(viona_api::VNA_IOC_RING_PAUSE, idx as usize)?;
         Ok(())
     }
-    fn ring_set_state(
-        &self,
-        idx: u16,
-        size: u16,
-        info: &queue::Info,
-    ) -> io::Result<()> {
-        let mut cfg = viona_api::vioc_ring_state {
-            vrs_index: idx,
-            vrs_avail_idx: info.avail_idx,
-            vrs_used_idx: info.used_idx,
-            vrs_qsize: size,
-            vrs_qaddr: info.mapping.desc_addr,
-        };
+    fn ring_set_state(&self, vq: &VirtQueue) -> io::Result<()> {
+        let mut cfg = viona_api::vioc_ring_state::from(vq);
         unsafe {
             self.0.ioctl(viona_api::VNA_IOC_RING_SET_STATE, &mut cfg)?;
         }
@@ -680,11 +717,12 @@ impl VionaHdl {
         }
         Ok(queue::Info {
             mapping: queue::MapInfo {
-                desc_addr: cfg.vrs_qaddr,
-                avail_addr: 0,
-                used_addr: 0,
+                desc_addr: cfg.vrs_qaddr_desc,
+                avail_addr: cfg.vrs_qaddr_avail,
+                used_addr: cfg.vrs_qaddr_used,
                 valid: true,
             },
+            flags: 0,
             avail_idx: cfg.vrs_avail_idx,
             used_idx: cfg.vrs_used_idx,
         })
@@ -944,7 +982,7 @@ pub(crate) mod bits {
     pub const VIRTIO_NET_S_LINK_UP: u16 = 1 << 0;
     pub const VIRTIO_NET_S_ANNOUNCE: u16 = 1 << 1;
 
-    pub const VIRTIO_NET_CFG_SIZE: usize = 0xc;
+    pub const VIRTIO_NET_CFG_SIZE: usize = 6 + 2 + 2 + 2 + 4 + 1 + 1 + 2 + 4;
 }
 use bits::*;
 

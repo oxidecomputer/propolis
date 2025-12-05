@@ -4,6 +4,8 @@
 
 use std::sync::Arc;
 
+use bitflags::bitflags;
+
 #[allow(unused)]
 mod bits;
 
@@ -16,24 +18,130 @@ mod queue;
 pub mod softnpu;
 pub mod viona;
 
-use crate::common::*;
+use crate::common::RWOp;
+use crate::lifecycle::Lifecycle;
 use queue::VirtQueue;
 
 pub use block::PciVirtioBlock;
 pub use viona::PciVirtioViona;
 
+bitflags! {
+    pub struct LegacyFeatures: u64 {
+        const NOTIFY_ON_EMPTY = 1 << 24;
+        const ANY_LAYOUT = 1 << 27;
+    }
+}
+
+/// Describes the VirtIO "mode" exposed by the device.  This
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Mode {
+    /// Legacy mode is pre-VirtIO 1.0.
+    Legacy,
+
+    /// Modern devices are those that implement and expose the VirtIO
+    /// 1.0 and later specification.
+    Modern,
+
+    /// Transitional devices exposes both the pre-VirtIO 1.0 "Legacy"
+    /// interface VirtIO 1.0 and later "Modern" interface.
+    Transitional,
+}
+
+/// Recognized VirtIO Device IDs, as defined in the VirtIO 1.2 specification,
+/// section 5, "Device Types".
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeviceId {
+    Reserved = 0,
+    Network = 1,
+    Block = 2,
+    Console = 3,
+    Entropy = 4,
+    TradMemBalloon = 5,
+    IoMem = 6,
+    RpMsg = 7,
+    Scsi = 8,
+    NineP = 9,
+    Mac80211Wlan = 10,
+    RprocSerial = 11,
+    Caif = 12,
+    MemBalloon = 13,
+    Gpu = 16,
+    Timer = 17,
+    Input = 18,
+    Socket = 19,
+    Crypto = 20,
+    SigDistMod = 21,
+    Pstore = 22,
+    Iommu = 23,
+    Memory = 24,
+    Audio = 25,
+    Filesystem = 26,
+    Pmem = 27,
+    Rpmb = 28,
+    Mac80211HWSim = 29,
+    VideoEncoder = 30,
+    VideoDecoder = 31,
+    ArmScmi = 32,
+    NitroSecureMod = 33,
+    I2c = 34,
+    Watchdog = 35,
+    Can = 36,
+    ParameterServer = 38,
+    AudioPolicy = 39,
+    Bluetooth = 40,
+    Gpio = 41,
+    Rdma = 42,
+}
+
+impl DeviceId {
+    /// Maps a VirtIO Device ID to a PCI Device ID for the given mode.
+    ///
+    /// VirtIO defines its own namespace for device IDs that is independent
+    /// of the underlying transport between host and guest.  The mapping from
+    /// that space into PCI device IDs is dependent on the mode; for devices
+    /// following the VirtIO 1.0 and later specifications, this is straight
+    /// forward: just add 0x1040 to the VirtIO ID.
+    ///
+    /// However, for legacy and transitional mode devices, the mapping is
+    /// irregular, and defined by a table.  Moreover, not all virtio devices
+    /// have a well-defined transitional mapping.  This last thing is not
+    /// really an issue for us, since we only expose a handful of device
+    /// models; regardless, we provide mappings for everything defined in
+    /// the VirtIO spec.
+    ///
+    /// See VirtIO 1.2, sec 4.1.2.1 for the mapping from
+    pub fn to_pci_dev_id(self, mode: Mode) -> Result<u16, Self> {
+        match mode {
+            Mode::Modern => Ok(self as u16 + 0x1040),
+            Mode::Legacy | Mode::Transitional => match self {
+                Self::Network => Ok(0x1000),
+                Self::Block => Ok(0x1001),
+                Self::TradMemBalloon => Ok(0x1002),
+                Self::Console => Ok(0x1003),
+                Self::Scsi => Ok(0x1004),
+                Self::Entropy => Ok(0x1005),
+                Self::NineP => Ok(0x1009),
+                _ => Err(self),
+            },
+        }
+    }
+}
+
 pub trait VirtioDevice: Send + Sync + 'static + Lifecycle {
-    /// Read/write device-specific virtio configuration space
-    fn cfg_rw(&self, ro: RWOp);
+    /// Read/write device-specific virtio configuration space.
+    fn rw_dev_config(&self, ro: RWOp);
 
-    /// Get the device-specific virtio feature bits
-    fn get_features(&self) -> u32;
+    /// Returns the device virtio mode (Legacy, Transitional, Modern).
+    fn mode(&self) -> Mode;
 
-    /// Set the device-specific virtio feature bits
+    /// Returns the device-specific virtio feature bits.
+    fn features(&self) -> u64;
+
+    /// Sets the device-specific virtio feature bits
     ///
     /// Returns `Err` if an error occurred while setting the features.  Doing so
     /// will transition the device to the Failed state.
-    fn set_features(&self, feat: u32) -> Result<(), ()>;
+    fn set_features(&self, feat: u64) -> Result<(), ()>;
 
     /// Service driver notification for a given virtqueue
     fn queue_notify(&self, vq: &Arc<VirtQueue>);
@@ -59,14 +167,18 @@ pub trait VirtioIntr: Send + 'static {
 pub enum VqChange {
     /// Underlying virtio device has been reset
     Reset,
+
     /// Physical address changed for VQ
     Address,
+
     /// MSI(-X) configuration changed for VQ
     IntrCfg,
 }
+
 pub enum VqIntr {
     /// Pin (lintr) interrupt
     Pin,
+
     /// MSI(-X) with address, data, and masked state
     Msi(u64, u32, bool),
 }

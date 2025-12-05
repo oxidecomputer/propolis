@@ -10,6 +10,7 @@ use crate::accessors::MemAccessor;
 use crate::block;
 use crate::common::*;
 use crate::hw::pci;
+use crate::hw::virtio;
 use crate::migrate::*;
 use crate::util::regmap::RegMap;
 
@@ -43,9 +44,10 @@ impl PciVirtioBlock {
         // - queue 0 notification
         let msix_count = Some(2);
         let (virtio_state, pci_state) = PciVirtioState::create(
+            virtio::Mode::Legacy,
             queues,
             msix_count,
-            VIRTIO_DEV_BLOCK,
+            virtio::DeviceId::Block,
             VIRTIO_SUB_DEV_BLOCK,
             pci::bits::CLASS_STORAGE,
             VIRTIO_BLK_CFG_SIZE,
@@ -258,7 +260,7 @@ impl block::DeviceQueue for BlockVq {
 }
 
 impl VirtioDevice for PciVirtioBlock {
-    fn cfg_rw(&self, mut rwo: RWOp) {
+    fn rw_dev_config(&self, mut rwo: RWOp) {
         BLOCK_DEV_REGS.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => self.block_cfg_read(id, ro),
             RWOp::Write(_) => {
@@ -266,7 +268,12 @@ impl VirtioDevice for PciVirtioBlock {
             }
         });
     }
-    fn get_features(&self) -> u32 {
+
+    fn mode(&self) -> virtio::Mode {
+        self.virtio_state().mode()
+    }
+
+    fn features(&self) -> u64 {
         let mut feat = VIRTIO_BLK_F_BLK_SIZE;
         feat |= VIRTIO_BLK_F_SEG_MAX;
         feat |= VIRTIO_BLK_F_FLUSH;
@@ -280,7 +287,8 @@ impl VirtioDevice for PciVirtioBlock {
         }
         feat
     }
-    fn set_features(&self, _feat: u32) -> Result<(), ()> {
+
+    fn set_features(&self, _feat: u64) -> Result<(), ()> {
         // XXX: real features
         Ok(())
     }
@@ -290,6 +298,7 @@ impl VirtioDevice for PciVirtioBlock {
         self.block_attach.notify(0usize.into(), None);
     }
 }
+
 impl PciVirtio for PciVirtioBlock {
     fn virtio_state(&self) -> &PciVirtioState {
         &self.virtio_state
@@ -298,11 +307,13 @@ impl PciVirtio for PciVirtioBlock {
         &self.pci_state
     }
 }
+
 impl block::Device for PciVirtioBlock {
     fn attachment(&self) -> &block::DeviceAttachment {
         &self.block_attach
     }
 }
+
 impl Lifecycle for PciVirtioBlock {
     fn type_name(&self) -> &'static str {
         "pci-virtio-block"

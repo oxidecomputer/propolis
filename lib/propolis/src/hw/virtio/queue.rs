@@ -9,6 +9,9 @@ use std::slice::SliceIndex;
 use std::sync::atomic::{fence, AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use bitflags::bitflags;
+use zerocopy::FromBytes;
+
 use super::bits::*;
 use super::probes;
 use super::{VirtioIntr, VqIntr};
@@ -17,7 +20,26 @@ use crate::common::*;
 use crate::migrate::MigrateStateError;
 use crate::vmm::MemCtx;
 
-use zerocopy::FromBytes;
+bitflags! {
+    /// Features supported by our implementation of virtqueues.
+    pub struct Features: u64 {
+        const RING_INDIRECT_DESC = 1 << 28;
+        const RING_EVENT_IDX = 1 << 29;
+        const VERSION_1 = 1 << 32;
+    }
+}
+
+impl Features {
+    /// Returns those features appropriate for a legacy queue.
+    pub fn legacy() -> Self {
+        Self::RING_INDIRECT_DESC
+    }
+
+    /// Returns those features appropriate for a transitional queue.
+    pub fn transitional() -> Self {
+        Self::legacy() | Self::VERSION_1
+    }
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, FromBytes)]
@@ -51,6 +73,7 @@ pub struct VqAvail {
 
     gpa_desc: GuestAddr,
 }
+
 impl VqAvail {
     /// If there's a request ready, pop it off the queue and return the
     /// corresponding descriptor and available ring indicies.
@@ -73,6 +96,7 @@ impl VqAvail {
         }
         None
     }
+
     fn read_ring_descr(
         &self,
         id: u16,
@@ -83,6 +107,7 @@ impl VqAvail {
         let addr = self.gpa_desc.offset::<VqdDesc>(id as usize);
         mem.read::<VqdDesc>(addr)
     }
+
     fn reset(&mut self) {
         self.valid = false;
         self.gpa_flags = GuestAddr(0);
@@ -91,6 +116,7 @@ impl VqAvail {
         self.gpa_desc = GuestAddr(0);
         self.cur_avail_idx = Wrapping(0);
     }
+
     fn map_split(&mut self, desc_addr: u64, avail_addr: u64) {
         self.gpa_desc = GuestAddr(desc_addr);
         // 16-bit flags, followed by 16-bit idx, followed by avail desc ring
@@ -110,6 +136,7 @@ pub struct VqUsed {
     used_idx: Wrapping<u16>,
     interrupt: Option<Box<dyn VirtioIntr>>,
 }
+
 impl VqUsed {
     fn write_used(&mut self, id: u16, len: u32, rsize: u16, mem: &MemCtx) {
         // We do not expect used entries to be pushed into a virtqueue which has
@@ -181,25 +208,29 @@ pub enum VqSizeError {
 
 pub struct VirtQueue {
     pub id: u16,
-    pub size: VqSize,
+    pub size: Mutex<VqSize>,
     pub live: AtomicBool,
+    pub enabled: AtomicBool,
+    pub notify_data: u16,
     avail: Mutex<VqAvail>,
     used: Mutex<VqUsed>,
     pub acc_mem: MemAccessor,
 }
-const LEGACY_QALIGN: u64 = PAGE_SIZE as u64;
+
 const fn qalign(addr: u64, align: u64) -> u64 {
     assert!(align.is_power_of_two());
-
     let mask = align - 1;
     (addr + mask) & !mask
 }
+
 impl VirtQueue {
     pub fn new(size: VqSize) -> Self {
         Self {
             id: 0, // to be populated when stashed in VirtQueues
-            size,
+            size: Mutex::new(size),
             live: AtomicBool::new(false),
+            enabled: AtomicBool::new(false),
+            notify_data: 0,
             avail: Mutex::new(VqAvail {
                 valid: false,
                 gpa_flags: GuestAddr(0),
@@ -219,6 +250,7 @@ impl VirtQueue {
             acc_mem: MemAccessor::new_orphan(),
         }
     }
+
     pub(super) fn reset(&self) {
         let mut avail = self.avail.lock().unwrap();
         let mut used = self.used.lock().unwrap();
@@ -231,14 +263,36 @@ impl VirtQueue {
 
     #[inline(always)]
     pub fn size(&self) -> u16 {
-        self.size.into()
+        let size = *self.size.lock().unwrap();
+        size.into()
     }
 
+    /// Attempt to establish area mappings for this virtqueue at specified
+    /// physical addresses.  Using the terminology of VirtIO 1.2, we take the
+    /// addresses for the "Descriptor Area", "Driver Area", and "Device Area".
+    /// Previously, these were called the "Descriptor Table", "Available Ring",
+    /// and "Used Ring".  However, section 2.7 of the version 1.2 specification
+    /// also refers to these using the older names, so we retain that
+    /// terminology.
+    pub fn map_virtqueue(
+        &self,
+        desc_addr: u64,
+        avail_addr: u64,
+        used_addr: u64,
+    ) {
+        let mut avail = self.avail.lock().expect("avail is initialized");
+        let mut used = self.used.lock().expect("used is initialized");
+        avail.map_split(desc_addr, avail_addr);
+        used.map_split(used_addr);
+        avail.valid = true;
+        used.valid = true;
+    }
     /// Attempt to establish ring mappings at a specified physical address,
     /// using legacy-style split virtqueue layout.
     ///
     /// `addr` must be aligned to 4k per the legacy requirements
     pub fn map_legacy(&self, addr: u64) {
+        const LEGACY_QALIGN: u64 = PAGE_SIZE as u64;
         assert_eq!(addr & (LEGACY_QALIGN - 1), 0);
 
         let size = self.size() as usize;
@@ -252,12 +306,10 @@ impl VirtQueue {
         let used_addr = qalign(avail_addr + avail_len as u64, LEGACY_QALIGN);
         let _used_len = mem::size_of::<VqUsed>() * size + 2 * 3;
 
-        let mut avail = self.avail.lock().unwrap();
-        let mut used = self.used.lock().unwrap();
-        avail.map_split(desc_addr, avail_addr);
-        used.map_split(used_addr);
-        avail.valid = true;
-        used.valid = true;
+        self.map_virtqueue(desc_addr, avail_addr, used_addr);
+    }
+    pub fn is_mapped(&self) -> bool {
+        self.avail.lock().unwrap().valid
     }
     pub fn get_state(&self) -> Info {
         let avail = self.avail.lock().unwrap();
@@ -270,6 +322,7 @@ impl VirtQueue {
                 used_addr: used.gpa_flags.0,
                 valid: avail.valid,
             },
+            flags: 0,
             avail_idx: avail.cur_avail_idx.0,
             used_idx: used.used_idx.0,
         }
@@ -729,9 +782,11 @@ pub struct MapInfo {
     pub used_addr: u64,
     pub valid: bool,
 }
+
 #[derive(Debug)]
 pub struct Info {
     pub mapping: MapInfo,
+    pub flags: u64,
     pub avail_idx: u16,
     pub used_idx: u16,
 }

@@ -50,7 +50,7 @@ impl<T> ASpace<T> {
     /// # Panics
     ///
     /// - Panics if start >= end.
-    pub fn new(start: usize, end: usize) -> ASpace<T> {
+    pub const fn new(start: usize, end: usize) -> ASpace<T> {
         assert!(start < end);
         Self { start, end, map: BTreeMap::new() }
     }
