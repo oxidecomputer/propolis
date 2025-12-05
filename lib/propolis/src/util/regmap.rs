@@ -42,7 +42,7 @@ struct RegXfer<'a, ID> {
 }
 
 impl<ID> RegMap<ID> {
-    pub fn new(len: usize) -> Self {
+    pub const fn new(len: usize) -> Self {
         Self { len, space: ASpace::new(0, len - 1) }
     }
 
@@ -328,7 +328,7 @@ mod test {
             &[('a', 1), ('b', 1), ('c', 2), ('d', 4), ('e', 8)],
             None,
         );
-        let expected = vec![
+        let expected = &[
             Xfer::read('a', 0, 1),
             Xfer::read('b', 0, 1),
             Xfer::read('c', 0, 2),
@@ -338,11 +338,11 @@ mod test {
         // Each field individually
         let reads = [(0, 1), (1, 1), (2, 2), (4, 4), (8, 8)];
         let res = drive_reads(&reads, &map);
-        assert_eq!(res, expected);
+        assert_eq!(&res, expected);
         // One big op, covering all
         let reads = [(0, 0x10)];
         let res = drive_reads(&reads, &map);
-        assert_eq!(res, expected);
+        assert_eq!(&res, expected);
     }
     #[test]
     fn misaligned() {
@@ -353,7 +353,7 @@ mod test {
             None,
         );
 
-        let expected = vec![
+        let expected = &[
             Xfer::read('a', 0, 6),
             Xfer::read('a', 0, 6),
             Xfer::read('b', 0, 2),
@@ -363,6 +363,6 @@ mod test {
         // Each field individually with 4-byte reads
         let reads = [(0, 4), (4, 4), (8, 4)];
         let res = drive_reads(&reads, &map);
-        assert_eq!(res, expected);
+        assert_eq!(&res, expected);
     }
 }

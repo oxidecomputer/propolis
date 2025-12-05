@@ -800,8 +800,6 @@ impl MachineInitializer<'_> {
 
             let viona = virtio::PciVirtioViona::new(
                 &nic.backend_spec.vnic_name,
-                0x0800.try_into().unwrap(),
-                0x0100.try_into().unwrap(),
                 &self.machine.hdl,
                 params,
             )

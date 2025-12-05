@@ -6,7 +6,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use super::bar::{BarDefine, Bars};
 use super::bits::*;
-use super::cfgspace::{CfgBuilder, CfgReg};
+use super::cfgspace::{CfgBuilder, CfgCapReg, CfgReg};
 use super::{bus, BarN, Endpoint};
 use crate::accessors::{MemAccessor, MsiAccessor};
 use crate::common::*;
@@ -17,44 +17,56 @@ use crate::util::regmap::{Flags, RegMap};
 use lazy_static::lazy_static;
 use strum::IntoEnumIterator;
 
+fn op_meta(rwo: &RWOp) -> (usize, &'static str) {
+    match rwo {
+        RWOp::Read(ro) => (ro.offset(), "read"),
+        RWOp::Write(wo) => (wo.offset(), "write"),
+    }
+}
+
+/// Represents behavior common across virtualized PCI(e) devices.
 pub trait Device: Send + Sync + 'static {
+    /// Returns the device state of this device.
     fn device_state(&self) -> &DeviceState;
 
+    /// Reads or writes an MMIO region described by a BAR.
     fn bar_rw(&self, bar: BarN, rwo: RWOp) {
-        match rwo {
-            RWOp::Read(ro) => {
-                unimplemented!("BAR read ({:?} @ {:x})", bar, ro.offset())
-            }
-            RWOp::Write(wo) => {
-                unimplemented!("BAR write ({:?} @ {:x})", bar, wo.offset())
-            }
-        }
+        let (offset, op) = op_meta(&rwo);
+        unimplemented!("BAR {op} ({bar:?} @ {offset:x})")
     }
+
+    /// Reads or writes capability space.
     fn cfg_rw(&self, region: u8, rwo: RWOp) {
-        match rwo {
-            RWOp::Read(ro) => {
-                unimplemented!("CFG read ({:x} @ {:x})", region, ro.offset())
-            }
-            RWOp::Write(wo) => {
-                unimplemented!("CFG write ({:x} @ {:x})", region, wo.offset())
-            }
-        }
+        let (offset, op) = op_meta(&rwo);
+        unimplemented!("CFG {op} ({region:x} @ {offset:x})")
     }
+
+    /// Reads or writes a capability in configuration space.
+    fn cap_rw(&self, id: CapId<u32>, rwo: RWOp) {
+        let (offset, op) = op_meta(&rwo);
+        unimplemented!("CAP {op} ({id:x?} @ {offset:x})")
+    }
+
+    /// Attaches the device to the virtual machine.
     fn attach(&self) {}
-    #[allow(unused_variables)]
-    fn interrupt_mode_change(&self, mode: IntrMode) {}
-    #[allow(unused_variables)]
-    fn msi_update(&self, info: MsiUpdate) {}
+
+    /// Notification that the interrupt mode has changed.  For
+    /// example, we might change from MSI-X to MSI.
+    fn interrupt_mode_change(&self, mode: IntrMode) {
+        let _used = mode;
+    }
+
+    /// Notification that our MSI configuration has changed.
+    fn msi_update(&self, info: MsiUpdate) {
+        let _used = info;
+    }
 
     /// Notification that configuration of BAR(s) has changed, either due to
     /// writes to the BARs themselves, or an overall status change (via the
     /// Command register or a device reset).
-    #[allow(unused_variables)]
-    fn bar_update(&self, bstate: BarState) {}
-
-    // TODO
-    // fn cap_read(&self);
-    // fn cap_write(&self);
+    fn bar_update(&self, bstate: BarState) {
+        let _used = bstate;
+    }
 }
 
 impl<D: Device + Send + Sync + 'static> Endpoint for D {
@@ -73,9 +85,7 @@ impl<D: Device + Send + Sync + 'static> Endpoint for D {
                 });
             }
             CfgReg::Custom(region) => Device::cfg_rw(self, *region, rwo),
-            CfgReg::CapId(_) | CfgReg::CapNext(_) | CfgReg::CapBody(_) => {
-                ds.cfg_cap_rw(self, id, rwo)
-            }
+            CfgReg::Cap(reg) => ds.cfg_cap_rw(self, reg, rwo),
         });
     }
     fn bar_rw(&self, bar: BarN, rwo: RWOp) {
@@ -157,8 +167,8 @@ lazy_static! {
 pub struct Ident {
     pub vendor_id: u16,
     pub device_id: u16,
-    pub class: u8,
-    pub subclass: u8,
+    pub device_class: u8,
+    pub device_subclass: u8,
     pub prog_if: u8,
     pub revision_id: u8,
     pub sub_vendor_id: u16,
@@ -175,6 +185,7 @@ struct State {
     update_in_progress: bool,
 }
 impl State {
+    /// Creates a new state structure for a device with the given BARs.
     fn new(bars: Bars) -> Self {
         Self {
             reg_command: RegCmd::empty(),
@@ -184,30 +195,57 @@ impl State {
             update_in_progress: false,
         }
     }
+
+    /// Returns the bus attachment state.
     fn attached(&self) -> &bus::Attachment {
         self.attach.as_ref().unwrap()
     }
+
     /// Is MMIO access decoding enabled?
     fn mmio_en(&self) -> bool {
         self.reg_command.contains(RegCmd::MMIO_EN)
     }
+
     /// Is PIO access decoding enabled?
     fn pio_en(&self) -> bool {
         self.reg_command.contains(RegCmd::IO_EN)
     }
+
     /// Given the device state, is decoding enabled for a specified [BarDefine]
     fn decoding_active(&self, bar: &BarDefine) -> bool {
         (bar.is_pio() && self.pio_en()) || (bar.is_mmio() && self.mmio_en())
     }
 }
 
-pub(super) struct Cap {
-    id: u8,
+/// A capability ID uniquely identifies a type of capability that may
+/// be present in configuration space.  Vendor capabilities are generic
+/// over some type T that is passed back to the device, allowing it to
+/// identify which capability is being accessed.
+#[derive(Clone, Copy, Debug)]
+pub enum CapId<T: Clone + Copy> {
+    Msix,
+    Vendor(T),
+}
+
+impl<T: Clone + Copy> CapId<T> {
+    /// Returns the PCI-defined capability ID for this CapId.
+    pub fn as_pci_cap_id(&self) -> u8 {
+        match self {
+            Self::Msix => CAP_ID_MSIX,
+            Self::Vendor(_) => CAP_ID_VENDOR,
+        }
+    }
+}
+
+/// Represents a capability with its type and offset in configuration space.
+pub struct Cap<T: Clone + Copy> {
+    id: CapId<T>,
     offset: u8,
 }
 
-impl Cap {
-    pub(super) fn new(id: u8, offset: u8) -> Self {
+impl<T: Clone + Copy> Cap<T> {
+    /// Creates a new CapId with the given type, at the given offset.
+    pub(super) fn new(id: CapId<T>, offset: u8) -> Self {
         Self { id, offset }
     }
 }
@@ -217,7 +255,7 @@ pub struct DeviceState {
     lintr_support: bool,
     cfg_space: RegMap<CfgReg>,
     msix_cfg: Option<Arc<MsixCfg>>,
-    caps: Vec<Cap>,
+    caps: Vec<Cap<u32>>,
 
     pub acc_mem: MemAccessor,
     // MSI accessor remains "hidden" behind MsixCfg machinery
@@ -233,7 +271,7 @@ impl DeviceState {
         lintr_support: bool,
         cfg_space: RegMap<CfgReg>,
         msix_cfg: Option<Arc<MsixCfg>>,
-        caps: Vec<Cap>,
+        caps: Vec<Cap<u32>>,
         bars: Bars,
     ) -> Self {
         let acc_msi = MsiAccessor::new_orphan();
@@ -289,8 +327,8 @@ impl DeviceState {
         match id {
             StdCfgReg::VendorId => ro.write_u16(self.ident.vendor_id),
             StdCfgReg::DeviceId => ro.write_u16(self.ident.device_id),
-            StdCfgReg::Class => ro.write_u8(self.ident.class),
-            StdCfgReg::Subclass => ro.write_u8(self.ident.subclass),
+            StdCfgReg::Class => ro.write_u8(self.ident.device_class),
+            StdCfgReg::Subclass => ro.write_u8(self.ident.device_subclass),
             StdCfgReg::SubVendorId => ro.write_u16(self.ident.sub_vendor_id),
             StdCfgReg::SubDeviceId => ro.write_u16(self.ident.sub_device_id),
             StdCfgReg::ProgIf => ro.write_u8(self.ident.prog_if),
@@ -527,14 +565,19 @@ impl DeviceState {
         })
     }
 
-    fn cfg_cap_rw(&self, dev: &dyn Device, id: &CfgReg, rwo: RWOp) {
+    fn cfg_cap_rw(&self, dev: &dyn Device, id: &CfgCapReg, rwo: RWOp) {
         match id {
-            CfgReg::CapId(i) => {
+            CfgCapReg::Id(idx) => {
                 if let RWOp::Read(ro) = rwo {
-                    ro.write_u8(self.caps[*i as usize].id)
+                    let i = *idx as usize;
+                    let cap_id = match self.caps[i].id {
+                        CapId::Msix => CAP_ID_MSIX,
+                        CapId::Vendor(_) => CAP_ID_VENDOR,
+                    };
+                    ro.write_u8(cap_id);
                 }
             }
-            CfgReg::CapNext(i) => {
+            CfgCapReg::Next(i) => {
                 if let RWOp::Read(ro) = rwo {
                     let next = *i as usize + 1;
                     if next < self.caps.len() {
@@ -544,18 +587,16 @@ impl DeviceState {
                     }
                 }
             }
-            CfgReg::CapBody(i) => self.do_cap_rw(dev, *i, rwo),
-
-            // Should be filtered down to only cap regs by now
-            _ => panic!(),
+            CfgCapReg::Body(i) => self.cap_rw_body(dev, *i, rwo),
         }
     }
-    fn do_cap_rw(&self, dev: &dyn Device, idx: u8, rwo: RWOp) {
+
+    fn cap_rw_body(&self, dev: &dyn Device, idx: u8, rwo: RWOp) {
         assert!(idx < self.caps.len() as u8);
         // XXX: no fancy capability support for now
         let cap = &self.caps[idx as usize];
         match cap.id {
-            CAP_ID_MSIX => {
+            CapId::Msix => {
                 let msix_cfg = self.msix_cfg.as_ref().unwrap();
                 if let RWOp::Write(_) = rwo {
                     // MSI-X cap writes may result in a change to the interrupt
@@ -571,9 +612,7 @@ impl DeviceState {
                         .cfg_rw(rwo, |info| self.notify_msi_update(dev, info));
                 }
             }
-            _ => {
-                // XXX: do some logging?
-            }
+            CapId::Vendor(_) => dev.cap_rw(cap.id, rwo),
         }
     }
     fn notify_msi_update(&self, dev: &dyn Device, info: MsiUpdate) {
@@ -987,9 +1026,10 @@ impl MsixCfg {
                             state.enabled = new_ena;
                             state.func_mask = new_mask;
 
-                            // Notify when the MSI-X function mask is changing.  Changes to
-                            // enable/disable state is already covered by the logic for
-                            // interrupt_mode_change updates
+                            // Notify when the MSI-X function mask is changing.
+                            // Changes to enable/disable state is already
+                            // covered by the logic for interrupt_mode_change
+                            // updates
                             if old_mask != new_mask
                                 && old_ena == new_ena
                                 && new_ena
@@ -1232,7 +1272,7 @@ impl Builder {
         self
     }
 
-    fn add_cap_raw(&mut self, id: u8, len: u8) {
+    fn add_cap_raw(&mut self, id: CapId<u32>, len: u8) {
         self.cfg_builder.add_capability(id, len);
     }
 
@@ -1251,8 +1291,14 @@ impl Builder {
         assert!(bar_size < u32::MAX as usize);
         self = self.add_bar_mmio(bar, bar_size as u32);
         self.msix_cfg = Some(cfg);
-        self.add_cap_raw(CAP_ID_MSIX, 10);
+        self.add_cap_raw(CapId::Msix, 10);
 
+        self
+    }
+
+    /// Add a "Vendor" capabiltiy.
+    pub fn add_cap_vendor(mut self, tag: u32, len: u8) -> Self {
+        self.add_cap_raw(CapId::Vendor(tag), len);
         self
     }
 

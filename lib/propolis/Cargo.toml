@@ -3,10 +3,11 @@ name = "propolis"
 version = "0.1.0"
 license = "MPL-2.0"
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.90"
 
 [dependencies]
 libc.workspace = true
+bit_field.workspace = true
 bitflags.workspace = true
 bitstruct.workspace = true
 byteorder.workspace = true
