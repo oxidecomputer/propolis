@@ -7,7 +7,9 @@ use std::io::{Error, ErrorKind, Result};
 use std::os::fd::*;
 use std::os::unix::fs::MetadataExt;
 
-pub use viona_api_sys::*;
+mod ffi;
+
+pub use ffi::*;
 
 // Hide libnvpair usage when not building on illumos to avoid linking errors
 #[cfg(target_os = "illumos")]
@@ -23,7 +25,7 @@ impl VionaFd {
         let this = Self::open()?;
 
         let mut vna_create = vioc_create { c_linkid: link_id, c_vmfd: vm_fd };
-        let _ = unsafe { this.ioctl(ioctls::VNA_IOC_CREATE, &mut vna_create) }?;
+        let _ = unsafe { this.ioctl(VNA_IOC_CREATE, &mut vna_create) }?;
         Ok(this)
     }
 
@@ -109,7 +111,7 @@ impl VionaFd {
 
     /// Query the API version exposed by the kernel VMM.
     pub fn api_version(&self) -> Result<u32> {
-        let vers = self.ioctl_usize(ioctls::VNA_IOC_VERSION, 0)?;
+        let vers = self.ioctl_usize(VNA_IOC_VERSION, 0)?;
 
         // We expect and demand a positive version number from the
         // VNA_IOC_VERSION interface.
@@ -129,16 +131,20 @@ impl VionaFd {
     const fn ioctl_usize_safe(cmd: i32) -> bool {
         matches!(
             cmd,
-            ioctls::VNA_IOC_DELETE
-                | ioctls::VNA_IOC_RING_RESET
-                | ioctls::VNA_IOC_RING_KICK
-                | ioctls::VNA_IOC_RING_PAUSE
-                | ioctls::VNA_IOC_RING_INTR_CLR
-                | ioctls::VNA_IOC_VERSION
-                | ioctls::VNA_IOC_SET_NOTIFY_IOP
-                | ioctls::VNA_IOC_SET_PROMISC
-                | ioctls::VNA_IOC_GET_MTU
-                | ioctls::VNA_IOC_SET_MTU,
+            VNA_IOC_DELETE
+                | VNA_IOC_RING_RESET
+                | VNA_IOC_RING_KICK
+                | VNA_IOC_RING_PAUSE
+                | VNA_IOC_RING_INTR_CLR
+                | VNA_IOC_VERSION
+                | VNA_IOC_SET_NOTIFY_IOP
+                | VNA_IOC_SET_PROMISC
+                | VNA_IOC_GET_MTU
+                | VNA_IOC_SET_MTU
+                | VNA_IOC_GET_PAIRS
+                | VNA_IOC_SET_PAIRS
+                | VNA_IOC_GET_USEPAIRS
+                | VNA_IOC_SET_USEPAIRS,
         )
     }
 }
@@ -191,7 +197,14 @@ fn minor(meta: &std::fs::Metadata) -> u32 {
 #[repr(u32)]
 #[derive(Copy, Clone)]
 pub enum ApiVersion {
-    /// Add support for getting/setting MTU
+    /// Adds multi-queue support and change the data structure for per-queue
+    /// interrupt polling to a compact bitmap.
+    V6 = 6,
+
+    /// Adds support for VirtIO 1.0 (modern) virtqueues.
+    V5 = 5,
+
+    /// Adds support for getting/setting MTU
     V4 = 4,
 
     /// Adds support for interface parameters
@@ -205,7 +218,7 @@ pub enum ApiVersion {
 }
 impl ApiVersion {
     pub const fn current() -> Self {
-        Self::V4
+        Self::V6
     }
 }
 impl PartialEq<ApiVersion> for u32 {

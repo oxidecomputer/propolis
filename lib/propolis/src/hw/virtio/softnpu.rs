@@ -14,7 +14,7 @@ use std::{
 use crate::{
     chardev::{Sink, Source},
     common::*,
-    hw::{pci, uart::LpcUart},
+    hw::{pci, uart::LpcUart, virtio},
     migrate::Migrator,
     util::regmap::RegMap,
     vmm::MemCtx,
@@ -23,7 +23,7 @@ use crate::{
 use super::{
     bits::*,
     pci::{PciVirtio, PciVirtioState},
-    queue::{write_buf, Chain, VirtQueue, VirtQueues},
+    queue::{write_buf, Chain, VirtQueue, VirtQueues, VqSize},
     viona::bits::VIRTIO_NET_S_LINK_UP,
     VirtioDevice,
 };
@@ -144,19 +144,15 @@ pub struct PortVirtioState {
 
 impl PortVirtioState {
     fn new(queue_size: u16) -> Self {
-        let queue_size = queue_size.try_into().unwrap();
-        let queues = VirtQueues::new(
-            // RX and TX queues
-            [VirtQueue::new(queue_size), VirtQueue::new(queue_size)],
-        )
-        .unwrap();
+        let rxq_size = VqSize::new(queue_size);
+        let txq_size = VqSize::new(queue_size);
+        let queues = VirtQueues::new(&[rxq_size, txq_size]);
         let msix_count = Some(2);
-        let (pci_virtio_state, pci_state) = PciVirtioState::create(
+        let (pci_virtio_state, pci_state) = PciVirtioState::new(
+            virtio::Mode::Legacy,
             queues,
             msix_count,
-            VIRTIO_DEV_NET,
-            VIRTIO_SUB_DEV_NET,
-            pci::bits::CLASS_NETWORK,
+            virtio::DeviceId::Network,
             VIRTIO_NET_CFG_SIZE,
         );
         Self { pci_virtio_state, pci_state }
@@ -310,7 +306,7 @@ impl PciVirtioSoftNpuPort {
         })
     }
 
-    fn handle_guest_virtio_request(&self, vq: &Arc<VirtQueue>) {
+    fn handle_guest_virtio_request(&self, vq: &VirtQueue) {
         if vq.id == 0 {
             return self.handle_q0_req(vq);
         }
@@ -380,7 +376,7 @@ impl PciVirtioSoftNpuPort {
         }
     }
 
-    fn handle_q0_req(&self, _vq: &Arc<VirtQueue>) {
+    fn handle_q0_req(&self, _vq: &VirtQueue) {
         // ignore notifications from the queue that we use for writing to the
         // guest.
         return;
@@ -424,7 +420,7 @@ impl PciVirtio for PciVirtioSoftNpuPort {
 }
 
 impl VirtioDevice for PciVirtioSoftNpuPort {
-    fn cfg_rw(&self, mut rwo: RWOp) {
+    fn rw_dev_config(&self, mut rwo: RWOp) {
         NET_DEV_REGS.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => self.net_cfg_read(id, ro),
             RWOp::Write(_) => {
@@ -433,15 +429,19 @@ impl VirtioDevice for PciVirtioSoftNpuPort {
         });
     }
 
-    fn get_features(&self) -> u32 {
+    fn mode(&self) -> virtio::Mode {
+        virtio::Mode::Legacy
+    }
+
+    fn features(&self) -> u64 {
         VIRTIO_NET_F_MAC
     }
 
-    fn set_features(&self, _feat: u32) -> std::result::Result<(), ()> {
+    fn set_features(&self, _feat: u64) -> std::result::Result<(), ()> {
         Ok(())
     }
 
-    fn queue_notify(&self, vq: &Arc<VirtQueue>) {
+    fn queue_notify(&self, vq: &VirtQueue) {
         self.handle_guest_virtio_request(vq);
     }
 }
@@ -616,7 +616,7 @@ impl PacketHandler {
             }
         };
         let mut chain = Chain::with_capacity(1);
-        let vq = &virtio.pci_virtio_state.queues[0];
+        let vq = virtio.pci_virtio_state.queues.get(0).expect("a queue");
         if let None = vq.pop_avail(&mut chain, &mem) {
             return;
         }

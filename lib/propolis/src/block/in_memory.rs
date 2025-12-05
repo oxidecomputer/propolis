@@ -106,7 +106,7 @@ impl InMemoryBackend {
         let len = bytes.len();
         if len == 0 {
             return Err(Error::new(ErrorKind::Other, "size cannot be 0"));
-        } else if (len % block_size as usize) != 0 {
+        } else if !len.is_multiple_of(block_size as usize) {
             return Err(Error::new(
                 ErrorKind::Other,
                 format!(

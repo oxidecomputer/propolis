@@ -1262,8 +1262,6 @@ fn setup_instance(
 
                     let viona = hw::virtio::PciVirtioViona::new(
                         vnic_name,
-                        0x0800.try_into().unwrap(),
-                        0x0100.try_into().unwrap(),
                         &hdl,
                         viona_params,
                     )?;

@@ -851,7 +851,7 @@ impl PrpIter<'_> {
                     // The first PRP List entry:
                     // - shall be Qword aligned, and
                     // - may also have a non-zero offset within the memory page.
-                    if (self.prp2 % 8) != 0 {
+                    if !self.prp2.is_multiple_of(8) {
                         return Err("PRP2 not Qword aligned!");
                     }
 
