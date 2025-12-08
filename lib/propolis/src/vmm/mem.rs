@@ -78,22 +78,66 @@ pub enum MapType {
     Mmio,
 }
 
-pub fn blank_phys_map(size: usize) -> MemAccessor {
-    assert!(size != 0);
-    assert!(size & PAGE_SIZE == 0, "size must be page-aligned");
+pub trait PhysMapHdl {
+    fn fd(&self) -> RawFd;
 
-    let map = Arc::new(ASpace::new(0, size - 1));
+    fn create_memseg(
+        &self,
+        segid: i32,
+        size: usize,
+        segname: Option<&str>,
+    ) -> Result<()>;
 
-    MemAccessor::new(Arc::new(MemCtx { map }))
+    fn map_memseg(
+        &self,
+        segid: i32,
+        gpa: usize,
+        len: usize,
+        segoff: usize,
+        prot: Prot,
+    ) -> Result<()>;
+
+    fn devmem_offset(&self, segid: i32) -> Result<usize>;
+}
+
+impl PhysMapHdl for VmmHdl {
+    fn fd(&self) -> RawFd {
+        self.fd()
+    }
+
+    fn create_memseg(
+        &self,
+        segid: i32,
+        size: usize,
+        segname: Option<&str>,
+    ) -> Result<()> {
+        self.create_memseg(segid, size, segname)
+    }
+
+    fn map_memseg(
+        &self,
+        segid: i32,
+        gpa: usize,
+        len: usize,
+        segoff: usize,
+        prot: Prot,
+    ) -> Result<()> {
+        self.map_memseg(segid, gpa, len, segoff, prot)
+    }
+
+    fn devmem_offset(&self, segid: i32) -> Result<usize> {
+        self.devmem_offset(segid)
+    }
 }
 
 pub struct PhysMap {
     map: Arc<ASpace<MapEnt>>,
-    hdl: Arc<VmmHdl>,
+    hdl: Arc<dyn PhysMapHdl + Send>,
     next_segid: i32,
 }
+
 impl PhysMap {
-    pub(crate) fn new(size: usize, hdl: Arc<VmmHdl>) -> Self {
+    pub fn new(size: usize, hdl: Arc<dyn PhysMapHdl + Send>) -> Self {
         assert!(size != 0);
         assert!(size & PAGE_SIZE == 0, "size must be page-aligned");
 
@@ -107,7 +151,7 @@ impl PhysMap {
     }
 
     /// Create and map a memory region for the guest
-    pub(crate) fn add_mem(
+    pub fn add_mem(
         &mut self,
         name: String,
         addr: usize,
@@ -133,7 +177,7 @@ impl PhysMap {
     }
 
     /// Create and map a ROM region for the guest
-    pub(crate) fn add_rom(
+    pub fn add_rom(
         &mut self,
         name: String,
         addr: usize,
@@ -159,7 +203,7 @@ impl PhysMap {
     }
 
     /// Mark a region of the guest address space as reserved for MMIO
-    pub(crate) fn add_mmio_reservation(
+    pub fn add_mmio_reservation(
         &mut self,
         name: String,
         addr: usize,
@@ -170,7 +214,7 @@ impl PhysMap {
             .map_err(Error::from)
     }
 
-    pub(crate) fn post_reinit(&self) -> Result<()> {
+    pub fn post_reinit(&self) -> Result<()> {
         // Since VM_REINIT unmaps all non-sysmem segments from the address space
         // of the VM, we must reestablish the ROM mapping(s) now.
         for (addr, len, ent) in self.map.iter() {
@@ -194,7 +238,7 @@ impl PhysMap {
             .collect()
     }
 
-    pub(crate) fn finalize(&mut self) -> MemAccessor {
+    pub fn finalize(&mut self) -> MemAccessor {
         assert!(
             Arc::strong_count(&self.map) == 1,
             "finalize should only be called once"
@@ -223,13 +267,14 @@ impl PhysMap {
         // memseg and its mapping established in the VMM will persist
 
         let seg_off = self.hdl.devmem_offset(segid)?;
-        let map_guest = Mapping::new(size, prot, &self.hdl, addr as i64)?;
-        let map_seg = Mapping::new(size, Prot::RW, &self.hdl, seg_off as i64)?;
+        let map_guest = Mapping::new(size, prot, &self.hdl.fd(), addr as i64)?;
+        let map_seg =
+            Mapping::new(size, Prot::RW, &self.hdl.fd(), seg_off as i64)?;
 
         Ok((segid, map_guest, map_seg))
     }
 
-    pub(crate) fn destroy(&mut self) {
+    pub fn destroy(&mut self) {
         let map = Arc::get_mut(&mut self.map).expect(
             "no refs should remain to Physmap contents when destroy() called",
         );
@@ -335,11 +380,9 @@ impl Mapping {
     fn new(
         size: usize,
         prot: Prot,
-        vmm: &VmmHdl,
+        fd: &RawFd,
         devoff: i64,
     ) -> Result<Arc<Self>> {
-        let fd = vmm.fd();
-
         // We do not mmap() guest resources with the EXEC bit set
         let mmap_prot = prot.intersection(Prot::RW);
 
@@ -355,7 +398,7 @@ impl Mapping {
                 size,
                 mmap_prot.bits().into(),
                 libc::MAP_SHARED,
-                fd,
+                *fd,
                 devoff,
             )
         };

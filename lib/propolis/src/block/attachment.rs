@@ -16,6 +16,7 @@
 //! from the associated device in order to process them.
 
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomPinned;
 use std::num::NonZeroUsize;
@@ -774,7 +775,7 @@ impl WorkerSlot {
 }
 
 /// Device queue worker is assigned to poll
-#[derive(Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 enum PollAssignment {
     /// End polling immediately since backend is halted
     Halt,
@@ -921,6 +922,7 @@ impl Strategy {
     }
 }
 
+#[derive(Debug)]
 struct Assignment {
     strategy: Versioned<Strategy>,
     poll_assignments: Option<BTreeMap<WorkerId, PollAssignment>>,
@@ -963,6 +965,7 @@ impl WorkerCollection {
     }
     fn assignments_refresh(&self, mut state: MutexGuard<WorkerColState>) {
         let assign = state.generate_assignments();
+        eprintln!("{assign:?}");
         let devid = state.device_id.unwrap_or(u32::MAX);
         drop(state);
 
@@ -1304,12 +1307,12 @@ pub enum AttachError {
 }
 
 /// Resource versioned with a generation number
-#[derive(Copy, Clone)]
-struct Versioned<T: Copy + Clone> {
+#[derive(Debug, Copy, Clone)]
+struct Versioned<T: Debug + Copy + Clone> {
     generation: usize,
     item: T,
 }
-impl<T: Copy + Clone> Versioned<T> {
+impl<T: Debug + Copy + Clone> Versioned<T> {
     fn new(item: T) -> Self {
         Self { generation: 0, item }
     }
@@ -1338,14 +1341,14 @@ impl<T: Copy + Clone> Versioned<T> {
         self.generation
     }
 }
-impl<T: Copy + Clone + Default> Default for Versioned<T> {
+impl<T: Debug + Copy + Clone + Default> Default for Versioned<T> {
     fn default() -> Self {
         Self::new(T::default())
     }
 }
 
 /// Simple bitmap which facilitates iterator over bits which are asserted
-#[derive(Copy, Clone, Default)]
+#[derive(Debug, Copy, Clone, Default)]
 pub(crate) struct Bitmap(u64);
 impl Bitmap {
     const TOP_BIT: usize = u64::BITS as usize;

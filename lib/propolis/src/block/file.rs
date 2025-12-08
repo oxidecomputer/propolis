@@ -99,7 +99,13 @@ impl SharedState {
                 }
             }
             block::Operation::Write(off, len) => {
-                let maps = req.mappings(mem).ok_or("bad guest region")?;
+                let maps = match req.mappings(mem) {
+                    //.ok_or("bad guest region")?
+                    Some(maps) => maps,
+                    None => {
+                        panic!("here");
+                    }
+                };
 
                 let nbytes = maps
                     .pwritev(self.fp.as_raw_fd(), off as i64)

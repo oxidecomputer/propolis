@@ -252,6 +252,12 @@ pub struct DeviceInfo {
     pub supports_discard: bool,
 }
 
+impl DeviceInfo {
+    pub fn total_size_in_bytes(&self) -> u64 {
+        self.block_size as u64 * self.total_size
+    }
+}
+
 /// Options to control behavior of block backend.
 ///
 /// Values for omitted fields will be determined by the backend, likely by

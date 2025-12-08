@@ -3,8 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::fs::OpenOptions;
 use std::num::NonZeroUsize;
 use std::os::unix::fs::FileTypeExt;
+use std::os::unix::io::AsRawFd;
+use std::os::unix::io::RawFd;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -12,14 +16,17 @@ use std::time::Instant;
 use anyhow::Context;
 use anyhow::Result;
 use clap::Parser;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
+use slog::info;
 use slog::o;
 use slog::Drain;
 use slog::Logger;
 
+use propolis::accessors;
 use propolis::block;
-use propolis::common::PAGE_SIZE;
-use propolis::vmm::blank_phys_map;
+use propolis::common;
+use propolis::vmm;
 
 // XXX common all this with standalone
 
@@ -36,6 +43,7 @@ pub struct Config {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Main {
+    pub ram_path: String,
     pub max_queues: NonZeroUsize,
     pub io_depth: NonZeroUsize,
 }
@@ -234,38 +242,139 @@ impl Timer {
         let now = Instant::now();
 
         if (now - self.time) >= std::time::Duration::from_secs(5) {
-            slog::info!(self.log, "{} requests/second", self.count / 5);
+            info!(self.log, "{} requests/second", self.count / 5);
             self.count = 0;
             self.time = now;
         }
     }
 }
 
-struct SeqWriteSpew {
+struct RandWriteSpew {
+    #[allow(unused)]
+    log: Logger,
+
     #[allow(unused)]
     info: block::DeviceInfo,
 
+    acc_mem: accessors::MemAccessor,
+
     timer: Arc<Mutex<Timer>>,
+
+    // into memory mapping
+    offset: usize,
+
+    // TODO io size
 }
 
-impl block::DeviceQueue for SeqWriteSpew {
+impl block::DeviceQueue for RandWriteSpew {
     type Token = ();
 
     fn next_req(
         &self,
     ) -> Option<(block::Request, Self::Token, Option<Instant>)> {
-        let request = block::Request::new_write(0, 4096, vec![]);
+        let guest_addr: u64 = self.offset as u64;
+
+        {
+            let mut data = vec![1u8; 4096];
+            rand::rng().fill(&mut data[..]);
+
+            let mem = self.acc_mem.access().unwrap();
+            mem.write_from(common::GuestAddr(guest_addr), &data, 4096);
+        }
+
+        let guest_region =
+            common::GuestRegion(common::GuestAddr(guest_addr), 4096);
+
+        let write_offset: usize =
+            rand::rng().random_range(0..(self.info.total_size_in_bytes() as usize - 4096));
+
+        let request =
+            block::Request::new_write(write_offset, 4096, vec![guest_region]);
+
         Some((request, (), None))
     }
 
     fn complete(
         &self,
         _op: block::Operation,
-        _result: block::Result,
+        result: block::Result,
         _token: Self::Token,
     ) {
+        match result {
+            block::Result::Success => {}
+            _ => {
+                panic!("not success!");
+            }
+        }
+
         let mut timer = self.timer.lock().unwrap();
         timer.tick();
+    }
+}
+
+struct FileBackedPhysMap {
+    size: usize,
+    fp: File,
+    segments: Mutex<BTreeMap<i32, (usize, Option<String>)>>,
+}
+
+impl FileBackedPhysMap {
+    pub fn new(fp: File) -> Self {
+        let size = fp.metadata().unwrap().len() as usize;
+
+        FileBackedPhysMap {
+            size,
+            fp,
+            segments: Mutex::new(BTreeMap::default()),
+        }
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
+    }
+}
+
+impl vmm::PhysMapHdl for FileBackedPhysMap {
+    fn fd(&self) -> RawFd {
+        self.fp.as_raw_fd()
+    }
+
+    fn create_memseg(
+        &self,
+        segid: i32,
+        size: usize,
+        segname: Option<&str>,
+    ) -> std::io::Result<()> {
+        let mut segments = self.segments.lock().unwrap();
+        let old =
+            segments.insert(segid, (size, segname.map(|x| x.to_string())));
+        assert!(old.is_none());
+        Ok(())
+    }
+
+    fn map_memseg(
+        &self,
+        segid: i32,
+        _gpa: usize,
+        _len: usize,
+        _segoff: usize,
+        _prot: vmm::Prot,
+    ) -> std::io::Result<()> {
+        let segments = self.segments.lock().unwrap();
+        assert!(segments.contains_key(&segid));
+        Ok(())
+    }
+
+    fn devmem_offset(&self, segid: i32) -> std::io::Result<usize> {
+        let segments = self.segments.lock().unwrap();
+        let mut offset = 0;
+        for (id, (size, _)) in segments.iter() {
+            if *id == segid {
+                return Ok(offset);
+            }
+            offset += size;
+        }
+        panic!("segment not found");
     }
 }
 
@@ -279,7 +388,22 @@ async fn main() -> Result<()> {
 
     let backends = get_backends(&log, &config);
 
-    let root_acc_mem = blank_phys_map(usize::MAX - (usize::MAX / PAGE_SIZE));
+    let file_backed_ram = Arc::new(FileBackedPhysMap::new(
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(false)
+            .open(&config.main.ram_path)?,
+    ));
+
+    let mut phys_map = vmm::PhysMap::new(
+        usize::MAX - (usize::MAX / common::PAGE_SIZE),
+        file_backed_ram.clone(),
+    );
+
+    phys_map.add_mem(String::from("ram"), 0, file_backed_ram.size())?;
+
+    let root_acc_mem = phys_map.finalize();
 
     let mut attached_backends = Vec::with_capacity(backends.len());
 
@@ -300,32 +424,45 @@ async fn main() -> Result<()> {
 
     for (n, attached_backend) in attached_backends.into_iter().enumerate() {
         let log = log.new(o!("backend" => n));
+        info!(log, "starting");
+
+        let acc_mem = root_acc_mem.child(Some("rand write spew".to_string()));
 
         let job = std::thread::Builder::new()
             .name(format!("attached backend {n}"))
             .spawn(move || {
                 let timer = Arc::new(Mutex::new(Timer {
-                    log,
+                    log: log.clone(),
                     count: 0,
                     time: Instant::now(),
                 }));
 
-                for n in 0..config.main.max_queues.into() {
-                    let spew = SeqWriteSpew {
+                let max_queues: usize = config.main.max_queues.into();
+
+                for m in 0..max_queues {
+                    let acc_mem = acc_mem
+                        .child(Some(format!("rand write spew queue {n}")));
+
+                    let spew = RandWriteSpew {
+                        log: log.new(o!("spew" => m)),
                         info: attached_backend.backend.device_info(),
                         timer: timer.clone(),
+                        acc_mem,
+                        offset: 4096 * m,
                     };
+
+                    info!(log, "associating with spew {m}");
 
                     attached_backend
                         .block_attach
-                        .queue_associate(n.into(), Arc::new(spew));
+                        .queue_associate(m.into(), Arc::new(spew));
                 }
 
                 loop {
-                    for n in 0..config.main.max_queues.into() {
+                    for m in 0..max_queues {
                         attached_backend
                             .block_attach
-                            .notify(n.into(), Some(config.main.io_depth));
+                            .notify(m.into(), Some(config.main.io_depth));
                     }
                 }
             })?;
