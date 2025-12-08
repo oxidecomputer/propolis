@@ -154,8 +154,11 @@ impl VcpuTasks {
                         VmEntry::Run
                     }
                     VmExitKind::Wrmsr(msr, val) => {
-                        debug!(&log, "Unhandled wrmsr {:08x} <- {:08x}", msr, val;
-                                       "rip" => exit.rip);
+                        // Skip logging for MSR 0x48 (IA32_SPEC_CTRL) to reduce noise
+                        if msr != 0x48 {
+                            debug!(&log, "Unhandled wrmsr {:08x} <- {:08x}", msr, val;
+                                           "rip" => exit.rip);
+                        }
                         VmEntry::Run
                     }
                     VmExitKind::Suspended(SuspendDetail { kind, when }) => {

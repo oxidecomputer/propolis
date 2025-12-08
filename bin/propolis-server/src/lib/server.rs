@@ -491,6 +491,17 @@ impl PropolisServerApi for PropolisServerImpl {
         result
     }
 
+    async fn instance_shutdown(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
+        let ctx = rqctx.context();
+        let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
+        let power_button = vm.objects().lock_shared().await.power_button().clone();
+        power_button.pulse();
+
+        Ok(HttpResponseUpdatedNoContent {})
+    }
+
     async fn instance_serial_history_get(
         rqctx: RequestContext<Self::Context>,
         query: Query<api::InstanceSerialConsoleHistoryRequest>,

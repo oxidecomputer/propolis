@@ -116,6 +116,14 @@ pub trait PropolisServerApi {
     ) -> Result<HttpResponseUpdatedNoContent, HttpError>;
 
     #[endpoint {
+        method = POST,
+        path = "/instance/shutdown",
+    }]
+    async fn instance_shutdown(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<HttpResponseUpdatedNoContent, HttpError>;
+
+    #[endpoint {
         method = GET,
         path = "/instance/serial/history",
     }]

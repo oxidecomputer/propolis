@@ -587,6 +587,8 @@ async fn initialize_vm_objects(
         log.new(slog::o!("component" => "vcpu_tasks")),
     )?);
 
+    let power_button = chipset.power_button_pin();
+
     let MachineInitializer {
         devices, block_backends, crucible_backends, ..
     } = init;
@@ -601,6 +603,7 @@ async fn initialize_vm_objects(
         com1,
         framebuffer: Some(ramfb),
         ps2ctrl,
+        power_button,
     })
 }
 

@@ -51,6 +51,7 @@ pub(super) struct InputVmObjects {
     pub com1: Arc<Serial<LpcUart>>,
     pub framebuffer: Option<Arc<RamFb>>,
     pub ps2ctrl: Arc<PS2Ctrl>,
+    pub power_button: Arc<dyn propolis::intr_pins::IntrPin>,
 }
 
 /// The collection of objects and state that make up a Propolis instance.
@@ -86,6 +87,9 @@ pub(crate) struct VmObjectsLocked {
 
     /// A handle to the VM's PS/2 controller.
     ps2ctrl: Arc<PS2Ctrl>,
+
+    /// A pin to trigger ACPI power button events.
+    power_button: Arc<dyn propolis::intr_pins::IntrPin>,
 }
 
 impl VmObjects {
@@ -126,6 +130,7 @@ impl VmObjectsLocked {
             com1: input.com1,
             framebuffer: input.framebuffer,
             ps2ctrl: input.ps2ctrl,
+            power_button: input.power_button,
         }
     }
 
@@ -186,6 +191,11 @@ impl VmObjectsLocked {
     /// Yields a clonable reference to this VM's PS/2 controller.
     pub(crate) fn ps2ctrl(&self) -> &Arc<PS2Ctrl> {
         &self.ps2ctrl
+    }
+
+    /// Yields a clonable reference to the ACPI power button pin.
+    pub(crate) fn power_button(&self) -> &Arc<dyn propolis::intr_pins::IntrPin> {
+        &self.power_button
     }
 
     pub(crate) fn device_map(&self) -> &DeviceMap {

@@ -638,11 +638,14 @@ impl Instance {
                         VmEntry::Run
                     }
                     VmExitKind::Wrmsr(msr, val) => {
-                        slog::error!(
-                            &log,
-                            "Unhandled wrmsr {:#08x} <- {:#08x}", msr, val;
-                            "rip" => #%exit.rip
-                        );
+                        // Skip logging for MSR 0x48 (IA32_SPEC_CTRL) to reduce noise
+                        if msr != 0x48 {
+                            slog::error!(
+                                &log,
+                                "Unhandled wrmsr {:#08x} <- {:#08x}", msr, val;
+                                "rip" => #%exit.rip
+                            );
+                        }
                         VmEntry::Run
                     }
                     VmExitKind::Suspended(SuspendDetail {
@@ -1106,6 +1109,7 @@ fn setup_instance(
     let chipset_pm = i440fx::Piix3PM::create(
         machine.hdl.clone(),
         chipset_hb.power_pin(),
+        chipset_lpc.sci_pin(),
         log.new(slog::o!("device" => "piix3pm")),
     );
 
