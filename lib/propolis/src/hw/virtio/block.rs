@@ -255,6 +255,10 @@ impl block::DeviceQueue for BlockVq {
             self.0.push_used(chain, &mem);
         }
     }
+
+    fn abandon(&self, _token: Self::Token) {
+        // Nothing necessary to safely abandon a `CompletionToken`.
+    }
 }
 
 impl VirtioDevice for PciVirtioBlock {

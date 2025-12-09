@@ -538,8 +538,9 @@ impl DeviceAttachment {
         let slot = self.0.queues.slot(queue_id);
         let mut slot_state = slot.state.lock().unwrap();
 
-        let _minder =
+        let minder =
             slot_state.minder.take().expect("queue slot should be occupied");
+        minder.destroy();
         drop(slot_state);
 
         let associated = state.queue_dissociate(queue_id);

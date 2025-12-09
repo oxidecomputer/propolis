@@ -1015,6 +1015,16 @@ impl Permit {
         self.sqid
     }
 
+    /// A device reset may cause us to abandon some in-flight I/O, dropping the
+    /// request `Permit` without any kind of completion.  Additionally, some of
+    /// the tests which to acquire Permit entries with no intent to drive them
+    /// through to completion.  Allow them to bypass the
+    /// ensure-this-permit-is-completed check in [`Drop`].
+    pub fn abandon(self) {
+        let Permit { _nodrop, .. } = self;
+        std::mem::forget(_nodrop);
+    }
+
     /// Consume the permit by placing an entry into the Completion Queue.
     ///
     /// This is a simpler version of [Self::complete()] for testing purposes
@@ -1029,15 +1039,6 @@ impl Permit {
         if let Some(cq) = cq.upgrade() {
             cq.push(Completion::success(), cid, sq);
         }
-    }
-
-    /// Some of the tests which to acquire Permit entries with no intent to
-    /// drive them through to completion.  Allow them to bypass the
-    /// ensure-this-permit-is-completed check in [`Drop`].
-    #[cfg(test)]
-    fn ignore(self) {
-        let Permit { _nodrop, .. } = self;
-        std::mem::forget(_nodrop);
     }
 }
 impl Debug for Permit {
@@ -1429,7 +1430,7 @@ mod test {
         assert!(matches!(
             sq.pop().map(|(_sub, permit, _idx)| {
                 // ignore permit so it can be discarded when done
-                permit.ignore()
+                permit.abandon()
             }),
             Some(_)
         ));

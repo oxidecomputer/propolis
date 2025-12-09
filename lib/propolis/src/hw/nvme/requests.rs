@@ -153,4 +153,10 @@ impl block::DeviceQueue for NvmeBlockQueue {
 
         permit.complete(Completion::from(result));
     }
+
+    /// In the unlikely case we must give up on an in-flight I/O, tear it down
+    /// without triggering the no-drop check on NVMe request permits.
+    fn abandon(&self, token: Self::Token) {
+        token.abandon();
+    }
 }
