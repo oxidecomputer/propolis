@@ -327,6 +327,10 @@ async fn run_smoke_test(ctx: &Framework, mut source: TestVm) -> Result<()> {
         |target: &TestVm| {
             Box::pin(async {
                 // the file should still exist on the target VM after migration.
+                let _ = target
+                    .run_shell_command("sync")
+                    .await
+                    .expect("sync should succeed after migration");
                 let lsout = target
                     .run_shell_command("ls foo.bar")
                     .await

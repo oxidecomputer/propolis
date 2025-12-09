@@ -1369,6 +1369,9 @@ impl MigrateMulti for PciNvme {
 
         let mut ctrl = self.state.lock().unwrap();
         ctrl.import(input, self)?;
+        if ctrl.ctrl.cc.enabled() {
+            self.is_enabled.store(true, Ordering::Release);
+        }
         drop(ctrl);
 
         MigrateMulti::import(&self.pci_state, offer, ctx)?;
