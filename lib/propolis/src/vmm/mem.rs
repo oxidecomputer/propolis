@@ -754,6 +754,28 @@ pub trait MappingExt {
     fn pwritev(&self, fd: RawFd, offset: i64) -> Result<usize>;
 }
 
+// Gross hack alert: since the mappings below are memory regions backed by
+// segvmm_ops, `zvol_{read,write}` and similar will end up contending on
+// `svmd->svmd_lock`. Instead, as long as the I/O is small enough we'll tolerate
+// it, copy from guest memory to Propolis heap. The segment backing Propolis'
+// heap has an `as_page{,un}lock` impl that avoids the more
+// expensive/contentious `as_fault()` fallback.
+//
+// This is an optimization until stlouis#871 can get things sorted, at
+// which point it should be strictly worse than directly using the
+// requested mappings.
+//
+// Beyond this, either fall back to using iovecs directly (and trust the kernel
+// to handle bizarre vecs) or error. This is an especially gross hack because we
+// could/should just set MDTS, which more naturally communicates to the guest
+// the largest I/O we're willing to handle (and gives an out for too-large I/Os)
+//
+// The amount of memory used for temporary buffers is given by the number of
+// worker threads for all file-backed disks, times this threshold. It works out
+// to up to 128 MiB (8 worker threads) of buffers per disk by default as of
+// writing.
+const MAPPING_IO_LIMIT_BYTES: usize = 16 * crate::common::MB;
+
 impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
     fn preadv(&self, fd: RawFd, offset: i64) -> Result<usize> {
         if !self
@@ -767,23 +789,92 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
             ));
         }
 
-        let iov = self
-            .as_ref()
-            .iter()
-            .map(|mapping| iovec {
-                iov_base: mapping.ptr.as_ptr() as *mut libc::c_void,
-                iov_len: mapping.len,
-            })
-            .collect::<Vec<_>>();
-
-        let read = unsafe {
-            libc::preadv(fd, iov.as_ptr(), iov.len() as libc::c_int, offset)
-        };
-        if read == -1 {
-            return Err(Error::last_os_error());
+        let mut total_capacity = 0;
+        for mapping in self.as_ref().iter() {
+            total_capacity += mapping.len;
         }
 
-        Ok(read as usize)
+        // Gross hack: see the comment on `MAPPING_IO_LIMIT_BYTES`.
+        if total_capacity < MAPPING_IO_LIMIT_BYTES {
+            // If we're motivated to avoid the zero-fill via
+            // `Layout::with_size_align` + `GlobalAlloc::alloc`, we should
+            // probably avoid this gross hack entirely (see comment on
+            // MAPPING_IO_LIMIT_BYTES).
+            let mut buf = vec![0; total_capacity];
+
+            let iov = [iovec {
+                iov_base: buf.as_mut_ptr() as *mut libc::c_void,
+                iov_len: buf.len(),
+            }];
+
+            let read = unsafe {
+                libc::preadv(fd, iov.as_ptr(), iov.len() as libc::c_int, offset)
+            };
+            if read == -1 {
+                return Err(Error::last_os_error());
+            }
+            let read: usize = read.try_into().expect("read is positive");
+
+            // copy `read` bytes back into the iovecs and return
+            let mut remaining = read;
+            let mut offset = 0;
+            for mapping in self.as_ref().iter() {
+                let to_copy = std::cmp::min(remaining, mapping.len);
+                if to_copy == 0 {
+                    break;
+                }
+
+                // Safety: guest physical memory is READ|WRITE, and won't become
+                // unmapped as long as we hold a Mapping, which `self` implies.
+                //
+                // Sketchy: nothing guarantees the guest is not concurrently
+                // modifying this memory. Also, nothing prevents the guest from
+                // submitting the same ranges as part of another I/O where we
+                // might be doing this same operation on another thread on the
+                // same ptr/len pair. Because we are just moving u8's, it should
+                // be OK.
+                let guest_slice = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        mapping.ptr.as_ptr(),
+                        mapping.len,
+                    )
+                };
+
+                guest_slice.copy_from_slice(&buf[offset..][..to_copy]);
+
+                remaining -= to_copy;
+                offset += to_copy;
+
+                if remaining == 0 {
+                    // Either we're at the last iov and we're finished copying
+                    // back into the guest, or `preadv` did a short read.
+                    break;
+                }
+            }
+
+            // We should never read more than the guest mappings could hold.
+            assert_eq!(remaining, 0);
+
+            Ok(read)
+        } else {
+            let iov = self
+                .as_ref()
+                .iter()
+                .map(|mapping| iovec {
+                    iov_base: mapping.ptr.as_ptr() as *mut libc::c_void,
+                    iov_len: mapping.len,
+                })
+                .collect::<Vec<_>>();
+
+            let read = unsafe {
+                libc::preadv(fd, iov.as_ptr(), iov.len() as libc::c_int, offset)
+            };
+            if read == -1 {
+                return Err(Error::last_os_error());
+            }
+            let read: usize = read.try_into().expect("read is positive");
+            Ok(read)
+        }
     }
 
     fn pwritev(&self, fd: RawFd, offset: i64) -> Result<usize> {
@@ -798,18 +889,63 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
             ));
         }
 
-        let iov = self
-            .as_ref()
-            .iter()
-            .map(|mapping| iovec {
-                iov_base: mapping.ptr.as_ptr() as *mut libc::c_void,
-                iov_len: mapping.len,
-            })
-            .collect::<Vec<_>>();
+        let mut total_capacity = 0;
+        for mapping in self.as_ref().iter() {
+            total_capacity += mapping.len;
+        }
 
-        let written = unsafe {
-            libc::pwritev(fd, iov.as_ptr(), iov.len() as libc::c_int, offset)
+        // Gross hack: see the comment on `MAPPING_IO_LIMIT_BYTES`.
+        let written = if total_capacity < MAPPING_IO_LIMIT_BYTES {
+            let mut buf = Vec::with_capacity(total_capacity);
+            for mapping in self.as_ref().iter() {
+                // Safety: these pointer/length pairs are into guest physical
+                // memory, which the VM has no control over. Having a `{Sub}Mapping`
+                // is a commitment that the guest memory mapping is valid, and will
+                // remain so until `pwritev` returns. We're going to immediately
+                // read from this slice, but it would be just as valid to pass these
+                // as an iovec directly to pwritev.
+                let s = unsafe {
+                    std::slice::from_raw_parts(
+                        mapping.ptr.as_ptr() as *const u8,
+                        mapping.len,
+                    )
+                };
+                buf.extend_from_slice(s);
+            }
+
+            let iovs = [iovec {
+                iov_base: buf.as_mut_ptr() as *mut libc::c_void,
+                iov_len: buf.len(),
+            }];
+
+            unsafe {
+                libc::pwritev(
+                    fd,
+                    iovs.as_ptr(),
+                    iovs.len() as libc::c_int,
+                    offset,
+                )
+            }
+        } else {
+            let iovs = self
+                .as_ref()
+                .iter()
+                .map(|mapping| iovec {
+                    iov_base: mapping.ptr.as_ptr() as *mut libc::c_void,
+                    iov_len: mapping.len,
+                })
+                .collect::<Vec<_>>();
+
+            unsafe {
+                libc::pwritev(
+                    fd,
+                    iovs.as_ptr(),
+                    iovs.len() as libc::c_int,
+                    offset,
+                )
+            }
         };
+
         if written == -1 {
             return Err(Error::last_os_error());
         }
