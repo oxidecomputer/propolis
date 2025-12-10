@@ -657,6 +657,7 @@ async fn initialize_vm_objects(
         framebuffer: Some(ramfb),
         ps2ctrl,
         attest_handle,
+        chipset: chipset.into(),
     };
 
     // Another really terrible hack. As we've found in Propolis#1008, brk()

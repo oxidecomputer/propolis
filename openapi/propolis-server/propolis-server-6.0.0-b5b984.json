@@ -1692,6 +1692,7 @@
         "type": "string",
         "enum": [
           "Run",
+          "ACPIShutdown",
           "Stop",
           "Reboot"
         ]
