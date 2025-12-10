@@ -450,6 +450,10 @@ impl Piix3Lpc {
             .pin_handle(irq)
             .map(|pin| Box::new(pin) as Box<dyn IntrPin>)
     }
+
+    pub fn sci_pin(&self) -> Arc<dyn IntrPin> {
+        Arc::clone(&self.irq_config.sci_pin) as Arc<dyn IntrPin>
+    }
 }
 impl pci::Device for Piix3Lpc {
     fn device_state(&self) -> &pci::DeviceState {
@@ -787,12 +791,14 @@ pub struct Piix3PM {
 
     regs: Mutex<PMRegs>,
     power_pin: Arc<dyn IntrPin>,
+    sci_pin: Arc<dyn IntrPin>,
     log: slog::Logger,
 }
 impl Piix3PM {
     pub fn create(
         hdl: Arc<VmmHdl>,
         power_pin: Arc<dyn IntrPin>,
+        sci_pin: Arc<dyn IntrPin>,
         log: slog::Logger,
     ) -> Arc<Self> {
         let pci_state = pci::Builder::new(pci::Ident {
@@ -820,6 +826,7 @@ impl Piix3PM {
 
             regs: Mutex::new(regs),
             power_pin,
+            sci_pin,
             log,
         })
     }
@@ -830,6 +837,12 @@ impl Piix3PM {
         let piofn = Arc::new(move |port: u16, rwo: RWOp| this.pio_rw(port, rwo))
             as Arc<PioFn>;
         pio.register(PMBASE_DEFAULT, PMBASE_LEN, piofn).unwrap();
+    }
+
+    pub fn acpi_shutdown(&self) {
+        let mut regs = self.regs.lock().unwrap();
+        regs.pm_status.insert(PmSts::PWRBTN_STS);
+        self.sci_pin.pulse();
     }
 
     fn pio_rw(&self, _port: u16, mut rwo: RWOp) {

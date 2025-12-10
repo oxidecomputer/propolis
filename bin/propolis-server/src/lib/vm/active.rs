@@ -64,6 +64,9 @@ impl ActiveVm {
         self.state_driver_queue
             .queue_external_request(match requested {
                 InstanceStateRequested::Run => ExternalRequest::start(),
+                InstanceStateRequested::ACPIShutdown => {
+                    ExternalRequest::acpi_shutdown()
+                }
                 InstanceStateRequested::Stop => ExternalRequest::stop(),
                 InstanceStateRequested::Reboot => ExternalRequest::reboot(),
             })

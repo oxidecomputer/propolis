@@ -712,6 +712,9 @@ impl StateDriver {
             };
 
             match req {
+                ExternalRequest::State(StateChangeRequest::ACPIShutdown) => {
+                    todo!()
+                }
                 ExternalRequest::State(StateChangeRequest::Stop) => {
                     info!(
                         &self.log,
@@ -826,6 +829,14 @@ impl StateDriver {
         request: ExternalRequest,
     ) -> HandleEventOutcome {
         match request {
+            ExternalRequest::State(StateChangeRequest::ACPIShutdown) => {
+                {
+                    let guard = self.objects.lock_exclusive().await;
+                    let chipset = guard.chipset();
+                    chipset.acpi_shutdown();
+                }
+                HandleEventOutcome::Continue
+            }
             ExternalRequest::State(StateChangeRequest::Start) => {
                 // If this start attempt produces a terminal VM state, return it
                 // to the driver and indicate that the driver should exit.

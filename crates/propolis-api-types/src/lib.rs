@@ -254,6 +254,7 @@ pub struct InstanceStateChange {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema)]
 pub enum InstanceStateRequested {
     Run,
+    ACPIShutdown,
     Stop,
     Reboot,
 }

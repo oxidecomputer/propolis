@@ -447,6 +447,7 @@ impl VmConfig {
 fn parse_state(state: &str) -> anyhow::Result<InstanceStateRequested> {
     match state.to_lowercase().as_str() {
         "run" => Ok(InstanceStateRequested::Run),
+        "acpi-shutdown" => Ok(InstanceStateRequested::AcpiShutdown),
         "stop" => Ok(InstanceStateRequested::Stop),
         "reboot" => Ok(InstanceStateRequested::Reboot),
         _ => Err(anyhow!(

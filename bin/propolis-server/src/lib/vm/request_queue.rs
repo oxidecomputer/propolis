@@ -53,12 +53,17 @@ pub(crate) enum StateChangeRequest {
     Start,
 
     /// Asks the state worker to start a migration-source task.
-    MigrateAsSource { migration_id: Uuid, websock: WebsocketConnection },
+    MigrateAsSource {
+        migration_id: Uuid,
+        websock: WebsocketConnection,
+    },
 
     /// Resets the guest by pausing all devices, resetting them to their
     /// cold-boot states, and resuming the devices. Note that this is not a
     /// graceful reboot and does not coordinate with guest software.
     Reboot,
+
+    ACPIShutdown,
 
     /// Halts the VM. Note that this is not a graceful shutdown and does not
     /// coordinate with guest software.
@@ -74,6 +79,7 @@ impl std::fmt::Debug for StateChangeRequest {
                 .field("migration_id", migration_id)
                 .finish(),
             Self::Reboot => write!(f, "Reboot"),
+            Self::ACPIShutdown => write!(f, "ACPI Shutdown"),
             Self::Stop => write!(f, "Stop"),
         }
     }
@@ -127,6 +133,10 @@ impl ExternalRequest {
     /// Constructs a VM start request.
     pub const fn start() -> Self {
         Self::State(StateChangeRequest::Start)
+    }
+
+    pub const fn acpi_shutdown() -> Self {
+        Self::State(StateChangeRequest::ACPIShutdown)
     }
 
     /// Constructs a VM stop request.
@@ -371,6 +381,11 @@ impl ExternalRequestQueue {
                 assert!(!self.awaiting_reboot);
                 self.awaiting_reboot = true;
             }
+            ExternalRequest::State(StateChangeRequest::ACPIShutdown) => {
+                // TODO(luiz): check if this is the right action.
+                assert!(!self.awaiting_stop);
+                self.awaiting_stop = true;
+            }
             ExternalRequest::State(StateChangeRequest::Stop) => {
                 assert!(!self.awaiting_stop);
                 self.awaiting_stop = true;
@@ -457,6 +472,13 @@ impl ExternalRequestQueue {
                     } else if self.state == QueueState::StartPending {
                         return Err(RequestDeniedReason::StartInProgress);
                     } else if self.awaiting_reboot {
+                        return Ok(false);
+                    }
+                }
+
+                ExternalRequest::State(StateChangeRequest::ACPIShutdown) => {
+                    // TODO(luiz): check if this is the right action.
+                    if self.awaiting_stop {
                         return Ok(false);
                     }
                 }

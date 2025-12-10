@@ -164,6 +164,7 @@ pub fn build_instance(
 pub struct RegisteredChipset {
     chipset: Arc<dyn Chipset>,
     isa: Arc<i440fx::Piix3Lpc>,
+    pm: Arc<i440fx::Piix3PM>,
 }
 impl RegisteredChipset {
     pub fn pci_attach(&self, bdf: pci::Bdf, dev: Arc<dyn pci::Endpoint>) {
@@ -171,6 +172,9 @@ impl RegisteredChipset {
     }
     pub fn irq_pin(&self, irq: u8) -> Option<Box<dyn intr_pins::IntrPin>> {
         self.isa.irq_pin(irq)
+    }
+    pub fn acpi_shutdown(&self) {
+        self.pm.acpi_shutdown();
     }
     fn reset_pin(&self) -> Arc<dyn intr_pins::IntrPin> {
         self.chipset.reset_pin()
@@ -330,6 +334,7 @@ impl MachineInitializer<'_> {
                 let chipset_pm = i440fx::Piix3PM::create(
                     self.machine.hdl.clone(),
                     chipset_hb.power_pin(),
+                    chipset_lpc.sci_pin(),
                     self.log.new(slog::o!("device" => "piix3pm")),
                 );
 
@@ -361,7 +366,7 @@ impl MachineInitializer<'_> {
                 );
                 self.devices.insert(
                     SpecKey::Name(chipset_pm.type_name().into()),
-                    chipset_pm,
+                    chipset_pm.clone(),
                 );
 
                 // Record attachment for any bridges in PCI topology too
@@ -378,7 +383,11 @@ impl MachineInitializer<'_> {
                     self.devices.insert(spec_element.0.clone(), bridge);
                 }
 
-                Ok(RegisteredChipset { chipset: chipset_hb, isa: chipset_lpc })
+                Ok(RegisteredChipset {
+                    chipset: chipset_hb,
+                    isa: chipset_lpc,
+                    pm: chipset_pm,
+                })
             }
         }
     }
