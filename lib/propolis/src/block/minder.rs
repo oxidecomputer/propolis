@@ -44,6 +44,21 @@ pub trait DeviceQueue: Send + Sync + 'static {
         result: block::Result,
         token: Self::Token,
     );
+
+    /// Explicitly abandon a queue token, never to be used for an I/O
+    /// completion.
+    ///
+    /// A token's typical lifecycle is to be produced by
+    /// [`DeviceQueue::next_req`], operated on, and completed with a result by
+    /// [`DeviceQueue::complete`]. If the device's queues are dissociated, such
+    /// as by a reset of the device, we may want to shortcut this lifecycle and
+    /// destroy the token immediately.
+    ///
+    /// `DeviceQueue` implementations may use `Token`s that panic on `Drop`, to
+    /// flag errnoenous discards of request tokens without completing them.
+    /// `abandon`, instead, is an escape hatch in the case one genuinely must
+    /// discard an I/O token without fulfilling the operation.
+    fn abandon(&self, token: Self::Token);
 }
 
 /// A wrapper for an IO [Request] bearing necessary tracking information to
@@ -104,6 +119,10 @@ type CompleteReqFn = Box<
     dyn Fn(Operation, block::Result, Box<dyn Any + Send + Sync>) + Send + Sync,
 >;
 
+/// Closure to permit [QueueMinder] to type-erase the calling of
+/// [DeviceQueue::abandon()].
+type AbandonReqFn = Box<dyn Fn(Box<dyn Any + Send + Sync>) + Send + Sync>;
+
 struct QmEntry {
     token: Box<dyn Any + Send + Sync>,
     op: Operation,
@@ -118,6 +137,12 @@ struct QmInner {
     /// this queue has new entries.
     notify_workers: Bitmap,
     paused: bool,
+    /// Has this QueueMinder been destroyed? Since `QueueMinder` is typically in
+    /// an Arc, `destroy` may be called while there are other references
+    /// outstanding - concurrent completions that have just upgraded their
+    /// weak refs, for example. When the minder has been "destroyed", those I/Os
+    /// should gracefully abort.
+    destroyed: bool,
     in_flight: BTreeMap<ReqId, QmEntry>,
     metric_consumer: Option<Arc<dyn MetricConsumer>>,
     /// Number of [Request] completions which are currently being processed by
@@ -132,6 +157,7 @@ impl Default for QmInner {
             next_id: ReqId::START,
             notify_workers: Bitmap::default(),
             paused: false,
+            destroyed: false,
             processing_last: 0,
             in_flight: BTreeMap::new(),
             metric_consumer: None,
@@ -149,17 +175,45 @@ pub(super) struct QueueMinder {
     next_req_fn: NextReqFn,
     /// Type-erased wrapper function for [DeviceQueue::complete()]
     complete_req_fn: CompleteReqFn,
+    /// Type-erased wrapper function for [DeviceQueue::abandon()]
+    abandon_req_fn: AbandonReqFn,
 }
 
 impl QueueMinder {
+    pub fn destroy(self: Arc<Self>) {
+        // Up-front, it would be nice to assert that we have the last strong ref
+        // on this `QueueMinder`. We might not actually though: the controller
+        // may be reset at the same time we're completing I/Os, and those
+        // completions have upgraded their ref back to the minder.
+        //
+        // So, do *not* `assert_eq!(Arc::strong_count(&self), 1);`.
+
+        let mut state = self.state.lock().unwrap();
+
+        // A minder can only be destroyed once. To destroy it more than once
+        // would imply it was dissociated from a queue a second time, and for
+        // that to happen the destroyed minder would have had to be associated
+        // to a queue. Nonsense!
+        assert!(!state.destroyed);
+        state.destroyed = true;
+
+        if state.in_flight.len() > 0 {
+            let old = std::mem::replace(&mut state.in_flight, BTreeMap::new());
+            for (_, QmEntry { token, .. }) in old.into_iter() {
+                (self.abandon_req_fn)(token);
+            }
+        }
+        assert_eq!(state.in_flight.len(), 0);
+    }
+
     pub fn new<DQ: DeviceQueue>(
         queue: Arc<DQ>,
         device_id: DeviceId,
         queue_id: QueueId,
     ) -> Arc<Self> {
-        let next_req_queue = queue.clone();
+        let device_queue_ref = queue.clone();
         let next_req_fn: NextReqFn = Box::new(move || {
-            let (req, token, when_queued) = next_req_queue.next_req()?;
+            let (req, token, when_queued) = device_queue_ref.next_req()?;
             Some((
                 req,
                 Box::new(token) as Box<dyn Any + Send + Sync>,
@@ -167,14 +221,22 @@ impl QueueMinder {
             ))
         });
 
+        let device_queue_ref = queue.clone();
         let complete_req_fn: CompleteReqFn =
             Box::new(move |op, result, token| {
                 let token = token
                     .downcast::<DQ::Token>()
                     .expect("token type unchanged");
                 let token = *token;
-                queue.complete(op, result, token);
+                device_queue_ref.complete(op, result, token);
             });
+
+        let abandon_req_fn: AbandonReqFn = Box::new(move |token| {
+            let token =
+                token.downcast::<DQ::Token>().expect("token type unchanged");
+            let token = *token;
+            queue.abandon(token);
+        });
 
         Arc::new_cyclic(|self_ref| Self {
             queue_id,
@@ -184,6 +246,7 @@ impl QueueMinder {
             notify: Notify::new(),
             next_req_fn,
             complete_req_fn,
+            abandon_req_fn,
         })
     }
 
@@ -194,6 +257,9 @@ impl QueueMinder {
     /// that more requests are available.
     pub fn next_req(&self, wid: WorkerId) -> Option<DeviceRequest> {
         let mut state = self.state.lock().unwrap();
+        if state.destroyed {
+            return None;
+        }
         if state.paused {
             state.notify_workers.set(wid);
             return None;
@@ -245,8 +311,19 @@ impl QueueMinder {
     /// Process a completion for an in-flight IO request on this queue.
     pub fn complete(&self, id: ReqId, result: block::Result) {
         let mut state = self.state.lock().unwrap();
-        let ent =
-            state.in_flight.remove(&id).expect("state for request not lost");
+        let Some(ent) = state.in_flight.remove(&id) else {
+            // If we lost state for this I/O, we better have gotten here because
+            // the controller was reset and dissociated all queues. In that case
+            // we should have destroyed the `QueueMinder`s, so assert that is
+            // the case.
+            assert!(state.destroyed);
+
+            // One must imagine the guest would be happy to know the I/O *was*
+            // completed after all, but we can no longer do anything about it.
+            // We don't even know when it started anymore, so we can't report
+            // meaningful metrics about it.
+            return;
+        };
         let metric_consumer = state.metric_consumer.as_ref().map(Arc::clone);
         let is_last_req = state.in_flight.is_empty();
         if is_last_req {
