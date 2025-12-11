@@ -507,11 +507,11 @@ impl NvmeCtrl {
     fn transfer_params(&self) -> queue::TransferParams {
         let lba_data_size = 1u64
             << (self.ns_ident.lbaf[(self.ns_ident.flbas & 0xF) as usize]).lbads;
-        let max_data_tranfser_size = match self.ctrl_ident.mdts {
+        let max_data_transfer_size = match self.ctrl_ident.mdts {
             0 => u64::MAX,
             mdts => (self.ctrl.cap.mpsmin_sz() as u64) << mdts,
         };
-        queue::TransferParams { lba_data_size, max_data_tranfser_size }
+        queue::TransferParams { lba_data_size, max_data_transfer_size }
     }
 
     fn update_block_info(&mut self, info: block::DeviceInfo) {

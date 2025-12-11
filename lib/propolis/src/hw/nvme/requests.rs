@@ -75,7 +75,7 @@ impl block::DeviceQueue for NvmeBlockQueue {
                     let off = params.lba_data_size * cmd.slba;
                     let size = params.lba_data_size * (cmd.nlb as u64);
 
-                    if size > params.max_data_tranfser_size {
+                    if size > params.max_data_transfer_size {
                         permit.complete(
                             Completion::generic_err(bits::STS_INVAL_FIELD)
                                 .dnr(),
@@ -94,7 +94,7 @@ impl block::DeviceQueue for NvmeBlockQueue {
                     let off = params.lba_data_size * cmd.slba;
                     let size = params.lba_data_size * (cmd.nlb as u64);
 
-                    if size > params.max_data_tranfser_size {
+                    if size > params.max_data_transfer_size {
                         permit.complete(
                             Completion::generic_err(bits::STS_INVAL_FIELD)
                                 .dnr(),
