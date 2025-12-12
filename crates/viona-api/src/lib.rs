@@ -124,7 +124,7 @@ impl VionaFd {
         Ok(minor(&meta))
     }
 
-    /// Check VMM ioctl command against those known to not require any
+    /// Check viona ioctl command against those known to not require any
     /// copyin/copyout to function.
     const fn ioctl_usize_safe(cmd: i32) -> bool {
         matches!(
@@ -135,9 +135,10 @@ impl VionaFd {
                 | ioctls::VNA_IOC_RING_PAUSE
                 | ioctls::VNA_IOC_RING_INTR_CLR
                 | ioctls::VNA_IOC_VERSION
+                | ioctls::VNA_IOC_SET_NOTIFY_IOP
                 | ioctls::VNA_IOC_SET_PROMISC
                 | ioctls::VNA_IOC_GET_MTU
-                | ioctls::VNA_IOC_SET_MTU
+                | ioctls::VNA_IOC_SET_MTU,
         )
     }
 }

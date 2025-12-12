@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::ffi::c_void;
+use std::num::NonZeroU16;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
@@ -88,6 +89,36 @@ impl VirtioState {
 pub trait PciVirtio: VirtioDevice + Send + Sync + 'static {
     fn virtio_state(&self) -> &PciVirtioState;
     fn pci_state(&self) -> &pci::DeviceState;
+
+    #[allow(unused_variables)]
+    /// Notification that the IO port representing the queue notification
+    /// register in the device BAR has changed.
+    fn notify_port_update(&self, state: Option<NonZeroU16>) {}
+
+    /// Notification from the PCI emulation that one of the BARs has undergone a
+    /// change of configuration
+    fn bar_update(&self, bstate: pci::BarState) {
+        if bstate.id == pci::BarN::BAR0 {
+            // Notify the device about the location (if any) of the Queue Notify
+            // register in the containing BAR region.
+            let port = if bstate.decode_en {
+                // Having registered `bstate.value` as the address in BAR0 only
+                // succeeds if that address through to the size of the
+                // registered region - the virtio legacy config registers - does
+                // not wrap. The base address *could* be zero, unwise as that
+                // would be, but adding LEGACY_REG_OFF_QUEUE_NOTIFY guarantees
+                // that the computed offset here is non-zero.
+                let notify_port_addr = NonZeroU16::new(
+                    bstate.value as u16 + LEGACY_REG_OFF_QUEUE_NOTIFY as u16,
+                )
+                .expect("addition does not wrap");
+                Some(notify_port_addr)
+            } else {
+                None
+            };
+            self.notify_port_update(port);
+        }
+    }
 }
 
 impl<D: PciVirtio + Send + Sync + 'static> pci::Device for D {
@@ -162,6 +193,10 @@ impl<D: PciVirtio + Send + Sync + 'static> pci::Device for D {
         }
         state.intr_mode_updating = false;
         vs.state_cv.notify_all();
+    }
+
+    fn bar_update(&self, bstate: pci::BarState) {
+        PciVirtio::bar_update(self, bstate);
     }
 }
 
@@ -428,9 +463,9 @@ impl PciVirtioState {
 
     /// Indicate to the guest that the VirtIO device has encountered an error of
     /// some sort and requires a reset.
-    pub fn set_needs_reset(&self, _dev: &dyn VirtioDevice) {
+    pub fn set_needs_reset(&self, dev: &dyn VirtioDevice) {
         let mut state = self.state.lock().unwrap();
-        self.needs_reset_locked(_dev, &mut state);
+        self.needs_reset_locked(dev, &mut state);
     }
 
     fn queue_notify(&self, dev: &dyn VirtioDevice, queue: u16) {
@@ -624,6 +659,12 @@ impl MigrateMulti for dyn PciVirtio {
         // to the VirtIO state.
         vs.set_intr_mode(ps, ps.get_intr_mode().into(), true);
 
+        // Perform a (potentially spurious) update notification for the BAR
+        // containing the virtio registers.  This ensures that anything
+        // interested in the placement of that BAR (such as the notify-port
+        // logic) is kept well aware
+        self.bar_update(ps.bar(pci::BarN::BAR0).unwrap());
+
         Ok(())
     }
 }
@@ -796,6 +837,7 @@ enum VirtioTop {
 
 const LEGACY_REG_SZ: usize = 0x18;
 const LEGACY_REG_SZ_NO_MSIX: usize = 0x14;
+const LEGACY_REG_OFF_QUEUE_NOTIFY: usize = 0x10;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 enum LegacyReg {
