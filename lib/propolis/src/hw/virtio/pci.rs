@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::ffi::c_void;
+use std::num::NonZeroU16;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
@@ -92,16 +93,26 @@ pub trait PciVirtio: VirtioDevice + Send + Sync + 'static {
     #[allow(unused_variables)]
     /// Notification that the IO port representing the queue notification
     /// register in the device BAR has changed.
-    fn notify_port_update(&self, state: Option<u16>) {}
+    fn notify_port_update(&self, state: Option<NonZeroU16>) {}
 
-    /// Noticiation from the PCI emulation that one of the BARs has undergone a
+    /// Notification from the PCI emulation that one of the BARs has undergone a
     /// change of configuration
     fn bar_update(&self, bstate: pci::BarState) {
         if bstate.id == pci::BarN::BAR0 {
-            // Notify the device about the location (if any) of the queue notify
+            // Notify the device about the location (if any) of the Queue Notify
             // register in the containing BAR region.
             let port = if bstate.decode_en {
-                Some(bstate.value as u16 + LEGACY_REG_OFF_QUEUE_NOTIFY as u16)
+                // Having registered `bstate.value` as the address in BAR0 only
+                // succeeds if that address through to the size of the
+                // registered region - the virtio legacy config registers - does
+                // not wrap. The base address *could* be zero, unwise as that
+                // would be, but adding LEGACY_REG_OFF_QUEUE_NOTIFY guarantees
+                // that the computed offset here is non-zero.
+                let notify_port_addr = NonZeroU16::new(
+                    bstate.value as u16 + LEGACY_REG_OFF_QUEUE_NOTIFY as u16,
+                )
+                .expect("addition does not wrap");
+                Some(notify_port_addr)
             } else {
                 None
             };

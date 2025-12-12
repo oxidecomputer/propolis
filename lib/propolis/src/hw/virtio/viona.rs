@@ -74,7 +74,7 @@ enum VRingState {
 
 struct Inner {
     poller: Option<PollerHdl>,
-    iop_state: Option<u16>,
+    iop_state: Option<NonZeroU16>,
     vring_state: [VRingState; 2],
 }
 impl Inner {
@@ -585,7 +585,7 @@ impl PciVirtio for PciVirtioViona {
     fn pci_state(&self) -> &pci::DeviceState {
         &self.pci_state
     }
-    fn notify_port_update(&self, port: Option<u16>) {
+    fn notify_port_update(&self, port: Option<NonZeroU16>) {
         let mut state = self.inner.lock().unwrap();
         state.iop_state = port;
 
@@ -794,12 +794,12 @@ impl VionaHdl {
     /// buffers.
     ///
     /// With a non-zero argument, viona will attempt to attach such a hook,
-    /// replacing any currently in place. When the argument is zero, any
+    /// replacing any currently in place. When the argument is None, any
     /// existing hook is torn down.
-    fn set_notify_iop(&self, port: Option<u16>) -> io::Result<()> {
+    fn set_notify_iop(&self, port: Option<NonZeroU16>) -> io::Result<()> {
         self.0.ioctl_usize(
             viona_api::VNA_IOC_SET_NOTIFY_IOP,
-            port.unwrap_or(0) as usize,
+            port.map(|p| p.get()).unwrap_or(0) as usize,
         )?;
         Ok(())
     }
