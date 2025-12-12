@@ -789,13 +789,19 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
             ));
         }
 
-        let mut total_capacity = 0;
+        let mut total_capacity: usize = 0;
         for mapping in self.as_ref().iter() {
-            total_capacity += mapping.len;
+            total_capacity =
+                total_capacity.checked_add(mapping.len).ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::InvalidInput,
+                        "Total mapping too large",
+                    )
+                })?;
         }
 
         // Gross hack: see the comment on `MAPPING_IO_LIMIT_BYTES`.
-        if total_capacity < MAPPING_IO_LIMIT_BYTES {
+        if total_capacity <= MAPPING_IO_LIMIT_BYTES {
             // If we're motivated to avoid the zero-fill via
             // `Layout::with_size_align` + `GlobalAlloc::alloc`, we should
             // probably avoid this gross hack entirely (see comment on
@@ -816,36 +822,29 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
             let read: usize = read.try_into().expect("read is positive");
 
             // copy `read` bytes back into the iovecs and return
-            let mut remaining = read;
-            let mut offset = 0;
+            let mut remaining = &mut buf[..read];
             for mapping in self.as_ref().iter() {
-                let to_copy = std::cmp::min(remaining, mapping.len);
-                if to_copy == 0 {
-                    break;
-                }
+                let to_copy = std::cmp::min(remaining.len(), mapping.len);
 
                 // Safety: guest physical memory is READ|WRITE, and won't become
                 // unmapped as long as we hold a Mapping, which `self` implies.
                 //
-                // Sketchy: nothing guarantees the guest is not concurrently
-                // modifying this memory. Also, nothing prevents the guest from
-                // submitting the same ranges as part of another I/O where we
-                // might be doing this same operation on another thread on the
-                // same ptr/len pair. Because we are just moving u8's, it should
-                // be OK.
-                let guest_slice = unsafe {
-                    std::slice::from_raw_parts_mut(
+                // The guest may be concurrently modifying this memory, we may
+                // be concurrently reading or writing this memory (if it is
+                // submitted for a read or write on another thread, for
+                // example), but `copy_nonoverlapping` has no compunctions about
+                // concurrent mutation.
+                unsafe {
+                    copy_nonoverlapping::<u8>(
+                        remaining.as_ptr(),
                         mapping.ptr.as_ptr(),
                         mapping.len,
-                    )
-                };
+                    );
+                }
 
-                guest_slice.copy_from_slice(&buf[offset..][..to_copy]);
+                remaining = remaining.split_at_mut(to_copy).1;
 
-                remaining -= to_copy;
-                offset += to_copy;
-
-                if remaining == 0 {
+                if remaining.len() == 0 {
                     // Either we're at the last iov and we're finished copying
                     // back into the guest, or `preadv` did a short read.
                     break;
@@ -853,7 +852,7 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
             }
 
             // We should never read more than the guest mappings could hold.
-            assert_eq!(remaining, 0);
+            assert_eq!(remaining.len(), 0);
 
             Ok(read)
         } else {
@@ -889,28 +888,44 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
             ));
         }
 
-        let mut total_capacity = 0;
+        let mut total_capacity: usize = 0;
         for mapping in self.as_ref().iter() {
-            total_capacity += mapping.len;
+            total_capacity =
+                total_capacity.checked_add(mapping.len).ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::InvalidInput,
+                        "Total mapping too large",
+                    )
+                })?;
         }
 
         // Gross hack: see the comment on `MAPPING_IO_LIMIT_BYTES`.
-        let written = if total_capacity < MAPPING_IO_LIMIT_BYTES {
-            let mut buf = Vec::with_capacity(total_capacity);
+        let written = if total_capacity <= MAPPING_IO_LIMIT_BYTES {
+            // If we're motivated to avoid the zero-fill via
+            // `Layout::with_size_align` + `GlobalAlloc::alloc`, we should
+            // probably avoid this gross hack entirely (see comment on
+            // MAPPING_IO_LIMIT_BYTES).
+            let mut buf = vec![0; total_capacity];
+
+            let mut remaining = buf.as_mut_slice();
             for mapping in self.as_ref().iter() {
-                // Safety: these pointer/length pairs are into guest physical
-                // memory, which the VM has no control over. Having a `{Sub}Mapping`
-                // is a commitment that the guest memory mapping is valid, and will
-                // remain so until `pwritev` returns. We're going to immediately
-                // read from this slice, but it would be just as valid to pass these
-                // as an iovec directly to pwritev.
-                let s = unsafe {
-                    std::slice::from_raw_parts(
+                // Safety: guest physical memory is READ|WRITE, and won't become
+                // unmapped as long as we hold a Mapping, which `self` implies.
+                //
+                // The guest may be concurrently modifying this memory, we may
+                // be concurrently reading or writing this memory (if it is
+                // submitted for a read or write on another thread, for
+                // example), but `copy_nonoverlapping` has no compunctions about
+                // concurrent mutation.
+                unsafe {
+                    copy_nonoverlapping::<u8>(
                         mapping.ptr.as_ptr() as *const u8,
+                        remaining.as_mut_ptr(),
                         mapping.len,
-                    )
-                };
-                buf.extend_from_slice(s);
+                    );
+                }
+
+                remaining = remaining.split_at_mut(mapping.len).1;
             }
 
             let iovs = [iovec {
