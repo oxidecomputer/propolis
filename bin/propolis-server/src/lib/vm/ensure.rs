@@ -581,9 +581,28 @@ async fn initialize_vm_objects(
 
     init.register_guest_hv_interface(guest_hv_lifecycle);
     init.initialize_cpus().await?;
+
+    let total_cpus = pbind::online_cpus()?;
+    let vcpu_count: i32 = machine
+        .vcpus
+        .len()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("more than 2^31 vCPUs"))?;
+    let bind_cpus = if vcpu_count > total_cpus / 2 {
+        let mut bind_cpus = Vec::new();
+        for i in 0..vcpu_count {
+            // Bind to the upper range of CPUs, fairly arbitrary.
+            bind_cpus.push(total_cpus - vcpu_count + i);
+        }
+        Some(bind_cpus)
+    } else {
+        None
+    };
+
     let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
         &machine,
         event_queue.clone() as Arc<dyn super::guest_event::VcpuEventHandler>,
+        bind_cpus,
         log.new(slog::o!("component" => "vcpu_tasks")),
     )?);
 

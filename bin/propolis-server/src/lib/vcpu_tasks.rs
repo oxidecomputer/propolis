@@ -22,6 +22,8 @@ use thiserror::Error;
 pub enum VcpuTaskError {
     #[error("Failed to spawn a vCPU backing thread: {0}")]
     BackingThreadSpawnFailed(std::io::Error),
+    #[error("CPU bindings did not match vCPUs: {bindings} bindings for {vcpus} vCPUs")]
+    CpuBindingMismatch { bindings: usize, vcpus: usize },
 }
 
 pub struct VcpuTasks {
@@ -41,11 +43,30 @@ impl VcpuTasks {
     pub(crate) fn new(
         machine: &propolis::Machine,
         event_handler: Arc<dyn super::vm::guest_event::VcpuEventHandler>,
+        bind_cpus: Option<Vec<pbind::processorid_t>>,
         log: slog::Logger,
     ) -> Result<Self, VcpuTaskError> {
         let generation = Arc::new(AtomicUsize::new(0));
+
+        // We take in an `Option<Vec<..>>` but a `Vec<Option<..>>` is more
+        // convenient for spawning below, so we have to shuffle values a bit..
+        let mut bindings = vec![None; machine.vcpus.len()];
+        if let Some(bind_cpus) = bind_cpus {
+            if bind_cpus.len() != machine.vcpus.len() {
+                return Err(VcpuTaskError::CpuBindingMismatch {
+                    bindings: bind_cpus.len(),
+                    vcpus: machine.vcpus.len(),
+                });
+            }
+            for i in 0..machine.vcpus.len() {
+                bindings[i] = Some(bind_cpus[i]);
+            }
+        }
+
         let mut tasks = Vec::new();
-        for vcpu in machine.vcpus.iter().map(Arc::clone) {
+        for (vcpu, bind_cpu) in
+            machine.vcpus.iter().map(Arc::clone).zip(bindings.into_iter())
+        {
             let (task, ctrl) =
                 propolis::tasks::TaskHdl::new_held(Some(vcpu.barrier_fn()));
             let task_log = log.new(slog::o!("vcpu" => vcpu.id));
@@ -54,6 +75,10 @@ impl VcpuTasks {
             let thread = std::thread::Builder::new()
                 .name(format!("vcpu-{}", vcpu.id))
                 .spawn(move || {
+                    if let Some(bind_cpu) = bind_cpu {
+                        pbind::bind_lwp(bind_cpu)
+                            .expect("can bind to specified CPU");
+                    }
                     Self::vcpu_loop(
                         vcpu.as_ref(),
                         task,

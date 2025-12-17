@@ -54,6 +54,9 @@ pub struct Main {
     pub memory: usize,
     pub use_reservoir: Option<bool>,
     pub cpuid_profile: Option<String>,
+    /// How vCPUs should be bound to physical processors, if at all. If not
+    /// provided, vCPUs are not bound (equivalent to setting `any`).
+    pub cpu_binding: Option<BindingStrategy>,
     /// Process exitcode to emit if/when instance halts
     ///
     /// Default: 0
@@ -67,6 +70,16 @@ pub struct Main {
 
     /// Request bootrom override boot order using the devices specified
     pub boot_order: Option<Vec<String>>,
+}
+
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BindingStrategy {
+    /// vCPUs are not bound to any particular physical processor.
+    Any,
+    /// vCPUs are bound to the highest-numbered processors in the system, one
+    /// vCPU per CPU, with the last vCPU bound to the last physical processor.
+    FromLast,
 }
 
 /// A hard-coded device, either enabled by default or accessible locally
