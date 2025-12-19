@@ -5350,6 +5350,7 @@ dependencies = [
  "slog-async",
  "slog-term",
  "softnpu",
+ "static_assertions",
  "strum 0.26.3",
  "tempfile",
  "thiserror 1.0.64",
