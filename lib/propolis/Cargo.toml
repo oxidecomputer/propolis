@@ -45,6 +45,7 @@ ispf = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 softnpu = { workspace = true, optional = true }
 dlpi = { workspace = true, optional = true }
+static_assertions = "1.1.0"
 
 [dev-dependencies]
 crossbeam-channel.workspace = true

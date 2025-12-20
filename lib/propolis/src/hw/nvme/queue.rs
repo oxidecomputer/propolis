@@ -12,6 +12,7 @@ use super::cmds::Completion;
 use crate::accessors::MemAccessor;
 use crate::block;
 use crate::common::*;
+use crate::hw::nvme::DeviceId;
 use crate::hw::pci;
 use crate::migrate::MigrateStateError;
 use crate::vmm::MemCtx;
@@ -20,18 +21,28 @@ use thiserror::Error;
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
-    fn nvme_cqe(qid: u16, idx: u16, phase: u8) {}
-    fn nvme_sq_dbbuf_read(qid: u16, val: u32, tail: u16) {}
-    fn nvme_sq_dbbuf_write(qid: u16, head: u16) {}
-    fn nvme_sq_dbbuf_write_shadow(qid: u16, head: u16) {}
-    fn nvme_cq_dbbuf_read(qid: u16, val: u32, tail: u16) {}
-    fn nvme_cq_dbbuf_write(qid: u16, head: u16) {}
-    fn nvme_cq_dbbuf_write_shadow(qid: u16, head: u16) {}
+    fn nvme_cqe(devcq_id: u64, idx: u16, phase: u8) {}
+    fn nvme_sq_dbbuf_read(devsq_id: u64, val: u32, tail: u16) {}
+    fn nvme_sq_dbbuf_write(devsq_id: u64, head: u16) {}
+    fn nvme_sq_dbbuf_write_shadow(devsq_id: u64, head: u16) {}
+    fn nvme_cq_dbbuf_read(devcq_id: u64, val: u32, tail: u16) {}
+    fn nvme_cq_dbbuf_write(devcq_id: u64, head: u16) {}
+    fn nvme_cq_dbbuf_write_shadow(devcq_id: u64, head: u16) {}
 }
 
 /// Each queue is identified by a 16-bit ID.
 ///
 /// See NVMe 1.0e Section 4.1.4 Queue Identifier
+///
+/// Submission and completion queue IDs are distinct namespaces, so a device
+/// can have both a "Submission Queue 1" and "Completion Queue 1".
+///
+/// For USDT probes, we combine this ID with an NVMe controller ID to produce a
+/// `devq_id`. This combined identifier is still ambiguous beteen one submission
+/// queue and one completion queue. Contextually there is typically only one
+/// reasonable interpretation of the ID, but the probe arguments are named
+/// `devsq_id` or `devcq_id` to be explicit about identifying a Submission or
+/// Completion queue, respectively.
 pub type QueueId = u16;
 
 /// The minimum number of entries in either a Completion or Submission Queue.
@@ -330,9 +341,9 @@ impl QueueGuard<'_, CompQueueState> {
     }
 
     /// Write update to the EventIdx in Doorbell Buffer page, if possible
-    fn db_buf_write(&mut self, qid: QueueId, mem: &MemCtx) {
+    fn db_buf_write(&mut self, devq_id: u64, mem: &MemCtx) {
         if let Some(db_buf) = self.state.db_buf {
-            probes::nvme_cq_dbbuf_write!(|| (qid, self.state.tail));
+            probes::nvme_cq_dbbuf_write!(|| (devq_id, self.state.tail));
             // Keep EventIdx populated with the position of the CQ tail.  We are
             // not especially concerned with receiving timely (doorbell) updates
             // from the guest about where the head pointer sits.  We keep our
@@ -352,21 +363,21 @@ impl QueueGuard<'_, CompQueueState> {
     /// We would expect the guest driver to keep this value in a valid state per
     /// the specification, but qemu notes that certain consumers fail to do so
     /// on the admin queue.  We follow their lead to avoid issues.
-    fn db_buf_write_shadow(&mut self, qid: QueueId, mem: &MemCtx) {
+    fn db_buf_write_shadow(&mut self, devq_id: u64, mem: &MemCtx) {
         if let Some(db_buf) = self.state.db_buf {
-            probes::nvme_cq_dbbuf_write_shadow!(|| (qid, self.state.head));
+            probes::nvme_cq_dbbuf_write_shadow!(|| (devq_id, self.state.head));
             fence(Ordering::Release);
             mem.write(db_buf.shadow, &self.state.head);
         }
     }
 
     /// Read update from the Shadow in Doorbell Buffer page, if possible
-    fn db_buf_read(&mut self, qid: QueueId, mem: &MemCtx) {
+    fn db_buf_read(&mut self, devq_id: u64, mem: &MemCtx) {
         if let Some(db_buf) = self.state.db_buf {
             if let Some(new_head) = mem.read::<u32>(db_buf.shadow) {
                 let new_head = *new_head;
                 probes::nvme_cq_dbbuf_read!(|| (
-                    qid,
+                    devq_id,
                     new_head,
                     self.state.head
                 ));
@@ -450,9 +461,9 @@ impl QueueGuard<'_, SubQueueState> {
     }
 
     /// Write update to the EventIdx in Doorbell Buffer page, if possible
-    fn db_buf_write(&mut self, qid: QueueId, mem: &MemCtx) {
+    fn db_buf_write(&mut self, devq_id: u64, mem: &MemCtx) {
         if let Some(db_buf) = self.state.db_buf {
-            probes::nvme_sq_dbbuf_write!(|| (qid, self.state.head));
+            probes::nvme_sq_dbbuf_write!(|| (devq_id, self.state.head));
             // Keep EventIdx populated with the position of the SQ head.  As
             // long as there are entries available between the head and tail, we
             // do not want the guest taking exits for ultimately redundant
@@ -470,21 +481,21 @@ impl QueueGuard<'_, SubQueueState> {
     ///
     /// See [QueueGuard<SubQueueState>::db_buf_write_shadow()] for why we would
     /// write to a "guest-owned" page.
-    fn db_buf_write_shadow(&mut self, qid: QueueId, mem: &MemCtx) {
+    fn db_buf_write_shadow(&mut self, devq_id: u64, mem: &MemCtx) {
         if let Some(db_buf) = self.state.db_buf {
-            probes::nvme_sq_dbbuf_write_shadow!(|| (qid, self.state.tail));
+            probes::nvme_sq_dbbuf_write_shadow!(|| (devq_id, self.state.tail));
             fence(Ordering::Release);
             mem.write(db_buf.shadow, &self.state.tail);
         }
     }
 
     /// Read update from the Shadow in Doorbell Buffer page, if possible
-    fn db_buf_read(&mut self, qid: QueueId, mem: &MemCtx) {
+    fn db_buf_read(&mut self, devq_id: u64, mem: &MemCtx) {
         if let Some(db_buf) = self.state.db_buf {
             if let Some(new_tail) = mem.read::<u32>(db_buf.shadow) {
                 let new_tail = *new_tail;
                 probes::nvme_sq_dbbuf_read!(|| (
-                    qid,
+                    devq_id,
                     new_tail,
                     self.state.head
                 ));
@@ -527,6 +538,9 @@ pub enum QueueUpdateError {
 #[derive(Copy, Clone)]
 pub struct CreateParams {
     pub id: QueueId,
+    // Not strictly necessary for submission or completion queues, but helpful
+    // to disambiguate the queue in probes.
+    pub device_id: DeviceId,
     pub base: GuestAddr,
     pub size: u32,
 }
@@ -535,6 +549,10 @@ pub struct CreateParams {
 pub struct SubQueue {
     /// The ID of this Submission Queue.
     id: QueueId,
+
+    /// The ID of the device that owns this submission queue. Kept here only to
+    /// produce `devsq_id` for DTrace probes.
+    device_id: DeviceId,
 
     /// The corresponding Completion Queue.
     cq: Arc<CompQueue>,
@@ -566,10 +584,11 @@ impl SubQueue {
         cq: Arc<CompQueue>,
         acc_mem: MemAccessor,
     ) -> Result<Arc<Self>, QueueCreateErr> {
-        let CreateParams { id, base, size } = params;
+        let CreateParams { id, device_id, base, size } = params;
         validate(id == ADMIN_QUEUE_ID, base, size)?;
         let sq = Arc::new(Self {
             id,
+            device_id,
             cq,
             state: SubQueueState::new(size, acc_mem),
             cur_head: AtomicU16::new(0),
@@ -597,7 +616,7 @@ impl SubQueue {
         state.push_tail_to(idx)?;
         if self.id == ADMIN_QUEUE_ID {
             if let Some(mem) = state.acc_mem.access() {
-                state.db_buf_write_shadow(self.id, &mem);
+                state.db_buf_write_shadow(self.devq_id(), &mem);
             }
         }
 
@@ -620,14 +639,15 @@ impl SubQueue {
 
         // Check for last-minute updates to the tail via any configured doorbell
         // page, prior to attempting the pop itself.
-        state.db_buf_read(self.id, &mem);
+        state.db_buf_read(self.devq_id(), &mem);
 
         if let Some(idx) = state.pop_head(&self.cur_head) {
             let addr = self.base.offset::<SubmissionQueueEntry>(idx as usize);
 
             if let Some(ent) = mem.read::<SubmissionQueueEntry>(addr) {
-                state.db_buf_write(self.id, &mem);
-                state.db_buf_read(self.id, &mem);
+                let devq_id = self.devq_id();
+                state.db_buf_write(devq_id, &mem);
+                state.db_buf_read(devq_id, &mem);
                 return Some((ent, permit.promote(ent.cid()), idx));
             }
             // TODO: set error state on queue/ctrl if we cannot read entry
@@ -678,6 +698,11 @@ impl SubQueue {
         cqe.sqhd = self.cur_head.load(Ordering::Acquire);
     }
 
+    /// Return a VM-unique identifier for this submission queue
+    pub(crate) fn devq_id(&self) -> u64 {
+        super::devq_id(self.device_id, self.id)
+    }
+
     pub(super) fn export(&self) -> migrate::NvmeSubQueueV1 {
         let inner = self.state.inner.lock().unwrap();
         migrate::NvmeSubQueueV1 {
@@ -713,6 +738,10 @@ pub struct CompQueue {
     /// The ID of this Completion Queue.
     id: QueueId,
 
+    /// The ID of the device that owns this completion queue. Kept here only to
+    /// produce `devcq_id` for DTrace probes.
+    device_id: DeviceId,
+
     /// The Interrupt Vector used to signal to the host (VM) upon pushing
     /// entries onto the Completion Queue.
     iv: u16,
@@ -739,10 +768,11 @@ impl CompQueue {
         hdl: pci::MsixHdl,
         acc_mem: MemAccessor,
     ) -> Result<Self, QueueCreateErr> {
-        let CreateParams { id, base, size } = params;
+        let CreateParams { id, device_id, base, size } = params;
         validate(id == ADMIN_QUEUE_ID, base, size)?;
         Ok(Self {
             id,
+            device_id,
             iv,
             state: CompQueueState::new(size, acc_mem),
             base,
@@ -757,7 +787,7 @@ impl CompQueue {
         state.pop_head_to(idx)?;
         if self.id == ADMIN_QUEUE_ID {
             if let Some(mem) = state.acc_mem.access() {
-                state.db_buf_write_shadow(self.id, &mem)
+                state.db_buf_write_shadow(self.devq_id(), &mem)
             }
         }
         Ok(())
@@ -804,7 +834,7 @@ impl CompQueue {
             // If the CQ appears full, but the db_buf shadow is configured, do a
             // last-minute check to see if entries have been consumed/freed
             // without a doorbell call.
-            state.db_buf_read(self.id, mem);
+            state.db_buf_read(self.devq_id(), mem);
         }
         if state.take_avail(sq) {
             Some(ProtoPermit::new(self, sq))
@@ -824,7 +854,7 @@ impl CompQueue {
             .push_tail()
             .expect("CQ should have available space for assigned permit");
 
-        probes::nvme_cqe!(|| (self.id, idx, u8::from(phase)));
+        probes::nvme_cqe!(|| (self.devq_id(), idx, u8::from(phase)));
 
         // The only definite indicator that a CQE has become valid is the phase
         // bit being toggled.  Since the interface for writing to guest memory
@@ -844,8 +874,9 @@ impl CompQueue {
             cqe.set_phase(phase);
             mem.write(addr, &cqe);
 
-            state.db_buf_read(self.id, &mem);
-            state.db_buf_write(self.id, &mem);
+            let devq_id = self.devq_id();
+            state.db_buf_read(devq_id, &mem);
+            state.db_buf_write(devq_id, &mem);
         } else {
             // TODO: mark the queue/controller in error state?
         }
@@ -868,6 +899,11 @@ impl CompQueue {
                 mem.write(db_buf.shadow, &(state.state.head as u32));
             }
         }
+    }
+
+    /// Return a VM-unique identifier for this completion queue
+    pub(crate) fn devq_id(&self) -> u64 {
+        super::devq_id(self.device_id, self.id)
     }
 
     pub(super) fn export(&self) -> migrate::NvmeCompQueueV1 {
@@ -918,13 +954,18 @@ pub struct ProtoPermit {
     /// The Submission Queue for which this entry is reserved.
     sq: Weak<SubQueue>,
 
-    /// The Submission Queue's ID (stored separately to avoid going through
-    /// the Weak ref).
-    sqid: u16,
+    /// The ID for the device and Submission Queue the command associated with
+    /// this permit was submtited from. Stored separately to avoid going through
+    /// the Weak ref.
+    devsq_id: u64,
 }
 impl ProtoPermit {
     fn new(cq: &Arc<CompQueue>, sq: &Arc<SubQueue>) -> Self {
-        Self { cq: Arc::downgrade(cq), sq: Arc::downgrade(sq), sqid: sq.id }
+        Self {
+            cq: Arc::downgrade(cq),
+            sq: Arc::downgrade(sq),
+            devsq_id: sq.devq_id(),
+        }
     }
 
     /// Promote a "proto" permit to a [Permit].
@@ -936,7 +977,7 @@ impl ProtoPermit {
         Permit {
             cq: self.cq,
             sq: self.sq,
-            sqid: self.sqid,
+            devsq_id: self.devsq_id,
             cid,
             _nodrop: NoDropPermit,
         }
@@ -963,8 +1004,9 @@ pub struct Permit {
     /// The Submission Queue for which this entry is reserved.
     sq: Weak<SubQueue>,
 
-    /// The Submission Queue ID the request came in on.
-    sqid: u16,
+    /// The Submission Queue and device ID the request came in on. Retained as a
+    /// consistent source identifier for probes.
+    devsq_id: u64,
 
     /// ID of command holding this permit.  Used to populate `cid` field in
     /// Completion Queue Entry.
@@ -1009,10 +1051,10 @@ impl Permit {
         self.cid
     }
 
-    /// Get the ID of the Submission Queue the command associated with this
-    /// permit was submitted on.
-    pub fn sqid(&self) -> u16 {
-        self.sqid
+    /// Get the ID of the device and Submission Queue the command associated
+    /// with this permit was submitted on.
+    pub fn devsq_id(&self) -> u64 {
+        self.devsq_id
     }
 
     /// A device reset may cause us to abandon some in-flight I/O, dropping the
@@ -1046,7 +1088,7 @@ impl Debug for Permit {
         f.debug_struct("Permit")
             .field("sq", &self.sq)
             .field("cq", &self.cq)
-            .field("sqid", &self.sqid)
+            .field("devsq_id", &self.devsq_id)
             .field("cid", &self.cid)
             .finish()
     }
@@ -1139,21 +1181,35 @@ mod test {
         let machine = Machine::new_test()?;
         let hdl = pci::MsixHdl::new_test();
         let write_base = GuestAddr(1024 * 1024);
-        let tmpl =
-            CreateParams { id: ADMIN_QUEUE_ID, base: write_base, size: 0 };
+        let tmpl = CreateParams {
+            id: ADMIN_QUEUE_ID,
+            device_id: 0,
+            base: write_base,
+            size: 0,
+        };
 
         let acc_mem = || machine.acc_mem.child(None);
 
         // Admin queues must be less than 4K
         let cq = CompQueue::new(
-            CreateParams { id: ADMIN_QUEUE_ID, size: 1024, ..tmpl },
+            CreateParams {
+                id: ADMIN_QUEUE_ID,
+                device_id: 0,
+                size: 1024,
+                ..tmpl
+            },
             0,
             hdl.clone(),
             acc_mem(),
         );
         assert!(matches!(cq, Ok(_)));
         let cq = CompQueue::new(
-            CreateParams { id: ADMIN_QUEUE_ID, size: 5 * 1024, ..tmpl },
+            CreateParams {
+                id: ADMIN_QUEUE_ID,
+                device_id: 0,
+                size: 5 * 1024,
+                ..tmpl
+            },
             0,
             hdl.clone(),
             acc_mem(),
@@ -1162,14 +1218,14 @@ mod test {
 
         // I/O queues must be less than 64K
         let cq = CompQueue::new(
-            CreateParams { id: 1, size: 1024, ..tmpl },
+            CreateParams { id: 1, device_id: 0, size: 1024, ..tmpl },
             0,
             hdl.clone(),
             acc_mem(),
         );
         assert!(matches!(cq, Ok(_)));
         let cq = CompQueue::new(
-            CreateParams { id: 1, size: 65 * 1024, ..tmpl },
+            CreateParams { id: 1, device_id: 0, size: 65 * 1024, ..tmpl },
             0,
             hdl.clone(),
             acc_mem(),
@@ -1178,14 +1234,14 @@ mod test {
 
         // Neither must be less than 2
         let cq = CompQueue::new(
-            CreateParams { id: ADMIN_QUEUE_ID, size: 1, ..tmpl },
+            CreateParams { id: ADMIN_QUEUE_ID, device_id: 0, size: 1, ..tmpl },
             0,
             hdl.clone(),
             acc_mem(),
         );
         assert!(matches!(cq, Err(QueueCreateErr::InvalidSize)));
         let cq = CompQueue::new(
-            CreateParams { id: 1, size: 1, ..tmpl },
+            CreateParams { id: 1, device_id: 0, size: 1, ..tmpl },
             0,
             hdl.clone(),
             acc_mem(),
@@ -1209,6 +1265,7 @@ mod test {
             CompQueue::new(
                 CreateParams {
                     id: ADMIN_QUEUE_ID,
+                    device_id: 0,
                     base: write_base,
                     size: 1024,
                 },
@@ -1220,7 +1277,12 @@ mod test {
         );
         let io_cq = Arc::new(
             CompQueue::new(
-                CreateParams { id: 1, base: write_base, size: 1024 },
+                CreateParams {
+                    id: 1,
+                    device_id: 0,
+                    base: write_base,
+                    size: 1024,
+                },
                 0,
                 hdl,
                 acc_mem(),
@@ -1230,7 +1292,12 @@ mod test {
 
         // Admin queues must be less than 4K
         let sq = SubQueue::new(
-            CreateParams { id: ADMIN_QUEUE_ID, base: read_base, size: 1024 },
+            CreateParams {
+                id: ADMIN_QUEUE_ID,
+                device_id: 0,
+                base: read_base,
+                size: 1024,
+            },
             admin_cq.clone(),
             acc_mem(),
         );
@@ -1238,6 +1305,7 @@ mod test {
         let sq = SubQueue::new(
             CreateParams {
                 id: ADMIN_QUEUE_ID,
+                device_id: 0,
                 base: read_base,
                 size: 5 * 1024,
             },
@@ -1248,13 +1316,18 @@ mod test {
 
         // I/O queues must be less than 64K
         let sq = SubQueue::new(
-            CreateParams { id: 1, base: read_base, size: 1024 },
+            CreateParams { id: 1, device_id: 0, base: read_base, size: 1024 },
             io_cq.clone(),
             acc_mem(),
         );
         assert!(matches!(sq, Ok(_)));
         let sq = SubQueue::new(
-            CreateParams { id: 1, base: read_base, size: 65 * 1024 },
+            CreateParams {
+                id: 1,
+                device_id: 0,
+                base: read_base,
+                size: 65 * 1024,
+            },
             io_cq,
             acc_mem(),
         );
@@ -1262,13 +1335,18 @@ mod test {
 
         // Neither must be less than 2
         let sq = SubQueue::new(
-            CreateParams { id: ADMIN_QUEUE_ID, base: read_base, size: 1 },
+            CreateParams {
+                id: ADMIN_QUEUE_ID,
+                device_id: 0,
+                base: read_base,
+                size: 1,
+            },
             admin_cq.clone(),
             acc_mem(),
         );
         assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
         let sq = SubQueue::new(
-            CreateParams { id: 1, base: read_base, size: 1 },
+            CreateParams { id: 1, device_id: 0, base: read_base, size: 1 },
             admin_cq,
             acc_mem(),
         );
@@ -1306,7 +1384,7 @@ mod test {
         // Create our queues
         let cq = Arc::new(
             CompQueue::new(
-                CreateParams { id: 1, base: write_base, size: 4 },
+                CreateParams { id: 1, device_id: 0, base: write_base, size: 4 },
                 0,
                 hdl,
                 acc_mem(),
@@ -1315,7 +1393,7 @@ mod test {
         );
         let sq = Arc::new(
             SubQueue::new(
-                CreateParams { id: 1, base: read_base, size: 4 },
+                CreateParams { id: 1, device_id: 0, base: read_base, size: 4 },
                 cq.clone(),
                 acc_mem(),
             )
@@ -1385,7 +1463,7 @@ mod test {
         // Purposely make the CQ smaller to test kicks
         let cq = Arc::new(
             CompQueue::new(
-                CreateParams { id: 1, base: write_base, size: 2 },
+                CreateParams { id: 1, device_id: 0, base: write_base, size: 2 },
                 0,
                 hdl,
                 acc_mem(),
@@ -1394,7 +1472,7 @@ mod test {
         );
         let sq = Arc::new(
             SubQueue::new(
-                CreateParams { id: 1, base: read_base, size: 4 },
+                CreateParams { id: 1, device_id: 0, base: read_base, size: 4 },
                 cq.clone(),
                 acc_mem(),
             )
@@ -1456,7 +1534,7 @@ mod test {
         let sq_size = rng.random_range(512..2048);
         let cq = Arc::new(
             CompQueue::new(
-                CreateParams { id: 1, base: write_base, size: 4 },
+                CreateParams { id: 1, device_id: 0, base: write_base, size: 4 },
                 0,
                 hdl,
                 acc_mem(),
@@ -1465,7 +1543,12 @@ mod test {
         );
         let sq = Arc::new(
             SubQueue::new(
-                CreateParams { id: 1, base: read_base, size: sq_size },
+                CreateParams {
+                    id: 1,
+                    device_id: 0,
+                    base: read_base,
+                    size: sq_size,
+                },
                 cq.clone(),
                 acc_mem(),
             )

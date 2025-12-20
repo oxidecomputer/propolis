@@ -5,6 +5,7 @@
 use std::convert::TryInto;
 use std::mem::size_of;
 use std::num::NonZeroUsize;
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
@@ -31,13 +32,33 @@ mod requests;
 use bits::*;
 use queue::{CompQueue, QueueId, SubQueue};
 
+/// Static for generating unique NVMe device identifiers across a VM.
+static NEXT_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
+
+type DeviceId = u32;
+
 #[usdt::provider(provider = "propolis")]
 mod probes {
-    fn nvme_doorbell(off: u64, qid: u16, is_cq: u8, val: u16) {}
+    fn nvme_doorbell(off: u64, devq_id: u64, is_cq: u8, val: u16) {}
     fn nvme_doorbell_admin_cq(val: u16) {}
     fn nvme_doorbell_admin_sq(val: u16) {}
     fn nvme_admin_cmd(opcode: u8, prp1: u64, prp2: u64) {}
-    fn nvme_block_notify(sqid: u16, block_qid: u16, occupied_hint: u16) {}
+    fn nvme_block_notify(devsq_id: u64, block_devqid: u64, occupied_hint: u16) {
+    }
+}
+
+/// Combine an NVMe device and queue ID into a single u64 for probes
+pub(crate) fn devq_id(dev: DeviceId, queue: QueueId) -> u64 {
+    // We'll use the low 16 bits for the queue ID. Assert at compile time that
+    // queue IDs cannot go above that. Clippy helpfully asserts this is an
+    // absurd comparison, so silence that. If you see a rustc error here you
+    // must have changed the type of QueueId such this is no longer absurd!
+    #[allow(clippy::absurd_extreme_comparisons)]
+    {
+        static_assertions::const_assert!(QueueId::MAX <= u16::MAX);
+    }
+
+    ((dev as u64) << 16) | (queue as u64)
 }
 
 /// The max number of MSI-X interrupts we support
@@ -154,6 +175,12 @@ const MAX_NUM_IO_QUEUES: usize = MAX_NUM_QUEUES - 1;
 
 /// NVMe Controller
 struct NvmeCtrl {
+    /// A distinguishing identifier for this NVMe controller across the VM.
+    /// Useful mostly to distinguish queues and commands as seen in probes.
+    /// `device_id` is held constant across NVMe resets, but not persisted
+    /// across export and import.
+    device_id: DeviceId,
+
     /// Internal NVMe Controller state
     ctrl: CtrlState,
 
@@ -185,6 +212,7 @@ impl NvmeCtrl {
         self.create_cq(
             queue::CreateParams {
                 id: queue::ADMIN_QUEUE_ID,
+                device_id: self.device_id,
                 base: GuestAddr(self.ctrl.admin_cq_base),
                 // Convert from 0's based
                 size: u32::from(self.ctrl.aqa.acqs()) + 1,
@@ -196,6 +224,7 @@ impl NvmeCtrl {
         self.create_sq(
             queue::CreateParams {
                 id: queue::ADMIN_QUEUE_ID,
+                device_id: self.device_id,
                 base: GuestAddr(self.ctrl.admin_sq_base),
                 // Convert from 0's based
                 size: u32::from(self.ctrl.aqa.asqs()) + 1,
@@ -589,6 +618,7 @@ impl NvmeCtrl {
             self.create_cq(
                 queue::CreateParams {
                     id: cqi.id,
+                    device_id: self.device_id,
                     base: GuestAddr(cqi.base),
                     size: cqi.size,
                 },
@@ -611,6 +641,7 @@ impl NvmeCtrl {
                 .create_sq(
                     queue::CreateParams {
                         id: sqi.id,
+                        device_id: self.device_id,
                         base: GuestAddr(sqi.base),
                         size: sqi.size,
                     },
@@ -742,6 +773,11 @@ pub struct PciNvme {
     /// accesses without stacking them up behind one central lock.
     is_enabled: AtomicBool,
 
+    /// Duplicate of the controller NVMe device ID, but not requiring locking
+    /// [NvmeCtrl] to read.  This is used to provide additional context in
+    /// NVMe-related probes.
+    device_id: DeviceId,
+
     /// Access to NVMe Submission and Completion queues.
     ///
     /// These are protected with per-slot (queue ID) locks, so actions taken on
@@ -849,6 +885,7 @@ impl PciNvme {
         let csts = Status(0);
 
         let state = NvmeCtrl {
+            device_id: NEXT_DEVICE_ID.fetch_add(1, Ordering::Relaxed),
             ctrl: CtrlState { cap, cc, csts, ..Default::default() },
             doorbell_buf: None,
             msix_hdl: None,
@@ -879,9 +916,13 @@ impl PciNvme {
                 }
             }));
 
+            // Cache device ID before we move it into the Mutex below.
+            let device_id = state.device_id;
+
             PciNvme {
                 state: Mutex::new(state),
                 is_enabled: AtomicBool::new(false),
+                device_id,
                 pci_state,
                 queues: NvmeQueues::default(),
                 block_attach,
@@ -1110,9 +1151,12 @@ impl PciNvme {
                 // 32-bit register but ignore reserved top 16-bits
                 let val = wo.read_u32() as u16;
 
+                // Mix in the device ID for probe purposes
+                let devq_id = devq_id(self.device_id, qid);
+
                 probes::nvme_doorbell!(|| (
                     off as u64,
-                    qid,
+                    devq_id,
                     u8::from(is_cq),
                     val
                 ));
@@ -1188,9 +1232,12 @@ impl PciNvme {
                 })
             {
                 let block_qid = queue::sqid_to_block_qid(sqid);
+                let devsq_id = devq_id(self.device_id, sqid);
+                let block_devqid =
+                    block::devq_id(self.block_attach.device_id(), block_qid);
                 probes::nvme_block_notify!(|| (
-                    sqid,
-                    u16::from(block_qid),
+                    devsq_id,
+                    block_devqid,
                     num_occupied
                 ));
                 self.block_attach.notify(
@@ -1207,14 +1254,17 @@ impl PciNvme {
             let sq = guard.as_ref().unwrap();
 
             let num_occupied = sq.notify_tail(val)?;
+            let devsq_id = sq.devq_id();
             // Notification to block layer cannot be issued with SQ lock held
             drop(guard);
 
             assert_ne!(qid, queue::ADMIN_QUEUE_ID);
             let block_qid = queue::sqid_to_block_qid(qid);
+            let block_devqid =
+                block::devq_id(self.block_attach.device_id(), block_qid);
             probes::nvme_block_notify!(|| (
-                qid,
-                u16::from(block_qid),
+                devsq_id,
+                block_devqid,
                 num_occupied
             ));
             self.block_attach

@@ -12,17 +12,37 @@ use crate::hw::nvme::{bits, cmds::Completion, queue::SubQueue};
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
-    fn nvme_read_enqueue(qid: u16, idx: u16, cid: u16, off: u64, sz: u64) {}
-    fn nvme_read_complete(qid: u16, cid: u16, res: u8) {}
+    // Note that unlike the probes in `queue.rs`, the probes here provide a
+    // `devsq_id` for completion as well as enqueuement. The submission queue is
+    // the one the command was originally submitted on.
+    //
+    // As long as queues are not destroyed (and the device is not reset), a
+    // `(devsq_id, cid)` tuple seen in an `nvme_*_enqueue` probably will not be
+    // reused before that same tuple is used in a corresponding
+    // `nvme_*_complete` probe. It is possible, but such a case is a
+    // guest error and unlikely. From the NVM Express Base Specification:
+    //
+    // > The Command Identifier field in the SQE shall be unique among all
+    // > outstanding commands associated with that queue.
+    fn nvme_read_enqueue(devsq_id: u64, idx: u16, cid: u16, off: u64, sz: u64) {
+    }
+    fn nvme_read_complete(devsq_id: u64, cid: u16, res: u8) {}
 
-    fn nvme_write_enqueue(qid: u16, idx: u16, cid: u16, off: u64, sz: u64) {}
-    fn nvme_write_complete(qid: u16, cid: u16, res: u8) {}
+    fn nvme_write_enqueue(
+        devsq_id: u64,
+        idx: u16,
+        cid: u16,
+        off: u64,
+        sz: u64,
+    ) {
+    }
+    fn nvme_write_complete(devsq_id: u64, cid: u16, res: u8) {}
 
-    fn nvme_flush_enqueue(qid: u16, idx: u16, cid: u16) {}
-    fn nvme_flush_complete(qid: u16, cid: u16, res: u8) {}
+    fn nvme_flush_enqueue(devsq_id: u64, idx: u16, cid: u16) {}
+    fn nvme_flush_complete(devsq_id: u64, cid: u16, res: u8) {}
 
     fn nvme_raw_cmd(
-        qid: u16,
+        devsq_id: u64,
         cdw0nsid: u64,
         prp1: u64,
         prp2: u64,
@@ -57,10 +77,10 @@ impl block::DeviceQueue for NvmeBlockQueue {
         let params = self.sq.params();
 
         while let Some((sub, permit, idx)) = sq.pop() {
-            let qid = sq.id();
+            let devsq_id = sq.devq_id();
             probes::nvme_raw_cmd!(|| {
                 (
-                    qid,
+                    devsq_id,
                     u64::from(sub.cdw0) | (u64::from(sub.nsid) << 32),
                     sub.prp1,
                     sub.prp2,
@@ -83,7 +103,13 @@ impl block::DeviceQueue for NvmeBlockQueue {
                         continue;
                     }
 
-                    probes::nvme_write_enqueue!(|| (qid, idx, cid, off, size));
+                    probes::nvme_write_enqueue!(|| (
+                        sq.devq_id(),
+                        idx,
+                        cid,
+                        off,
+                        size
+                    ));
 
                     let bufs = cmd.data(size, &mem).collect();
                     let req =
@@ -102,7 +128,13 @@ impl block::DeviceQueue for NvmeBlockQueue {
                         continue;
                     }
 
-                    probes::nvme_read_enqueue!(|| (qid, idx, cid, off, size));
+                    probes::nvme_read_enqueue!(|| (
+                        sq.devq_id(),
+                        idx,
+                        cid,
+                        off,
+                        size
+                    ));
 
                     let bufs = cmd.data(size, &mem).collect();
                     let req =
@@ -110,7 +142,7 @@ impl block::DeviceQueue for NvmeBlockQueue {
                     return Some((req, permit, None));
                 }
                 Ok(NvmCmd::Flush) => {
-                    probes::nvme_flush_enqueue!(|| (qid, idx, cid));
+                    probes::nvme_flush_enqueue!(|| (sq.devq_id(), idx, cid));
                     let req = Request::new_flush();
                     return Some((req, permit, None));
                 }
@@ -133,18 +165,18 @@ impl block::DeviceQueue for NvmeBlockQueue {
         result: block::Result,
         permit: Self::Token,
     ) {
-        let qid = permit.sqid();
+        let devsq_id = permit.devsq_id();
         let cid = permit.cid();
         let resnum = result as u8;
         match op {
             Operation::Read(..) => {
-                probes::nvme_read_complete!(|| (qid, cid, resnum));
+                probes::nvme_read_complete!(|| (devsq_id, cid, resnum));
             }
             Operation::Write(..) => {
-                probes::nvme_write_complete!(|| (qid, cid, resnum));
+                probes::nvme_write_complete!(|| (devsq_id, cid, resnum));
             }
             Operation::Flush => {
-                probes::nvme_flush_complete!(|| (qid, cid, resnum));
+                probes::nvme_flush_complete!(|| (devsq_id, cid, resnum));
             }
             Operation::Discard(..) => {
                 unreachable!("discard not supported in NVMe for now");

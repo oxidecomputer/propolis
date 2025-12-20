@@ -39,7 +39,10 @@ use thiserror::Error;
 use tokio::sync::futures::Notified;
 use tokio::sync::Notify;
 
-/// Static for generating unique block [DeviceId]s with a process
+/// Static for generating unique block [DeviceId]s within a process
+///
+/// Numbering across block devices means that a block `DeviceId` and the queue
+/// ID in a block attachment are unique across a VM.
 static NEXT_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
 
 pub const MAX_WORKERS: NonZeroUsize = NonZeroUsize::new(64).unwrap();

@@ -5,6 +5,7 @@
 use std::mem::size_of;
 
 use crate::common::{GuestAddr, GuestRegion, PAGE_SIZE};
+use crate::hw::nvme;
 use crate::vmm::MemCtx;
 
 use super::bits::*;
@@ -17,7 +18,7 @@ use super::{
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
-    fn nvme_abort(cid: u16, sqid: u16) {}
+    fn nvme_abort(cid: u16, devsq_id: u64) {}
 }
 
 impl NvmeCtrl {
@@ -25,7 +26,8 @@ impl NvmeCtrl {
     ///
     /// See NVMe 1.0e Section 5.1 Abort command
     pub(super) fn acmd_abort(&self, cmd: &cmds::AbortCmd) -> cmds::Completion {
-        probes::nvme_abort!(|| (cmd.cid, cmd.sqid));
+        let devsq_id = nvme::devq_id(self.device_id, cmd.sqid);
+        probes::nvme_abort!(|| (cmd.cid, devsq_id));
 
         // Verify the SQ in question currently exists
         let sqid = cmd.sqid as usize;
@@ -74,6 +76,7 @@ impl NvmeCtrl {
         match self.create_cq(
             super::queue::CreateParams {
                 id: cmd.qid,
+                device_id: self.device_id,
                 base: GuestAddr(cmd.prp),
                 size: cmd.qsize,
             },
@@ -119,6 +122,7 @@ impl NvmeCtrl {
         match self.create_sq(
             super::queue::CreateParams {
                 id: cmd.qid,
+                device_id: self.device_id,
                 base: GuestAddr(cmd.prp),
                 size: cmd.qsize,
             },
