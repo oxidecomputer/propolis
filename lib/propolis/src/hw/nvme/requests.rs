@@ -12,18 +12,37 @@ use crate::hw::nvme::{bits, cmds::Completion, queue::SubQueue};
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
-    fn nvme_read_enqueue(devq_id: u64, idx: u16, cid: u16, off: u64, sz: u64) {}
-    fn nvme_read_complete(devq_id: u64, cid: u16, res: u8) {}
-
-    fn nvme_write_enqueue(devq_id: u64, idx: u16, cid: u16, off: u64, sz: u64) {
+    // Note that unlike the probes in `queue.rs`, the probes here provide a
+    // `devsq_id` for completion as well as enqueuement. The submission queue is
+    // the one the command was originally submitted on.
+    //
+    // As long as queues are not destroyed (and the device is not reset), a
+    // `(devsq_id, cid)` tuple seen in an `nvme_*_enqueue` probably will not be
+    // reused before that same tuple is used in a corresponding
+    // `nvme_*_complete` probe. It is possible, but such a case is a
+    // guest error and unlikely. From the NVM Express Base Specification:
+    //
+    // > The Command Identifier field in the SQE shall be unique among all
+    // > outstanding commands associated with that queue.
+    fn nvme_read_enqueue(devsq_id: u64, idx: u16, cid: u16, off: u64, sz: u64) {
     }
-    fn nvme_write_complete(devq_id: u64, cid: u16, res: u8) {}
+    fn nvme_read_complete(devsq_id: u64, cid: u16, res: u8) {}
 
-    fn nvme_flush_enqueue(devq_id: u64, idx: u16, cid: u16) {}
-    fn nvme_flush_complete(devq_id: u64, cid: u16, res: u8) {}
+    fn nvme_write_enqueue(
+        devsq_id: u64,
+        idx: u16,
+        cid: u16,
+        off: u64,
+        sz: u64,
+    ) {
+    }
+    fn nvme_write_complete(devsq_id: u64, cid: u16, res: u8) {}
+
+    fn nvme_flush_enqueue(devsq_id: u64, idx: u16, cid: u16) {}
+    fn nvme_flush_complete(devsq_id: u64, cid: u16, res: u8) {}
 
     fn nvme_raw_cmd(
-        devq_id: u64,
+        devsq_id: u64,
         cdw0nsid: u64,
         prp1: u64,
         prp2: u64,
@@ -58,10 +77,10 @@ impl block::DeviceQueue for NvmeBlockQueue {
         let params = self.sq.params();
 
         while let Some((sub, permit, idx)) = sq.pop() {
-            let devq_id = sq.devq_id();
+            let devsq_id = sq.devq_id();
             probes::nvme_raw_cmd!(|| {
                 (
-                    devq_id,
+                    devsq_id,
                     u64::from(sub.cdw0) | (u64::from(sub.nsid) << 32),
                     sub.prp1,
                     sub.prp2,

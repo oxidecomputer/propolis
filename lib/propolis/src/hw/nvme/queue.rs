@@ -33,6 +33,16 @@ mod probes {
 /// Each queue is identified by a 16-bit ID.
 ///
 /// See NVMe 1.0e Section 4.1.4 Queue Identifier
+///
+/// Submission and completion queue IDs are distinct namespaces, so a device
+/// can have both a "Submission Queue 1" and "Completion Queue 1".
+///
+/// For USDT probes, we combine this ID with an NVMe controller ID to produce a
+/// `devq_id`. This combined identifier is still ambiguous beteen one submission
+/// queue and one completion queue. Contextually there is typically only one
+/// reasonable interpretation of the ID, but the probe arguments are named
+/// `devsq_id` or `devcq_id` to be explicit about identifying a Submission or
+/// Completion queue, respectively.
 pub type QueueId = u16;
 
 /// The minimum number of entries in either a Completion or Submission Queue.
@@ -540,8 +550,8 @@ pub struct SubQueue {
     /// The ID of this Submission Queue.
     id: QueueId,
 
-    /// The ID of the device this is a submission queue for. Not semantically
-    /// interesting for submission queues, but useful context in probes.
+    /// The ID of the device that owns this submission queue. Kept here only to
+    /// produce `devsq_id` for DTrace probes.
     device_id: DeviceId,
 
     /// The corresponding Completion Queue.
@@ -728,8 +738,8 @@ pub struct CompQueue {
     /// The ID of this Completion Queue.
     id: QueueId,
 
-    /// The ID of the device this is a completion queue for. Not semantically
-    /// interesting for completion queues, but useful context in probes.
+    /// The ID of the device that owns this completion queue. Kept here only to
+    /// produce `devcq_id` for DTrace probes.
     device_id: DeviceId,
 
     /// The Interrupt Vector used to signal to the host (VM) upon pushing
@@ -1171,21 +1181,35 @@ mod test {
         let machine = Machine::new_test()?;
         let hdl = pci::MsixHdl::new_test();
         let write_base = GuestAddr(1024 * 1024);
-        let tmpl =
-            CreateParams { id: ADMIN_QUEUE_ID, device_id: 0, base: write_base, size: 0 };
+        let tmpl = CreateParams {
+            id: ADMIN_QUEUE_ID,
+            device_id: 0,
+            base: write_base,
+            size: 0,
+        };
 
         let acc_mem = || machine.acc_mem.child(None);
 
         // Admin queues must be less than 4K
         let cq = CompQueue::new(
-            CreateParams { id: ADMIN_QUEUE_ID, device_id: 0, size: 1024, ..tmpl },
+            CreateParams {
+                id: ADMIN_QUEUE_ID,
+                device_id: 0,
+                size: 1024,
+                ..tmpl
+            },
             0,
             hdl.clone(),
             acc_mem(),
         );
         assert!(matches!(cq, Ok(_)));
         let cq = CompQueue::new(
-            CreateParams { id: ADMIN_QUEUE_ID, device_id: 0, size: 5 * 1024, ..tmpl },
+            CreateParams {
+                id: ADMIN_QUEUE_ID,
+                device_id: 0,
+                size: 5 * 1024,
+                ..tmpl
+            },
             0,
             hdl.clone(),
             acc_mem(),
@@ -1253,7 +1277,12 @@ mod test {
         );
         let io_cq = Arc::new(
             CompQueue::new(
-                CreateParams { id: 1, device_id: 0, base: write_base, size: 1024 },
+                CreateParams {
+                    id: 1,
+                    device_id: 0,
+                    base: write_base,
+                    size: 1024,
+                },
                 0,
                 hdl,
                 acc_mem(),
@@ -1263,7 +1292,12 @@ mod test {
 
         // Admin queues must be less than 4K
         let sq = SubQueue::new(
-            CreateParams { id: ADMIN_QUEUE_ID, device_id: 0, base: read_base, size: 1024 },
+            CreateParams {
+                id: ADMIN_QUEUE_ID,
+                device_id: 0,
+                base: read_base,
+                size: 1024,
+            },
             admin_cq.clone(),
             acc_mem(),
         );
@@ -1288,7 +1322,12 @@ mod test {
         );
         assert!(matches!(sq, Ok(_)));
         let sq = SubQueue::new(
-            CreateParams { id: 1, device_id: 0, base: read_base, size: 65 * 1024 },
+            CreateParams {
+                id: 1,
+                device_id: 0,
+                base: read_base,
+                size: 65 * 1024,
+            },
             io_cq,
             acc_mem(),
         );
@@ -1296,7 +1335,12 @@ mod test {
 
         // Neither must be less than 2
         let sq = SubQueue::new(
-            CreateParams { id: ADMIN_QUEUE_ID, device_id: 0, base: read_base, size: 1 },
+            CreateParams {
+                id: ADMIN_QUEUE_ID,
+                device_id: 0,
+                base: read_base,
+                size: 1,
+            },
             admin_cq.clone(),
             acc_mem(),
         );
@@ -1499,7 +1543,12 @@ mod test {
         );
         let sq = Arc::new(
             SubQueue::new(
-                CreateParams { id: 1, device_id: 0, base: read_base, size: sq_size },
+                CreateParams {
+                    id: 1,
+                    device_id: 0,
+                    base: read_base,
+                    size: sq_size,
+                },
                 cq.clone(),
                 acc_mem(),
             )
