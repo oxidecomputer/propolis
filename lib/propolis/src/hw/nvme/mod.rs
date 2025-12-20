@@ -32,14 +32,7 @@ mod requests;
 use bits::*;
 use queue::{CompQueue, QueueId, SubQueue};
 
-/// Static for generating unique NVMe device identifiers within a process.
-///
-/// Numbering across NVMe devices means that the combination of NVMe
-/// `device_id` and queue ID identify either an NVMe submission or completion
-/// queue across a VM.
-///
-/// Guests typically will configure submission queue N to complete into
-/// completion queue N, but this is not a mandated device configuration.
+/// Static for generating unique NVMe device identifiers across a VM.
 static NEXT_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
 
 type DeviceId = u32;
@@ -184,6 +177,8 @@ const MAX_NUM_IO_QUEUES: usize = MAX_NUM_QUEUES - 1;
 struct NvmeCtrl {
     /// A distinguishing identifier for this NVMe controller across the VM.
     /// Useful mostly to distinguish queues and commands as seen in probes.
+    /// `device_id` is held constant across NVMe resets, but not persisted
+    /// across export and import.
     device_id: DeviceId,
 
     /// Internal NVMe Controller state
@@ -921,7 +916,7 @@ impl PciNvme {
                 }
             }));
 
-            // Peel out device ID before we move it into the Mutex below.
+            // Cache device ID before we move it into the Mutex below.
             let device_id = state.device_id;
 
             PciNvme {
