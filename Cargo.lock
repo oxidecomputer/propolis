@@ -5387,7 +5387,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.64",
  "tokio",
- "usdt 0.5.0",
+ "usdt 0.6.0",
  "uuid",
  "viona_api",
  "zerocopy 0.8.27",
@@ -5569,7 +5569,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "toml 0.7.8",
- "usdt 0.5.0",
+ "usdt 0.6.0",
  "uuid",
 ]
 
