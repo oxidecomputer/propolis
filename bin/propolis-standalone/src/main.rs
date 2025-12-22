@@ -286,7 +286,29 @@ impl Instance {
         let state = &mut *state_guard;
         let machine = state.machine.as_ref().unwrap();
 
-        for vcpu in machine.vcpus.iter().map(Arc::clone) {
+        let bind_cpus = match this.0.config.main.cpu_binding {
+            Some(config::BindingStrategy::FromLast) => {
+                let mut bind_cpus = vec![None; machine.vcpus.len()];
+                let total_cpus =
+                    pbind::online_cpus().expect("can get processor count");
+                let vcpu_count: i32 =
+                    machine.vcpus.len().try_into().expect("<2^31 vCPUs");
+
+                let first_bound_cpu = total_cpus - vcpu_count;
+                for i in 0..vcpu_count {
+                    // Bind to the upper range of CPUs.
+                    bind_cpus[i as usize] = Some(first_bound_cpu + i);
+                }
+                bind_cpus
+            }
+            Some(config::BindingStrategy::Any) | None => {
+                vec![None; machine.vcpus.len()]
+            }
+        };
+
+        for (vcpu, bind_cpu) in
+            machine.vcpus.iter().map(Arc::clone).zip(bind_cpus.into_iter())
+        {
             let (task, ctrl) =
                 propolis::tasks::TaskHdl::new_held(Some(vcpu.barrier_fn()));
 
@@ -295,6 +317,9 @@ impl Instance {
             let _ = std::thread::Builder::new()
                 .name(format!("vcpu-{}", vcpu.id))
                 .spawn(move || {
+                    if let Some(bind_cpu) = bind_cpu {
+                        pbind::bind_lwp(bind_cpu).expect("can bind vcpu");
+                    }
                     Instance::vcpu_loop(inner, vcpu.as_ref(), &task, task_log)
                 })
                 .unwrap();
