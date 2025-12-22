@@ -5394,6 +5394,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "propolis-api-types-versions"
+version = "0.0.0"
+dependencies = [
+ "crucible-client-types",
+ "propolis_types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.64",
+ "uuid",
+]
+
+[[package]]
 name = "propolis-cli"
 version = "0.1.0"
 dependencies = [
@@ -5427,6 +5440,7 @@ dependencies = [
  "futures",
  "progenitor 0.10.0",
  "progenitor-client 0.10.0",
+ "propolis-api-types-versions",
  "propolis_api_types",
  "rand 0.9.2",
  "reqwest",
@@ -5544,6 +5558,7 @@ dependencies = [
  "oximeter-instruments",
  "oximeter-producer",
  "propolis",
+ "propolis-api-types-versions",
  "propolis-server-api",
  "propolis_api_types",
  "propolis_types",
@@ -5580,7 +5595,7 @@ dependencies = [
  "crucible-client-types",
  "dropshot",
  "dropshot-api-manager-types",
- "propolis_api_types",
+ "propolis-api-types-versions",
 ]
 
 [[package]]
@@ -5636,12 +5651,7 @@ name = "propolis_api_types"
 version = "0.0.0"
 dependencies = [
  "crucible-client-types",
- "propolis_types",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 1.0.64",
- "uuid",
+ "propolis-api-types-versions",
 ]
 
 [[package]]

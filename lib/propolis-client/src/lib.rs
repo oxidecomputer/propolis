@@ -19,16 +19,20 @@
 /// counterparts. This obviates the need to maintain `From` impls to convert
 /// between native and generated types.
 pub mod instance_spec {
+    pub use propolis_api_types::instance::{
+        InstanceMetadata, InstanceProperties, ReplacementComponent,
+    };
     pub use propolis_api_types::instance_spec::{
         components::{backends::*, board::*, devices::*},
-        v0::*,
-        *,
+        InstanceSpec, InstanceSpecGetResponse, InstanceSpecStatus,
+        SmbiosType1Input, *,
     };
-
-    pub use propolis_api_types::{
-        InstanceMetadata, InstanceProperties, InstanceSpec,
-        InstanceSpecGetResponse, InstanceSpecStatus, ReplacementComponent,
-        SmbiosType1Input,
+    // Re-export v1 types with V0 suffix for backward compatibility with
+    // progenitor-generated clients.
+    pub use propolis_api_types_versions::v1::instance_spec::{
+        Component as ComponentV0, InstanceSpec as InstanceSpecV0,
+        InstanceSpecGetResponse as InstanceSpecGetResponseV0,
+        InstanceSpecStatus as InstanceSpecStatusV0, VersionedInstanceSpec,
     };
 }
 

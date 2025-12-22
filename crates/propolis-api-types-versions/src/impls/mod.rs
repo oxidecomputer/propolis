@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Board-level specifications.
+//! Functional code for the latest versions of types.
 
-pub use propolis_api_types_versions::latest::components::board::*;
+mod instance;
+mod instance_spec;

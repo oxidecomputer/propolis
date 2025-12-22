@@ -52,6 +52,7 @@ nvpair = { path = "crates/nvpair" }
 nvpair_sys = { path = "crates/nvpair/sys" }
 propolis-config-toml = { path = "crates/propolis-config-toml" }
 propolis_api_types = { path = "crates/propolis-api-types" }
+propolis-api-types-versions = { path = "crates/propolis-api-types-versions" }
 propolis-server-api = { path = "crates/propolis-server-api" }
 propolis_types = { path = "crates/propolis-types" }
 rfb = { path = "crates/rfb" }
