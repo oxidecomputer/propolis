@@ -5352,6 +5352,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bhyve_api 0.0.0",
+ "bit_field",
  "bitflags 2.9.4",
  "bitstruct",
  "byteorder",
@@ -8524,14 +8525,6 @@ version = "0.0.0"
 dependencies = [
  "libc",
  "nvpair 0.0.0",
- "viona_api_sys",
-]
-
-[[package]]
-name = "viona_api_sys"
-version = "0.0.0"
-dependencies = [
- "libc",
 ]
 
 [[package]]

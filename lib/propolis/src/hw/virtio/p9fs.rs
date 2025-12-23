@@ -12,14 +12,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::common::*;
-use crate::hw::pci;
+use crate::hw::{pci, virtio};
 use crate::migrate::Migrator;
 use crate::util::regmap::RegMap;
 use crate::vmm::MemCtx;
 
-use super::bits::*;
 use super::pci::{PciVirtio, PciVirtioState};
-use super::queue::{write_buf, Chain, VirtQueue, VirtQueues};
+use super::queue::{write_buf, Chain, VirtQueue, VirtQueues, VqSize};
 use super::VirtioDevice;
 
 use ispf::WireSize;
@@ -79,16 +78,13 @@ pub struct PciVirtio9pfs {
 
 impl PciVirtio9pfs {
     pub fn new(queue_size: u16, handler: Arc<dyn P9Handler>) -> Arc<Self> {
-        let queues =
-            VirtQueues::new([VirtQueue::new(queue_size.try_into().unwrap())])
-                .unwrap();
+        let queues = VirtQueues::new(&[VqSize::new(queue_size)]);
         let msix_count = Some(2); //guess
-        let (virtio_state, pci_state) = PciVirtioState::create(
+        let (virtio_state, pci_state) = PciVirtioState::new(
+            virtio::Mode::Legacy,
             queues,
             msix_count,
-            VIRTIO_DEV_9P,
-            VIRTIO_SUB_DEV_9P_TRANSPORT,
-            pci::bits::CLASS_STORAGE,
+            virtio::DeviceId::NineP,
             VIRTIO_9P_CFG_SIZE,
         );
         Arc::new(Self { virtio_state, pci_state, handler })
@@ -96,7 +92,7 @@ impl PciVirtio9pfs {
 }
 
 impl VirtioDevice for PciVirtio9pfs {
-    fn cfg_rw(&self, mut rwo: RWOp) {
+    fn rw_dev_config(&self, mut rwo: RWOp) {
         P9FS_DEV_REGS.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => {
                 probes::p9fs_cfg_read!(|| ());
@@ -122,11 +118,15 @@ impl VirtioDevice for PciVirtio9pfs {
         })
     }
 
-    fn get_features(&self) -> u32 {
+    fn mode(&self) -> virtio::Mode {
+        virtio::Mode::Legacy
+    }
+
+    fn features(&self) -> u64 {
         VIRTIO_9P_F_MOUNT_TAG
     }
 
-    fn set_features(&self, _feat: u32) -> Result<(), ()> {
+    fn set_features(&self, _feat: u64) -> Result<(), ()> {
         Ok(())
     }
 
@@ -182,7 +182,7 @@ pub(crate) mod bits {
     use std::mem::size_of;
 
     // features
-    pub const VIRTIO_9P_F_MOUNT_TAG: u32 = 0x1;
+    pub const VIRTIO_9P_F_MOUNT_TAG: u64 = 0x1;
 
     pub const VIRTIO_9P_MAX_TAG_SIZE: usize = 256;
     pub const VIRTIO_9P_CFG_SIZE: usize =
