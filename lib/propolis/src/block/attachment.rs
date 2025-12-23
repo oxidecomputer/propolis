@@ -20,16 +20,17 @@ use std::future::Future;
 use std::marker::PhantomPinned;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::task::{Context, Poll};
 
 use super::minder::{NoneInFlight, QueueMinder};
 use super::{
-    devq_id, probes, DeviceId, DeviceInfo, DeviceQueue, DeviceRequest,
-    MetricConsumer, QueueId, WorkerId,
+    devq_id, probes, BackendId, DeviceId, DeviceInfo, DeviceQueue,
+    DeviceRequest, MetricConsumer, QueueId, WorkerId,
 };
 use crate::accessors::MemAccessor;
+use crate::block;
 
 use futures::stream::FuturesUnordered;
 use futures::Stream;
@@ -38,12 +39,6 @@ use strum::IntoStaticStr;
 use thiserror::Error;
 use tokio::sync::futures::Notified;
 use tokio::sync::Notify;
-
-/// Static for generating unique block [DeviceId]s within a process
-///
-/// Numbering across block devices means that a block `DeviceId` and the queue
-/// ID in a block attachment are unique across a VM.
-static NEXT_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
 
 pub const MAX_WORKERS: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 
@@ -381,6 +376,7 @@ impl AttachPair {
             return Err(AttachError::BackendAttached);
         }
 
+        probes::block_attach!(|| (dev.device_id().0, be.backend_id().0));
         // TODO: name the accessor child?
         let be_acc_mem = dev.0.acc_mem.child(None);
         be.0.workers.attach(&be_acc_mem, &dev.0.queues);
@@ -431,6 +427,7 @@ impl AttachPair {
                 return;
             }
         }
+        probes::block_detach!(|| (dev.device_id.0, be.backend_id.0));
         *dev_state = None;
         *be_state = None;
 
@@ -458,6 +455,7 @@ struct DeviceAttachInner {
     dev_state: Mutex<DeviceState>,
     queues: Arc<QueueCollection>,
     acc_mem: MemAccessor,
+    device_id: block::DeviceId,
 }
 
 /// Main "attachment point" for a block device.
@@ -467,13 +465,14 @@ impl DeviceAttachment {
     /// queues which the device will ever expose is set via `max_queues`.  DMA
     /// done by attached backend workers will be through the provided `acc_mem`.
     pub fn new(max_queues: NonZeroUsize, acc_mem: MemAccessor) -> Self {
-        let devid = NEXT_DEVICE_ID.fetch_add(1, Ordering::Relaxed);
-        let queues = QueueCollection::new(max_queues, devid);
+        let device_id = DeviceId::new();
+        let queues = QueueCollection::new(max_queues, device_id);
         Self(Arc::new(DeviceAttachInner {
             att_state: Mutex::new(None),
             dev_state: Mutex::new(DeviceState::default()),
             queues,
             acc_mem,
+            device_id,
         }))
     }
 
@@ -560,8 +559,9 @@ impl DeviceAttachment {
     }
 
     pub fn device_id(&self) -> DeviceId {
-        self.0.queues.devid
+        self.0.device_id
     }
+
     /// Get the maximum queues configured for this device.
     pub fn max_queues(&self) -> NonZeroUsize {
         NonZeroUsize::new(self.0.queues.queues.len())
@@ -678,9 +678,9 @@ impl WorkerSlot {
             };
 
             state.sleeping_on = Some(devid);
-            probes::block_sleep!(|| { (devid, self.id as u64) });
+            probes::block_sleep!(|| { (devid.0, self.id as u64) });
             state = self.cv.wait(state).unwrap();
-            probes::block_wake!(|| { (devid, self.id as u64) });
+            probes::block_wake!(|| { (devid.0, self.id as u64) });
             state.sleeping_on = None;
         }
     }
@@ -720,13 +720,13 @@ impl WorkerSlot {
         devid: DeviceId,
     ) {
         state.sleeping_on = Some(devid);
-        probes::block_sleep!(|| { (devid, self.id as u64) });
+        probes::block_sleep!(|| { (devid.0, self.id as u64) });
     }
 
     fn async_stop_sleep(&self) {
         let mut state = self.state.lock().unwrap();
         if let Some(devid) = state.sleeping_on.take() {
-            probes::block_wake!(|| { (devid, self.id as u64) });
+            probes::block_wake!(|| { (devid.0, self.id as u64) });
         }
     }
 
@@ -967,13 +967,13 @@ impl WorkerCollection {
     }
     fn assignments_refresh(&self, mut state: MutexGuard<WorkerColState>) {
         let assign = state.generate_assignments();
-        let devid = state.device_id.unwrap_or(u32::MAX);
+        let devid = state.device_id.unwrap_or(block::DeviceId::INVALID);
         drop(state);
 
         super::probes::block_strategy!(|| {
             let assign_name: &'static str = assign.strategy.get().into();
             let generation = assign.strategy.generation() as u64;
-            (devid, assign_name, generation)
+            (devid.0, assign_name, generation)
         });
         for slot in self.workers.iter() {
             slot.update_assignment(&assign);
@@ -1155,6 +1155,7 @@ struct BackendAttachInner {
     att_state: Mutex<Option<(AttachPair, MemAccessor)>>,
     workers: Arc<WorkerCollection>,
     info: DeviceInfo,
+    backend_id: BackendId,
 }
 
 /// Main "attachment point" for a block backend.
@@ -1165,6 +1166,7 @@ impl BackendAttachment {
             att_state: Mutex::new(None),
             workers: WorkerCollection::new(max_workers),
             info,
+            backend_id: BackendId::new(),
         }))
     }
     /// Get an (inactive) [context](InactiveWorkerCtx) for a given [WorkerId].
@@ -1180,6 +1182,10 @@ impl BackendAttachment {
 
     pub fn info(&self) -> DeviceInfo {
         self.0.info
+    }
+
+    pub fn backend_id(&self) -> BackendId {
+        self.0.backend_id
     }
 
     /// Permit workers to pull requests from the attached device (if any) for

@@ -20,6 +20,7 @@ propolis_types.workspace = true
 usdt = { workspace = true, features = ["asm"] }
 tokio = { workspace = true, features = ["full"] }
 futures.workspace = true
+paste.workspace = true
 pin-project-lite.workspace = true
 anyhow.workspace = true
 rgb_frame.workspace = true

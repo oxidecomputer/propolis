@@ -209,13 +209,14 @@ impl FileBackend {
         }))
     }
     fn spawn_workers(&self) -> std::io::Result<()> {
+        let backend_id = self.block_attach.backend_id().0;
         let spawn_results = (0..self.worker_count.get())
             .map(|n| {
                 let shared_state = self.state.clone();
                 let wctx = self.block_attach.worker(n as WorkerId);
 
                 std::thread::Builder::new()
-                    .name(format!("file worker {n}"))
+                    .name(format!("file backend {backend_id}/worker {n}"))
                     .spawn(move || {
                         let wctx = wctx
                             .activate_sync()

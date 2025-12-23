@@ -5370,6 +5370,7 @@ dependencies = [
  "nexus-client",
  "oximeter",
  "p9ds",
+ "paste",
  "pin-project-lite",
  "propolis_types",
  "rand 0.9.2",
