@@ -1183,7 +1183,7 @@ mod test {
         let write_base = GuestAddr(1024 * 1024);
         let tmpl = CreateParams {
             id: ADMIN_QUEUE_ID,
-            device_id: 0,
+            device_id: DeviceId(0),
             base: write_base,
             size: 0,
         };
@@ -1194,7 +1194,7 @@ mod test {
         let cq = CompQueue::new(
             CreateParams {
                 id: ADMIN_QUEUE_ID,
-                device_id: 0,
+                device_id: DeviceId(0),
                 size: 1024,
                 ..tmpl
             },
@@ -1206,7 +1206,7 @@ mod test {
         let cq = CompQueue::new(
             CreateParams {
                 id: ADMIN_QUEUE_ID,
-                device_id: 0,
+                device_id: DeviceId(0),
                 size: 5 * 1024,
                 ..tmpl
             },
@@ -1218,14 +1218,19 @@ mod test {
 
         // I/O queues must be less than 64K
         let cq = CompQueue::new(
-            CreateParams { id: 1, device_id: 0, size: 1024, ..tmpl },
+            CreateParams { id: 1, device_id: DeviceId(0), size: 1024, ..tmpl },
             0,
             hdl.clone(),
             acc_mem(),
         );
         assert!(matches!(cq, Ok(_)));
         let cq = CompQueue::new(
-            CreateParams { id: 1, device_id: 0, size: 65 * 1024, ..tmpl },
+            CreateParams {
+                id: 1,
+                device_id: DeviceId(0),
+                size: 65 * 1024,
+                ..tmpl
+            },
             0,
             hdl.clone(),
             acc_mem(),
@@ -1234,14 +1239,19 @@ mod test {
 
         // Neither must be less than 2
         let cq = CompQueue::new(
-            CreateParams { id: ADMIN_QUEUE_ID, device_id: 0, size: 1, ..tmpl },
+            CreateParams {
+                id: ADMIN_QUEUE_ID,
+                device_id: DeviceId(0),
+                size: 1,
+                ..tmpl
+            },
             0,
             hdl.clone(),
             acc_mem(),
         );
         assert!(matches!(cq, Err(QueueCreateErr::InvalidSize)));
         let cq = CompQueue::new(
-            CreateParams { id: 1, device_id: 0, size: 1, ..tmpl },
+            CreateParams { id: 1, device_id: DeviceId(0), size: 1, ..tmpl },
             0,
             hdl.clone(),
             acc_mem(),
@@ -1265,7 +1275,7 @@ mod test {
             CompQueue::new(
                 CreateParams {
                     id: ADMIN_QUEUE_ID,
-                    device_id: 0,
+                    device_id: DeviceId(0),
                     base: write_base,
                     size: 1024,
                 },
@@ -1279,7 +1289,7 @@ mod test {
             CompQueue::new(
                 CreateParams {
                     id: 1,
-                    device_id: 0,
+                    device_id: DeviceId(0),
                     base: write_base,
                     size: 1024,
                 },
@@ -1294,7 +1304,7 @@ mod test {
         let sq = SubQueue::new(
             CreateParams {
                 id: ADMIN_QUEUE_ID,
-                device_id: 0,
+                device_id: DeviceId(0),
                 base: read_base,
                 size: 1024,
             },
@@ -1305,7 +1315,7 @@ mod test {
         let sq = SubQueue::new(
             CreateParams {
                 id: ADMIN_QUEUE_ID,
-                device_id: 0,
+                device_id: DeviceId(0),
                 base: read_base,
                 size: 5 * 1024,
             },
@@ -1316,7 +1326,12 @@ mod test {
 
         // I/O queues must be less than 64K
         let sq = SubQueue::new(
-            CreateParams { id: 1, device_id: 0, base: read_base, size: 1024 },
+            CreateParams {
+                id: 1,
+                device_id: DeviceId(0),
+                base: read_base,
+                size: 1024,
+            },
             io_cq.clone(),
             acc_mem(),
         );
@@ -1324,7 +1339,7 @@ mod test {
         let sq = SubQueue::new(
             CreateParams {
                 id: 1,
-                device_id: 0,
+                device_id: DeviceId(0),
                 base: read_base,
                 size: 65 * 1024,
             },
@@ -1337,7 +1352,7 @@ mod test {
         let sq = SubQueue::new(
             CreateParams {
                 id: ADMIN_QUEUE_ID,
-                device_id: 0,
+                device_id: DeviceId(0),
                 base: read_base,
                 size: 1,
             },
@@ -1346,7 +1361,12 @@ mod test {
         );
         assert!(matches!(sq, Err(QueueCreateErr::InvalidSize)));
         let sq = SubQueue::new(
-            CreateParams { id: 1, device_id: 0, base: read_base, size: 1 },
+            CreateParams {
+                id: 1,
+                device_id: DeviceId(0),
+                base: read_base,
+                size: 1,
+            },
             admin_cq,
             acc_mem(),
         );
@@ -1384,7 +1404,12 @@ mod test {
         // Create our queues
         let cq = Arc::new(
             CompQueue::new(
-                CreateParams { id: 1, device_id: 0, base: write_base, size: 4 },
+                CreateParams {
+                    id: 1,
+                    device_id: DeviceId(0),
+                    base: write_base,
+                    size: 4,
+                },
                 0,
                 hdl,
                 acc_mem(),
@@ -1393,7 +1418,12 @@ mod test {
         );
         let sq = Arc::new(
             SubQueue::new(
-                CreateParams { id: 1, device_id: 0, base: read_base, size: 4 },
+                CreateParams {
+                    id: 1,
+                    device_id: DeviceId(0),
+                    base: read_base,
+                    size: 4,
+                },
                 cq.clone(),
                 acc_mem(),
             )
@@ -1463,7 +1493,12 @@ mod test {
         // Purposely make the CQ smaller to test kicks
         let cq = Arc::new(
             CompQueue::new(
-                CreateParams { id: 1, device_id: 0, base: write_base, size: 2 },
+                CreateParams {
+                    id: 1,
+                    device_id: DeviceId(0),
+                    base: write_base,
+                    size: 2,
+                },
                 0,
                 hdl,
                 acc_mem(),
@@ -1472,7 +1507,12 @@ mod test {
         );
         let sq = Arc::new(
             SubQueue::new(
-                CreateParams { id: 1, device_id: 0, base: read_base, size: 4 },
+                CreateParams {
+                    id: 1,
+                    device_id: DeviceId(0),
+                    base: read_base,
+                    size: 4,
+                },
                 cq.clone(),
                 acc_mem(),
             )
@@ -1534,7 +1574,12 @@ mod test {
         let sq_size = rng.random_range(512..2048);
         let cq = Arc::new(
             CompQueue::new(
-                CreateParams { id: 1, device_id: 0, base: write_base, size: 4 },
+                CreateParams {
+                    id: 1,
+                    device_id: DeviceId(0),
+                    base: write_base,
+                    size: 4,
+                },
                 0,
                 hdl,
                 acc_mem(),
@@ -1545,7 +1590,7 @@ mod test {
             SubQueue::new(
                 CreateParams {
                     id: 1,
-                    device_id: 0,
+                    device_id: DeviceId(0),
                     base: read_base,
                     size: sq_size,
                 },
