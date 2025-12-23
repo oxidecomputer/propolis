@@ -18,7 +18,7 @@ use futures::future::Fuse;
 use futures::stream::SplitSink;
 use futures::{FutureExt, SinkExt, StreamExt};
 use propolis::chardev::{pollers, Sink, Source};
-use propolis_api_types::InstanceSerialConsoleControlMessage;
+use propolis_api_types::serial::InstanceSerialConsoleControlMessage;
 use slog::{info, warn, Logger};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock as AsyncRwLock};
