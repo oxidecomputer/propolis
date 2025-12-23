@@ -13,7 +13,6 @@ crucible-client-types.workspace = true
 futures.workspace = true
 progenitor.workspace = true
 progenitor-client.workspace = true
-propolis_api_types.workspace = true
 propolis-api-types-versions.workspace = true
 rand.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }

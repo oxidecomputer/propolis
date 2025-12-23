@@ -19,14 +19,13 @@
 /// counterparts. This obviates the need to maintain `From` impls to convert
 /// between native and generated types.
 pub mod instance_spec {
-    pub use propolis_api_types::instance::{
+    pub use propolis_api_types_versions::latest::components::{
+        backends::*, board::*, devices::*,
+    };
+    pub use propolis_api_types_versions::latest::instance::{
         InstanceMetadata, InstanceProperties, ReplacementComponent,
     };
-    pub use propolis_api_types::instance_spec::{
-        components::{backends::*, board::*, devices::*},
-        InstanceSpec, InstanceSpecGetResponse, InstanceSpecStatus,
-        SmbiosType1Input, *,
-    };
+    pub use propolis_api_types_versions::latest::instance_spec::*;
     // Re-export v1 types with V0 suffix for backward compatibility with
     // progenitor-generated clients.
     pub use propolis_api_types_versions::v1::instance_spec::{
@@ -47,17 +46,18 @@ progenitor::generate_api!(
     interface = Builder,
     tags = Separate,
     replace = {
-        PciPath = crate::instance_spec::PciPath,
-        ReplacementComponent = crate::instance_spec::ReplacementComponent,
-        InstanceSpecV0 = crate::instance_spec::InstanceSpecV0,
-        InstanceSpec = crate::instance_spec::InstanceSpec,
-        InstanceSpecStatus = crate::instance_spec::InstanceSpecStatus,
-        InstanceProperties = crate::instance_spec::InstanceProperties,
-        InstanceMetadata = crate::instance_spec::InstanceMetadata,
-        InstanceSpecGetResponse = crate::instance_spec::InstanceSpecGetResponse,
-        SmbiosType1Input = crate::instance_spec::SmbiosType1Input,
-        VersionedInstanceSpec = crate::instance_spec::VersionedInstanceSpec,
-        CpuidEntry = crate::instance_spec::CpuidEntry,
+        PciPath = propolis_api_types_versions::latest::instance_spec::PciPath,
+        ReplacementComponent = propolis_api_types_versions::latest::instance::ReplacementComponent,
+        // V0 types for backward compatibility (from v1)
+        InstanceSpecV0 = propolis_api_types_versions::v1::instance_spec::InstanceSpec,
+        InstanceSpec = propolis_api_types_versions::latest::instance_spec::InstanceSpec,
+        InstanceSpecStatus = propolis_api_types_versions::latest::instance_spec::InstanceSpecStatus,
+        InstanceProperties = propolis_api_types_versions::latest::instance::InstanceProperties,
+        InstanceMetadata = propolis_api_types_versions::latest::instance::InstanceMetadata,
+        InstanceSpecGetResponse = propolis_api_types_versions::latest::instance_spec::InstanceSpecGetResponse,
+        SmbiosType1Input = propolis_api_types_versions::latest::instance_spec::SmbiosType1Input,
+        VersionedInstanceSpec = propolis_api_types_versions::latest::instance_spec::VersionedInstanceSpec,
+        CpuidEntry = propolis_api_types_versions::latest::components::board::CpuidEntry,
     },
     // Automatically derive JsonSchema for instance spec-related types so that
     // they can be reused in sled-agent's API. This can't be done with a
