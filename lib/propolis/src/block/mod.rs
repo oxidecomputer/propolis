@@ -9,6 +9,9 @@ use std::time::Duration;
 use crate::common::*;
 use crate::vmm::{MemCtx, SubMapping};
 
+mod id;
+pub use id::{BackendId, DeviceId};
+
 mod file;
 pub use file::FileBackend;
 
@@ -41,6 +44,9 @@ pub const DEFAULT_BLOCK_SIZE: u32 = 512;
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
+    fn block_attach(dev_id: u32, backend_id: u32) {}
+    fn block_detach(dev_id: u32, backend_id: u32) {}
+
     fn block_begin_read(devq_id: u64, req_id: u64, offset: u64, len: u64) {}
     fn block_begin_write(devq_id: u64, req_id: u64, offset: u64, len: u64) {}
     fn block_begin_flush(devq_id: u64, req_id: u64) {}
@@ -181,12 +187,11 @@ impl From<QueueId> for u16 {
     }
 }
 
-pub type DeviceId = u32;
 pub type WorkerId = usize;
 
 /// Combine device and queue IDs into single u64 for probes
 pub(crate) fn devq_id(dev: DeviceId, queue: QueueId) -> u64 {
-    ((dev as u64) << 8) | (queue.0 as u64)
+    ((dev.0 as u64) << 8) | (queue.0 as u64)
 }
 
 /// Block device operation request
