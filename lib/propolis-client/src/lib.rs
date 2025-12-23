@@ -48,8 +48,6 @@ progenitor::generate_api!(
     replace = {
         PciPath = propolis_api_types_versions::latest::instance_spec::PciPath,
         ReplacementComponent = propolis_api_types_versions::latest::instance::ReplacementComponent,
-        // V0 types for backward compatibility (from v1)
-        InstanceSpecV0 = propolis_api_types_versions::v1::instance_spec::InstanceSpec,
         InstanceSpec = propolis_api_types_versions::latest::instance_spec::InstanceSpec,
         InstanceSpecStatus = propolis_api_types_versions::latest::instance_spec::InstanceSpecStatus,
         InstanceProperties = propolis_api_types_versions::latest::instance::InstanceProperties,
