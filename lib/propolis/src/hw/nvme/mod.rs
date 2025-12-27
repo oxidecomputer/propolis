@@ -827,12 +827,29 @@ impl PciNvme {
         let cqes = size_of::<CompletionQueueEntry>().trailing_zeros() as u8;
         let sqes = size_of::<SubmissionQueueEntry>().trailing_zeros() as u8;
 
+        let mn = {
+            // Use all spaces for the model: otherwise, OVMF's boot order may be
+            // affected.
+            let mn = [0x20u8; 40];
+            mn
+        };
+
+        let fr = {
+            let mut fr = [0u8; 8];
+            const FW_REV: &'static str = "1.0";
+            let sz = FW_REV.len().min(40);
+            fr[..sz].clone_from_slice(&FW_REV.as_bytes()[..sz]);
+            fr
+        };
+
         // Initialize the Identify structure returned when the host issues
         // an Identify Controller command.
         let ctrl_ident = bits::IdentifyController {
             vid: VENDOR_OXIDE,
             ssvid: VENDOR_OXIDE,
             sn: *serial_number,
+            mn,
+            fr,
             ieee: OXIDE_OUI,
             mdts: mdts.unwrap_or(0),
             // We use standard Completion/Submission Queue Entry structures with no extra
