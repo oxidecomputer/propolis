@@ -631,7 +631,8 @@ impl SubQueue {
     pub fn pop(
         self: &Arc<SubQueue>,
     ) -> Option<(GuestData<SubmissionQueueEntry>, Permit, u16)> {
-        let Some(mem) = self.state.acc_mem.access() else { return None };
+        let Some(mem) = self.state.acc_mem.access_borrow() else { return None };
+        let mem = mem.view();
 
         // Attempt to reserve an entry on the Completion Queue
         let permit = self.cq.reserve_entry(&self, &mem)?;
@@ -868,18 +869,20 @@ impl CompQueue {
         //
         // XXX: handle a guest addr that becomes unmapped later
         let addr = self.base.offset::<CompletionQueueEntry>(idx as usize);
-        if let Some(mem) = self.state.acc_mem.access() {
-            cqe.set_phase(!phase);
-            mem.write(addr, &cqe);
-            cqe.set_phase(phase);
-            mem.write(addr, &cqe);
-
-            let devq_id = self.devq_id();
-            state.db_buf_read(devq_id, &mem);
-            state.db_buf_write(devq_id, &mem);
-        } else {
+        // TODO: access disallowed?
+        let Some(mem) = self.state.acc_mem.access_borrow() else {
             // TODO: mark the queue/controller in error state?
-        }
+            return;
+        };
+        let mem = mem.view();
+        cqe.set_phase(!phase);
+        mem.write(addr, &cqe);
+        cqe.set_phase(phase);
+        mem.write(addr, &cqe);
+
+        let devq_id = self.devq_id();
+        state.db_buf_read(devq_id, &mem);
+        state.db_buf_write(devq_id, &mem);
     }
 
     pub(super) fn set_db_buf(
