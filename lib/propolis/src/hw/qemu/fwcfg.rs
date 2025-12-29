@@ -1476,7 +1476,7 @@ pub mod formats {
     pub const ACPI_TABLES_FWCFG_NAME: &str = "etc/acpi/tables";
     pub const ACPI_RSDP_FWCFG_NAME: &str = "etc/acpi/rsdp";
 
-    pub use crate::firmware::acpi::{Dsdt, Fadt, Hpet, Madt, Mcfg, Rsdt, Rsdp, Xsdt};
+    pub use crate::firmware::acpi::{Dsdt, Facs, Fadt, Hpet, Madt, Mcfg, Rsdt, Rsdp, Xsdt};
 
     #[cfg(test)]
     mod test_table_loader {
