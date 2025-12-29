@@ -6,4 +6,4 @@
 
 pub mod tables;
 
-pub use tables::{Rsdt, Rsdp, Xsdt};
+pub use tables::{Dsdt, Fadt, Rsdt, Rsdp, Xsdt};
