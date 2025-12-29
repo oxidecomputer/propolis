@@ -1637,6 +1637,31 @@ pub mod formats {
         }
     }
 
+    const FACS_SIZE: usize = 64;
+    const FACS_VERSION: u8 = 2;
+    const FACS_OFF_LENGTH: usize = 4;
+    const FACS_OFF_VERSION: usize = 32;
+
+    #[must_use = "call .finish() to get the FACS table bytes"]
+    pub struct Facs {
+        data: Vec<u8>,
+    }
+
+    impl Facs {
+        pub fn new() -> Self {
+            let mut data = vec![0u8; FACS_SIZE];
+            data[..b"FACS".len()].copy_from_slice(b"FACS");
+            data[FACS_OFF_LENGTH..FACS_OFF_LENGTH + 4]
+                .copy_from_slice(&(FACS_SIZE as u32).to_le_bytes());
+            data[FACS_OFF_VERSION] = FACS_VERSION;
+            Self { data }
+        }
+
+        pub fn finish(self) -> Vec<u8> {
+            self.data
+        }
+    }
+
     const MADT_LOCAL_APIC_ADDR_OFF: usize = ACPI_TABLE_HEADER_SIZE;
     const MADT_FLAGS_OFF: usize = ACPI_TABLE_HEADER_SIZE + 4;
     const MADT_ENTRIES_OFF: usize = ACPI_TABLE_HEADER_SIZE + 8;
