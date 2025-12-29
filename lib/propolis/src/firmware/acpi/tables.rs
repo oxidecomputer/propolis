@@ -416,6 +416,82 @@ impl Madt {
     }
 }
 
+const MCFG_ENTRIES_OFF: usize = ACPI_TABLE_HEADER_SIZE + 8;
+
+pub struct Mcfg {
+    data: Vec<u8>,
+}
+
+impl Mcfg {
+    pub fn new() -> Self {
+        let header = AcpiTableHeader::new(*b"MCFG", 1);
+        let mut data = vec![0u8; MCFG_ENTRIES_OFF];
+        data[..ACPI_TABLE_HEADER_SIZE].copy_from_slice(header.as_bytes());
+        Self { data }
+    }
+
+    pub fn add_allocation(
+        &mut self,
+        base_addr: u64,
+        segment_group: u16,
+        start_bus: u8,
+        end_bus: u8,
+    ) {
+        assert!(start_bus <= end_bus);
+        self.data.extend_from_slice(&base_addr.to_le_bytes());
+        self.data.extend_from_slice(&segment_group.to_le_bytes());
+        self.data.push(start_bus);
+        self.data.push(end_bus);
+        self.data.extend_from_slice(&[0u8; 4]);
+    }
+
+    pub fn finish(mut self) -> Vec<u8> {
+        let length = self.data.len() as u32;
+        self.data[ACPI_TABLE_LENGTH_OFFSET
+            ..ACPI_TABLE_LENGTH_OFFSET + size_of::<u32>()]
+            .copy_from_slice(&length.to_le_bytes());
+        self.data
+    }
+}
+
+const HPET_HW_ID: u32 = 0x8086_0701;
+const HPET_BASE_ADDR: u64 = 0xfed0_0000;
+const HPET_DATA_SIZE: usize = 20;
+const HPET_PAGE_PROTECT4: u8 = 1;
+
+const HPET_OFF_HW_ID: usize = ACPI_TABLE_HEADER_SIZE;
+const HPET_OFF_BASE_ADDR: usize = ACPI_TABLE_HEADER_SIZE + 8;
+const HPET_OFF_FLAGS: usize = ACPI_TABLE_HEADER_SIZE + 19;
+
+#[must_use = "call .finish() to get the HPET table bytes"]
+pub struct Hpet {
+    data: Vec<u8>,
+}
+
+impl Hpet {
+    pub fn new() -> Self {
+        let header = AcpiTableHeader::new(*b"HPET", 1);
+        let mut data = vec![0u8; ACPI_TABLE_HEADER_SIZE + HPET_DATA_SIZE];
+        data[..ACPI_TABLE_HEADER_SIZE].copy_from_slice(header.as_bytes());
+
+        data[HPET_OFF_HW_ID..HPET_OFF_HW_ID + size_of::<u32>()]
+            .copy_from_slice(&HPET_HW_ID.to_le_bytes());
+        data[HPET_OFF_BASE_ADDR..HPET_OFF_BASE_ADDR + size_of::<u64>()]
+            .copy_from_slice(&HPET_BASE_ADDR.to_le_bytes());
+        data[HPET_OFF_FLAGS] = HPET_PAGE_PROTECT4;
+
+        Self { data }
+    }
+
+    pub fn finish(mut self) -> Vec<u8> {
+        let length = self.data.len() as u32;
+        self.data[ACPI_TABLE_LENGTH_OFFSET
+            ..ACPI_TABLE_LENGTH_OFFSET + size_of::<u32>()]
+            .copy_from_slice(&length.to_le_bytes());
+        self.data
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +518,13 @@ mod tests {
         let madt = Madt::new(0xFEE0_0000);
         let madt_data = madt.finish();
         assert_eq!(&madt_data[0..4], b"APIC");
+
+        let mcfg = Mcfg::new();
+        let mcfg_data = mcfg.finish();
+        assert_eq!(&mcfg_data[0..4], b"MCFG");
+
+        let hpet = Hpet::new();
+        let hpet_data = hpet.finish();
+        assert_eq!(&hpet_data[0..4], b"HPET");
     }
 }
