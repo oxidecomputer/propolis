@@ -39,6 +39,7 @@ slog-term.workspace = true
 strum = { workspace = true, features = ["derive"] }
 tar.workspace = true
 uuid.workspace = true
+pbind.workspace = true
 
 [features]
 default = []

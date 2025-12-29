@@ -43,6 +43,7 @@ oxide-tokio-rt.workspace = true
 oximeter-instruments.workspace = true
 oximeter-producer.workspace = true
 oximeter.workspace = true
+pbind.workspace = true
 ron.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }
