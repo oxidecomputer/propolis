@@ -492,6 +492,34 @@ impl Hpet {
     }
 }
 
+pub const FACS_SIZE: usize = 64;
+const FACS_SIGNATURE_OFF: usize = 0;
+const FACS_LENGTH_OFF: usize = size_of::<u32>();
+const FACS_HW_SIGNATURE_OFF: usize = 2 * size_of::<u32>();
+const FACS_VERSION_OFF: usize = 32;
+
+pub struct Facs {
+    data: Vec<u8>,
+}
+
+impl Facs {
+    pub fn new() -> Self {
+        let mut data = vec![0u8; FACS_SIZE];
+        data[FACS_SIGNATURE_OFF..FACS_SIGNATURE_OFF + size_of::<u32>()]
+            .copy_from_slice(b"FACS");
+        data[FACS_LENGTH_OFF..FACS_LENGTH_OFF + size_of::<u32>()]
+            .copy_from_slice(&(FACS_SIZE as u32).to_le_bytes());
+        data[FACS_HW_SIGNATURE_OFF..FACS_HW_SIGNATURE_OFF + size_of::<u32>()]
+            .copy_from_slice(&0u32.to_le_bytes());
+        data[FACS_VERSION_OFF] = 2;
+        Self { data }
+    }
+
+    pub fn finish(self) -> Vec<u8> {
+        self.data
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,5 +554,9 @@ mod tests {
         let hpet = Hpet::new();
         let hpet_data = hpet.finish();
         assert_eq!(&hpet_data[0..4], b"HPET");
+
+        let facs = Facs::new();
+        let facs_data = facs.finish();
+        assert_eq!(&facs_data[0..4], b"FACS");
     }
 }
