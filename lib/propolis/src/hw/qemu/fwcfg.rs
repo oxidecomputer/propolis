@@ -1563,6 +1563,113 @@ pub mod formats {
         }
     }
 
+    const MADT_LOCAL_APIC_ADDR_OFF: usize = ACPI_TABLE_HEADER_SIZE;
+    const MADT_FLAGS_OFF: usize = ACPI_TABLE_HEADER_SIZE + 4;
+    const MADT_ENTRIES_OFF: usize = ACPI_TABLE_HEADER_SIZE + 8;
+
+    const MADT_TYPE_LOCAL_APIC: u8 = 0;
+    const MADT_TYPE_IO_APIC: u8 = 1;
+    const MADT_TYPE_INT_SRC_OVERRIDE: u8 = 2;
+    const MADT_TYPE_LAPIC_NMI: u8 = 4;
+
+    const MADT_LOCAL_APIC_LEN: u8 = 8;
+    const MADT_IO_APIC_LEN: u8 = 12;
+    const MADT_INT_SRC_OVERRIDE_LEN: u8 = 10;
+    const MADT_LAPIC_NMI_LEN: u8 = 6;
+
+    pub const MADT_FLAG_PCAT_COMPAT: u32 = 1;
+    pub const MADT_LAPIC_ENABLED: u32 = 1;
+
+    const MADT_INT_POLARITY_ACTIVE_HIGH: u16 = 0x01;
+    const MADT_INT_POLARITY_ACTIVE_LOW: u16 = 0x03;
+    const MADT_INT_TRIGGER_EDGE: u16 = 0x04;
+    const MADT_INT_TRIGGER_LEVEL: u16 = 0x0c;
+    pub const MADT_INT_LEVEL_ACTIVE_LOW: u16 =
+        MADT_INT_POLARITY_ACTIVE_LOW | MADT_INT_TRIGGER_LEVEL;
+    pub const MADT_INT_EDGE_ACTIVE_HIGH: u16 =
+        MADT_INT_POLARITY_ACTIVE_HIGH | MADT_INT_TRIGGER_EDGE;
+    pub const MADT_INT_LEVEL_ACTIVE_HIGH: u16 =
+        MADT_INT_POLARITY_ACTIVE_HIGH | MADT_INT_TRIGGER_LEVEL;
+
+    pub const ISA_BUS: u8 = 0;
+    pub const ISA_IRQ_TIMER: u8 = 0;
+    pub const ISA_IRQ_SCI: u8 = 9;
+    pub const GSI_TIMER: u32 = 2;
+    pub const GSI_SCI: u32 = 9;
+
+    pub const ACPI_PROCESSOR_ALL: u8 = 0xff;
+    pub const MADT_INT_FLAGS_DEFAULT: u16 = 0;
+    pub const LINT1: u8 = 1;
+
+    pub struct Madt {
+        data: Vec<u8>,
+    }
+
+    impl Madt {
+        pub fn new(local_apic_addr: u32) -> Self {
+            let header = AcpiTableHeader::new(*b"APIC", 5);
+            let mut data = vec![0u8; MADT_ENTRIES_OFF];
+            data[..ACPI_TABLE_HEADER_SIZE].copy_from_slice(header.as_bytes());
+            data[MADT_LOCAL_APIC_ADDR_OFF..MADT_LOCAL_APIC_ADDR_OFF + 4]
+                .copy_from_slice(&local_apic_addr.to_le_bytes());
+            data[MADT_FLAGS_OFF..MADT_FLAGS_OFF + 4]
+                .copy_from_slice(&MADT_FLAG_PCAT_COMPAT.to_le_bytes());
+            Self { data }
+        }
+
+        pub fn add_local_apic(
+            &mut self,
+            processor_id: u8,
+            apic_id: u8,
+            flags: u32,
+        ) {
+            self.data.push(MADT_TYPE_LOCAL_APIC);
+            self.data.push(MADT_LOCAL_APIC_LEN);
+            self.data.push(processor_id);
+            self.data.push(apic_id);
+            self.data.extend_from_slice(&flags.to_le_bytes());
+        }
+
+        pub fn add_io_apic(&mut self, id: u8, addr: u32, gsi_base: u32) {
+            self.data.push(MADT_TYPE_IO_APIC);
+            self.data.push(MADT_IO_APIC_LEN);
+            self.data.push(id);
+            self.data.push(0);
+            self.data.extend_from_slice(&addr.to_le_bytes());
+            self.data.extend_from_slice(&gsi_base.to_le_bytes());
+        }
+
+        pub fn add_int_src_override(
+            &mut self,
+            bus: u8,
+            source: u8,
+            gsi: u32,
+            flags: u16,
+        ) {
+            self.data.push(MADT_TYPE_INT_SRC_OVERRIDE);
+            self.data.push(MADT_INT_SRC_OVERRIDE_LEN);
+            self.data.push(bus);
+            self.data.push(source);
+            self.data.extend_from_slice(&gsi.to_le_bytes());
+            self.data.extend_from_slice(&flags.to_le_bytes());
+        }
+
+        pub fn add_lapic_nmi(&mut self, processor_uid: u8, flags: u16, lint: u8) {
+            self.data.push(MADT_TYPE_LAPIC_NMI);
+            self.data.push(MADT_LAPIC_NMI_LEN);
+            self.data.push(processor_uid);
+            self.data.extend_from_slice(&flags.to_le_bytes());
+            self.data.push(lint);
+        }
+
+        pub fn finish(mut self) -> Vec<u8> {
+            let length = self.data.len() as u32;
+            self.data[ACPI_TABLE_LENGTH_OFFSET..ACPI_TABLE_LENGTH_OFFSET + 4]
+                .copy_from_slice(&length.to_le_bytes());
+            self.data
+        }
+    }
+
     pub struct Dsdt {
         data: Vec<u8>,
     }
@@ -1739,7 +1846,6 @@ pub mod formats {
         }
     }
 
-
     pub const RSDP_SIZE: usize = 36;
     pub const RSDP_V1_SIZE: usize = 20;
 
@@ -1852,6 +1958,10 @@ pub mod formats {
             let rsdp = Rsdp::new();
             let rsdp_data = rsdp.finish();
             assert_eq!(&rsdp_data[0..8], b"RSD PTR ");
+
+            let madt = Madt::new(0xFEE0_0000);
+            let madt_data = madt.finish();
+            assert_eq!(&madt_data[0..4], b"APIC");
 
             let dsdt = Dsdt::new();
             let dsdt_data = dsdt.finish();
