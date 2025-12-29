@@ -1057,6 +1057,7 @@ mod test {
 pub mod formats {
     use super::Entry;
     use crate::hw::pci;
+    use thiserror::Error;
     use zerocopy::{Immutable, IntoBytes};
 
     /// A type for a range described in an E820 map entry.
@@ -1300,6 +1301,243 @@ pub mod formats {
                 .split('\n')
                 .collect::<Vec<_>>();
             assert_eq!(&expected[..], &entries[..]);
+        }
+    }
+
+    pub const TABLE_LOADER_FILESZ: usize = 56;
+    pub const TABLE_LOADER_COMMAND_SIZE: usize = 128;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, IntoBytes, Immutable)]
+    #[repr(u8)]
+    pub enum AllocZone {
+        High = 0x1,
+        FSeg = 0x2,
+    }
+
+    #[derive(Debug, Error)]
+    pub enum TableLoaderError {
+        #[error(
+            "file name too long: {len} bytes exceeds max of {}",
+            TABLE_LOADER_FILESZ - 1
+        )]
+        FileNameTooLong { len: usize },
+
+        #[error("invalid pointer size: {0} (must be 1, 2, 4, or 8)")]
+        InvalidPointerSize(u8),
+
+        #[error("alignment must be a power of two, got {0}")]
+        InvalidAlignment(u32),
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, IntoBytes, Immutable)]
+    #[repr(u32)]
+    enum CommandType {
+        Allocate = 1,
+        AddPointer = 2,
+        AddChecksum = 3,
+        #[allow(dead_code)]
+        WritePointer = 4,
+    }
+
+    #[derive(Clone, IntoBytes, Immutable)]
+    #[repr(C)]
+    struct LoaderFileName([u8; TABLE_LOADER_FILESZ]);
+
+    impl LoaderFileName {
+        fn new(name: &str) -> Result<Self, TableLoaderError> {
+            let bytes = name.as_bytes();
+            if bytes.len() >= TABLE_LOADER_FILESZ {
+                return Err(TableLoaderError::FileNameTooLong {
+                    len: bytes.len(),
+                });
+            }
+
+            let mut buf = [0u8; TABLE_LOADER_FILESZ];
+            buf[..bytes.len()].copy_from_slice(bytes);
+            Ok(Self(buf))
+        }
+    }
+
+    #[derive(IntoBytes, Immutable)]
+    #[repr(C, packed)]
+    struct AllocateCommand {
+        file: LoaderFileName,
+        align: u32,
+        zone: AllocZone,
+    }
+
+    #[derive(IntoBytes, Immutable)]
+    #[repr(C, packed)]
+    struct AddPointerCommand {
+        dest_file: LoaderFileName,
+        src_file: LoaderFileName,
+        offset: u32,
+        size: u8,
+    }
+
+    #[derive(IntoBytes, Immutable)]
+    #[repr(C, packed)]
+    struct AddChecksumCommand {
+        file: LoaderFileName,
+        result_offset: u32,
+        start: u32,
+        length: u32,
+    }
+
+    #[must_use = "call .finish() to get the table-loader entry"]
+    pub struct TableLoader {
+        commands: Vec<u8>,
+    }
+
+    impl TableLoader {
+        pub fn new() -> Self {
+            Self { commands: Vec::new() }
+        }
+
+        pub fn add_allocate(
+            &mut self,
+            file: &str,
+            align: u32,
+            zone: AllocZone,
+        ) -> Result<(), TableLoaderError> {
+            if !align.is_power_of_two() {
+                return Err(TableLoaderError::InvalidAlignment(align));
+            }
+
+            let cmd = AllocateCommand {
+                file: LoaderFileName::new(file)?,
+                align,
+                zone,
+            };
+
+            self.write_command(CommandType::Allocate, cmd.as_bytes());
+            Ok(())
+        }
+
+        pub fn add_pointer(
+            &mut self,
+            dest_file: &str,
+            src_file: &str,
+            offset: u32,
+            size: u8,
+        ) -> Result<(), TableLoaderError> {
+            if !matches!(size, 1 | 2 | 4 | 8) {
+                return Err(TableLoaderError::InvalidPointerSize(size));
+            }
+
+            let cmd = AddPointerCommand {
+                dest_file: LoaderFileName::new(dest_file)?,
+                src_file: LoaderFileName::new(src_file)?,
+                offset,
+                size,
+            };
+
+            self.write_command(CommandType::AddPointer, cmd.as_bytes());
+            Ok(())
+        }
+
+        pub fn add_checksum(
+            &mut self,
+            file: &str,
+            result_offset: u32,
+            start: u32,
+            length: u32,
+        ) -> Result<(), TableLoaderError> {
+            let cmd = AddChecksumCommand {
+                file: LoaderFileName::new(file)?,
+                result_offset,
+                start,
+                length,
+            };
+
+            self.write_command(CommandType::AddChecksum, cmd.as_bytes());
+            Ok(())
+        }
+
+        pub fn finish(self) -> Entry {
+            Entry::Bytes(self.commands)
+        }
+
+        fn write_command(&mut self, cmd_type: CommandType, payload: &[u8]) {
+            let start = self.commands.len();
+            self.commands.resize(start + TABLE_LOADER_COMMAND_SIZE, 0);
+
+            let cmd_bytes = (cmd_type as u32).to_le_bytes();
+            self.commands[start..start + 4].copy_from_slice(&cmd_bytes);
+
+            let payload_start = start + 4;
+            let payload_end = payload_start + payload.len();
+            assert!(payload_end <= start + TABLE_LOADER_COMMAND_SIZE);
+            self.commands[payload_start..payload_end].copy_from_slice(payload);
+        }
+    }
+
+    pub const TABLE_LOADER_FWCFG_NAME: &str = "etc/table-loader";
+    pub const ACPI_TABLES_FWCFG_NAME: &str = "etc/acpi/tables";
+    pub const ACPI_RSDP_FWCFG_NAME: &str = "etc/acpi/rsdp";
+
+    #[cfg(test)]
+    mod test_table_loader {
+        use super::*;
+
+        #[test]
+        fn struct_sizes() {
+            assert_eq!(
+                std::mem::size_of::<LoaderFileName>(),
+                TABLE_LOADER_FILESZ
+            );
+            assert_eq!(
+                std::mem::size_of::<AllocateCommand>(),
+                TABLE_LOADER_FILESZ + 5
+            );
+            assert_eq!(
+                std::mem::size_of::<AddPointerCommand>(),
+                TABLE_LOADER_FILESZ * 2 + 5
+            );
+            assert_eq!(
+                std::mem::size_of::<AddChecksumCommand>(),
+                TABLE_LOADER_FILESZ + 12
+            );
+        }
+
+        #[test]
+        fn basic() {
+            let mut loader = TableLoader::new();
+            loader.add_allocate("rsdp", 16, AllocZone::FSeg).unwrap();
+            loader.add_allocate("tables", 64, AllocZone::High).unwrap();
+            loader.add_pointer("rsdp", "tables", 16, 4).unwrap();
+            loader.add_checksum("rsdp", 8, 0, 20).unwrap();
+
+            let Entry::Bytes(bytes) = loader.finish() else {
+                panic!("expected Bytes entry");
+            };
+
+            assert_eq!(bytes.len(), TABLE_LOADER_COMMAND_SIZE * 4);
+            assert_eq!(bytes[0], CommandType::Allocate as u8);
+            assert_eq!(bytes[128], CommandType::Allocate as u8);
+            assert_eq!(bytes[256], CommandType::AddPointer as u8);
+            assert_eq!(bytes[384], CommandType::AddChecksum as u8);
+        }
+
+        #[test]
+        fn validation() {
+            let mut loader = TableLoader::new();
+
+            let long_name = "a".repeat(TABLE_LOADER_FILESZ);
+            assert!(matches!(
+                loader.add_allocate(&long_name, 64, AllocZone::High),
+                Err(TableLoaderError::FileNameTooLong { .. })
+            ));
+
+            assert!(matches!(
+                loader.add_allocate("test", 3, AllocZone::High),
+                Err(TableLoaderError::InvalidAlignment(3))
+            ));
+
+            assert!(matches!(
+                loader.add_pointer("a", "b", 0, 3),
+                Err(TableLoaderError::InvalidPointerSize(3))
+            ));
         }
     }
 }
