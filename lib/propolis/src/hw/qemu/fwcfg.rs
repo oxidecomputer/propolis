@@ -1476,6 +1476,8 @@ pub mod formats {
     pub const ACPI_TABLES_FWCFG_NAME: &str = "etc/acpi/tables";
     pub const ACPI_RSDP_FWCFG_NAME: &str = "etc/acpi/rsdp";
 
+    pub use crate::firmware::acpi::{Rsdt, Rsdp, Xsdt};
+
     #[cfg(test)]
     mod test_table_loader {
         use super::*;
@@ -1538,6 +1540,23 @@ pub mod formats {
                 loader.add_pointer("a", "b", 0, 3),
                 Err(TableLoaderError::InvalidPointerSize(3))
             ));
+        }
+    }
+
+    #[cfg(test)]
+    mod test_acpi_tables {
+        use super::*;
+
+        #[test]
+        fn basic() {
+            let mut xsdt = Xsdt::new();
+            xsdt.add_entry();
+            let xsdt_data = xsdt.finish();
+            assert_eq!(&xsdt_data[0..4], b"XSDT");
+
+            let rsdp = Rsdp::new();
+            let rsdp_data = rsdp.finish();
+            assert_eq!(&rsdp_data[0..8], b"RSD PTR ");
         }
     }
 }
