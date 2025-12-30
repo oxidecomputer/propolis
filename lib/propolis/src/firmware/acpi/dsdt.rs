@@ -185,6 +185,39 @@ fn build_pcie_host_bridge(
         }
     }
     pci0.name_package("_PRT", &prt_entries);
+    pci0.name("SUPP", &0u32);
+
+    build_pcie_osc_method(&mut pci0);
+}
+
+fn build_pcie_osc_method(dev: &mut super::aml::DeviceGuard<'_>) {
+    use super::names::{encode_uuid, UUID_SIZE};
+    use super::opcodes::*;
+
+    const PCIE_UUID: [u8; UUID_SIZE] =
+        encode_uuid("33DB4D5B-1FF7-401C-9657-7441C03DD766");
+    const OSC_STATUS_UNSUPPORT_UUID: u32 = 1 << 2;
+    const OSC_CTRL_SHPC_HP: u32 = 1 << 1;
+    const OSC_CTRL_PCIE_AER: u32 = 1 << 3;
+
+    let unsupported_mask = !(OSC_CTRL_SHPC_HP | OSC_CTRL_PCIE_AER);
+
+    let mut osc = dev.method("_OSC", 4, false);
+
+    osc.create_dword_field(ARG3_OP, 0, "CDW1");
+    osc.create_dword_field(ARG3_OP, 4, "CDW2");
+    osc.create_dword_field(ARG3_OP, 8, "CDW3");
+
+    osc.if_uuid_equal(&PCIE_UUID, |osc| {
+        osc.store("CDW2", "SUPP");
+        osc.and_to("CDW3", unsupported_mask);
+    });
+
+    osc.else_block(|osc| {
+        osc.or_to("CDW1", OSC_STATUS_UNSUPPORT_UUID);
+    });
+
+    osc.return_arg(3);
 }
 
 fn build_com_port(

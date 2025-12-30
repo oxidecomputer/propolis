@@ -94,6 +94,7 @@ pub const SIZEOF_OP: u8 = 0x87;
 pub const INDEX_OP: u8 = 0x88;
 pub const DEREF_OF_OP: u8 = 0x83;
 pub const REF_OF_OP: u8 = 0x71;
+pub const CREATE_DWORD_FIELD_OP: u8 = 0x8A;
 
 // Resource template end tag
 pub const END_TAG: u8 = 0x79;
