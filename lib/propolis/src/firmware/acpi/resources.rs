@@ -10,9 +10,12 @@ const SMALL_IRQ_TAG: u8 = 0x04;
 const SMALL_IO_TAG: u8 = 0x08;
 const SMALL_END_TAG: u8 = 0x0F;
 
+const LARGE_RESOURCE_BIT: u8 = 0x80;
+
 const LARGE_QWORD_ADDR_SPACE: u8 = 0x0A;
-const LARGE_WORD_ADDR_SPACE: u8 = 0x08;
 const LARGE_DWORD_ADDR_SPACE: u8 = 0x07;
+const LARGE_WORD_ADDR_SPACE: u8 = 0x08;
+const LARGE_MEMORY32_FIXED: u8 = 0x06;
 const LARGE_EXT_IRQ: u8 = 0x09;
 
 const ADDR_SPACE_TYPE_MEMORY: u8 = 0x00;
@@ -44,6 +47,12 @@ fn mem_type_flags(cacheable: bool, read_write: bool) -> u8 {
 const QWORD_ADDR_SPACE_DATA_LEN: u16 = 43;
 const WORD_ADDR_SPACE_DATA_LEN: u16 = 13;
 const DWORD_ADDR_SPACE_DATA_LEN: u16 = 23;
+const FIXED_MEMORY32_DATA_LEN: u16 = 9;
+
+const ADDR_SPACE_FLAG_MIF: u8 = 0x04;
+const ADDR_SPACE_FLAG_MAF: u8 = 0x08;
+
+const IO_RANGE_ENTIRE: u8 = 0x03;
 
 const SMALL_IO_LEN: u8 = 0x07;
 const SMALL_IRQ_LEN: u8 = 0x02;
@@ -91,7 +100,7 @@ impl ResourceTemplateBuilder {
         translation: u64,
         len: u64,
     ) -> &mut Self {
-        self.buf.push(0x80 | LARGE_QWORD_ADDR_SPACE);
+        self.buf.push(LARGE_RESOURCE_BIT | LARGE_QWORD_ADDR_SPACE);
         self.buf.extend_from_slice(&QWORD_ADDR_SPACE_DATA_LEN.to_le_bytes());
 
         self.buf.push(resource_type);
@@ -120,12 +129,12 @@ impl ResourceTemplateBuilder {
         translation: u16,
         len: u16,
     ) -> &mut Self {
-        self.buf.push(0x80 | LARGE_WORD_ADDR_SPACE);
+        self.buf.push(LARGE_RESOURCE_BIT | LARGE_WORD_ADDR_SPACE);
         self.buf.extend_from_slice(&WORD_ADDR_SPACE_DATA_LEN.to_le_bytes());
 
         self.buf.push(ADDR_SPACE_TYPE_BUS);
         self.buf.push(0x00); // General flags
-        self.buf.push(0x00); // Type-specific flags
+        self.buf.push(0x00); // Type specific flags
 
         self.buf.extend_from_slice(&0u16.to_le_bytes()); // Granularity
         self.buf.extend_from_slice(&min.to_le_bytes());
@@ -145,7 +154,7 @@ impl ResourceTemplateBuilder {
         translation: u32,
         len: u32,
     ) -> &mut Self {
-        self.buf.push(0x80 | LARGE_DWORD_ADDR_SPACE);
+        self.buf.push(LARGE_RESOURCE_BIT | LARGE_DWORD_ADDR_SPACE);
         self.buf.extend_from_slice(&DWORD_ADDR_SPACE_DATA_LEN.to_le_bytes());
 
         self.buf.push(ADDR_SPACE_TYPE_MEMORY);
@@ -171,6 +180,32 @@ impl ResourceTemplateBuilder {
         self
     }
 
+    pub fn io_range(&mut self, min: u16, max: u16, len: u16) -> &mut Self {
+        self.buf.push(LARGE_RESOURCE_BIT | LARGE_WORD_ADDR_SPACE);
+        self.buf.extend_from_slice(&WORD_ADDR_SPACE_DATA_LEN.to_le_bytes());
+
+        self.buf.push(ADDR_SPACE_TYPE_IO);
+        self.buf.push(ADDR_SPACE_FLAG_MIF | ADDR_SPACE_FLAG_MAF);
+        self.buf.push(IO_RANGE_ENTIRE);
+
+        self.buf.extend_from_slice(&0u16.to_le_bytes());
+        self.buf.extend_from_slice(&min.to_le_bytes());
+        self.buf.extend_from_slice(&max.to_le_bytes());
+        self.buf.extend_from_slice(&0u16.to_le_bytes());
+        self.buf.extend_from_slice(&len.to_le_bytes());
+
+        self
+    }
+
+    pub fn fixed_memory(&mut self, base: u32, len: u32) -> &mut Self {
+        self.buf.push(LARGE_RESOURCE_BIT | LARGE_MEMORY32_FIXED);
+        self.buf.extend_from_slice(&FIXED_MEMORY32_DATA_LEN.to_le_bytes());
+        self.buf.push(MEM_FLAG_READ_WRITE);
+        self.buf.extend_from_slice(&base.to_le_bytes());
+        self.buf.extend_from_slice(&len.to_le_bytes());
+        self
+    }
+
     pub fn irq(&mut self, irq_mask: u16) -> &mut Self {
         self.buf.push((SMALL_IRQ_TAG << 3) | SMALL_IRQ_LEN);
         self.buf.extend_from_slice(&irq_mask.to_le_bytes());
@@ -187,7 +222,7 @@ impl ResourceTemplateBuilder {
     ) -> &mut Self {
         let data_len = 2 + (irqs.len() * 4);
 
-        self.buf.push(0x80 | LARGE_EXT_IRQ);
+        self.buf.push(LARGE_RESOURCE_BIT | LARGE_EXT_IRQ);
         self.buf.extend_from_slice(&(data_len as u16).to_le_bytes());
 
         let mut flags = 0u8;
@@ -253,13 +288,13 @@ mod tests {
         let mut builder = ResourceTemplateBuilder::new();
         builder.word_bus_number(0, 255, 0, 256);
         let data = builder.finish();
-        assert_eq!(data[0], 0x80 | LARGE_WORD_ADDR_SPACE);
+        assert_eq!(data[0], LARGE_RESOURCE_BIT | LARGE_WORD_ADDR_SPACE);
         assert_eq!(data[3], ADDR_SPACE_TYPE_BUS);
 
         let mut builder = ResourceTemplateBuilder::new();
         builder.qword_memory(false, true, 0xE000_0000, 0xEFFF_FFFF, 0, 0x1000_0000);
         let data = builder.finish();
-        assert_eq!(data[0], 0x80 | LARGE_QWORD_ADDR_SPACE);
+        assert_eq!(data[0], LARGE_RESOURCE_BIT | LARGE_QWORD_ADDR_SPACE);
         assert_eq!(data[3], ADDR_SPACE_TYPE_MEMORY);
     }
 

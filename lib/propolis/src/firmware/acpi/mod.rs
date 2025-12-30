@@ -5,10 +5,12 @@
 //! ACPI table and AML bytecode generation.
 
 pub mod aml;
+pub mod dsdt;
 pub mod names;
 pub mod opcodes;
 pub mod resources;
 
 pub use aml::{AmlBuilder, AmlWriter, DeviceGuard, MethodGuard, ScopeGuard};
+pub use dsdt::{build_dsdt_aml, ComPortConfig, DsdtConfig, PcieConfig};
 pub use names::EisaId;
 pub use resources::ResourceTemplateBuilder;
