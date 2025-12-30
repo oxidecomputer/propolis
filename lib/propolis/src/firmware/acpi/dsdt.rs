@@ -9,6 +9,10 @@ use super::resources::ResourceTemplateBuilder;
 const PCI_CONFIG_IO_BASE: u16 = 0x0CF8;
 const PCI_CONFIG_IO_SIZE: u8 = 8;
 
+const PS2_DATA_PORT: u16 = 0x60;
+const PS2_CMD_PORT: u16 = 0x64;
+const PS2_KBD_IRQ: u8 = 1;
+
 const PCI_INT_PINS: u8 = 4;
 const PCI_GSI_BASE: u32 = 16;
 const PCI_SLOTS: u8 = 32;
@@ -94,6 +98,7 @@ pub fn build_dsdt_aml(config: &DsdtConfig) -> Vec<u8> {
             build_com_port(&mut sb, i, com);
         }
 
+        build_ps2_devices(&mut sb);
         build_qemu_panic_device(&mut sb);
     }
 
@@ -204,6 +209,18 @@ fn build_com_port(
     crs.io(com.io_base, com.io_base, IO_ALIGN_BYTE, COM_PORT_IO_LEN);
     crs.irq(1u16 << com.irq);
     dev.name("_CRS", &crs);
+}
+
+fn build_ps2_devices(sb: &mut super::aml::ScopeGuard<'_>) {
+    let mut kbd = sb.device("KBD_");
+
+    kbd.name("_HID", &EisaId::from_str("PNP0303"));
+
+    let mut crs = ResourceTemplateBuilder::new();
+    crs.io(PS2_DATA_PORT, PS2_DATA_PORT, 1, 1);
+    crs.io(PS2_CMD_PORT, PS2_CMD_PORT, 1, 1);
+    crs.irq(1u16 << PS2_KBD_IRQ);
+    kbd.name("_CRS", &crs);
 }
 
 fn build_qemu_panic_device(sb: &mut super::aml::ScopeGuard<'_>) {
