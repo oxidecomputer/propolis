@@ -228,6 +228,14 @@ fn write_package<T: AmlWriter>(buf: &mut Vec<u8>, elements: &[T]) {
     buf.extend_from_slice(&content);
 }
 
+pub fn write_package_raw(buf: &mut Vec<u8>, num_elements: u8, content: &[u8]) {
+    buf.push(PACKAGE_OP);
+    let len = 1 + content.len();
+    write_pkg_length(buf, len);
+    buf.push(num_elements);
+    buf.extend_from_slice(content);
+}
+
 /// ```compile_fail
 /// use propolis::firmware::acpi::AmlBuilder;
 /// let mut builder = AmlBuilder::new();
@@ -418,8 +426,19 @@ impl<'a> MethodGuard<'a> {
         Self { builder, start_pos, content_start }
     }
 
+    pub fn store_arg_to_name(&mut self, arg: u8, name: &str) {
+        self.builder.buf.push(STORE_OP);
+        self.builder.buf.push(ARG0_OP + arg);
+        encode_name_string(name, &mut self.builder.buf);
+    }
+
     pub fn return_value<T: AmlWriter>(&mut self, value: &T) {
         self.builder.return_value(value);
+    }
+
+    pub fn return_name(&mut self, name: &str) {
+        self.builder.buf.push(RETURN_OP);
+        encode_name_string(name, &mut self.builder.buf);
     }
 
     pub fn raw(&mut self, bytes: &[u8]) {

@@ -96,6 +96,16 @@ pub trait Lifecycle: Send + Sync + 'static {
     fn migrate(&'_ self) -> Migrator<'_> {
         Migrator::Empty
     }
+
+    /// Returns this device as a [`DsdtGenerator`] if it contributes to DSDT.
+    ///
+    /// Devices that implement [`DsdtGenerator`] should override this method
+    /// to return `Some(self)` so they can be automatically discovered.
+    ///
+    /// [`DsdtGenerator`]: crate::firmware::acpi::DsdtGenerator
+    fn as_dsdt_generator(&self) -> Option<&dyn crate::firmware::acpi::DsdtGenerator> {
+        None
+    }
 }
 
 /// Indicator for tracking [Lifecycle] states.

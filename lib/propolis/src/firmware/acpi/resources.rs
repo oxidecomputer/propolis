@@ -17,6 +17,8 @@ const SMALL_END_TAG: u8 = 0x0F;
 
 // Table 6.40 "Large Resource Items"
 // https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/06_Device_Configuration/Device_Configuration.html#large-resource-data-type
+const LARGE_RESOURCE_BIT: u8 = 0x80;
+const LARGE_MEMORY32_FIXED: u8 = 0x06;
 const LARGE_DWORD_ADDR_SPACE: u8 = 0x07;
 const LARGE_WORD_ADDR_SPACE: u8 = 0x08;
 const LARGE_EXT_IRQ: u8 = 0x09;
@@ -55,6 +57,15 @@ fn mem_type_flags(cacheable: bool, read_write: bool) -> u8 {
     }
     f
 }
+
+// Table 6.47 "General Flags"
+// https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/06_Device_Configuration/Device_Configuration.html#qword-address-space-descriptor
+const ADDR_SPACE_FLAG_MIF: u8 = 1 << 2;
+const ADDR_SPACE_FLAG_MAF: u8 = 1 << 3;
+
+// Table 6.50 "I/O Resource Flag (Resource Type = 1) Definitions"
+// https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/06_Device_Configuration/Device_Configuration.html#qword-address-space-descriptor
+const IO_RANGE_ENTIRE: u8 = 0x03;
 
 /// Builder for ACPI resource templates used in _CRS, _PRS and _SRS methods.
 #[must_use = "call .finish() to get the resource template bytes"]
@@ -101,7 +112,7 @@ impl ResourceTemplateBuilder {
         // 3 bytes of header + 5 u64 fields
         let data_len = (3 + 5 * std::mem::size_of::<u64>()) as u16;
 
-        self.buf.push(0x80 | LARGE_QWORD_ADDR_SPACE);
+        self.buf.push(LARGE_RESOURCE_BIT | LARGE_QWORD_ADDR_SPACE);
         self.buf.extend_from_slice(&data_len.to_le_bytes());
 
         self.buf.push(resource_type);
@@ -133,12 +144,12 @@ impl ResourceTemplateBuilder {
         // 3 bytes of header + 5 u16 fields
         let data_len = (3 + 5 * std::mem::size_of::<u16>()) as u16;
 
-        self.buf.push(0x80 | LARGE_WORD_ADDR_SPACE);
+        self.buf.push(LARGE_RESOURCE_BIT | LARGE_WORD_ADDR_SPACE);
         self.buf.extend_from_slice(&data_len.to_le_bytes());
 
         self.buf.push(ADDR_SPACE_TYPE_BUS);
         self.buf.push(0x00); // General flags
-        self.buf.push(0x00); // Type-specific flags
+        self.buf.push(0x00); // Type specific flags
 
         self.buf.extend_from_slice(&0u16.to_le_bytes()); // Granularity
         self.buf.extend_from_slice(&min.to_le_bytes());
@@ -161,7 +172,7 @@ impl ResourceTemplateBuilder {
         // 3 bytes of header + 5 u32 fields
         let data_len = (3 + 5 * std::mem::size_of::<u32>()) as u16;
 
-        self.buf.push(0x80 | LARGE_DWORD_ADDR_SPACE);
+        self.buf.push(LARGE_RESOURCE_BIT | LARGE_DWORD_ADDR_SPACE);
         self.buf.extend_from_slice(&data_len.to_le_bytes());
 
         self.buf.push(ADDR_SPACE_TYPE_MEMORY);
@@ -190,6 +201,38 @@ impl ResourceTemplateBuilder {
         self
     }
 
+    pub fn io_range(&mut self, min: u16, max: u16, len: u16) -> &mut Self {
+        // 3 bytes of header + 5 u16 fields
+        let data_len = (3 + 5 * std::mem::size_of::<u16>()) as u16;
+
+        self.buf.push(LARGE_RESOURCE_BIT | LARGE_WORD_ADDR_SPACE);
+        self.buf.extend_from_slice(&data_len.to_le_bytes());
+
+        self.buf.push(ADDR_SPACE_TYPE_IO);
+        self.buf.push(ADDR_SPACE_FLAG_MIF | ADDR_SPACE_FLAG_MAF);
+        self.buf.push(IO_RANGE_ENTIRE);
+
+        self.buf.extend_from_slice(&0u16.to_le_bytes());
+        self.buf.extend_from_slice(&min.to_le_bytes());
+        self.buf.extend_from_slice(&max.to_le_bytes());
+        self.buf.extend_from_slice(&0u16.to_le_bytes());
+        self.buf.extend_from_slice(&len.to_le_bytes());
+
+        self
+    }
+
+    pub fn fixed_memory(&mut self, base: u32, len: u32) -> &mut Self {
+        // info(1) + base(4) + len(4)
+        let data_len = (1 + 2 * std::mem::size_of::<u32>()) as u16;
+
+        self.buf.push(LARGE_RESOURCE_BIT | LARGE_MEMORY32_FIXED);
+        self.buf.extend_from_slice(&data_len.to_le_bytes());
+        self.buf.push(MEM_FLAG_READ_WRITE);
+        self.buf.extend_from_slice(&base.to_le_bytes());
+        self.buf.extend_from_slice(&len.to_le_bytes());
+        self
+    }
+
     pub fn irq(&mut self, irq_mask: u16) -> &mut Self {
         let data_len = std::mem::size_of::<u16>();
 
@@ -208,7 +251,7 @@ impl ResourceTemplateBuilder {
     ) -> &mut Self {
         let data_len = 2 + (irqs.len() * 4);
 
-        self.buf.push(0x80 | LARGE_EXT_IRQ);
+        self.buf.push(LARGE_RESOURCE_BIT | LARGE_EXT_IRQ);
         self.buf.extend_from_slice(&(data_len as u16).to_le_bytes());
 
         let mut flags = 0u8;
@@ -277,7 +320,7 @@ mod tests {
         let mut builder = ResourceTemplateBuilder::new();
         builder.word_bus_number(0, 255, 0, 256);
         let data = builder.finish();
-        assert_eq!(data[0], 0x80 | LARGE_WORD_ADDR_SPACE);
+        assert_eq!(data[0], LARGE_RESOURCE_BIT | LARGE_WORD_ADDR_SPACE);
         assert_eq!(data[3], ADDR_SPACE_TYPE_BUS);
 
         let mut builder = ResourceTemplateBuilder::new();
@@ -290,7 +333,7 @@ mod tests {
             0x1000_0000,
         );
         let data = builder.finish();
-        assert_eq!(data[0], 0x80 | LARGE_QWORD_ADDR_SPACE);
+        assert_eq!(data[0], LARGE_RESOURCE_BIT | LARGE_QWORD_ADDR_SPACE);
         assert_eq!(data[3], ADDR_SPACE_TYPE_MEMORY);
     }
 
