@@ -13,6 +13,6 @@ pub mod tables;
 
 pub use aml::{AmlBuilder, AmlWriter, DeviceGuard, MethodGuard, ScopeGuard};
 pub use dsdt::{build_dsdt_aml, DsdtConfig, DsdtGenerator, DsdtScope, PcieConfig};
-pub use names::EisaId;
+pub use names::{encode_uuid, EisaId};
 pub use resources::ResourceTemplateBuilder;
 pub use tables::{Dsdt, Facs, Fadt, Hpet, Madt, Mcfg, Rsdt, Rsdp, Xsdt};

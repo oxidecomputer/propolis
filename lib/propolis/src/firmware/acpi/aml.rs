@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use super::names::{encode_name_string, EisaId};
+use super::names::{encode_name_string, EisaId, UUID_SIZE};
 use super::opcodes::*;
 
 pub trait AmlWriter {
@@ -441,8 +441,85 @@ impl<'a> MethodGuard<'a> {
         encode_name_string(name, &mut self.builder.buf);
     }
 
+    pub fn return_arg(&mut self, n: u8) {
+        assert!(n <= 6);
+        self.builder.buf.push(RETURN_OP);
+        self.builder.buf.push(ARG0_OP + n);
+    }
+
     pub fn raw(&mut self, bytes: &[u8]) {
         self.builder.raw(bytes);
+    }
+
+    pub fn create_dword_field(&mut self, source: u8, offset: u8, name: &str) {
+        self.builder.buf.push(CREATE_DWORD_FIELD_OP);
+        self.builder.buf.push(source);
+        if offset == 0 {
+            self.builder.buf.push(ZERO_OP);
+        } else {
+            self.builder.buf.push(BYTE_PREFIX);
+            self.builder.buf.push(offset);
+        }
+        encode_name_string(name, &mut self.builder.buf);
+    }
+
+    pub fn if_uuid_equal(
+        &mut self,
+        uuid: &[u8; 16],
+        body: impl FnOnce(&mut Self),
+    ) {
+        self.builder.buf.push(IF_OP);
+        let start = self.builder.buf.len();
+        self.builder.buf.extend_from_slice(&[0; MAX_PKG_LENGTH_BYTES]);
+
+        self.builder.buf.push(LEQUAL_OP);
+        self.builder.buf.push(ARG0_OP);
+
+        self.builder.buf.push(BUFFER_OP);
+        let buffer_start = self.builder.buf.len();
+        self.builder.buf.extend_from_slice(&[0; MAX_PKG_LENGTH_BYTES]);
+        self.builder.buf.push(BYTE_PREFIX);
+        self.builder.buf.push(UUID_SIZE as u8);
+        let buffer_content_start = self.builder.buf.len();
+        self.builder.buf.extend_from_slice(uuid);
+        finalize_pkg_length(
+            &mut self.builder.buf,
+            buffer_start,
+            buffer_content_start,
+        );
+
+        let content_start = self.builder.buf.len();
+        body(self);
+        finalize_pkg_length(&mut self.builder.buf, start, content_start);
+    }
+
+    pub fn else_block(&mut self, body: impl FnOnce(&mut Self)) {
+        self.builder.buf.push(ELSE_OP);
+        let start = self.builder.buf.len();
+        self.builder.buf.extend_from_slice(&[0; MAX_PKG_LENGTH_BYTES]);
+        let content_start = self.builder.buf.len();
+        body(self);
+        finalize_pkg_length(&mut self.builder.buf, start, content_start);
+    }
+
+    pub fn and_to(&mut self, name: &str, mask: u32) {
+        self.builder.buf.push(AND_OP);
+        encode_name_string(name, &mut self.builder.buf);
+        mask.write_aml(&mut self.builder.buf);
+        encode_name_string(name, &mut self.builder.buf);
+    }
+
+    pub fn or_to(&mut self, name: &str, value: u32) {
+        self.builder.buf.push(OR_OP);
+        encode_name_string(name, &mut self.builder.buf);
+        value.write_aml(&mut self.builder.buf);
+        encode_name_string(name, &mut self.builder.buf);
+    }
+
+    pub fn store(&mut self, source: &str, dest: &str) {
+        self.builder.buf.push(STORE_OP);
+        encode_name_string(source, &mut self.builder.buf);
+        encode_name_string(dest, &mut self.builder.buf);
     }
 }
 

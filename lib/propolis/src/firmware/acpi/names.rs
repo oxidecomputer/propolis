@@ -133,6 +133,57 @@ impl EisaId {
     }
 }
 
+/// UUID byte size.
+pub const UUID_SIZE: usize = 16;
+
+/// Encode a UUID string into ACPI ToUUID format at compile time.
+///
+/// UUID format: "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+///
+/// ACPI ToUUID uses mixed-endian encoding:
+/// - First 3 groups (8-4-4 hex digits): little-endian
+/// - Last 2 groups (4-12 hex digits): big-endian
+pub const fn encode_uuid(uuid: &str) -> [u8; UUID_SIZE] {
+    let b = uuid.as_bytes();
+    assert!(b.len() == 36, "UUID must be 36 characters");
+    assert!(
+        b[8] == b'-' && b[13] == b'-' && b[18] == b'-' && b[23] == b'-',
+        "UUID must have dashes at positions 8, 13, 18, 23"
+    );
+
+    const fn hex(c: u8) -> u8 {
+        match c {
+            b'0'..=b'9' => c - b'0',
+            b'A'..=b'F' => c - b'A' + 10,
+            b'a'..=b'f' => c - b'a' + 10,
+            _ => panic!("invalid hex"),
+        }
+    }
+
+    const fn byte(b: &[u8], i: usize) -> u8 {
+        (hex(b[i]) << 4) | hex(b[i + 1])
+    }
+
+    [
+        byte(b, 6),
+        byte(b, 4),
+        byte(b, 2),
+        byte(b, 0),
+        byte(b, 11),
+        byte(b, 9),
+        byte(b, 16),
+        byte(b, 14),
+        byte(b, 19),
+        byte(b, 21),
+        byte(b, 24),
+        byte(b, 26),
+        byte(b, 28),
+        byte(b, 30),
+        byte(b, 32),
+        byte(b, 34),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,5 +240,17 @@ mod tests {
     #[should_panic(expected = "EISA ID manufacturer code must be A-Z")]
     fn eisaid_rejects_lowercase() {
         encode_eisaid("pnp0A08");
+    }
+
+    #[test]
+    fn uuid_encoding() {
+        let uuid = encode_uuid("33DB4D5B-1FF7-401C-9657-7441C03DD766");
+        assert_eq!(
+            uuid,
+            [
+                0x5B, 0x4D, 0xDB, 0x33, 0xF7, 0x1F, 0x1C, 0x40, 0x96, 0x57,
+                0x74, 0x41, 0xC0, 0x3D, 0xD7, 0x66,
+            ]
+        );
     }
 }
