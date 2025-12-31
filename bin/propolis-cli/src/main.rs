@@ -340,6 +340,7 @@ impl VmConfig {
                 } else {
                     Default::default()
                 },
+                native_acpi_tables: Some(true),
             },
             components: Default::default(),
             smbios: None,
