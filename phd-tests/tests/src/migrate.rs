@@ -100,6 +100,9 @@ mod from_base {
         // because a newer base Propolis will understand `boot_settings` just
         // fine.
         cfg.clear_boot_order();
+        // Base Propolis predates native ACPI table support. None ensures the
+        // field isn't serialized and is preserved through migration round trips.
+        cfg.native_acpi_tables(None);
         ctx.spawn_vm(&cfg, Some(&env)).await
     }
 }

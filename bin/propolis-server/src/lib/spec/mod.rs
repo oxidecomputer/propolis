@@ -129,6 +129,12 @@ pub(crate) struct Board {
     pub memory_mb: u64,
     pub chipset: Chipset,
     pub guest_hv_interface: GuestHypervisorInterface,
+    /// Use native ACPI tables instead of OVMF-provided tables.
+    ///
+    /// `None` indicates a VM created before native ACPI table support existed.
+    /// For migration compatibility, `None` is preserved through round-trips
+    /// and treated the same as `Some(false)` at runtime.
+    pub native_acpi_tables: Option<bool>,
 }
 
 impl Default for Board {
@@ -138,6 +144,7 @@ impl Default for Board {
             memory_mb: 0,
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
             guest_hv_interface: GuestHypervisorInterface::Bhyve,
+            native_acpi_tables: None,
         }
     }
 }
