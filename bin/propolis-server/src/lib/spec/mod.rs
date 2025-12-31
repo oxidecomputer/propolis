@@ -129,6 +129,7 @@ pub(crate) struct Board {
     pub memory_mb: u64,
     pub chipset: Chipset,
     pub guest_hv_interface: GuestHypervisorInterface,
+    pub native_acpi_tables: bool,
 }
 
 impl Default for Board {
@@ -138,6 +139,7 @@ impl Default for Board {
             memory_mb: 0,
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
             guest_hv_interface: GuestHypervisorInterface::Bhyve,
+            native_acpi_tables: false,
         }
     }
 }
