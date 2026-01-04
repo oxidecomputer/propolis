@@ -39,10 +39,18 @@ pub struct LpcUart {
     state: Mutex<UartState>,
     notify_readable: NotifierCell<dyn Source>,
     notify_writable: NotifierCell<dyn Sink>,
+    io_base: u16,
+    irq: u8,
+    name: &'static str,
 }
 
 impl LpcUart {
-    pub fn new(irq_pin: Box<dyn IntrPin>) -> Arc<Self> {
+    pub fn new(
+        irq_pin: Box<dyn IntrPin>,
+        io_base: u16,
+        irq: u8,
+        name: &'static str,
+    ) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(UartState {
                 uart: Uart::new(),
@@ -52,13 +60,17 @@ impl LpcUart {
             }),
             notify_readable: NotifierCell::new(),
             notify_writable: NotifierCell::new(),
+            io_base,
+            irq,
+            name,
         })
     }
-    pub fn attach(self: &Arc<Self>, bus: &PioBus, port: u16) {
+
+    pub fn attach(self: &Arc<Self>, bus: &PioBus) {
         let this = self.clone();
         let piofn = Arc::new(move |_port: u16, rwo: RWOp| this.pio_rw(rwo))
             as Arc<PioFn>;
-        bus.register(port, REGISTER_LEN as u16, piofn).unwrap();
+        bus.register(self.io_base, REGISTER_LEN as u16, piofn).unwrap();
     }
     fn pio_rw(&self, rwo: RWOp) {
         assert!(rwo.offset() < REGISTER_LEN);
@@ -172,6 +184,12 @@ impl Lifecycle for LpcUart {
         let mut state = self.state.lock().unwrap();
         state.paused = false;
     }
+
+    fn as_dsdt_generator(
+        &self,
+    ) -> Option<&dyn crate::firmware::acpi::DsdtGenerator> {
+        Some(self)
+    }
 }
 impl MigrateSingle for LpcUart {
     fn export(
@@ -192,5 +210,32 @@ impl MigrateSingle for LpcUart {
         state.uart.import(&data)?;
         state.irq_pin.import_state(state.uart.intr_state());
         Ok(())
+    }
+}
+
+impl crate::firmware::acpi::DsdtGenerator for LpcUart {
+    fn dsdt_scope(&self) -> crate::firmware::acpi::DsdtScope {
+        crate::firmware::acpi::DsdtScope::SystemBus
+    }
+
+    fn generate_dsdt(&self, scope: &mut crate::firmware::acpi::ScopeGuard<'_>) {
+        use crate::firmware::acpi::{EisaId, ResourceTemplateBuilder};
+
+        let uid: u32 = match self.name {
+            "COM1" => 0,
+            "COM2" => 1,
+            "COM3" => 2,
+            "COM4" => 3,
+            _ => 0,
+        };
+
+        let mut dev = scope.device(self.name);
+        dev.name("_HID", &EisaId::from_str("PNP0501"));
+        dev.name("_UID", &uid);
+
+        let mut crs = ResourceTemplateBuilder::new();
+        crs.io(self.io_base, self.io_base, 1, REGISTER_LEN as u8);
+        crs.irq(1u16 << self.irq);
+        dev.name("_CRS", &crs);
     }
 }
