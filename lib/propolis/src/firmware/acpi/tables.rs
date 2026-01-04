@@ -13,6 +13,7 @@ use zerocopy::{Immutable, IntoBytes};
 
 pub const ACPI_TABLE_HEADER_SIZE: usize = 36;
 const ACPI_TABLE_LENGTH_OFFSET: usize = 4;
+pub const ACPI_TABLE_CHECKSUM_OFF: usize = 9;
 
 #[derive(Copy, Clone, IntoBytes, Immutable)]
 #[repr(C, packed)]
