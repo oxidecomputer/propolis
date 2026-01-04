@@ -1139,10 +1139,30 @@ fn setup_instance(
     guard.inventory.register(&hpet);
 
     // UARTs
-    let com1 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM1).unwrap());
-    let com2 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM2).unwrap());
-    let com3 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM3).unwrap());
-    let com4 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM4).unwrap());
+    let com1 = LpcUart::new(
+        chipset_lpc.irq_pin(ibmpc::IRQ_COM1).unwrap(),
+        ibmpc::PORT_COM1,
+        ibmpc::IRQ_COM1,
+        "COM1",
+    );
+    let com2 = LpcUart::new(
+        chipset_lpc.irq_pin(ibmpc::IRQ_COM2).unwrap(),
+        ibmpc::PORT_COM2,
+        ibmpc::IRQ_COM2,
+        "COM2",
+    );
+    let com3 = LpcUart::new(
+        chipset_lpc.irq_pin(ibmpc::IRQ_COM3).unwrap(),
+        ibmpc::PORT_COM3,
+        ibmpc::IRQ_COM3,
+        "COM3",
+    );
+    let com4 = LpcUart::new(
+        chipset_lpc.irq_pin(ibmpc::IRQ_COM4).unwrap(),
+        ibmpc::PORT_COM4,
+        ibmpc::IRQ_COM4,
+        "COM4",
+    );
 
     com1_sock.spawn(
         Arc::clone(&com1) as Arc<dyn Sink>,
@@ -1156,10 +1176,10 @@ fn setup_instance(
     com4.set_autodiscard(true);
 
     let pio = &machine.bus_pio;
-    LpcUart::attach(&com1, pio, ibmpc::PORT_COM1);
-    LpcUart::attach(&com2, pio, ibmpc::PORT_COM2);
-    LpcUart::attach(&com3, pio, ibmpc::PORT_COM3);
-    LpcUart::attach(&com4, pio, ibmpc::PORT_COM4);
+    com1.attach(pio);
+    com2.attach(pio);
+    com3.attach(pio);
+    com4.attach(pio);
     guard.inventory.register_instance(&com1, "com1");
     guard.inventory.register_instance(&com2, "com2");
     guard.inventory.register_instance(&com3, "com3");

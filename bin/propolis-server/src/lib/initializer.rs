@@ -393,16 +393,25 @@ impl MachineInitializer<'_> {
                 continue;
             }
 
-            let (irq, port) = match desc.num {
-                SerialPortNumber::Com1 => (ibmpc::IRQ_COM1, ibmpc::PORT_COM1),
-                SerialPortNumber::Com2 => (ibmpc::IRQ_COM2, ibmpc::PORT_COM2),
-                SerialPortNumber::Com3 => (ibmpc::IRQ_COM3, ibmpc::PORT_COM3),
-                SerialPortNumber::Com4 => (ibmpc::IRQ_COM4, ibmpc::PORT_COM4),
+            let (irq, port, uart_name) = match desc.num {
+                SerialPortNumber::Com1 => {
+                    (ibmpc::IRQ_COM1, ibmpc::PORT_COM1, "COM1")
+                }
+                SerialPortNumber::Com2 => {
+                    (ibmpc::IRQ_COM2, ibmpc::PORT_COM2, "COM2")
+                }
+                SerialPortNumber::Com3 => {
+                    (ibmpc::IRQ_COM3, ibmpc::PORT_COM3, "COM3")
+                }
+                SerialPortNumber::Com4 => {
+                    (ibmpc::IRQ_COM4, ibmpc::PORT_COM4, "COM4")
+                }
             };
 
-            let dev = LpcUart::new(chipset.irq_pin(irq).unwrap());
+            let dev =
+                LpcUart::new(chipset.irq_pin(irq).unwrap(), port, irq, uart_name);
             dev.set_autodiscard(true);
-            LpcUart::attach(&dev, &self.machine.bus_pio, port);
+            dev.attach(&self.machine.bus_pio);
             self.devices.insert(name.to_owned(), dev.clone());
             if desc.num == SerialPortNumber::Com1 {
                 assert!(com1.is_none());
@@ -899,9 +908,14 @@ impl MachineInitializer<'_> {
         // Set up an LPC uart for ASIC management comms from the guest.
         //
         // NOTE: SoftNpu squats on com4.
-        let uart = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM4).unwrap());
+        let uart = LpcUart::new(
+            chipset.irq_pin(ibmpc::IRQ_COM4).unwrap(),
+            ibmpc::PORT_COM4,
+            ibmpc::IRQ_COM4,
+            "COM4",
+        );
         uart.set_autodiscard(true);
-        LpcUart::attach(&uart, &self.machine.bus_pio, ibmpc::PORT_COM4);
+        uart.attach(&self.machine.bus_pio);
         self.devices
             .insert(SpecKey::Name("softnpu-uart".to_string()), uart.clone());
 
