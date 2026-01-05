@@ -167,9 +167,18 @@ struct LinuxGuestTopo<'a> {
     vm: &'a TestVm,
 }
 
+struct CacheInfo {
+    level: u8,
+    shared_cpu_list: String,
+}
+
 impl<'a> LinuxGuestTopo<'a> {
     fn cpu_stem(vcpu: u8) -> String {
         format!("/sys/devices/system/cpu/cpu{vcpu}/topology")
+    }
+
+    fn cache_stem(vcpu: u8, index: u8) -> String {
+        format!("/sys/devices/system/cpu/cpu{vcpu}/cache/index{index}")
     }
 
     async fn new(vm: &'a TestVm) -> Self {
@@ -292,6 +301,37 @@ impl<'a> LinuxGuestTopo<'a> {
             .expect("thread_siblings should be valid hex");
         value.count_ones() > 1
     }
+
+    async fn cache_info(&self) -> Vec<CacheInfo> {
+        let mut result = Vec::new();
+        for index in 0u8.. {
+            let stem = Self::cache_stem(0, index);
+            let level_out = self
+                .vm
+                .run_shell_command(&format!("cat {stem}/level 2>/dev/null"))
+                .await
+                .expect("can run cat");
+
+            let level_out = level_out.trim();
+            if level_out.is_empty() || level_out.contains("file not found") {
+                break;
+            }
+
+            let level: u8 =
+                level_out.parse().expect("cache level parses");
+
+            let shared_cpu_list = self
+                .vm
+                .run_shell_command(&format!("cat {stem}/shared_cpu_list"))
+                .await
+                .expect("can read shared_cpu_list")
+                .trim()
+                .to_string();
+
+            result.push(CacheInfo { level, shared_cpu_list });
+        }
+        result
+    }
 }
 
 #[phd_testcase]
@@ -358,4 +398,30 @@ async fn guest_cpu_topo_test(ctx: &Framework) {
             }));
         }
     }
+
+    // Check cache topology. With SMT, L1/L2 should be shared by SMT siblings
+    // while L3 is shared across all vCPUs.
+    let caches = guest_topo.cache_info().await;
+    let num_cpus = guest_topo.cpus().await;
+
+    for cache in &caches {
+        match cache.level {
+            1 | 2 => {
+                let expected = if has_smt { "0-1" } else { "0" };
+                assert_eq!(cache.shared_cpu_list, expected);
+            }
+            3 => {
+                let expected = format!("0-{}", num_cpus - 1);
+                assert_eq!(cache.shared_cpu_list, expected);
+            }
+            other => {
+                panic!("unexpected cache level {other}");
+            }
+        }
+    }
+
+    let l1_count = caches.iter().filter(|c| c.level == 1).count();
+    let l2_count = caches.iter().filter(|c| c.level == 2).count();
+    assert!(l1_count >= 2, "expected at least L1d and L1i caches");
+    assert!(l2_count >= 1, "expected at least one L2 cache");
 }
