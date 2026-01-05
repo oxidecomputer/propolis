@@ -45,8 +45,10 @@ pub enum IdType {
     P_PSETID,
 }
 
-// Returns an `i32` to match `processorid_t`, so that `0..online_cpus()`
-// produces a range of processor IDs without additional translation needed.
+/// Returns an `i32` to match `processorid_t`, so that `0..online_cpus()`
+/// produces a range of processor IDs without additional translation needed.
+///
+/// This is really just a wrapper for `sysconf(_SC_NPROCESSORS_ONLN)`.
 pub fn online_cpus() -> Result<i32, Error> {
     let res = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) };
 
@@ -56,7 +58,7 @@ pub fn online_cpus() -> Result<i32, Error> {
 
     res.try_into().map_err(|_| {
         // sysconf() reports more than 2^31 processors?!
-        Error::other(format!("too many processors: {}", res))
+        Error::other(format!("too many processors: {res}"))
     })
 }
 

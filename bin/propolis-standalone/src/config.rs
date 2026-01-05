@@ -77,9 +77,16 @@ pub struct Main {
 pub enum BindingStrategy {
     /// vCPUs are not bound to any particular physical processor.
     Any,
-    /// vCPUs are bound to the highest-numbered processors in the system, one
-    /// vCPU per CPU, with the last vCPU bound to the last physical processor.
-    FromLast,
+    /// vCPUs are bound to the highest-numbered processors in the system, with
+    /// the first vCPU bound to CPU `last - N_vCPU` and the last vCPU bound to
+    /// the last CPU.
+    ///
+    /// An example given a system with 10 CPUs running a VM with 6 vCPUs:
+    /// ```text
+    /// host CPU number:   | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+    /// guest vCPU number: |   |   |   |   | 0 | 1 | 2 | 3 | 4 | 5 |
+    /// ```
+    UpperHalf,
 }
 
 /// A hard-coded device, either enabled by default or accessible locally

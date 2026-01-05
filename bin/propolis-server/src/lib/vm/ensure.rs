@@ -588,12 +588,32 @@ async fn initialize_vm_objects(
         .len()
         .try_into()
         .map_err(|_| anyhow::anyhow!("more than 2^31 vCPUs"))?;
-    let bind_cpus = if vcpu_count > total_cpus / 2 {
-        let mut bind_cpus = Vec::new();
-        for i in 0..vcpu_count {
-            // Bind to the upper range of CPUs, fairly arbitrary.
-            bind_cpus.push(total_cpus - vcpu_count + i);
+
+    // When a VM has I/O-heavy workloads across many cores, vCPUs can end up
+    // moving across the host and come with wasted time in juggling cyclics.
+    //
+    // Nexus can't yet determine CPU binding assignments in a central manner. In
+    // lieu of it, knowing that Nexus won't oversubscribe a host we can
+    // autonomously follow a CPU pinning strategy as: "if the VM is larger than
+    // half of the sled, there can only be one, so bind it to specific CPUs and
+    // rely on the OS to sort out the rest". This gets the largest VMs to fixed
+    // vCPU->CPU assignments, which also are most likely to benefit.
+    let cpu_threshold = total_cpus / 2;
+    let bind_cpus = if vcpu_count > cpu_threshold {
+        if vcpu_count > total_cpus {
+            anyhow::anyhow!("spec requested more CPUs than are online!");
         }
+
+        // Bind to the upper range of CPUs, fairly arbitrary.
+        let first_bind_cpu = total_cpus - vcpu_count;
+        let bind_cpus = (first_bind_cpu..total_cpus).iter().collect();
+
+        info!(log, "applying automatic vCPU->CPU binding";
+                  "vcpu_count" => vcpu_count,
+                  "total_cpus" => total_cpus,
+                  "threshold" => cpu_threshold,
+                  "vcpu_cpus" => #?bind_cpus);
+
         Some(bind_cpus)
     } else {
         None

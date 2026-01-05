@@ -287,18 +287,23 @@ impl Instance {
         let machine = state.machine.as_ref().unwrap();
 
         let bind_cpus = match this.0.config.main.cpu_binding {
-            Some(config::BindingStrategy::FromLast) => {
-                let mut bind_cpus = vec![None; machine.vcpus.len()];
+            Some(config::BindingStrategy::UpperHalf) => {
                 let total_cpus =
                     pbind::online_cpus().expect("can get processor count");
-                let vcpu_count: i32 =
-                    machine.vcpus.len().try_into().expect("<2^31 vCPUs");
+                let vcpu_count: i32 = machine
+                    .vcpus
+                    .len()
+                    .try_into()
+                    .expect("vCPU count <= MAXCPU < i32::MAX");
 
                 let first_bound_cpu = total_cpus - vcpu_count;
-                for i in 0..vcpu_count {
-                    // Bind to the upper range of CPUs.
-                    bind_cpus[i as usize] = Some(first_bound_cpu + i);
-                }
+                let bind_cpus =
+                    (first_bound_cpu..total_cpus).map(|v| Some(v)).collect();
+                slog::info!(
+                    &log,
+                    "Explicit CPU binding requested";
+                    "bind_cpus" => #?bind_cpus
+                );
                 bind_cpus
             }
             Some(config::BindingStrategy::Any) | None => {
