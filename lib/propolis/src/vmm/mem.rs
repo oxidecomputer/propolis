@@ -765,16 +765,32 @@ pub trait MappingExt {
 // which point it should be strictly worse than directly using the
 // requested mappings.
 //
-// Beyond this, either fall back to using iovecs directly (and trust the kernel
-// to handle bizarre vecs) or error. This is an especially gross hack because we
-// could/should just set MDTS, which more naturally communicates to the guest
-// the largest I/O we're willing to handle (and gives an out for too-large I/Os)
+// 1 MiB is an arbitrary-ish choice: `propolis-server` and `propolis-standalone`
+// set NVMe MDTS to "8", so the largest I/Os from NVMe will be
+// `2**8 * 4096 == 1048576 bytes == 1 MiB`. Beyond this, fall back to using
+// iovecs directly, potentially at increased OS overhead.
 //
 // The amount of memory used for temporary buffers is given by the number of
 // worker threads for all file-backed disks, times this threshold. It works out
-// to up to 128 MiB (8 worker threads) of buffers per disk by default as of
+// to up to 8 MiB (8 worker threads) of buffers per disk by default as of
 // writing.
-const MAPPING_IO_LIMIT_BYTES: usize = 16 * crate::common::MB;
+const MAPPING_IO_LIMIT_BYTES: usize = crate::common::MB;
+
+/// Compute the number of bytes that would be required to hold these mappings
+/// sequentially.
+///
+/// Ranges covered by multiple mappings are counted repeatedly.
+fn total_mapping_size(mappings: &[SubMapping<'_>]) -> Result<usize> {
+    mappings
+        .iter()
+        .try_fold(0usize, |total, mapping| total.checked_add(mapping.len))
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                "Total mapping larger than a `usize`",
+            )
+        })
+}
 
 impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
     fn preadv(&self, fd: RawFd, offset: i64) -> Result<usize> {
@@ -789,16 +805,7 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
             ));
         }
 
-        let mut total_capacity: usize = 0;
-        for mapping in self.as_ref().iter() {
-            total_capacity =
-                total_capacity.checked_add(mapping.len).ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::InvalidInput,
-                        "Total mapping too large",
-                    )
-                })?;
-        }
+        let total_capacity = total_mapping_size(self.as_ref())?;
 
         // Gross hack: see the comment on `MAPPING_IO_LIMIT_BYTES`.
         if total_capacity <= MAPPING_IO_LIMIT_BYTES {
@@ -813,13 +820,13 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
                 iov_len: buf.len(),
             }];
 
-            let read = unsafe {
+            let res = unsafe {
                 libc::preadv(fd, iov.as_ptr(), iov.len() as libc::c_int, offset)
             };
-            if read == -1 {
+            if res == -1 {
                 return Err(Error::last_os_error());
             }
-            let read: usize = read.try_into().expect("read is positive");
+            let read = res as usize;
 
             // copy `read` bytes back into the iovecs and return
             let mut remaining = &mut buf[..read];
@@ -888,16 +895,7 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
             ));
         }
 
-        let mut total_capacity: usize = 0;
-        for mapping in self.as_ref().iter() {
-            total_capacity =
-                total_capacity.checked_add(mapping.len).ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::InvalidInput,
-                        "Total mapping too large",
-                    )
-                })?;
-        }
+        let total_capacity = total_mapping_size(self.as_ref())?;
 
         // Gross hack: see the comment on `MAPPING_IO_LIMIT_BYTES`.
         let written = if total_capacity <= MAPPING_IO_LIMIT_BYTES {
