@@ -298,11 +298,13 @@ impl Instance {
 
                 let first_bound_cpu = total_cpus - vcpu_count;
                 let bind_cpus =
-                    (first_bound_cpu..total_cpus).map(|v| Some(v)).collect();
+                    (first_bound_cpu..total_cpus).map(Some).collect();
                 slog::info!(
                     &log,
                     "Explicit CPU binding requested";
-                    "bind_cpus" => #?bind_cpus
+                    "last_cpu" => total_cpus,
+                    "first_cpu" => first_bound_cpu,
+                    "vcpu_count" => vcpu_count,
                 );
                 bind_cpus
             }

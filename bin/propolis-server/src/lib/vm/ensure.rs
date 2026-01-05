@@ -601,12 +601,12 @@ async fn initialize_vm_objects(
     let cpu_threshold = total_cpus / 2;
     let bind_cpus = if vcpu_count > cpu_threshold {
         if vcpu_count > total_cpus {
-            anyhow::anyhow!("spec requested more CPUs than are online!");
+            anyhow::bail!("spec requested more CPUs than are online!");
         }
 
         // Bind to the upper range of CPUs, fairly arbitrary.
         let first_bind_cpu = total_cpus - vcpu_count;
-        let bind_cpus = (first_bind_cpu..total_cpus).iter().collect();
+        let bind_cpus = (first_bind_cpu..total_cpus).collect();
 
         info!(log, "applying automatic vCPU->CPU binding";
                   "vcpu_count" => vcpu_count,
