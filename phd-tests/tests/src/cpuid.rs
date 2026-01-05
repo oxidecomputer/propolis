@@ -3,7 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
-use itertools::Itertools;
 use phd_framework::{test_vm::MigrationTimeout, TestVm};
 use phd_testcase::*;
 use propolis_client::instance_spec::{CpuidEntry, InstanceSpecStatus};
@@ -273,6 +272,26 @@ impl<'a> LinuxGuestTopo<'a> {
         }
         result.into_iter()
     }
+
+    /// Returns true if the guest has SMT enabled.
+    ///
+    /// This is determined by checking if cpu0's thread_siblings has more than
+    /// one bit set.
+    async fn has_smt(&self) -> bool {
+        let siblings = self
+            .vm
+            .run_shell_command(&format!(
+                "cat {}/thread_siblings",
+                Self::cpu_stem(0)
+            ))
+            .await
+            .expect("can get thread siblings");
+        let siblings = siblings.trim();
+
+        let value = u64::from_str_radix(siblings, 16)
+            .expect("thread_siblings should be valid hex");
+        value.count_ones() > 1
+    }
 }
 
 #[phd_testcase]
@@ -312,37 +331,31 @@ async fn guest_cpu_topo_test(ctx: &Framework) {
     // All cores should be in socket 0
     assert!(guest_topo.physical_package_ids().await.all(|item| item == 0));
 
-    // We currently number CPUs such that Linux numbers them as successive pairs
-    // of thread twins.
-    let siblings = guest_topo.thread_siblings().await;
-    for (idx, mut pair) in siblings.chunks(2).into_iter().enumerate() {
-        let lower = pair.next().expect("sibling pair has a pair of cores");
-        let upper = pair.next().expect("pairs have even numbers of cores");
+    let has_smt = guest_topo.has_smt().await;
 
-        // Each pair of siblings should see that they have the same siblings
-        assert_eq!(lower, upper);
-        // This character in the string should have a pair of bits for the
-        // current sibling pair under consideration.
-        let sibling_idx = idx / 4;
-        // And at that index, the character should be this hex digit
-        // (representing the pair of bits for these sibling threads). We can be
-        // looking either of the lower pairs (in which case the cores are 0b0011
-        // => 3), or the higher pairs (in which case the cores are 0b1100 => c)
-        let sibling_char = match idx % 4 {
-            0 => '3',
-            1 => '3',
-            2 => 'c',
-            3 => 'c',
-            o => {
-                panic!("bit index in hex digit is less than four? except {o}");
-            }
-        };
-        assert!(lower.chars().enumerate().all(|(i, ch)| {
-            if i != sibling_idx {
-                ch == '0'
-            } else {
-                ch == sibling_char
-            }
-        }));
+    // The thread_siblings checks only make sense when SMT is enabled.
+    if has_smt {
+        // We currently number CPUs such that Linux numbers them as successive
+        // pairs of thread twins.
+        let siblings: Vec<_> = guest_topo.thread_siblings().await.collect();
+        for (idx, pair) in siblings.chunks(2).enumerate() {
+            assert!(pair.len() == 2, "expected even number of CPUs");
+            let lower = &pair[0];
+            let upper = &pair[1];
+
+            // Each pair of siblings should see that they have the same siblings
+            assert_eq!(lower, upper);
+            // Each hex digit represents 4 CPUs. With chunks(2), idx is the pair
+            // number: idx=0 is cpus 0-1, idx=1 is cpus 2-3, etc.
+            let sibling_idx = idx / 2;
+            let sibling_char = if idx % 2 == 0 { '3' } else { 'c' };
+            assert!(lower.chars().enumerate().all(|(i, ch)| {
+                if i != sibling_idx {
+                    ch == '0'
+                } else {
+                    ch == sibling_char
+                }
+            }));
+        }
     }
 }
