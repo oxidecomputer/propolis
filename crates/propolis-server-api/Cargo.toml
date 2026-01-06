@@ -8,4 +8,4 @@ edition = "2024"
 crucible-client-types.workspace = true
 dropshot.workspace = true
 dropshot-api-manager-types.workspace = true
-propolis_api_types.workspace = true
+propolis-api-types-versions.workspace = true

@@ -98,13 +98,13 @@ use propolis::enlightenment::{
     hyperv::{Features as HyperVFeatures, HyperV},
     Enlightenment,
 };
-use propolis_api_types::{
-    instance_spec::components::board::{
-        GuestHypervisorInterface, HyperVFeatureFlag,
-    },
-    InstanceEnsureResponse, InstanceMigrateInitiateResponse,
-    InstanceProperties, InstanceState,
+use propolis_api_types::instance::{
+    InstanceEnsureResponse, InstanceProperties, InstanceState,
 };
+use propolis_api_types::instance_spec::components::board::{
+    GuestHypervisorInterface, HyperVFeatureFlag,
+};
+use propolis_api_types::migration::InstanceMigrateInitiateResponse;
 use slog::{debug, info};
 
 use crate::{

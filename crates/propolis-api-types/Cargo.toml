@@ -9,11 +9,4 @@ doctest = false
 
 [dependencies]
 crucible-client-types.workspace = true
-propolis_types.workspace = true
-schemars.workspace = true
-serde.workspace = true
-thiserror.workspace = true
-uuid.workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true
+propolis-api-types-versions.workspace = true
