@@ -4710,6 +4710,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
+name = "pbind"
+version = "0.0.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "pem"
 version = "3.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5523,6 +5530,7 @@ dependencies = [
  "oximeter",
  "oximeter-instruments",
  "oximeter-producer",
+ "pbind",
  "propolis",
  "propolis-server-api",
  "propolis_api_types",
@@ -5580,6 +5588,7 @@ dependencies = [
  "futures",
  "libc",
  "oxide-tokio-rt",
+ "pbind",
  "propolis",
  "propolis_types",
  "serde",
