@@ -754,6 +754,44 @@ pub trait MappingExt {
     fn pwritev(&self, fd: RawFd, offset: i64) -> Result<usize>;
 }
 
+// Gross hack alert: since the mappings below are memory regions backed by
+// segvmm_ops, `zvol_{read,write}` and similar will end up contending on
+// `svmd->svmd_lock`. Instead, as long as the I/O is small enough we'll tolerate
+// it, copy from guest memory to Propolis heap. The segment backing Propolis'
+// heap has an `as_page{,un}lock` impl that avoids the more
+// expensive/contentious `as_fault()` fallback.
+//
+// This is an optimization until stlouis#871 can get things sorted, at
+// which point it should be strictly worse than directly using the
+// requested mappings.
+//
+// 1 MiB is an arbitrary-ish choice: `propolis-server` and `propolis-standalone`
+// set NVMe MDTS to "8", so the largest I/Os from NVMe will be
+// `2**8 * 4096 == 1048576 bytes == 1 MiB`. Beyond this, fall back to using
+// iovecs directly, potentially at increased OS overhead.
+//
+// The amount of memory used for temporary buffers is given by the number of
+// worker threads for all file-backed disks, times this threshold. It works out
+// to up to 8 MiB (8 worker threads) of buffers per disk by default as of
+// writing.
+const MAPPING_IO_LIMIT_BYTES: usize = crate::common::MB;
+
+/// Compute the number of bytes that would be required to hold these mappings
+/// sequentially.
+///
+/// Ranges covered by multiple mappings are counted repeatedly.
+fn total_mapping_size(mappings: &[SubMapping<'_>]) -> Result<usize> {
+    mappings
+        .iter()
+        .try_fold(0usize, |total, mapping| total.checked_add(mapping.len))
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                "Total mapping larger than a `usize`",
+            )
+        })
+}
+
 impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
     fn preadv(&self, fd: RawFd, offset: i64) -> Result<usize> {
         if !self
@@ -767,23 +805,82 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
             ));
         }
 
-        let iov = self
-            .as_ref()
-            .iter()
-            .map(|mapping| iovec {
-                iov_base: mapping.ptr.as_ptr() as *mut libc::c_void,
-                iov_len: mapping.len,
-            })
-            .collect::<Vec<_>>();
+        let total_capacity = total_mapping_size(self.as_ref())?;
 
-        let read = unsafe {
-            libc::preadv(fd, iov.as_ptr(), iov.len() as libc::c_int, offset)
-        };
-        if read == -1 {
-            return Err(Error::last_os_error());
+        // Gross hack: see the comment on `MAPPING_IO_LIMIT_BYTES`.
+        if total_capacity <= MAPPING_IO_LIMIT_BYTES {
+            // If we're motivated to avoid the zero-fill via
+            // `Layout::with_size_align` + `GlobalAlloc::alloc`, we should
+            // probably avoid this gross hack entirely (see comment on
+            // MAPPING_IO_LIMIT_BYTES).
+            let mut buf = vec![0; total_capacity];
+
+            let iov = [iovec {
+                iov_base: buf.as_mut_ptr() as *mut libc::c_void,
+                iov_len: buf.len(),
+            }];
+
+            let res = unsafe {
+                libc::preadv(fd, iov.as_ptr(), iov.len() as libc::c_int, offset)
+            };
+            if res == -1 {
+                return Err(Error::last_os_error());
+            }
+            let read = res as usize;
+
+            // copy `read` bytes back into the iovecs and return
+            let mut remaining = &mut buf[..read];
+            for mapping in self.as_ref().iter() {
+                let to_copy = std::cmp::min(remaining.len(), mapping.len);
+
+                // Safety: guest physical memory is READ|WRITE, and won't become
+                // unmapped as long as we hold a Mapping, which `self` implies.
+                //
+                // The guest may be concurrently modifying this memory, we may
+                // be concurrently reading or writing this memory (if it is
+                // submitted for a read or write on another thread, for
+                // example), but `copy_nonoverlapping` has no compunctions about
+                // concurrent mutation.
+                unsafe {
+                    copy_nonoverlapping::<u8>(
+                        remaining.as_ptr(),
+                        mapping.ptr.as_ptr(),
+                        mapping.len,
+                    );
+                }
+
+                remaining = remaining.split_at_mut(to_copy).1;
+
+                if remaining.len() == 0 {
+                    // Either we're at the last iov and we're finished copying
+                    // back into the guest, or `preadv` did a short read.
+                    break;
+                }
+            }
+
+            // We should never read more than the guest mappings could hold.
+            assert_eq!(remaining.len(), 0);
+
+            Ok(read)
+        } else {
+            let iov = self
+                .as_ref()
+                .iter()
+                .map(|mapping| iovec {
+                    iov_base: mapping.ptr.as_ptr() as *mut libc::c_void,
+                    iov_len: mapping.len,
+                })
+                .collect::<Vec<_>>();
+
+            let read = unsafe {
+                libc::preadv(fd, iov.as_ptr(), iov.len() as libc::c_int, offset)
+            };
+            if read == -1 {
+                return Err(Error::last_os_error());
+            }
+            let read: usize = read.try_into().expect("read is positive");
+            Ok(read)
         }
-
-        Ok(read as usize)
     }
 
     fn pwritev(&self, fd: RawFd, offset: i64) -> Result<usize> {
@@ -798,18 +895,70 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
             ));
         }
 
-        let iov = self
-            .as_ref()
-            .iter()
-            .map(|mapping| iovec {
-                iov_base: mapping.ptr.as_ptr() as *mut libc::c_void,
-                iov_len: mapping.len,
-            })
-            .collect::<Vec<_>>();
+        let total_capacity = total_mapping_size(self.as_ref())?;
 
-        let written = unsafe {
-            libc::pwritev(fd, iov.as_ptr(), iov.len() as libc::c_int, offset)
+        // Gross hack: see the comment on `MAPPING_IO_LIMIT_BYTES`.
+        let written = if total_capacity <= MAPPING_IO_LIMIT_BYTES {
+            // If we're motivated to avoid the zero-fill via
+            // `Layout::with_size_align` + `GlobalAlloc::alloc`, we should
+            // probably avoid this gross hack entirely (see comment on
+            // MAPPING_IO_LIMIT_BYTES).
+            let mut buf = vec![0; total_capacity];
+
+            let mut remaining = buf.as_mut_slice();
+            for mapping in self.as_ref().iter() {
+                // Safety: guest physical memory is READ|WRITE, and won't become
+                // unmapped as long as we hold a Mapping, which `self` implies.
+                //
+                // The guest may be concurrently modifying this memory, we may
+                // be concurrently reading or writing this memory (if it is
+                // submitted for a read or write on another thread, for
+                // example), but `copy_nonoverlapping` has no compunctions about
+                // concurrent mutation.
+                unsafe {
+                    copy_nonoverlapping::<u8>(
+                        mapping.ptr.as_ptr() as *const u8,
+                        remaining.as_mut_ptr(),
+                        mapping.len,
+                    );
+                }
+
+                remaining = remaining.split_at_mut(mapping.len).1;
+            }
+
+            let iovs = [iovec {
+                iov_base: buf.as_mut_ptr() as *mut libc::c_void,
+                iov_len: buf.len(),
+            }];
+
+            unsafe {
+                libc::pwritev(
+                    fd,
+                    iovs.as_ptr(),
+                    iovs.len() as libc::c_int,
+                    offset,
+                )
+            }
+        } else {
+            let iovs = self
+                .as_ref()
+                .iter()
+                .map(|mapping| iovec {
+                    iov_base: mapping.ptr.as_ptr() as *mut libc::c_void,
+                    iov_len: mapping.len,
+                })
+                .collect::<Vec<_>>();
+
+            unsafe {
+                libc::pwritev(
+                    fd,
+                    iovs.as_ptr(),
+                    iovs.len() as libc::c_int,
+                    offset,
+                )
+            }
         };
+
         if written == -1 {
             return Err(Error::last_os_error());
         }
