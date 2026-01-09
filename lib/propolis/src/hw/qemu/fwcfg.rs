@@ -898,7 +898,6 @@ mod test {
         let mut val = T::default();
         let mut ro = ReadOp::from_buf(0, val.as_mut_bytes());
         dev.pio_read(port, &mut ro);
-        drop(ro);
         val
     }
     fn pio_read_data<T: IntoBytes + FromBytes + Copy + Default>(
