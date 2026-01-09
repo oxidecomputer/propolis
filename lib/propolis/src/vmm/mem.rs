@@ -378,7 +378,7 @@ unsafe impl Sync for Mapping {}
 // not reference them directly as a field.
 #[allow(dead_code)]
 enum Backing<'a> {
-    Base(Arc<Mapping>),
+    Base(&'a Mapping),
     Sub(&'a SubMapping<'a>),
 }
 
@@ -401,12 +401,9 @@ pub struct SubMapping<'a> {
 impl SubMapping<'_> {
     /// Create `SubMapping` using the entire region offered by an underlying
     /// `Mapping` object.
-    fn new_base<'a>(
-        _mem: &'a MemCtx,
-        base: &'_ Arc<Mapping>,
-    ) -> SubMapping<'a> {
+    fn new_base<'a>(base: &'a Mapping) -> SubMapping<'a> {
         SubMapping {
-            backing: Backing::Base(base.clone()),
+            backing: Backing::Base(base),
 
             ptr: base.ptr,
             len: base.len,
@@ -427,7 +424,7 @@ impl SubMapping<'_> {
     }
 
     #[cfg(test)]
-    fn new_base_test<'a>(base: Arc<Mapping>) -> SubMapping<'a> {
+    fn new_base_test(base: &Mapping) -> SubMapping<'_> {
         let ptr = base.ptr;
         let len = base.len;
         let prot = base.prot;
@@ -1121,7 +1118,7 @@ impl MemCtx {
                     format!("memory region {} not found", name),
                 )
             })?;
-        Ok(SubMapping::new_base(self, ent).constrain_access(Prot::WRITE))
+        Ok(SubMapping::new_base(ent).constrain_access(Prot::WRITE))
     }
 
     /// Like `writable_region`, but accesses the underlying memory segment
@@ -1167,12 +1164,12 @@ impl MemCtx {
                 MapKind::MmioReserve => None,
             }?;
 
-            let guest_map = SubMapping::new_base(self, &seg.map_guest)
+            let guest_map = SubMapping::new_base(&seg.map_guest)
                 .constrain_access(prot)
                 .constrain_region(req_offset, len)
                 .expect("mapping offset should be valid");
 
-            let seg_map = SubMapping::new_base(self, &seg.map_seg)
+            let seg_map = SubMapping::new_base(&seg.map_seg)
                 .constrain_region(req_offset, len)
                 .expect("mapping offset should be valid");
 
@@ -1342,7 +1339,7 @@ pub mod test {
     #[test]
     fn mapping_denies_read_beyond_end() {
         let (_hdl, base) = test_setup(Prot::READ);
-        let mapping = SubMapping::new_base_test(base);
+        let mapping = SubMapping::new_base_test(&base);
 
         assert!(mapping.read::<[u8; TEST_LEN + 1]>().is_err());
     }
@@ -1350,7 +1347,7 @@ pub mod test {
     #[test]
     fn mapping_shortens_read_bytes_beyond_end() {
         let (_hdl, base) = test_setup(Prot::READ);
-        let mapping = SubMapping::new_base_test(base);
+        let mapping = SubMapping::new_base_test(&base);
 
         let mut buf: [u8; TEST_LEN + 1] = [0; TEST_LEN + 1];
         assert_eq!(TEST_LEN, mapping.read_bytes(&mut buf).unwrap());
@@ -1359,7 +1356,7 @@ pub mod test {
     #[test]
     fn mapping_shortens_write_bytes_beyond_end() {
         let (_hdl, base) = test_setup(Prot::RW);
-        let mapping = SubMapping::new_base_test(base);
+        let mapping = SubMapping::new_base_test(&base);
 
         let mut buf: [u8; TEST_LEN + 1] = [0; TEST_LEN + 1];
         assert_eq!(TEST_LEN, mapping.write_bytes(&mut buf).unwrap());
@@ -1369,7 +1366,7 @@ pub mod test {
     fn mapping_create_empty() {
         let (_hdl, base) = test_setup(Prot::READ);
         let mapping =
-            SubMapping::new_base_test(base).constrain_region(0, 0).unwrap();
+            SubMapping::new_base_test(&base).constrain_region(0, 0).unwrap();
 
         assert_eq!(0, mapping.len());
         assert!(mapping.is_empty());
@@ -1378,7 +1375,7 @@ pub mod test {
     #[test]
     fn mapping_valid_subregions() {
         let (_hdl, base) = test_setup(Prot::READ);
-        let mapping = SubMapping::new_base_test(base);
+        let mapping = SubMapping::new_base_test(&base);
 
         assert!(mapping.subregion(0, 0).is_some());
         assert!(mapping.subregion(0, TEST_LEN / 2).is_some());
@@ -1388,7 +1385,7 @@ pub mod test {
     #[test]
     fn mapping_invalid_subregions() {
         let (_hdl, base) = test_setup(Prot::READ);
-        let mapping = SubMapping::new_base_test(base);
+        let mapping = SubMapping::new_base_test(&base);
 
         // Beyond the end of the mapping.
         assert!(mapping.subregion(TEST_LEN + 1, 0).is_none());
@@ -1402,7 +1399,7 @@ pub mod test {
     #[test]
     fn subregion_protection() {
         let (_hdl, base) = test_setup(Prot::RW);
-        let mapping = SubMapping::new_base_test(base);
+        let mapping = SubMapping::new_base_test(&base);
 
         // Main region has full access
         let mut buf = [0u8];

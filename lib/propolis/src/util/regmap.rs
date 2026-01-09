@@ -130,7 +130,6 @@ impl<ID> RegMap<ID> {
             let mut sro = ReadOp::from_buf(0, &mut scratch);
 
             f(&reg.id, RWOp::Read(&mut sro));
-            drop(sro);
             copy_op.write_bytes(
                 &scratch[copy_op.offset()..(copy_op.offset() + copy_op.len())],
             );

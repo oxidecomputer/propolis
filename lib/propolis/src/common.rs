@@ -527,22 +527,18 @@ mod test {
         let mut buf = [0u8; 8];
         let mut ro8 = ReadOp::from_buf(0, &mut buf[0..1]);
         ro8.write_u8(1);
-        drop(ro8);
         assert_eq!(buf, [1, 0, 0, 0, 0, 0, 0, 0]);
 
         let mut ro16 = ReadOp::from_buf(0, &mut buf[0..2]);
         ro16.write_u16(0x2000);
-        drop(ro16);
         assert_eq!(buf, [0, 0x20, 0, 0, 0, 0, 0, 0]);
 
         let mut ro32 = ReadOp::from_buf(0, &mut buf[0..4]);
         ro32.write_u32(0x4000_0000);
-        drop(ro32);
         assert_eq!(buf, [0, 0, 0, 0x40, 0, 0, 0, 0]);
 
         let mut ro64 = ReadOp::from_buf(0, &mut buf);
         ro64.write_u64(0x8000_0000_0000_0000);
-        drop(ro64);
         assert_eq!(buf, [0, 0, 0, 0, 0, 0, 0, 0x80]);
     }
 
@@ -551,19 +547,15 @@ mod test {
         let buf = [0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80];
         let mut wo8 = WriteOp::from_buf(0, &buf[0..1]);
         assert_eq!(wo8.read_u8(), 0x10);
-        drop(wo8);
 
         let mut wo16 = WriteOp::from_buf(0, &buf[0..2]);
         assert_eq!(wo16.read_u16(), 0x2010);
-        drop(wo16);
 
         let mut wo32 = WriteOp::from_buf(0, &buf[0..4]);
         assert_eq!(wo32.read_u32(), 0x40302010);
-        drop(wo32);
 
         let mut wo64 = WriteOp::from_buf(0, &buf);
         assert_eq!(wo64.read_u64(), 0x8070605040302010);
-        drop(wo64);
     }
 
     #[test]
@@ -588,7 +580,6 @@ mod test {
         let mut ro = ReadOp::from_buf(0, &mut buf);
         ro.write_u8(0x10);
         ro.write_u8(0x20);
-        drop(ro);
         assert_eq!(buf, [0x10, 0x20]);
     }
 
