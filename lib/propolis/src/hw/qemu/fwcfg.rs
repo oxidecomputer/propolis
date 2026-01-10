@@ -1056,6 +1056,7 @@ mod test {
 pub mod formats {
     use super::Entry;
     use crate::hw::pci;
+    use thiserror::Error;
     use zerocopy::{Immutable, IntoBytes};
 
     /// A type for a range described in an E820 map entry.
@@ -1299,6 +1300,497 @@ pub mod formats {
                 .split('\n')
                 .collect::<Vec<_>>();
             assert_eq!(&expected[..], &entries[..]);
+        }
+    }
+
+    pub const TABLE_LOADER_FILESZ: usize = 56;
+    pub const TABLE_LOADER_COMMAND_SIZE: usize = 128;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, IntoBytes, Immutable)]
+    #[repr(u8)]
+    pub enum AllocZone {
+        High = 0x1,
+        FSeg = 0x2,
+    }
+
+    #[derive(Debug, Error)]
+    pub enum TableLoaderError {
+        #[error(
+            "file name too long: {len} bytes exceeds max of {}",
+            TABLE_LOADER_FILESZ - 1
+        )]
+        FileNameTooLong { len: usize },
+
+        #[error("invalid pointer size: {0} (must be 1, 2, 4, or 8)")]
+        InvalidPointerSize(u8),
+
+        #[error("alignment must be a power of two, got {0}")]
+        InvalidAlignment(u32),
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, IntoBytes, Immutable)]
+    #[repr(u32)]
+    enum CommandType {
+        Allocate = 1,
+        AddPointer = 2,
+        AddChecksum = 3,
+        #[allow(dead_code)]
+        WritePointer = 4,
+    }
+
+    #[derive(Clone, IntoBytes, Immutable)]
+    #[repr(C)]
+    struct LoaderFileName([u8; TABLE_LOADER_FILESZ]);
+
+    impl LoaderFileName {
+        fn new(name: &str) -> Result<Self, TableLoaderError> {
+            let bytes = name.as_bytes();
+            if bytes.len() >= TABLE_LOADER_FILESZ {
+                return Err(TableLoaderError::FileNameTooLong {
+                    len: bytes.len(),
+                });
+            }
+
+            let mut buf = [0u8; TABLE_LOADER_FILESZ];
+            buf[..bytes.len()].copy_from_slice(bytes);
+            Ok(Self(buf))
+        }
+    }
+
+    #[derive(IntoBytes, Immutable)]
+    #[repr(C, packed)]
+    struct AllocateCommand {
+        file: LoaderFileName,
+        align: u32,
+        zone: AllocZone,
+    }
+
+    #[derive(IntoBytes, Immutable)]
+    #[repr(C, packed)]
+    struct AddPointerCommand {
+        dest_file: LoaderFileName,
+        src_file: LoaderFileName,
+        offset: u32,
+        size: u8,
+    }
+
+    #[derive(IntoBytes, Immutable)]
+    #[repr(C, packed)]
+    struct AddChecksumCommand {
+        file: LoaderFileName,
+        result_offset: u32,
+        start: u32,
+        length: u32,
+    }
+
+    #[must_use = "call .finish() to get the table-loader entry"]
+    pub struct TableLoader {
+        commands: Vec<u8>,
+    }
+
+    impl TableLoader {
+        pub fn new() -> Self {
+            Self { commands: Vec::new() }
+        }
+
+        pub fn add_allocate(
+            &mut self,
+            file: &str,
+            align: u32,
+            zone: AllocZone,
+        ) -> Result<(), TableLoaderError> {
+            if !align.is_power_of_two() {
+                return Err(TableLoaderError::InvalidAlignment(align));
+            }
+
+            let cmd = AllocateCommand {
+                file: LoaderFileName::new(file)?,
+                align,
+                zone,
+            };
+
+            self.write_command(CommandType::Allocate, cmd.as_bytes());
+            Ok(())
+        }
+
+        pub fn add_pointer(
+            &mut self,
+            dest_file: &str,
+            src_file: &str,
+            offset: u32,
+            size: u8,
+        ) -> Result<(), TableLoaderError> {
+            if !matches!(size, 1 | 2 | 4 | 8) {
+                return Err(TableLoaderError::InvalidPointerSize(size));
+            }
+
+            let cmd = AddPointerCommand {
+                dest_file: LoaderFileName::new(dest_file)?,
+                src_file: LoaderFileName::new(src_file)?,
+                offset,
+                size,
+            };
+
+            self.write_command(CommandType::AddPointer, cmd.as_bytes());
+            Ok(())
+        }
+
+        pub fn add_checksum(
+            &mut self,
+            file: &str,
+            result_offset: u32,
+            start: u32,
+            length: u32,
+        ) -> Result<(), TableLoaderError> {
+            let cmd = AddChecksumCommand {
+                file: LoaderFileName::new(file)?,
+                result_offset,
+                start,
+                length,
+            };
+
+            self.write_command(CommandType::AddChecksum, cmd.as_bytes());
+            Ok(())
+        }
+
+        pub fn finish(self) -> Entry {
+            Entry::Bytes(self.commands)
+        }
+
+        fn write_command(&mut self, cmd_type: CommandType, payload: &[u8]) {
+            let start = self.commands.len();
+            self.commands.resize(start + TABLE_LOADER_COMMAND_SIZE, 0);
+
+            let cmd_bytes = (cmd_type as u32).to_le_bytes();
+            self.commands[start..start + 4].copy_from_slice(&cmd_bytes);
+
+            let payload_start = start + 4;
+            let payload_end = payload_start + payload.len();
+            assert!(payload_end <= start + TABLE_LOADER_COMMAND_SIZE);
+            self.commands[payload_start..payload_end].copy_from_slice(payload);
+        }
+    }
+
+    pub const TABLE_LOADER_FWCFG_NAME: &str = "etc/table-loader";
+    pub const ACPI_TABLES_FWCFG_NAME: &str = "etc/acpi/tables";
+    pub const ACPI_RSDP_FWCFG_NAME: &str = "etc/acpi/rsdp";
+
+    pub use crate::firmware::acpi::{Dsdt, Facs, Fadt, Hpet, Madt, Mcfg, Rsdt, Rsdp, Xsdt};
+    use crate::firmware::acpi::tables::{
+        ACPI_PROCESSOR_ALL, ACPI_TABLE_CHECKSUM_OFF, FADT_OFF_DSDT32,
+        FADT_OFF_DSDT64, FADT_OFF_FACS32, GSI_SCI, GSI_TIMER, ISA_BUS,
+        ISA_IRQ_SCI, ISA_IRQ_TIMER, LINT1, MADT_INT_FLAGS_DEFAULT,
+        MADT_INT_LEVEL_ACTIVE_HIGH, MADT_LAPIC_ENABLED, RSDP_CHECKSUM_OFFSET,
+        RSDP_EXT_CHECKSUM_OFFSET, RSDP_SIZE, RSDP_V1_SIZE, RSDP_XSDT_ADDR_OFFSET,
+    };
+
+    use std::mem::size_of;
+
+    pub struct AcpiConfig {
+        pub num_cpus: u8,
+        pub local_apic_addr: u32,
+        pub io_apic_id: u8,
+        pub io_apic_addr: u32,
+        pub pcie_ecam_base: u64,
+        pub pcie_ecam_size: u64,
+        pub pcie_bus_start: u8,
+        pub pcie_bus_end: u8,
+        pub pcie_mmio32_base: u64,
+        pub pcie_mmio32_limit: u64,
+        pub pcie_mmio64_base: u64,
+        pub pcie_mmio64_limit: u64,
+    }
+
+    impl Default for AcpiConfig {
+        fn default() -> Self {
+            Self {
+                num_cpus: 1,
+                local_apic_addr: 0xfee0_0000,
+                io_apic_id: 0,
+                io_apic_addr: 0xfec0_0000,
+                pcie_ecam_base: 0xe000_0000,
+                pcie_ecam_size: 0x1000_0000,
+                pcie_bus_start: 0,
+                pcie_bus_end: 255,
+                pcie_mmio32_base: 0xc000_0000,
+                pcie_mmio32_limit: 0xfbff_ffff,
+                pcie_mmio64_base: 0x1_0000_0000,
+                pcie_mmio64_limit: 0xf_ffff_ffff,
+            }
+        }
+    }
+
+    pub struct AcpiTables {
+        pub tables: Vec<u8>,
+        pub rsdp: Vec<u8>,
+        pub loader: Vec<u8>,
+    }
+
+    pub fn build_acpi_tables(
+        config: &AcpiConfig,
+        generators: &[&dyn crate::firmware::acpi::DsdtGenerator],
+    ) -> AcpiTables {
+        use crate::firmware::acpi::{build_dsdt_aml, DsdtConfig, PcieConfig};
+
+        let mut tables = Vec::new();
+        let mut loader = TableLoader::new();
+
+        let dsdt_config = DsdtConfig {
+            pcie: Some(PcieConfig {
+                ecam_base: config.pcie_ecam_base,
+                ecam_size: config.pcie_ecam_size,
+                bus_start: config.pcie_bus_start,
+                bus_end: config.pcie_bus_end,
+                mmio32_base: config.pcie_mmio32_base,
+                mmio32_limit: config.pcie_mmio32_limit,
+                mmio64_base: config.pcie_mmio64_base,
+                mmio64_limit: config.pcie_mmio64_limit,
+            }),
+        };
+        let aml = build_dsdt_aml(&dsdt_config, generators);
+        let mut dsdt = Dsdt::new();
+        dsdt.append_aml(&aml);
+        let dsdt_offset = tables.len();
+        tables.extend_from_slice(&dsdt.finish());
+
+        let fadt = Fadt::new();
+        let fadt_offset = tables.len();
+        tables.extend_from_slice(&fadt.finish());
+
+        let mut madt = Madt::new(config.local_apic_addr);
+        for i in 0..config.num_cpus {
+            madt.add_local_apic(i, i, MADT_LAPIC_ENABLED);
+        }
+        madt.add_io_apic(config.io_apic_id, config.io_apic_addr, 0);
+        madt.add_int_src_override(ISA_BUS, ISA_IRQ_TIMER, GSI_TIMER, 0);
+        madt.add_int_src_override(
+            ISA_BUS,
+            ISA_IRQ_SCI,
+            GSI_SCI,
+            MADT_INT_LEVEL_ACTIVE_HIGH,
+        );
+        madt.add_lapic_nmi(ACPI_PROCESSOR_ALL, MADT_INT_FLAGS_DEFAULT, LINT1);
+        let madt_offset = tables.len();
+        tables.extend_from_slice(&madt.finish());
+
+        let mut mcfg = Mcfg::new();
+        mcfg.add_allocation(
+            config.pcie_ecam_base,
+            0,
+            config.pcie_bus_start,
+            config.pcie_bus_end,
+        );
+        let mcfg_offset = tables.len();
+        tables.extend_from_slice(&mcfg.finish());
+
+        let hpet = Hpet::new();
+        let hpet_offset = tables.len();
+        tables.extend_from_slice(&hpet.finish());
+
+        let mut xsdt = Xsdt::new();
+        let xsdt_fadt_off = xsdt.add_entry();
+        let xsdt_madt_off = xsdt.add_entry();
+        let xsdt_mcfg_off = xsdt.add_entry();
+        let xsdt_hpet_off = xsdt.add_entry();
+        let xsdt_offset = tables.len();
+        tables.extend_from_slice(&xsdt.finish());
+
+        let facs = Facs::new();
+        let facs_offset = tables.len();
+        tables.extend_from_slice(&facs.finish());
+
+        let rsdp_data = Rsdp::new().finish();
+
+        tables[fadt_offset + FADT_OFF_FACS32
+            ..fadt_offset + FADT_OFF_FACS32 + size_of::<u32>()]
+            .copy_from_slice(&(facs_offset as u32).to_le_bytes());
+
+        tables[fadt_offset + FADT_OFF_DSDT32
+            ..fadt_offset + FADT_OFF_DSDT32 + size_of::<u32>()]
+            .copy_from_slice(&(dsdt_offset as u32).to_le_bytes());
+        tables[fadt_offset + FADT_OFF_DSDT64
+            ..fadt_offset + FADT_OFF_DSDT64 + size_of::<u64>()]
+            .copy_from_slice(&(dsdt_offset as u64).to_le_bytes());
+
+        let xsdt_entries = [
+            (xsdt_fadt_off, fadt_offset),
+            (xsdt_madt_off, madt_offset),
+            (xsdt_mcfg_off, mcfg_offset),
+            (xsdt_hpet_off, hpet_offset),
+        ];
+        for (entry_off, table_offset) in xsdt_entries {
+            let off = xsdt_offset + entry_off as usize;
+            tables[off..off + size_of::<u64>()]
+                .copy_from_slice(&(table_offset as u64).to_le_bytes());
+        }
+
+        loader
+            .add_allocate(ACPI_TABLES_FWCFG_NAME, 64, AllocZone::High)
+            .unwrap();
+        loader.add_allocate(ACPI_RSDP_FWCFG_NAME, 16, AllocZone::FSeg).unwrap();
+
+        let table_pointers: &[(u32, u8)] = &[
+            (
+                fadt_offset as u32 + FADT_OFF_FACS32 as u32,
+                size_of::<u32>() as u8,
+            ),
+            (
+                fadt_offset as u32 + FADT_OFF_DSDT32 as u32,
+                size_of::<u32>() as u8,
+            ),
+            (
+                fadt_offset as u32 + FADT_OFF_DSDT64 as u32,
+                size_of::<u64>() as u8,
+            ),
+            (xsdt_offset as u32 + xsdt_fadt_off, size_of::<u64>() as u8),
+            (xsdt_offset as u32 + xsdt_madt_off, size_of::<u64>() as u8),
+            (xsdt_offset as u32 + xsdt_mcfg_off, size_of::<u64>() as u8),
+            (xsdt_offset as u32 + xsdt_hpet_off, size_of::<u64>() as u8),
+        ];
+        for &(offset, size) in table_pointers {
+            loader
+                .add_pointer(
+                    ACPI_TABLES_FWCFG_NAME,
+                    ACPI_TABLES_FWCFG_NAME,
+                    offset,
+                    size,
+                )
+                .unwrap();
+        }
+
+        loader
+            .add_pointer(
+                ACPI_RSDP_FWCFG_NAME,
+                ACPI_TABLES_FWCFG_NAME,
+                RSDP_XSDT_ADDR_OFFSET as u32,
+                size_of::<u64>() as u8,
+            )
+            .unwrap();
+
+        let table_offsets = [
+            dsdt_offset,
+            fadt_offset,
+            madt_offset,
+            mcfg_offset,
+            hpet_offset,
+            xsdt_offset,
+            facs_offset,
+        ];
+        for pair in table_offsets.windows(2) {
+            let (start, end) = (pair[0] as u32, pair[1] as u32);
+            loader
+                .add_checksum(
+                    ACPI_TABLES_FWCFG_NAME,
+                    start + ACPI_TABLE_CHECKSUM_OFF as u32,
+                    start,
+                    end - start,
+                )
+                .unwrap();
+        }
+
+        let rsdp_checksums = [
+            (RSDP_CHECKSUM_OFFSET, RSDP_V1_SIZE),
+            (RSDP_EXT_CHECKSUM_OFFSET, RSDP_SIZE),
+        ];
+        for (checksum_off, length) in rsdp_checksums {
+            loader
+                .add_checksum(
+                    ACPI_RSDP_FWCFG_NAME,
+                    checksum_off as u32,
+                    0,
+                    length as u32,
+                )
+                .unwrap();
+        }
+
+        let loader_entry = loader.finish();
+        let loader_bytes = match loader_entry {
+            super::Entry::Bytes(b) => b,
+            _ => unreachable!(),
+        };
+
+        AcpiTables { tables, rsdp: rsdp_data, loader: loader_bytes }
+    }
+
+    #[cfg(test)]
+    mod test_table_loader {
+        use super::*;
+
+        #[test]
+        fn struct_sizes() {
+            assert_eq!(
+                std::mem::size_of::<LoaderFileName>(),
+                TABLE_LOADER_FILESZ
+            );
+            assert_eq!(
+                std::mem::size_of::<AllocateCommand>(),
+                TABLE_LOADER_FILESZ + 5
+            );
+            assert_eq!(
+                std::mem::size_of::<AddPointerCommand>(),
+                TABLE_LOADER_FILESZ * 2 + 5
+            );
+            assert_eq!(
+                std::mem::size_of::<AddChecksumCommand>(),
+                TABLE_LOADER_FILESZ + 12
+            );
+        }
+
+        #[test]
+        fn basic() {
+            let mut loader = TableLoader::new();
+            loader.add_allocate("rsdp", 16, AllocZone::FSeg).unwrap();
+            loader.add_allocate("tables", 64, AllocZone::High).unwrap();
+            loader.add_pointer("rsdp", "tables", 16, 4).unwrap();
+            loader.add_checksum("rsdp", 8, 0, 20).unwrap();
+
+            let Entry::Bytes(bytes) = loader.finish() else {
+                panic!("expected Bytes entry");
+            };
+
+            assert_eq!(bytes.len(), TABLE_LOADER_COMMAND_SIZE * 4);
+            assert_eq!(bytes[0], CommandType::Allocate as u8);
+            assert_eq!(bytes[128], CommandType::Allocate as u8);
+            assert_eq!(bytes[256], CommandType::AddPointer as u8);
+            assert_eq!(bytes[384], CommandType::AddChecksum as u8);
+        }
+
+        #[test]
+        fn validation() {
+            let mut loader = TableLoader::new();
+
+            let long_name = "a".repeat(TABLE_LOADER_FILESZ);
+            assert!(matches!(
+                loader.add_allocate(&long_name, 64, AllocZone::High),
+                Err(TableLoaderError::FileNameTooLong { .. })
+            ));
+
+            assert!(matches!(
+                loader.add_allocate("test", 3, AllocZone::High),
+                Err(TableLoaderError::InvalidAlignment(3))
+            ));
+
+            assert!(matches!(
+                loader.add_pointer("a", "b", 0, 3),
+                Err(TableLoaderError::InvalidPointerSize(3))
+            ));
+        }
+    }
+
+    #[cfg(test)]
+    mod test_acpi_tables {
+        use super::*;
+
+        #[test]
+        fn basic() {
+            let mut xsdt = Xsdt::new();
+            xsdt.add_entry();
+            let xsdt_data = xsdt.finish();
+            assert_eq!(&xsdt_data[0..4], b"XSDT");
+
+            let rsdp = Rsdp::new();
+            let rsdp_data = rsdp.finish();
+            assert_eq!(&rsdp_data[0..8], b"RSD PTR ");
         }
     }
 }
