@@ -57,19 +57,24 @@ mod test {
 }
 
 /// The minimum number of queue pairs supported by a device.
-pub const VIONA_MIN_QPAIRS: usize = 1;
+pub const VIONA_MIN_QPAIR: usize = 1;
 
 /// The maximum number of queue pairs supported by a device.
 ///
 /// Note that the VirtIO limit is much higher (0x8000); Viona artificially
 /// limits the number to 256 pairs, which makes it possible to implmeent
 /// interrupt notification with a reasonably sized bitmap.
-pub const VIONA_MAX_QPAIRS: usize = 0x100;
+pub const VIONA_MAX_QPAIR: usize = 0x100;
 
 const fn howmany(x: usize, y: usize) -> usize {
     assert!(y > 0);
     x.div_ceil(y)
 }
+
+/// The number of 32-bit words required to detect interrupts for the maximum
+/// number of supported queue pairs.  Note the factor of two here: interrupts
+/// are per-queue, not per-pair.
+pub const VIONA_INTR_WORDS: usize = howmany(VIONA_MAX_QPAIR * 2, 32);
 
 #[repr(C)]
 pub struct vioc_create {
@@ -102,7 +107,7 @@ pub struct vioc_ring_msi {
 pub struct vioc_intr_poll_mq {
     pub vipm_nrings: u16,
     pub _pad: u16,
-    pub vipm_status: [u32; howmany(VIONA_MAX_QPAIRS, 32)],
+    pub vipm_status: [u32; VIONA_INTR_WORDS],
 }
 
 #[repr(C)]
