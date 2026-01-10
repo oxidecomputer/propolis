@@ -30,6 +30,22 @@ async fn instance_start_stop_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
+async fn instance_stop_unstarted_test(ctx: &Framework) {
+    let mut vm = ctx.spawn_default_vm("instance_stop_unstarted_test").await?;
+
+    vm.instance_ensure().await?;
+    let instance = vm.get().await?.instance;
+    assert_eq!(instance.state, InstanceState::Creating);
+
+    // At this point the VM is created and its resources are held as
+    // appropriate. Stopping the VM will cause propolis-server to destroy the
+    // VM, releasing those resources and getting the server ready for shutdown.
+    vm.stop().await?;
+    vm.wait_for_state(InstanceState::Destroyed, Duration::from_secs(60))
+        .await?;
+}
+
+#[phd_testcase]
 async fn instance_stop_causes_destroy_test(ctx: &Framework) {
     let mut vm =
         ctx.spawn_default_vm("instance_stop_causes_destroy_test").await?;
