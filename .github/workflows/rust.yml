@@ -50,4 +50,10 @@ jobs:
       run: cargo build -p propolis-mock-server --verbose
     - name: Test Libraries
       run: cargo test --lib --verbose
+    - name: Run header-checks
+      run: |
+        GATE_REF="$(./tools/check_headers gate_ref)"
+        git clone --depth 1 --revision "$GATE_REF" \
+          https://github.com/oxidecomputer/illumos-gate ../illumos-gate
+        ./tools/check_headers run ../illumos-gate
 
