@@ -18,7 +18,11 @@ set -e
 
 GATE_REF="$(./tools/check_headers gate_ref)"
 
-git clone --depth 1 --revision "$GATE_REF" \
-	https://github.com/oxidecomputer/illumos-gate ./gate_src
+# TODO: `--branch` is overly restrictive, but it's what we've got. In git 2.49
+# the --revision flag was added to `git-clone`, and can clone an arbitrary
+# revision, which is more appropriate here. We might be tracking an arbitrary
+# commit with some changes in illumos-gate that isn't yet merged, after all.
+git clone --depth 1 --branch "$GATE_REF" \
+	https://code.oxide.computer/illumos-gate ./gate_src
 
 ./tools/check_headers run ./gate_src
