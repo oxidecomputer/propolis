@@ -54,7 +54,7 @@ jobs:
       run: |
         GATE_REF="$(./tools/check_headers gate_ref)"
         git clone --depth 1 --revision "$GATE_REF" \
-          https://github.com/oxidecomputer/illumos-gate ../illumos-gate
-        ls ../illumos-gate/usr/src/uts/intel/sys/
-        ./tools/check_headers run ../illumos-gate
+          https://github.com/oxidecomputer/illumos-gate ./illumos-gate
+        ls ./illumos-gate/usr/src/uts/intel/sys/
+        ./tools/check_headers run ./illumos-gate
 
