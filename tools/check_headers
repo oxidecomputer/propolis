@@ -28,7 +28,7 @@ function usage() {
 }
 
 function run_checks() {
-  export GATE_SRC="$1"
+  export GATE_SRC="$(readlink -e $1)"
 
   if ! [ -d "$GATE_SRC" ]; then
     echo "header-check was given non-existent \"$GATE_SRC\" as gate directory"
