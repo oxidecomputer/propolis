@@ -22,11 +22,14 @@ default-members = [
   "xtask",
 ]
 
+# `header-check` crates are excluded because they require an external checkout
+# of illumos-gate (perhaps even to a specific revision) to run. So, to support
+# more Propolis-local development, exclude these and leave them for more
+# specific tools (see `tools/check_headers`, which is used to run these in CI)
 exclude = [
   "crates/bhyve-api/header-check",
   "crates/nvpair/header-check",
   "crates/viona-api/header-check",
-  "phd-tests/buildomat",
 ]
 
 # If one wants the 'dev' profile, but with "panic = abort" semantics, they
