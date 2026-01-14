@@ -300,7 +300,7 @@ impl PhysMap {
 /// When emulating hardware in service of a VM we are often working with raw
 /// pointers into guest memory. `Mapping` and [`SubMapping`] together provide
 /// safe (in the Rust sense) operators to read and write guest memory, with
-/// escape hatches in some cases `Mapping` cannot directly support.
+/// escape hatches in some cases which `Mapping` cannot directly support.
 ///
 /// In general, the guest into which this `Mapping` points is assumed to be
 /// running and concurrently reading or writing all of its address space. For
@@ -314,9 +314,9 @@ impl PhysMap {
 /// # Safety
 ///
 /// Rust references of guest memory are inappropriate:
-/// - if we had an immutable reference of guest memory, guest vCPUs or host
-///   hardware may concurrently write and violate that immutability.
-/// - if we had a mutable reference of guest memory, guest vCPUs or host
+/// - if we had an immutable reference of guest memory, then guest vCPUs or
+///   host hardware may concurrently write and violate that immutability.
+/// - if we had a mutable reference of guest memory, then guest vCPUs or host
 ///   hardware may concurrently write or read and violate the exclusivity of a
 ///   mutable reference.
 ///
