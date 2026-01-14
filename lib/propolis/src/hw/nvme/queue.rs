@@ -1116,7 +1116,7 @@ pub fn sqid_to_block_qid(sqid: super::QueueId) -> block::QueueId {
 #[derive(Copy, Clone, Debug, Default)]
 pub struct TransferParams {
     pub lba_data_size: u64,
-    pub max_data_tranfser_size: u64,
+    pub max_data_transfer_size: u64,
 }
 
 /// Configuration for Doorbell Buffer feature

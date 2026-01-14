@@ -546,7 +546,10 @@ impl NvmeCtrl {
             0 => u64::MAX,
             mdts => (self.ctrl.cap.mpsmin_sz() as u64) << mdts,
         };
-        queue::TransferParams { lba_data_size, max_data_tranfser_size }
+        queue::TransferParams {
+            lba_data_size,
+            max_data_transfer_size: max_data_tranfser_size,
+        }
     }
 
     fn update_block_info(&mut self, info: block::DeviceInfo) {
