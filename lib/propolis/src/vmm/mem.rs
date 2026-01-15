@@ -297,22 +297,54 @@ impl PhysMap {
 // TODO: reword?
 /// A owned region of mapped guest memory, accessible via [`SubMapping`].
 ///
-/// When dealing with raw pointers, caution must be taken to dereference the
-/// pointer safely:
+/// When emulating hardware in service of a VM we are often working with raw
+/// pointers into guest memory. `Mapping` and [`SubMapping`] together provide
+/// safe (in the Rust sense) operators to read and write guest memory, with
+/// escape hatches in some cases which `Mapping` cannot directly support.
+///
+/// In general, the guest into which this `Mapping` points is assumed to be
+/// running and concurrently reading or writing all of its address space. For
+/// example, when Propolis is performing a read in service of memory-mapped I/O,
+/// we must assume the guest is concurrently writing to the address we read.
+/// Even if the guest is paused, it is possible that guest address ranges have
+/// been sent sent to hardware and are being accessed via DMA. This limits the
+/// interfaces `Mapping` can provide, and adds some complexity to `Mapping`'s
+/// implementation.
+///
+/// # Safety
+///
+/// Rust references of guest memory are inappropriate:
+/// - if we had an immutable reference of guest memory, then guest vCPUs or
+///   host hardware may concurrently write and violate that immutability.
+/// - if we had a mutable reference of guest memory, then guest vCPUs or host
+///   hardware may concurrently write or read and violate the exclusivity of a
+///   mutable reference.
+///
+/// As a result, `(Sub)Mapping` takes care to not return a reference of guest
+/// memory, and to never accidentally form a reference of guest memory - even as
+/// a slice, `&[u8]`.
+///
+/// Guest pointers are subject to the same requirements as any other raw
+/// pointer:
 /// - The pointer must not be null
 /// - The dereferenced pointer must be within bounds of a valid mapping
 ///
-/// Additionally, aliasing rules apply to references:
-/// - References cannot outlive their referents
-/// - Mutable references cannot be aliased
+/// Guest pointers are trivially not null; a `Mapping` will have some non-null
+/// base and does not wrap the address space. Even if a guest's provided
+/// pointer is `0usize`, it is added to a non-null offset and will never be an
+/// actual pointer to zero.
 ///
-/// These issues become especially hairy across mappings, where an
-/// out-of-process entity (i.e., the guest, hardware, etc) may modify memory.
+/// `Mapping` and `SubMapping` are primarily concerned with ensuring guest
+/// accesses are within bounds of the guest mapping, and that the mapping is
+/// valid for the access to be performed (writes are not made into read-only
+/// mappings, for example).
 ///
-/// This structure provides an interface which upholds the following conditions:
+/// Considering these requirements, this structure provides an interface which
+/// upholds the following conditions:
+/// - An accessed memory region is fully contained in the mapping.
 /// - Reads to a memory region are only permitted if the mapping is readable.
 /// - Writes to a memory region are only permitted if the mapping is writable.
-/// - References to memory are not exposed from the structure.
+/// - References to memory are neither made transiently nor exposed.
 
 #[derive(Debug)]
 pub(crate) struct Mapping {
@@ -335,7 +367,7 @@ impl Mapping {
         let mmap_prot = prot.intersection(Prot::RW);
 
         // Safety:
-        // With a NULL `addr, the OS will pick a mapping location which does not
+        // With a NULL `addr`, the OS will pick a mapping location which does not
         // conflict with other resources.  While the VmmFile is not something
         // that should be truncated, it is the responsibility of the caller to
         // ensure that the underlying resources are not destroyed prior to
@@ -386,6 +418,10 @@ enum Backing<'a> {
 ///
 /// Provides interfaces for acting on memory, but does not own the
 /// underlying memory region.
+///
+/// As this is simply a borrow of a `Mapping`, `SubMapping` is subject to the
+/// same safety requirements as `Mapping`; everything in the doc comment there
+/// applies here as well.
 #[derive(Debug)]
 pub struct SubMapping<'a> {
     // The backing resource must remain held, even though we never reference it
@@ -826,27 +862,15 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
             let read = res as usize;
 
             // copy `read` bytes back into the iovecs and return
-            let mut remaining = &mut buf[..read];
+            let mut remaining = &buf[..read];
             for mapping in self.as_ref().iter() {
                 let to_copy = std::cmp::min(remaining.len(), mapping.len);
 
-                // Safety: guest physical memory is READ|WRITE, and won't become
-                // unmapped as long as we hold a Mapping, which `self` implies.
-                //
-                // The guest may be concurrently modifying this memory, we may
-                // be concurrently reading or writing this memory (if it is
-                // submitted for a read or write on another thread, for
-                // example), but `copy_nonoverlapping` has no compunctions about
-                // concurrent mutation.
-                unsafe {
-                    copy_nonoverlapping::<u8>(
-                        remaining.as_ptr(),
-                        mapping.ptr.as_ptr(),
-                        mapping.len,
-                    );
-                }
+                let (curr_buf, rest) = remaining.split_at(to_copy);
 
-                remaining = remaining.split_at_mut(to_copy).1;
+                mapping.write_bytes(curr_buf)?;
+
+                remaining = rest;
 
                 if remaining.len() == 0 {
                     // Either we're at the last iov and we're finished copying
@@ -904,23 +928,14 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
 
             let mut remaining = buf.as_mut_slice();
             for mapping in self.as_ref().iter() {
-                // Safety: guest physical memory is READ|WRITE, and won't become
-                // unmapped as long as we hold a Mapping, which `self` implies.
-                //
-                // The guest may be concurrently modifying this memory, we may
-                // be concurrently reading or writing this memory (if it is
-                // submitted for a read or write on another thread, for
-                // example), but `copy_nonoverlapping` has no compunctions about
-                // concurrent mutation.
-                unsafe {
-                    copy_nonoverlapping::<u8>(
-                        mapping.ptr.as_ptr() as *const u8,
-                        remaining.as_mut_ptr(),
-                        mapping.len,
-                    );
-                }
+                // The original `buf` is at least as large as all mappings
+                // combined, so `remaining` is at least as large as this and all
+                // remaining mappings, so we can slice up to `mapping.len`.
+                let (curr_buf, rest) = remaining.split_at_mut(mapping.len);
 
-                remaining = remaining.split_at_mut(mapping.len).1;
+                mapping.read_bytes(curr_buf)?;
+
+                remaining = rest;
             }
 
             let iovs = [iovec {
