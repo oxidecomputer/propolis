@@ -21,6 +21,7 @@ use crate::hw::pci::{
     self, Bdf, INTxPinID, LintrCfg, PcieCfgDecoder, PioCfgDecoder,
 };
 use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin, NoOpPin};
+use crate::lifecycle;
 use crate::migrate::*;
 use crate::mmio::MmioFn;
 use crate::pio::{PioBus, PioFn};
@@ -155,6 +156,7 @@ pub struct Opts {
 
 pub struct I440FxHostBridge {
     pci_state: pci::DeviceState,
+    indicator: lifecycle::Indicator,
 
     pci_topology: Arc<pci::topology::Topology>,
     pci_cfg: PioCfgDecoder,
@@ -189,6 +191,7 @@ impl I440FxHostBridge {
 
         Arc::new(Self {
             pci_state,
+            indicator: Default::default(),
 
             pci_topology,
             pci_cfg,
@@ -275,6 +278,19 @@ impl Lifecycle for I440FxHostBridge {
     }
     fn reset(&self) {
         self.pci_state.reset(self);
+    }
+    fn start(&self) -> anyhow::Result<()> {
+        self.indicator.start();
+        Ok(())
+    }
+    fn pause(&self) {
+        self.indicator.pause();
+    }
+    fn resume(&self) {
+        self.indicator.resume();
+    }
+    fn halt(&self) {
+        self.indicator.halt();
     }
     fn migrate(&self) -> Migrator<'_> {
         Migrator::Multi(self)

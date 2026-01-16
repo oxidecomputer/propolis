@@ -173,7 +173,7 @@ impl IndicatedState {
     const fn valid_transition(old: Self, new: Self) -> bool {
         use IndicatedState::*;
         match (old, new) {
-            (Init, Run) | (Init, Halt) => true,
+            (Init, Run) | (Init, Pause) => true,
             (Run, Pause) => true,
             (Pause, Run) | (Pause, Halt) => true,
             _ => false,
