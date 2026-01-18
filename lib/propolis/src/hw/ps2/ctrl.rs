@@ -605,6 +605,11 @@ impl Lifecycle for PS2Ctrl {
     fn migrate(&self) -> Migrator<'_> {
         Migrator::Single(self)
     }
+    fn as_dsdt_generator(
+        &self,
+    ) -> Option<&dyn crate::firmware::acpi::DsdtGenerator> {
+        Some(self)
+    }
 }
 impl MigrateSingle for PS2Ctrl {
     fn export(
@@ -1087,6 +1092,28 @@ impl PS2Mouse {
 impl Default for PS2Mouse {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl crate::firmware::acpi::DsdtGenerator for PS2Ctrl {
+    fn dsdt_scope(&self) -> crate::firmware::acpi::DsdtScope {
+        crate::firmware::acpi::DsdtScope::SystemBus
+    }
+
+    fn generate_dsdt(&self, scope: &mut crate::firmware::acpi::ScopeGuard<'_>) {
+        use crate::firmware::acpi::{EisaId, ResourceTemplateBuilder};
+        use crate::hw::ibmpc;
+
+        const PS2_KBD_IRQ: u8 = 1;
+
+        let mut kbd = scope.device("KBD_");
+        kbd.name("_HID", &EisaId::from_str("PNP0303"));
+
+        let mut crs = ResourceTemplateBuilder::new();
+        crs.io(ibmpc::PORT_PS2_DATA, ibmpc::PORT_PS2_DATA, 1, 1);
+        crs.io(ibmpc::PORT_PS2_CMD_STATUS, ibmpc::PORT_PS2_CMD_STATUS, 1, 1);
+        crs.irq(1u16 << PS2_KBD_IRQ);
+        kbd.name("_CRS", &crs);
     }
 }
 

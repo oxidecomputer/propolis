@@ -108,4 +108,29 @@ impl Lifecycle for QemuPvpanic {
     fn type_name(&self) -> &'static str {
         DEVICE_NAME
     }
+
+    fn as_dsdt_generator(
+        &self,
+    ) -> Option<&dyn crate::firmware::acpi::DsdtGenerator> {
+        Some(self)
+    }
+}
+
+impl crate::firmware::acpi::DsdtGenerator for QemuPvpanic {
+    fn dsdt_scope(&self) -> crate::firmware::acpi::DsdtScope {
+        crate::firmware::acpi::DsdtScope::SystemBus
+    }
+
+    fn generate_dsdt(&self, scope: &mut crate::firmware::acpi::ScopeGuard<'_>) {
+        use crate::firmware::acpi::ResourceTemplateBuilder;
+
+        let mut dev = scope.device("PEVT");
+        dev.name("_HID", &"QEMU0001");
+
+        let mut crs = ResourceTemplateBuilder::new();
+        crs.io(Self::IOPORT, Self::IOPORT, 1, 1);
+        dev.name("_CRS", &crs);
+
+        dev.name("_STA", &0x0Fu32);
+    }
 }
