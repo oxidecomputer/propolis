@@ -64,6 +64,7 @@ viona_ioctl:entry/arg1 == VNA_IOC_DELETE/ {
 }
 
 viona_ioctl:entry/arg1 == VNA_IOC_VERSION/ {
+	self->cmd = "VERSION";
 	self->pending = arg1;
 }
 
@@ -120,6 +121,7 @@ viona_ioctl:entry/arg1 == VNA_IOC_RING_SET_STATE/ {
 }
 
 viona_ioctl:entry/arg1 == VNA_IOC_RING_GET_STATE/ {
+	self->cmd = "RING_GET_STATE";
 	self->pending = arg1;
 }
 
@@ -139,6 +141,7 @@ viona_ioctl:entry/arg1 == VNA_IOC_RING_PAUSE/ {
 }
 
 viona_ioctl:entry/arg1 == VNA_IOC_INTR_POLL_MQ/ {
+	self->cmd = "INTR_POLL_MQ";
 	self->pending = arg1;
 }
 
@@ -157,7 +160,8 @@ viona_ioctl:entry/arg1 == VNA_IOC_SET_FEATURES/ {
 }
 
 viona_ioctl:entry/arg1 == VNA_IOC_GET_FEATURES/ {
-	self->pending = arg1;;
+	self->cmd = "GET_FEATURES";
+	self->pending = arg1;
 }
 
 viona_ioctl:return/self->pending == VNA_IOC_GET_FEATURES/ {
