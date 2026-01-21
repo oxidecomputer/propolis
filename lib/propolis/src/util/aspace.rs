@@ -49,9 +49,9 @@ impl<T> ASpace<T> {
     ///
     /// # Panics
     ///
-    /// - Panics if start >= end.
+    /// - Panics if start > end.
     pub const fn new(start: usize, end: usize) -> ASpace<T> {
-        assert!(start < end);
+        assert!(start <= end);
         Self { start, end, map: BTreeMap::new() }
     }
 
@@ -284,9 +284,13 @@ mod test {
     use super::*;
 
     #[test]
-    #[should_panic]
-    fn create_zero_size() {
-        let _s: ASpace<u32> = ASpace::new(0, 0);
+    fn create_one_elem() {
+        let mut s: ASpace<u32> = ASpace::new(0, 0);
+        s.register(0, 1, 0xaa)
+            .expect("can register an element in one-elem ASpace");
+        assert_eq!(s.register(0, 2, 0x11), Err(Error::OutOfRange));
+        assert_eq!(s.register(1, 2, 0x22), Err(Error::OutOfRange));
+        assert_eq!(s.region_at(0), Ok((0, 1, &0xaa)));
     }
     #[test]
     fn create_max() {
