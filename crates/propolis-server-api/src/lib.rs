@@ -137,7 +137,7 @@ pub trait PropolisServerApi {
         HttpResponseOk<v1::instance_spec::InstanceSpecGetResponse>,
         HttpError,
     > {
-        Ok(Self::instance_spec_get(rqctx)
+        Ok(Self::instance_spec_get_v2(rqctx)
             .await?
             .map(v1::instance_spec::InstanceSpecGetResponse::from))
     }

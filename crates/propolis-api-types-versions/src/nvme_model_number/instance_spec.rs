@@ -203,19 +203,6 @@ impl From<InstanceSpec> for v2::instance_spec::InstanceSpec {
 }
 
 // Conversions for InstanceSpecStatus.
-impl From<InstanceSpecStatus> for v1::instance_spec::InstanceSpecStatus {
-    fn from(new: InstanceSpecStatus) -> Self {
-        match new {
-            InstanceSpecStatus::WaitingForMigrationSource => {
-                Self::WaitingForMigrationSource
-            }
-            InstanceSpecStatus::Present(spec) => Self::Present(
-                v1::instance_spec::VersionedInstanceSpec::V0(spec.into()),
-            ),
-        }
-    }
-}
-
 impl From<InstanceSpecStatus> for v2::instance_spec::InstanceSpecStatus {
     fn from(new: InstanceSpecStatus) -> Self {
         match new {
@@ -241,18 +228,6 @@ impl From<v2::instance_spec::InstanceSpecStatus> for InstanceSpecStatus {
 }
 
 // Conversions for InstanceSpecGetResponse.
-impl From<InstanceSpecGetResponse>
-    for v1::instance_spec::InstanceSpecGetResponse
-{
-    fn from(new: InstanceSpecGetResponse) -> Self {
-        Self {
-            properties: new.properties,
-            state: new.state,
-            spec: new.spec.into(),
-        }
-    }
-}
-
 impl From<InstanceSpecGetResponse>
     for v2::instance_spec::InstanceSpecGetResponse
 {
