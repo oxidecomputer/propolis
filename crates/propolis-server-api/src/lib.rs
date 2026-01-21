@@ -8,16 +8,7 @@ use dropshot::{
     WebsocketChannelResult, WebsocketConnection,
 };
 use dropshot_api_manager_types::api_versions;
-use propolis_api_types::{
-    InstanceEnsureRequest, InstanceEnsureResponse, InstanceGetResponse,
-    InstanceMigrateStartRequest, InstanceMigrateStatusResponse,
-    InstanceSerialConsoleHistoryRequest, InstanceSerialConsoleHistoryResponse,
-    InstanceSerialConsoleStreamRequest, InstanceSpecGetResponse,
-    InstanceStateMonitorRequest, InstanceStateMonitorResponse,
-    InstanceStateRequested, InstanceVCRReplace, SnapshotRequestPathParams,
-    VCRRequestPathParams, VolumeStatus, VolumeStatusPathParams,
-    instance_spec::v0::InstanceSpecGetResponseV0, v0::InstanceEnsureRequestV0,
-};
+use propolis_api_types_versions::{latest, v1, v2};
 
 api_versions!([
     // WHEN CHANGING THE API (part 1 of 2):
@@ -31,6 +22,7 @@ api_versions!([
     // |  example for the next person.
     // v
     // (next_int, IDENT),
+    (3, NVME_MODEL_NUMBER),
     (2, PROGRAMMABLE_SMBIOS),
     (1, INITIAL),
 ]);
@@ -54,40 +46,101 @@ pub trait PropolisServerApi {
     #[endpoint {
         method = PUT,
         path = "/instance",
-        versions = VERSION_PROGRAMMABLE_SMBIOS..
+        versions = VERSION_NVME_MODEL_NUMBER..
     }]
     async fn instance_ensure(
         rqctx: RequestContext<Self::Context>,
-        request: TypedBody<InstanceEnsureRequest>,
-    ) -> Result<HttpResponseCreated<InstanceEnsureResponse>, HttpError>;
+        request: TypedBody<latest::instance::InstanceEnsureRequest>,
+    ) -> Result<
+        HttpResponseCreated<latest::instance::InstanceEnsureResponse>,
+        HttpError,
+    >;
 
     #[endpoint {
+        operation_id = "instance_ensure",
+        method = PUT,
+        path = "/instance",
+        versions = VERSION_PROGRAMMABLE_SMBIOS..VERSION_NVME_MODEL_NUMBER
+    }]
+    async fn instance_ensure_v2(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<v2::api::InstanceEnsureRequest>,
+    ) -> Result<
+        HttpResponseCreated<latest::instance::InstanceEnsureResponse>,
+        HttpError,
+    > {
+        Self::instance_ensure(
+            rqctx,
+            request.map(latest::instance::InstanceEnsureRequest::from),
+        )
+        .await
+    }
+
+    #[endpoint {
+        operation_id = "instance_ensure",
         method = PUT,
         path = "/instance",
         versions = ..VERSION_PROGRAMMABLE_SMBIOS
     }]
-    async fn v0_instance_ensure(
+    async fn instance_ensure_v1(
         rqctx: RequestContext<Self::Context>,
-        request: TypedBody<InstanceEnsureRequestV0>,
-    ) -> Result<HttpResponseCreated<InstanceEnsureResponse>, HttpError>;
+        request: TypedBody<v1::instance::InstanceEnsureRequest>,
+    ) -> Result<
+        HttpResponseCreated<latest::instance::InstanceEnsureResponse>,
+        HttpError,
+    > {
+        Self::instance_ensure_v2(
+            rqctx,
+            request.map(v2::api::InstanceEnsureRequest::from),
+        )
+        .await
+    }
 
     #[endpoint {
         method = GET,
         path = "/instance/spec",
-        versions = VERSION_PROGRAMMABLE_SMBIOS..
+        versions = VERSION_NVME_MODEL_NUMBER..
     }]
     async fn instance_spec_get(
         rqctx: RequestContext<Self::Context>,
-    ) -> Result<HttpResponseOk<InstanceSpecGetResponse>, HttpError>;
+    ) -> Result<
+        HttpResponseOk<latest::instance_spec::InstanceSpecGetResponse>,
+        HttpError,
+    >;
 
     #[endpoint {
+        operation_id = "instance_spec_get",
+        method = GET,
+        path = "/instance/spec",
+        versions = VERSION_PROGRAMMABLE_SMBIOS..VERSION_NVME_MODEL_NUMBER
+    }]
+    async fn instance_spec_get_v2(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<
+        HttpResponseOk<v2::instance_spec::InstanceSpecGetResponse>,
+        HttpError,
+    > {
+        Ok(Self::instance_spec_get(rqctx)
+            .await?
+            .map(v2::instance_spec::InstanceSpecGetResponse::from))
+    }
+
+    #[endpoint {
+        operation_id = "instance_spec_get",
         method = GET,
         path = "/instance/spec",
         versions = ..VERSION_PROGRAMMABLE_SMBIOS
     }]
-    async fn v0_instance_spec_get(
+    async fn instance_spec_get_v1(
         rqctx: RequestContext<Self::Context>,
-    ) -> Result<HttpResponseOk<InstanceSpecGetResponseV0>, HttpError>;
+    ) -> Result<
+        HttpResponseOk<v1::instance_spec::InstanceSpecGetResponse>,
+        HttpError,
+    > {
+        Ok(Self::instance_spec_get(rqctx)
+            .await?
+            .map(v1::instance_spec::InstanceSpecGetResponse::from))
+    }
 
     #[endpoint {
         method = GET,
@@ -95,7 +148,7 @@ pub trait PropolisServerApi {
     }]
     async fn instance_get(
         rqctx: RequestContext<Self::Context>,
-    ) -> Result<HttpResponseOk<InstanceGetResponse>, HttpError>;
+    ) -> Result<HttpResponseOk<latest::instance::InstanceGetResponse>, HttpError>;
 
     #[endpoint {
         method = GET,
@@ -103,8 +156,11 @@ pub trait PropolisServerApi {
     }]
     async fn instance_state_monitor(
         rqctx: RequestContext<Self::Context>,
-        request: TypedBody<InstanceStateMonitorRequest>,
-    ) -> Result<HttpResponseOk<InstanceStateMonitorResponse>, HttpError>;
+        request: TypedBody<latest::instance::InstanceStateMonitorRequest>,
+    ) -> Result<
+        HttpResponseOk<latest::instance::InstanceStateMonitorResponse>,
+        HttpError,
+    >;
 
     #[endpoint {
         method = PUT,
@@ -112,7 +168,7 @@ pub trait PropolisServerApi {
     }]
     async fn instance_state_put(
         rqctx: RequestContext<Self::Context>,
-        request: TypedBody<InstanceStateRequested>,
+        request: TypedBody<latest::instance::InstanceStateRequested>,
     ) -> Result<HttpResponseUpdatedNoContent, HttpError>;
 
     #[endpoint {
@@ -121,8 +177,11 @@ pub trait PropolisServerApi {
     }]
     async fn instance_serial_history_get(
         rqctx: RequestContext<Self::Context>,
-        query: Query<InstanceSerialConsoleHistoryRequest>,
-    ) -> Result<HttpResponseOk<InstanceSerialConsoleHistoryResponse>, HttpError>;
+        query: Query<latest::serial::InstanceSerialConsoleHistoryRequest>,
+    ) -> Result<
+        HttpResponseOk<latest::serial::InstanceSerialConsoleHistoryResponse>,
+        HttpError,
+    >;
 
     #[channel {
         protocol = WEBSOCKETS,
@@ -130,7 +189,7 @@ pub trait PropolisServerApi {
     }]
     async fn instance_serial(
         rqctx: RequestContext<Self::Context>,
-        query: Query<InstanceSerialConsoleStreamRequest>,
+        query: Query<latest::serial::InstanceSerialConsoleStreamRequest>,
         websock: WebsocketConnection,
     ) -> WebsocketChannelResult;
 
@@ -179,7 +238,7 @@ pub trait PropolisServerApi {
     }]
     async fn instance_migrate_start(
         rqctx: RequestContext<Self::Context>,
-        path_params: Path<InstanceMigrateStartRequest>,
+        path_params: Path<latest::migration::InstanceMigrateStartRequest>,
         websock: WebsocketConnection,
     ) -> dropshot::WebsocketChannelResult;
 
@@ -189,7 +248,10 @@ pub trait PropolisServerApi {
     }]
     async fn instance_migrate_status(
         rqctx: RequestContext<Self::Context>,
-    ) -> Result<HttpResponseOk<InstanceMigrateStatusResponse>, HttpError>;
+    ) -> Result<
+        HttpResponseOk<latest::migration::InstanceMigrateStatusResponse>,
+        HttpError,
+    >;
 
     /// Issues a snapshot request to a crucible backend.
     #[endpoint {
@@ -198,7 +260,7 @@ pub trait PropolisServerApi {
     }]
     async fn instance_issue_crucible_snapshot_request(
         rqctx: RequestContext<Self::Context>,
-        path_params: Path<SnapshotRequestPathParams>,
+        path_params: Path<latest::disk::SnapshotRequestPathParams>,
     ) -> Result<HttpResponseOk<()>, HttpError>;
 
     /// Gets the status of a Crucible volume backing a disk
@@ -208,8 +270,8 @@ pub trait PropolisServerApi {
     }]
     async fn disk_volume_status(
         rqctx: RequestContext<Self::Context>,
-        path_params: Path<VolumeStatusPathParams>,
-    ) -> Result<HttpResponseOk<VolumeStatus>, HttpError>;
+        path_params: Path<latest::disk::VolumeStatusPathParams>,
+    ) -> Result<HttpResponseOk<latest::disk::VolumeStatus>, HttpError>;
 
     /// Issues a volume_construction_request replace to a crucible backend.
     #[endpoint {
@@ -218,8 +280,8 @@ pub trait PropolisServerApi {
     }]
     async fn instance_issue_crucible_vcr_request(
         rqctx: RequestContext<Self::Context>,
-        path_params: Path<VCRRequestPathParams>,
-        request: TypedBody<InstanceVCRReplace>,
+        path_params: Path<latest::disk::VCRRequestPathParams>,
+        request: TypedBody<latest::disk::InstanceVCRReplace>,
     ) -> Result<HttpResponseOk<crucible_client_types::ReplaceResult>, HttpError>;
 
     /// Issues an NMI to the instance.
