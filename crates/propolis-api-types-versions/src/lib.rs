@@ -24,8 +24,9 @@
 //!
 //! 4. Update `latest.rs` with new and updated types from the new version.
 //!
-//! For more information, see [RFD 619].
+//! For more information, see the [detailed guide] and [RFD 619].
 //!
+//! [detailed guide]: https://github.com/oxidecomputer/dropshot-api-manager/blob/main/guides/new-version.md
 //! [RFD 619]: https://rfd.shared.oxide.computer/rfd/619
 
 mod impls;

@@ -108,7 +108,7 @@ impl MemAsyncBackend {
 
         if size == 0 {
             return Err(Error::new(ErrorKind::Other, "size cannot be 0"));
-        } else if (size % u64::from(block_size)) != 0 {
+        } else if !size.is_multiple_of(u64::from(block_size)) {
             return Err(Error::new(
                 ErrorKind::Other,
                 format!(

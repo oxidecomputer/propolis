@@ -22,11 +22,14 @@ default-members = [
   "xtask",
 ]
 
+# `header-check` crates are excluded because they require an external checkout
+# of illumos-gate (perhaps even to a specific revision) to run. So, to support
+# more Propolis-local development, exclude these and leave them for more
+# specific tools (see `tools/check_headers`, which is used to run these in CI)
 exclude = [
   "crates/bhyve-api/header-check",
   "crates/nvpair/header-check",
   "crates/viona-api/header-check",
-  "phd-tests/buildomat",
 ]
 
 # If one wants the 'dev' profile, but with "panic = abort" semantics, they
@@ -50,6 +53,7 @@ cpuid_profile_config = { path = "crates/cpuid-profile-config" }
 dladm = { path = "crates/dladm" }
 nvpair = { path = "crates/nvpair" }
 nvpair_sys = { path = "crates/nvpair/sys" }
+pbind = { path = "crates/pbind" }
 propolis-config-toml = { path = "crates/propolis-config-toml" }
 propolis_api_types = { path = "crates/propolis-api-types" }
 propolis-api-types-versions = { path = "crates/propolis-api-types-versions" }
@@ -58,7 +62,6 @@ propolis_types = { path = "crates/propolis-types" }
 rfb = { path = "crates/rfb" }
 rgb_frame = { path = "crates/rgb-frame" }
 viona_api = { path = "crates/viona-api" }
-viona_api_sys = { path = "crates/viona-api/sys" }
 
 # PHD testing framework
 phd-framework = { path = "phd-tests/framework" }
@@ -139,6 +142,7 @@ newtype_derive = "0.1.6"
 newtype-uuid = { version = "1.0.1", features = [ "v4" ] }
 owo-colors = "4"
 oxide-tokio-rt = "0.1.2"
+paste = "1.0.15"
 pin-project-lite = "0.2.13"
 proc-macro2 = "1.0"
 proc-macro-error = "1"

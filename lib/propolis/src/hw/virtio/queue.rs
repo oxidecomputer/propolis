@@ -4,12 +4,12 @@
 
 use std::mem;
 use std::num::{NonZeroU16, Wrapping};
-use std::ops::Index;
-use std::slice::SliceIndex;
-use std::sync::atomic::{fence, AtomicBool, Ordering};
+use std::sync::atomic::{fence, AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use super::bits::*;
+use bitflags::bitflags;
+use zerocopy::FromBytes;
+
 use super::probes;
 use super::{VirtioIntr, VqIntr};
 use crate::accessors::MemAccessor;
@@ -17,7 +17,40 @@ use crate::common::*;
 use crate::migrate::MigrateStateError;
 use crate::vmm::MemCtx;
 
-use zerocopy::FromBytes;
+bitflags! {
+    /// Features supported by our implementation of virtqueues.
+    pub struct Features: u64 {
+        const RING_INDIRECT_DESC = 1 << 28;
+        const RING_EVENT_IDX = 1 << 29;
+        const VERSION_1 = 1 << 32;
+    }
+
+    struct QueueFlags: u16 {
+        const DESC_NEXT = 1 << 0;
+        const DESC_WRITE = 1 << 1;
+        const DESC_INDIRECT = 1 << 2;
+    }
+
+    struct AvailFlags: u16 {
+        const NO_INTERRUPT = 1 << 0;
+    }
+
+    struct UsedFlags: u16 {
+        const NO_NOTIFY = 1 << 0;
+    }
+}
+
+impl Features {
+    /// Returns those features appropriate for a legacy queue.
+    pub fn legacy() -> Self {
+        Self::RING_INDIRECT_DESC
+    }
+
+    /// Returns those features appropriate for a transitional queue.
+    pub fn transitional() -> Self {
+        Self::legacy() | Self::VERSION_1
+    }
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, FromBytes)]
@@ -51,6 +84,7 @@ pub struct VqAvail {
 
     gpa_desc: GuestAddr,
 }
+
 impl VqAvail {
     /// If there's a request ready, pop it off the queue and return the
     /// corresponding descriptor and available ring indicies.
@@ -73,6 +107,7 @@ impl VqAvail {
         }
         None
     }
+
     fn read_ring_descr(
         &self,
         id: u16,
@@ -83,6 +118,7 @@ impl VqAvail {
         let addr = self.gpa_desc.offset::<VqdDesc>(id as usize);
         mem.read::<VqdDesc>(addr)
     }
+
     fn reset(&mut self) {
         self.valid = false;
         self.gpa_flags = GuestAddr(0);
@@ -91,12 +127,27 @@ impl VqAvail {
         self.gpa_desc = GuestAddr(0);
         self.cur_avail_idx = Wrapping(0);
     }
+
     fn map_split(&mut self, desc_addr: u64, avail_addr: u64) {
         self.gpa_desc = GuestAddr(desc_addr);
         // 16-bit flags, followed by 16-bit idx, followed by avail desc ring
         self.gpa_flags = GuestAddr(avail_addr);
         self.gpa_idx = GuestAddr(avail_addr + 2);
         self.gpa_ring = GuestAddr(avail_addr + 4);
+    }
+
+    /// Returns guest flags.
+    fn flags(&self, mem: &MemCtx) -> AvailFlags {
+        let value =
+            if self.valid { *mem.read(self.gpa_flags).unwrap() } else { 0 };
+        AvailFlags::from_bits_truncate(value)
+    }
+
+    /// Returns true IFF interrupts are supressed.
+    #[allow(dead_code)]
+    fn _intr_supressed(&self, mem: &MemCtx) -> bool {
+        let flags = self.flags(mem);
+        flags.contains(AvailFlags::NO_INTERRUPT)
     }
 }
 
@@ -110,6 +161,7 @@ pub struct VqUsed {
     used_idx: Wrapping<u16>,
     interrupt: Option<Box<dyn VirtioIntr>>,
 }
+
 impl VqUsed {
     fn write_used(&mut self, id: u16, len: u32, rsize: u16, mem: &MemCtx) {
         // We do not expect used entries to be pushed into a virtqueue which has
@@ -126,10 +178,39 @@ impl VqUsed {
         fence(Ordering::Release);
         mem.write(self.gpa_idx, &self.used_idx.0);
     }
-    fn intr_supressed(&self, mem: &MemCtx) -> bool {
-        let flags: u16 = *mem.read(self.gpa_flags).unwrap();
-        flags & VRING_AVAIL_F_NO_INTERRUPT != 0
+
+    /// Returns guest flags.
+    fn flags(&self, mem: &MemCtx) -> UsedFlags {
+        let value: u16 = *mem.read(self.gpa_flags).unwrap();
+        UsedFlags::from_bits_truncate(value)
     }
+
+    /// Sets flags.
+    fn set_flags(&self, flags: UsedFlags, mem: &MemCtx) {
+        let value = flags.bits();
+        mem.write(self.gpa_flags, &value);
+    }
+
+    /// Disables notifications on this queue; returns the previous state.
+    fn disable_notify(&self, mem: &MemCtx) -> bool {
+        let flags = self.flags(mem);
+        let current = flags.contains(UsedFlags::NO_NOTIFY);
+        self.set_flags(flags | UsedFlags::NO_NOTIFY, mem);
+        current
+    }
+
+    fn enable_notify(&self, mem: &MemCtx) {
+        let mut flags = self.flags(mem);
+        flags.remove(UsedFlags::NO_NOTIFY);
+        self.set_flags(flags, mem);
+    }
+
+    /// Returns true iff notifications are supressed for this queue.
+    fn notify_supressed(&self, mem: &MemCtx) -> bool {
+        let flags = self.flags(mem);
+        flags.contains(UsedFlags::NO_NOTIFY)
+    }
+
     fn reset(&mut self) {
         self.valid = false;
         self.gpa_flags = GuestAddr(0);
@@ -145,8 +226,16 @@ impl VqUsed {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct VqSize(NonZeroU16);
+impl VqSize {
+    pub const fn new(size: u16) -> VqSize {
+        let size = NonZeroU16::new(size).expect("nonzero queue size");
+        assert!(size.is_power_of_two());
+        Self(size)
+    }
+}
+
 impl TryFrom<NonZeroU16> for VqSize {
     type Error = VqSizeError;
 
@@ -165,6 +254,7 @@ impl TryFrom<u16> for VqSize {
         NonZeroU16::try_from(value).or(Err(VqSizeError::IsZero))?.try_into()
     }
 }
+
 impl Into<u16> for VqSize {
     fn into(self) -> u16 {
         self.0.get()
@@ -181,25 +271,31 @@ pub enum VqSizeError {
 
 pub struct VirtQueue {
     pub id: u16,
-    pub size: VqSize,
+    pub size: Mutex<VqSize>,
     pub live: AtomicBool,
+    pub enabled: AtomicBool,
+    pub is_control: AtomicBool,
+    pub notify_data: u16,
     avail: Mutex<VqAvail>,
     used: Mutex<VqUsed>,
     pub acc_mem: MemAccessor,
 }
-const LEGACY_QALIGN: u64 = PAGE_SIZE as u64;
+
 const fn qalign(addr: u64, align: u64) -> u64 {
     assert!(align.is_power_of_two());
-
     let mask = align - 1;
     (addr + mask) & !mask
 }
+
 impl VirtQueue {
-    pub fn new(size: VqSize) -> Self {
+    fn new(id: u16, size: VqSize) -> Self {
         Self {
-            id: 0, // to be populated when stashed in VirtQueues
-            size,
+            id,
+            size: Mutex::new(size),
             live: AtomicBool::new(false),
+            enabled: AtomicBool::new(false),
+            is_control: AtomicBool::new(false),
+            notify_data: id,
             avail: Mutex::new(VqAvail {
                 valid: false,
                 gpa_flags: GuestAddr(0),
@@ -219,6 +315,7 @@ impl VirtQueue {
             acc_mem: MemAccessor::new_orphan(),
         }
     }
+
     pub(super) fn reset(&self) {
         let mut avail = self.avail.lock().unwrap();
         let mut used = self.used.lock().unwrap();
@@ -227,11 +324,58 @@ impl VirtQueue {
         avail.reset();
         used.reset();
         self.live.store(false, Ordering::Release);
+        self.enabled.store(false, Ordering::Release);
+    }
+
+    pub(super) fn enable(&self) {
+        self.enabled.store(true, Ordering::Release);
+    }
+
+    pub(super) fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+    }
+
+    pub(super) fn arise(&self) {
+        self.live.store(true, Ordering::Release);
+    }
+
+    pub(super) fn is_alive(&self) -> bool {
+        self.live.load(Ordering::Acquire)
+    }
+
+    pub(super) fn is_control(&self) -> bool {
+        self.is_control.load(Ordering::Acquire)
+    }
+
+    pub(super) fn set_control(&self) {
+        self.is_control.store(true, Ordering::Release);
     }
 
     #[inline(always)]
     pub fn size(&self) -> u16 {
-        self.size.into()
+        let size = *self.size.lock().unwrap();
+        size.into()
+    }
+
+    /// Attempt to establish area mappings for this virtqueue at specified
+    /// physical addresses.  Using the terminology of VirtIO 1.2, we take the
+    /// addresses for the "Descriptor Area", "Driver Area", and "Device Area".
+    /// Previously, these were called the "Descriptor Table", "Available Ring",
+    /// and "Used Ring".  However, section 2.7 of the version 1.2 specification
+    /// also refers to these using the older names, so we retain that
+    /// terminology.
+    pub fn map_virtqueue(
+        &self,
+        desc_addr: u64,
+        avail_addr: u64,
+        used_addr: u64,
+    ) {
+        let mut avail = self.avail.lock().expect("avail is initialized");
+        let mut used = self.used.lock().expect("used is initialized");
+        avail.map_split(desc_addr, avail_addr);
+        used.map_split(used_addr);
+        avail.valid = true;
+        used.valid = true;
     }
 
     /// Attempt to establish ring mappings at a specified physical address,
@@ -239,7 +383,9 @@ impl VirtQueue {
     ///
     /// `addr` must be aligned to 4k per the legacy requirements
     pub fn map_legacy(&self, addr: u64) {
+        const LEGACY_QALIGN: u64 = PAGE_SIZE as u64;
         assert_eq!(addr & (LEGACY_QALIGN - 1), 0);
+        assert_ne!(addr, 0);
 
         let size = self.size() as usize;
 
@@ -252,13 +398,24 @@ impl VirtQueue {
         let used_addr = qalign(avail_addr + avail_len as u64, LEGACY_QALIGN);
         let _used_len = mem::size_of::<VqUsed>() * size + 2 * 3;
 
-        let mut avail = self.avail.lock().unwrap();
-        let mut used = self.used.lock().unwrap();
-        avail.map_split(desc_addr, avail_addr);
-        used.map_split(used_addr);
-        avail.valid = true;
-        used.valid = true;
+        self.map_virtqueue(desc_addr, avail_addr, used_addr);
     }
+
+    /// Returns true iff there is a valid mapping for this queue in the
+    /// guest physical address space.
+    pub fn is_mapped(&self) -> bool {
+        self.avail.lock().unwrap().valid
+    }
+
+    /// Returns true if this queue is not mapped, or is empty.
+    pub fn avail_is_empty(&self, mem: &MemCtx) -> bool {
+        let avail = self.avail.lock().expect("not poisoned");
+        !avail.valid || {
+            let guest_idx: u16 = *mem.read(avail.gpa_idx).unwrap();
+            avail.cur_avail_idx == std::num::Wrapping(guest_idx)
+        }
+    }
+
     pub fn get_state(&self) -> Info {
         let avail = self.avail.lock().unwrap();
         let used = self.used.lock().unwrap();
@@ -274,6 +431,7 @@ impl VirtQueue {
             used_idx: used.used_idx.0,
         }
     }
+
     pub fn set_state(&self, info: &Info) {
         let mut avail = self.avail.lock().unwrap();
         let mut used = self.used.lock().unwrap();
@@ -285,6 +443,10 @@ impl VirtQueue {
         avail.cur_avail_idx = Wrapping(info.avail_idx);
         used.used_idx = Wrapping(info.used_idx);
     }
+
+    /// Accummulates a sequence of available descriptors into a `Chain`.
+    ///
+    /// VirtIO descriptors can be organized into a linked list
     pub fn pop_avail(
         &self,
         chain: &mut Chain,
@@ -369,6 +531,7 @@ impl VirtQueue {
         }
         Some((req.avail_idx, len))
     }
+
     pub fn push_used(&self, chain: &mut Chain, mem: &MemCtx) {
         assert!(chain.idx.is_some());
         let mut used = self.used.lock().unwrap();
@@ -377,7 +540,10 @@ impl VirtQueue {
         let len = chain.write_stat.bytes - chain.write_stat.bytes_remain;
         probes::virtio_vq_push!(|| (self as *const VirtQueue as u64, id, len));
         used.write_used(id, len, self.size(), mem);
-        if !used.intr_supressed(mem) {
+        // XXX: This is wrong.  Interrupt notification is on the avail ring,
+        // not used.
+        #[allow(clippy::overly_complex_bool_expr)]
+        if true || !used.notify_supressed(mem) {
             if let Some(intr) = used.interrupt.as_ref() {
                 intr.notify();
             }
@@ -397,10 +563,25 @@ impl VirtQueue {
         used.interrupt.as_ref().map(|x| x.read())
     }
 
-    /// Send an interrupt for VQ
+    /// Disables interrupts (notifications) on the `Used` ring
+    pub(super) fn disable_intr(&self, mem: &MemCtx) -> bool {
+        let used = self.used.lock().unwrap();
+        used.disable_notify(mem)
+    }
+
+    /// Enables interrupts (notifications) on the `Used` ring
+    pub(super) fn enable_intr(&self, mem: &MemCtx) {
+        let used = self.used.lock().unwrap();
+        used.enable_notify(mem);
+    }
+
+    /// Send an interrupt for this virtual queue.
     pub(super) fn send_intr(&self, mem: &MemCtx) {
         let used = self.used.lock().unwrap();
-        if !used.intr_supressed(mem) {
+        // XXX: This is wrong.  Interrupt notification is on the avail ring,
+        // not used.
+        #[allow(clippy::overly_complex_bool_expr)]
+        if true || !used.notify_supressed(mem) {
             if let Some(intr) = used.interrupt.as_ref() {
                 intr.notify();
             }
@@ -417,6 +598,9 @@ impl VirtQueue {
             descr_gpa: avail.gpa_desc.0,
             mapping_valid: avail.valid && used.valid,
             live: self.live.load(Ordering::Acquire),
+            enabled: self.enabled.load(Ordering::Acquire),
+            is_control: self.is_control.load(Ordering::Acquire),
+            notify_data: self.notify_data,
 
             // `flags` field is the first member for avail and used rings
             avail_gpa: avail.gpa_flags.0,
@@ -429,7 +613,7 @@ impl VirtQueue {
 
     pub fn import(
         &self,
-        state: migrate::VirtQueueV1,
+        state: &migrate::VirtQueueV1,
     ) -> Result<(), MigrateStateError> {
         let mut avail = self.avail.lock().unwrap();
         let mut used = self.used.lock().unwrap();
@@ -447,6 +631,13 @@ impl VirtQueue {
                 state.size,
             )));
         }
+        if self.notify_data != state.notify_data {
+            return Err(MigrateStateError::ImportFailed(format!(
+                "VirtQueue: mismatched notify data {} vs {}",
+                self.size(),
+                state.size,
+            )));
+        }
 
         avail.map_split(state.descr_gpa, state.avail_gpa);
         avail.valid = state.mapping_valid;
@@ -455,7 +646,10 @@ impl VirtQueue {
         used.map_split(state.used_gpa);
         used.valid = state.mapping_valid;
         used.used_idx = Wrapping(state.used_idx);
+
         self.live.store(state.live, Ordering::Release);
+        self.enabled.store(state.enabled, Ordering::Release);
+        self.is_control.store(state.is_control, Ordering::Release);
 
         Ok(())
     }
@@ -464,9 +658,9 @@ impl VirtQueue {
 bitflags! {
     #[derive(Default)]
     pub struct DescFlag: u16 {
-        const NEXT = VIRTQ_DESC_F_NEXT;
-        const WRITE = VIRTQ_DESC_F_WRITE;
-        const INDIRECT = VIRTQ_DESC_F_INDIRECT;
+        const NEXT = 1 << 0;
+        const WRITE = 1 << 1;
+        const INDIRECT = 1 << 2;
     }
 }
 
@@ -729,6 +923,7 @@ pub struct MapInfo {
     pub used_addr: u64,
     pub valid: bool,
 }
+
 #[derive(Debug)]
 pub struct Info {
     pub mapping: MapInfo,
@@ -737,54 +932,109 @@ pub struct Info {
 }
 
 pub struct VirtQueues {
+    len: AtomicUsize,
     queues: Vec<Arc<VirtQueue>>,
 }
+
+const MAX_QUEUES: usize = 65535;
+
 impl VirtQueues {
-    pub fn new(
-        queues: impl IntoIterator<Item = VirtQueue>,
-    ) -> Result<Self, VirtQueuesError> {
-        let queues = queues
+    pub fn new(sizes: &[VqSize]) -> Self {
+        assert!(
+            !sizes.is_empty() && sizes.len() <= MAX_QUEUES,
+            "virtqueue size must be positive u16"
+        );
+        Self::new_with_len(sizes.len(), sizes)
+    }
+
+    pub fn new_with_len(len: usize, sizes: &[VqSize]) -> Self {
+        assert!(
+            0 < len && len <= sizes.len() && sizes.len() <= MAX_QUEUES,
+            "virtqueue size must be positive u16 and len must be smaller pos"
+        );
+        let queues = sizes
             .into_iter()
             .enumerate()
-            .map(|(id, mut vq)| {
-                vq.id = id as u16;
-                Arc::new(vq)
-            })
+            .map(|(id, size)| Arc::new(VirtQueue::new(id as u16, *size)))
             .collect::<Vec<_>>();
-        if !(0..(u16::MAX as usize)).contains(&queues.len()) {
-            return Err(VirtQueuesError::BadQueueCount(queues.len()));
-        }
-
-        Ok(Self { queues })
+        let len = AtomicUsize::new(len);
+        Self { len, queues }
     }
+
+    pub fn set_len(&self, len: usize) -> Result<(), usize> {
+        if len == 0 || len > self.max_capacity() {
+            return Err(len);
+        }
+        self.len.store(len, Ordering::Release);
+        Ok(())
+    }
+
     pub fn count(&self) -> NonZeroU16 {
-        NonZeroU16::try_from(self.queues.len() as u16)
+        NonZeroU16::try_from(self.len() as u16)
             .expect("queue count already validated")
     }
+
+    pub fn len(&self) -> usize {
+        self.len.load(Ordering::Relaxed)
+    }
+
+    pub const fn max_capacity(&self) -> usize {
+        self.queues.len()
+    }
+
     pub fn get(&self, qid: u16) -> Option<&Arc<VirtQueue>> {
-        self.queues.get(usize::from(qid))
+        let len = self.len();
+        let qid = usize::from(qid);
+        // XXX: This special case is for viona, which always puts the
+        // control queue at the end of queue vector.  None of the other
+        // devices currently handle queues specially in this way, but we
+        // should come up with some better mechanism here.
+        if qid + 1 == len {
+            Some(self.get_control())
+        } else {
+            self.queues[..len].get(qid)
+        }
     }
-    pub fn iter(&self) -> std::slice::Iter<'_, Arc<VirtQueue>> {
-        self.queues.iter()
+
+    fn get_control(&self) -> &Arc<VirtQueue> {
+        &self.queues[self.max_capacity() - 1]
     }
-}
 
-impl<S: SliceIndex<[Arc<VirtQueue>]>> Index<S> for VirtQueues {
-    type Output = S::Output;
-
-    fn index(&self, index: S) -> &Self::Output {
-        Index::index(&self.queues, index)
+    pub fn iter(&self) -> impl std::iter::Iterator<Item = &Arc<VirtQueue>> {
+        let len = self.len() - 1;
+        self.queues[..len].iter().chain([self.get_control()])
     }
-}
 
-#[derive(Copy, Clone, Debug, thiserror::Error)]
-pub enum VirtQueuesError {
-    #[error("queue count {0} must be nonzero and less than 65535")]
-    BadQueueCount(usize),
+    pub fn export(&self) -> migrate::VirtQueuesV1 {
+        let len = self.len() as u64;
+        let queues = self.queues.iter().map(|q| q.export()).collect();
+        migrate::VirtQueuesV1 { len, queues }
+    }
+
+    pub fn import(
+        &self,
+        state: &migrate::VirtQueuesV1,
+    ) -> Result<(), MigrateStateError> {
+        for (vq, vq_input) in self.queues.iter().zip(state.queues.iter()) {
+            vq.import(vq_input)?;
+        }
+        self.set_len(state.len as usize).map_err(|len| {
+            MigrateStateError::ImportFailed(format!(
+                "VirtQueues: could not set len to {len}"
+            ))
+        })?;
+        Ok(())
+    }
 }
 
 pub mod migrate {
     use serde::{Deserialize, Serialize};
+
+    #[derive(Deserialize, Serialize)]
+    pub struct VirtQueuesV1 {
+        pub len: u64,
+        pub queues: Vec<VirtQueueV1>,
+    }
 
     #[derive(Deserialize, Serialize)]
     pub struct VirtQueueV1 {
@@ -793,6 +1043,9 @@ pub mod migrate {
         pub descr_gpa: u64,
         pub mapping_valid: bool,
         pub live: bool,
+        pub enabled: bool,
+        pub is_control: bool,
+        pub notify_data: u16,
 
         pub avail_gpa: u64,
         pub avail_cur_idx: u16,

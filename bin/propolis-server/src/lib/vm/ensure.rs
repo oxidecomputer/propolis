@@ -581,9 +581,48 @@ async fn initialize_vm_objects(
 
     init.register_guest_hv_interface(guest_hv_lifecycle);
     init.initialize_cpus().await?;
+
+    let total_cpus = pbind::online_cpus()?;
+    let vcpu_count: i32 = machine
+        .vcpus
+        .len()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("more than 2^31 vCPUs"))?;
+
+    // When a VM has I/O-heavy workloads across many cores, vCPUs can end up
+    // moving across the host and come with wasted time in juggling cyclics.
+    //
+    // Nexus can't yet determine CPU binding assignments in a central manner. In
+    // lieu of it, knowing that Nexus won't oversubscribe a host we can
+    // autonomously follow a CPU pinning strategy as: "if the VM is larger than
+    // half of the sled, there can only be one, so bind it to specific CPUs and
+    // rely on the OS to sort out the rest". This gets the largest VMs to fixed
+    // vCPU->CPU assignments, which also are most likely to benefit.
+    let cpu_threshold = total_cpus / 2;
+    let bind_cpus = if vcpu_count > cpu_threshold {
+        if vcpu_count > total_cpus {
+            anyhow::bail!("spec requested more CPUs than are online!");
+        }
+
+        // Bind to the upper range of CPUs, fairly arbitrary.
+        let first_bind_cpu = total_cpus - vcpu_count;
+        let bind_cpus = (first_bind_cpu..total_cpus).collect();
+
+        info!(log, "applying automatic vCPU->CPU binding";
+                  "vcpu_count" => vcpu_count,
+                  "total_cpus" => total_cpus,
+                  "threshold" => cpu_threshold,
+                  "vcpu_cpus" => #?bind_cpus);
+
+        Some(bind_cpus)
+    } else {
+        None
+    };
+
     let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
         &machine,
         event_queue.clone() as Arc<dyn super::guest_event::VcpuEventHandler>,
+        bind_cpus,
         log.new(slog::o!("component" => "vcpu_tasks")),
     )?);
 

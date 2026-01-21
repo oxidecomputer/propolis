@@ -5,7 +5,6 @@
 use std::convert::TryInto;
 use std::mem::size_of;
 use std::num::NonZeroUsize;
-use std::sync::atomic::AtomicU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
@@ -16,6 +15,7 @@ use crate::hw::ids::pci::{PROPOLIS_NVME_DEV_ID, VENDOR_OXIDE};
 use crate::hw::ids::OXIDE_OUI;
 use crate::hw::pci;
 use crate::migrate::*;
+use crate::util::id::define_id;
 use crate::util::regmap::RegMap;
 use crate::vmm::MemAccessed;
 
@@ -32,10 +32,16 @@ mod requests;
 use bits::*;
 use queue::{CompQueue, QueueId, SubQueue};
 
-/// Static for generating unique NVMe device identifiers across a VM.
-static NEXT_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
-
-type DeviceId = u32;
+define_id! {
+    /// Identifier for which NVMe controller in the VM an operation is happening
+    /// on.
+    ///
+    /// This is mostly useful for NVMe-related DTrace probes, where otherwise a
+    /// queue number or command ID may be ambiguous across distinct NVMe
+    /// controllers in a VM.
+    #[derive(Copy, Clone)]
+    pub struct DeviceId(u32);
+}
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
@@ -58,7 +64,7 @@ pub(crate) fn devq_id(dev: DeviceId, queue: QueueId) -> u64 {
         static_assertions::const_assert!(QueueId::MAX <= u16::MAX);
     }
 
-    ((dev as u64) << 16) | (queue as u64)
+    ((dev.0 as u64) << 16) | (queue as u64)
 }
 
 /// The max number of MSI-X interrupts we support
@@ -536,11 +542,11 @@ impl NvmeCtrl {
     fn transfer_params(&self) -> queue::TransferParams {
         let lba_data_size = 1u64
             << (self.ns_ident.lbaf[(self.ns_ident.flbas & 0xF) as usize]).lbads;
-        let max_data_tranfser_size = match self.ctrl_ident.mdts {
+        let max_data_transfer_size = match self.ctrl_ident.mdts {
             0 => u64::MAX,
             mdts => (self.ctrl.cap.mpsmin_sz() as u64) << mdts,
         };
-        queue::TransferParams { lba_data_size, max_data_tranfser_size }
+        queue::TransferParams { lba_data_size, max_data_transfer_size }
     }
 
     fn update_block_info(&mut self, info: block::DeviceInfo) {
@@ -808,8 +814,8 @@ impl PciNvme {
             device_id: PROPOLIS_NVME_DEV_ID,
             sub_vendor_id: VENDOR_OXIDE,
             sub_device_id: PROPOLIS_NVME_DEV_ID,
-            class: pci::bits::CLASS_STORAGE,
-            subclass: pci::bits::SUBCLASS_STORAGE_NVM,
+            device_class: pci::bits::CLASS_STORAGE,
+            device_subclass: pci::bits::SUBCLASS_STORAGE_NVM,
             prog_if: pci::bits::PROGIF_ENTERPRISE_NVME,
             ..Default::default()
         });
@@ -885,7 +891,7 @@ impl PciNvme {
         let csts = Status(0);
 
         let state = NvmeCtrl {
-            device_id: NEXT_DEVICE_ID.fetch_add(1, Ordering::Relaxed),
+            device_id: DeviceId::new(),
             ctrl: CtrlState { cap, cc, csts, ..Default::default() },
             doorbell_buf: None,
             msix_hdl: None,

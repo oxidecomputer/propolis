@@ -50,4 +50,3 @@ jobs:
       run: cargo build -p propolis-mock-server --verbose
     - name: Test Libraries
       run: cargo test --lib --verbose
-

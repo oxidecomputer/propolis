@@ -297,22 +297,54 @@ impl PhysMap {
 // TODO: reword?
 /// A owned region of mapped guest memory, accessible via [`SubMapping`].
 ///
-/// When dealing with raw pointers, caution must be taken to dereference the
-/// pointer safely:
+/// When emulating hardware in service of a VM we are often working with raw
+/// pointers into guest memory. `Mapping` and [`SubMapping`] together provide
+/// safe (in the Rust sense) operators to read and write guest memory, with
+/// escape hatches in some cases which `Mapping` cannot directly support.
+///
+/// In general, the guest into which this `Mapping` points is assumed to be
+/// running and concurrently reading or writing all of its address space. For
+/// example, when Propolis is performing a read in service of memory-mapped I/O,
+/// we must assume the guest is concurrently writing to the address we read.
+/// Even if the guest is paused, it is possible that guest address ranges have
+/// been sent sent to hardware and are being accessed via DMA. This limits the
+/// interfaces `Mapping` can provide, and adds some complexity to `Mapping`'s
+/// implementation.
+///
+/// # Safety
+///
+/// Rust references of guest memory are inappropriate:
+/// - if we had an immutable reference of guest memory, then guest vCPUs or
+///   host hardware may concurrently write and violate that immutability.
+/// - if we had a mutable reference of guest memory, then guest vCPUs or host
+///   hardware may concurrently write or read and violate the exclusivity of a
+///   mutable reference.
+///
+/// As a result, `(Sub)Mapping` takes care to not return a reference of guest
+/// memory, and to never accidentally form a reference of guest memory - even as
+/// a slice, `&[u8]`.
+///
+/// Guest pointers are subject to the same requirements as any other raw
+/// pointer:
 /// - The pointer must not be null
 /// - The dereferenced pointer must be within bounds of a valid mapping
 ///
-/// Additionally, aliasing rules apply to references:
-/// - References cannot outlive their referents
-/// - Mutable references cannot be aliased
+/// Guest pointers are trivially not null; a `Mapping` will have some non-null
+/// base and does not wrap the address space. Even if a guest's provided
+/// pointer is `0usize`, it is added to a non-null offset and will never be an
+/// actual pointer to zero.
 ///
-/// These issues become especially hairy across mappings, where an
-/// out-of-process entity (i.e., the guest, hardware, etc) may modify memory.
+/// `Mapping` and `SubMapping` are primarily concerned with ensuring guest
+/// accesses are within bounds of the guest mapping, and that the mapping is
+/// valid for the access to be performed (writes are not made into read-only
+/// mappings, for example).
 ///
-/// This structure provides an interface which upholds the following conditions:
+/// Considering these requirements, this structure provides an interface which
+/// upholds the following conditions:
+/// - An accessed memory region is fully contained in the mapping.
 /// - Reads to a memory region are only permitted if the mapping is readable.
 /// - Writes to a memory region are only permitted if the mapping is writable.
-/// - References to memory are not exposed from the structure.
+/// - References to memory are neither made transiently nor exposed.
 
 #[derive(Debug)]
 pub(crate) struct Mapping {
@@ -335,7 +367,7 @@ impl Mapping {
         let mmap_prot = prot.intersection(Prot::RW);
 
         // Safety:
-        // With a NULL `addr, the OS will pick a mapping location which does not
+        // With a NULL `addr`, the OS will pick a mapping location which does not
         // conflict with other resources.  While the VmmFile is not something
         // that should be truncated, it is the responsibility of the caller to
         // ensure that the underlying resources are not destroyed prior to
@@ -378,7 +410,7 @@ unsafe impl Sync for Mapping {}
 // not reference them directly as a field.
 #[allow(dead_code)]
 enum Backing<'a> {
-    Base(Arc<Mapping>),
+    Base(&'a Mapping),
     Sub(&'a SubMapping<'a>),
 }
 
@@ -386,6 +418,10 @@ enum Backing<'a> {
 ///
 /// Provides interfaces for acting on memory, but does not own the
 /// underlying memory region.
+///
+/// As this is simply a borrow of a `Mapping`, `SubMapping` is subject to the
+/// same safety requirements as `Mapping`; everything in the doc comment there
+/// applies here as well.
 #[derive(Debug)]
 pub struct SubMapping<'a> {
     // The backing resource must remain held, even though we never reference it
@@ -401,12 +437,9 @@ pub struct SubMapping<'a> {
 impl SubMapping<'_> {
     /// Create `SubMapping` using the entire region offered by an underlying
     /// `Mapping` object.
-    fn new_base<'a>(
-        _mem: &'a MemCtx,
-        base: &'_ Arc<Mapping>,
-    ) -> SubMapping<'a> {
+    fn new_base<'a>(base: &'a Mapping) -> SubMapping<'a> {
         SubMapping {
-            backing: Backing::Base(base.clone()),
+            backing: Backing::Base(base),
 
             ptr: base.ptr,
             len: base.len,
@@ -427,7 +460,7 @@ impl SubMapping<'_> {
     }
 
     #[cfg(test)]
-    fn new_base_test<'a>(base: Arc<Mapping>) -> SubMapping<'a> {
+    fn new_base_test(base: &Mapping) -> SubMapping<'_> {
         let ptr = base.ptr;
         let len = base.len;
         let prot = base.prot;
@@ -754,6 +787,44 @@ pub trait MappingExt {
     fn pwritev(&self, fd: RawFd, offset: i64) -> Result<usize>;
 }
 
+// Gross hack alert: since the mappings below are memory regions backed by
+// segvmm_ops, `zvol_{read,write}` and similar will end up contending on
+// `svmd->svmd_lock`. Instead, as long as the I/O is small enough we'll tolerate
+// it, copy from guest memory to Propolis heap. The segment backing Propolis'
+// heap has an `as_page{,un}lock` impl that avoids the more
+// expensive/contentious `as_fault()` fallback.
+//
+// This is an optimization until stlouis#871 can get things sorted, at
+// which point it should be strictly worse than directly using the
+// requested mappings.
+//
+// 1 MiB is an arbitrary-ish choice: `propolis-server` and `propolis-standalone`
+// set NVMe MDTS to "8", so the largest I/Os from NVMe will be
+// `2**8 * 4096 == 1048576 bytes == 1 MiB`. Beyond this, fall back to using
+// iovecs directly, potentially at increased OS overhead.
+//
+// The amount of memory used for temporary buffers is given by the number of
+// worker threads for all file-backed disks, times this threshold. It works out
+// to up to 8 MiB (8 worker threads) of buffers per disk by default as of
+// writing.
+const MAPPING_IO_LIMIT_BYTES: usize = crate::common::MB;
+
+/// Compute the number of bytes that would be required to hold these mappings
+/// sequentially.
+///
+/// Ranges covered by multiple mappings are counted repeatedly.
+fn total_mapping_size(mappings: &[SubMapping<'_>]) -> Result<usize> {
+    mappings
+        .iter()
+        .try_fold(0usize, |total, mapping| total.checked_add(mapping.len))
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidInput,
+                "Total mapping larger than a `usize`",
+            )
+        })
+}
+
 impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
     fn preadv(&self, fd: RawFd, offset: i64) -> Result<usize> {
         if !self
@@ -767,23 +838,70 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
             ));
         }
 
-        let iov = self
-            .as_ref()
-            .iter()
-            .map(|mapping| iovec {
-                iov_base: mapping.ptr.as_ptr() as *mut libc::c_void,
-                iov_len: mapping.len,
-            })
-            .collect::<Vec<_>>();
+        let total_capacity = total_mapping_size(self.as_ref())?;
 
-        let read = unsafe {
-            libc::preadv(fd, iov.as_ptr(), iov.len() as libc::c_int, offset)
-        };
-        if read == -1 {
-            return Err(Error::last_os_error());
+        // Gross hack: see the comment on `MAPPING_IO_LIMIT_BYTES`.
+        if total_capacity <= MAPPING_IO_LIMIT_BYTES {
+            // If we're motivated to avoid the zero-fill via
+            // `Layout::with_size_align` + `GlobalAlloc::alloc`, we should
+            // probably avoid this gross hack entirely (see comment on
+            // MAPPING_IO_LIMIT_BYTES).
+            let mut buf = vec![0; total_capacity];
+
+            let iov = [iovec {
+                iov_base: buf.as_mut_ptr() as *mut libc::c_void,
+                iov_len: buf.len(),
+            }];
+
+            let res = unsafe {
+                libc::preadv(fd, iov.as_ptr(), iov.len() as libc::c_int, offset)
+            };
+            if res == -1 {
+                return Err(Error::last_os_error());
+            }
+            let read = res as usize;
+
+            // copy `read` bytes back into the iovecs and return
+            let mut remaining = &buf[..read];
+            for mapping in self.as_ref().iter() {
+                let to_copy = std::cmp::min(remaining.len(), mapping.len);
+
+                let (curr_buf, rest) = remaining.split_at(to_copy);
+
+                mapping.write_bytes(curr_buf)?;
+
+                remaining = rest;
+
+                if remaining.len() == 0 {
+                    // Either we're at the last iov and we're finished copying
+                    // back into the guest, or `preadv` did a short read.
+                    break;
+                }
+            }
+
+            // We should never read more than the guest mappings could hold.
+            assert_eq!(remaining.len(), 0);
+
+            Ok(read)
+        } else {
+            let iov = self
+                .as_ref()
+                .iter()
+                .map(|mapping| iovec {
+                    iov_base: mapping.ptr.as_ptr() as *mut libc::c_void,
+                    iov_len: mapping.len,
+                })
+                .collect::<Vec<_>>();
+
+            let read = unsafe {
+                libc::preadv(fd, iov.as_ptr(), iov.len() as libc::c_int, offset)
+            };
+            if read == -1 {
+                return Err(Error::last_os_error());
+            }
+            let read: usize = read.try_into().expect("read is positive");
+            Ok(read)
         }
-
-        Ok(read as usize)
     }
 
     fn pwritev(&self, fd: RawFd, offset: i64) -> Result<usize> {
@@ -798,18 +916,61 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
             ));
         }
 
-        let iov = self
-            .as_ref()
-            .iter()
-            .map(|mapping| iovec {
-                iov_base: mapping.ptr.as_ptr() as *mut libc::c_void,
-                iov_len: mapping.len,
-            })
-            .collect::<Vec<_>>();
+        let total_capacity = total_mapping_size(self.as_ref())?;
 
-        let written = unsafe {
-            libc::pwritev(fd, iov.as_ptr(), iov.len() as libc::c_int, offset)
+        // Gross hack: see the comment on `MAPPING_IO_LIMIT_BYTES`.
+        let written = if total_capacity <= MAPPING_IO_LIMIT_BYTES {
+            // If we're motivated to avoid the zero-fill via
+            // `Layout::with_size_align` + `GlobalAlloc::alloc`, we should
+            // probably avoid this gross hack entirely (see comment on
+            // MAPPING_IO_LIMIT_BYTES).
+            let mut buf = vec![0; total_capacity];
+
+            let mut remaining = buf.as_mut_slice();
+            for mapping in self.as_ref().iter() {
+                // The original `buf` is at least as large as all mappings
+                // combined, so `remaining` is at least as large as this and all
+                // remaining mappings, so we can slice up to `mapping.len`.
+                let (curr_buf, rest) = remaining.split_at_mut(mapping.len);
+
+                mapping.read_bytes(curr_buf)?;
+
+                remaining = rest;
+            }
+
+            let iovs = [iovec {
+                iov_base: buf.as_mut_ptr() as *mut libc::c_void,
+                iov_len: buf.len(),
+            }];
+
+            unsafe {
+                libc::pwritev(
+                    fd,
+                    iovs.as_ptr(),
+                    iovs.len() as libc::c_int,
+                    offset,
+                )
+            }
+        } else {
+            let iovs = self
+                .as_ref()
+                .iter()
+                .map(|mapping| iovec {
+                    iov_base: mapping.ptr.as_ptr() as *mut libc::c_void,
+                    iov_len: mapping.len,
+                })
+                .collect::<Vec<_>>();
+
+            unsafe {
+                libc::pwritev(
+                    fd,
+                    iovs.as_ptr(),
+                    iovs.len() as libc::c_int,
+                    offset,
+                )
+            }
         };
+
         if written == -1 {
             return Err(Error::last_os_error());
         }
@@ -972,7 +1133,7 @@ impl MemCtx {
                     format!("memory region {} not found", name),
                 )
             })?;
-        Ok(SubMapping::new_base(self, ent).constrain_access(Prot::WRITE))
+        Ok(SubMapping::new_base(ent).constrain_access(Prot::WRITE))
     }
 
     /// Like `writable_region`, but accesses the underlying memory segment
@@ -1018,12 +1179,12 @@ impl MemCtx {
                 MapKind::MmioReserve => None,
             }?;
 
-            let guest_map = SubMapping::new_base(self, &seg.map_guest)
+            let guest_map = SubMapping::new_base(&seg.map_guest)
                 .constrain_access(prot)
                 .constrain_region(req_offset, len)
                 .expect("mapping offset should be valid");
 
-            let seg_map = SubMapping::new_base(self, &seg.map_seg)
+            let seg_map = SubMapping::new_base(&seg.map_seg)
                 .constrain_region(req_offset, len)
                 .expect("mapping offset should be valid");
 
@@ -1193,7 +1354,7 @@ pub mod test {
     #[test]
     fn mapping_denies_read_beyond_end() {
         let (_hdl, base) = test_setup(Prot::READ);
-        let mapping = SubMapping::new_base_test(base);
+        let mapping = SubMapping::new_base_test(&base);
 
         assert!(mapping.read::<[u8; TEST_LEN + 1]>().is_err());
     }
@@ -1201,7 +1362,7 @@ pub mod test {
     #[test]
     fn mapping_shortens_read_bytes_beyond_end() {
         let (_hdl, base) = test_setup(Prot::READ);
-        let mapping = SubMapping::new_base_test(base);
+        let mapping = SubMapping::new_base_test(&base);
 
         let mut buf: [u8; TEST_LEN + 1] = [0; TEST_LEN + 1];
         assert_eq!(TEST_LEN, mapping.read_bytes(&mut buf).unwrap());
@@ -1210,7 +1371,7 @@ pub mod test {
     #[test]
     fn mapping_shortens_write_bytes_beyond_end() {
         let (_hdl, base) = test_setup(Prot::RW);
-        let mapping = SubMapping::new_base_test(base);
+        let mapping = SubMapping::new_base_test(&base);
 
         let mut buf: [u8; TEST_LEN + 1] = [0; TEST_LEN + 1];
         assert_eq!(TEST_LEN, mapping.write_bytes(&mut buf).unwrap());
@@ -1220,7 +1381,7 @@ pub mod test {
     fn mapping_create_empty() {
         let (_hdl, base) = test_setup(Prot::READ);
         let mapping =
-            SubMapping::new_base_test(base).constrain_region(0, 0).unwrap();
+            SubMapping::new_base_test(&base).constrain_region(0, 0).unwrap();
 
         assert_eq!(0, mapping.len());
         assert!(mapping.is_empty());
@@ -1229,7 +1390,7 @@ pub mod test {
     #[test]
     fn mapping_valid_subregions() {
         let (_hdl, base) = test_setup(Prot::READ);
-        let mapping = SubMapping::new_base_test(base);
+        let mapping = SubMapping::new_base_test(&base);
 
         assert!(mapping.subregion(0, 0).is_some());
         assert!(mapping.subregion(0, TEST_LEN / 2).is_some());
@@ -1239,7 +1400,7 @@ pub mod test {
     #[test]
     fn mapping_invalid_subregions() {
         let (_hdl, base) = test_setup(Prot::READ);
-        let mapping = SubMapping::new_base_test(base);
+        let mapping = SubMapping::new_base_test(&base);
 
         // Beyond the end of the mapping.
         assert!(mapping.subregion(TEST_LEN + 1, 0).is_none());
@@ -1253,7 +1414,7 @@ pub mod test {
     #[test]
     fn subregion_protection() {
         let (_hdl, base) = test_setup(Prot::RW);
-        let mapping = SubMapping::new_base_test(base);
+        let mapping = SubMapping::new_base_test(&base);
 
         // Main region has full access
         let mut buf = [0u8];

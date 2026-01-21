@@ -73,7 +73,8 @@ impl block::DeviceQueue for NvmeBlockQueue {
     /// the underlying block backend
     fn next_req(&self) -> Option<(Request, Self::Token, Option<Instant>)> {
         let sq = &self.sq;
-        let mem = self.acc_mem.access()?;
+        let mem = self.acc_mem.access_borrow()?;
+        let mem = mem.view();
         let params = self.sq.params();
 
         while let Some((sub, permit, idx)) = sq.pop() {
@@ -95,7 +96,7 @@ impl block::DeviceQueue for NvmeBlockQueue {
                     let off = params.lba_data_size * cmd.slba;
                     let size = params.lba_data_size * (cmd.nlb as u64);
 
-                    if size > params.max_data_tranfser_size {
+                    if size > params.max_data_transfer_size {
                         permit.complete(
                             Completion::generic_err(bits::STS_INVAL_FIELD)
                                 .dnr(),
@@ -120,7 +121,7 @@ impl block::DeviceQueue for NvmeBlockQueue {
                     let off = params.lba_data_size * cmd.slba;
                     let size = params.lba_data_size * (cmd.nlb as u64);
 
-                    if size > params.max_data_tranfser_size {
+                    if size > params.max_data_transfer_size {
                         permit.complete(
                             Completion::generic_err(bits::STS_INVAL_FIELD)
                                 .dnr(),

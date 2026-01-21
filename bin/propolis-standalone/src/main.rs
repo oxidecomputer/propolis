@@ -286,7 +286,36 @@ impl Instance {
         let state = &mut *state_guard;
         let machine = state.machine.as_ref().unwrap();
 
-        for vcpu in machine.vcpus.iter().map(Arc::clone) {
+        let bind_cpus = match this.0.config.main.cpu_binding {
+            Some(config::BindingStrategy::UpperHalf) => {
+                let total_cpus =
+                    pbind::online_cpus().expect("can get processor count");
+                let vcpu_count: i32 = machine
+                    .vcpus
+                    .len()
+                    .try_into()
+                    .expect("vCPU count <= MAXCPU < i32::MAX");
+
+                let first_bound_cpu = total_cpus - vcpu_count;
+                let bind_cpus =
+                    (first_bound_cpu..total_cpus).map(Some).collect();
+                slog::info!(
+                    &log,
+                    "Explicit CPU binding requested";
+                    "last_cpu" => total_cpus,
+                    "first_cpu" => first_bound_cpu,
+                    "vcpu_count" => vcpu_count,
+                );
+                bind_cpus
+            }
+            Some(config::BindingStrategy::Any) | None => {
+                vec![None; machine.vcpus.len()]
+            }
+        };
+
+        for (vcpu, bind_cpu) in
+            machine.vcpus.iter().map(Arc::clone).zip(bind_cpus.into_iter())
+        {
             let (task, ctrl) =
                 propolis::tasks::TaskHdl::new_held(Some(vcpu.barrier_fn()));
 
@@ -295,6 +324,9 @@ impl Instance {
             let _ = std::thread::Builder::new()
                 .name(format!("vcpu-{}", vcpu.id))
                 .spawn(move || {
+                    if let Some(bind_cpu) = bind_cpu {
+                        pbind::bind_lwp(bind_cpu).expect("can bind vcpu");
+                    }
                     Instance::vcpu_loop(inner, vcpu.as_ref(), &task, task_log)
                 })
                 .unwrap();
@@ -1230,8 +1262,6 @@ fn setup_instance(
 
                     let viona = hw::virtio::PciVirtioViona::new(
                         vnic_name,
-                        0x0800.try_into().unwrap(),
-                        0x0100.try_into().unwrap(),
                         &hdl,
                         viona_params,
                     )?;

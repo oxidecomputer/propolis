@@ -362,12 +362,12 @@ impl<T: AccessedResource> Tree<T> {
 
     /// Create a [Tree] returning the root node
     fn new(res_root: Option<T::Root>) -> Arc<Node<T>> {
-        let res_leaf = res_root.as_ref().map(T::derive);
         let tree = Self::new_empty(res_root);
-        let node = Node::new_root(tree.clone());
-        node.0.lock().unwrap().res_leaf = res_leaf;
 
+        let node = Node::new_root(tree.clone());
         let mut guard = tree.lock().unwrap();
+        let res_leaf = guard.res_root.as_ref().map(T::derive);
+        node.0.lock().unwrap().res_leaf = res_leaf;
         let root_key = NodeKey::from(&node);
         guard.root_key = Some(root_key);
         guard.nodes.insert(root_key, TreeNode::new_root(Arc::downgrade(&node)));
@@ -423,14 +423,17 @@ impl<T: AccessedResource> Node<T> {
     /// This is purely a helper function to make lifetimes clearer for
     /// [`Self::lock_tree()`]
     #[allow(clippy::type_complexity)]
-    fn try_lock_tree<'a>(
-        &'a self,
-        tree_ref: &'a TreeBackref<T>,
-    ) -> Result<MutexGuard<'a, Tree<T>>, TreeBackref<T>> {
+    fn try_lock_tree<'node, 'guard>(
+        &'node self,
+        tree_ref: &'guard TreeBackref<T>,
+    ) -> Result<
+        (MutexGuard<'guard, Tree<T>>, MutexGuard<'node, NodeEntry<T>>),
+        TreeBackref<T>,
+    > {
         let guard = tree_ref.lock().unwrap();
         let node_guard = self.0.lock().unwrap();
         if Arc::ptr_eq(tree_ref, &node_guard.tree) {
-            Ok(guard)
+            Ok((guard, node_guard))
         } else {
             Err(node_guard.tree.clone())
         }
@@ -438,39 +441,64 @@ impl<T: AccessedResource> Node<T> {
 
     /// Safely acquire the lock to this entry, as well as the containing tree,
     /// respecting the ordering requirements.
-    fn lock_tree<R>(&self, f: impl FnOnce(MutexGuard<'_, Tree<T>>) -> R) -> R {
+    fn lock_tree<'node, F, R>(&'node self, f: F) -> R
+    where
+        F: for<'guard> FnOnce(
+            MutexGuard<'guard, Tree<T>>,
+            MutexGuard<'node, NodeEntry<T>>,
+        ) -> R,
+    {
         let mut tree = self.0.lock().unwrap().tree.clone();
-        let guard = loop {
+        let (guard, self_guard) = loop {
             let new_tree = match self.try_lock_tree(&tree) {
-                Ok(tg) => break tg,
+                Ok(guards) => break guards,
                 Err(nt) => nt,
             };
             let _ = std::mem::replace(&mut tree, new_tree);
         };
-        f(guard)
+        f(guard, self_guard)
     }
 
     fn new_root(tree: Arc<Mutex<Tree<T>>>) -> Arc<Node<T>> {
         Arc::new(Node(Mutex::new(NodeEntry { tree, res_leaf: None })))
     }
     fn new_child(self: &Arc<Node<T>>, name: Option<String>) -> Arc<Node<T>> {
-        self.lock_tree(|mut guard| guard.add_child(self.into(), name))
+        self.lock_tree(|mut guard, _| guard.add_child(self.into(), name))
     }
 
+    /// Acquire a reference to the accessed resource, if permitted.
+    ///
+    /// TODO: The guarded resource can be replaced while this guard is held.
+    /// There is no synchronization between a potential disabling of access and
+    /// outstanding guards that would be forbidden by that disablement.
     fn guard(&self) -> Option<Guard<'_, T>> {
+        self.guard_borrow().map(|guard| {
+            let leaf_ref = guard
+                .res_leaf
+                .clone()
+                .expect("guard_borrow() only returns Some if res_leaf is Some");
+            Guard { inner: leaf_ref, _pd: PhantomData }
+        })
+    }
+
+    /// Lock this node's reference to the resource, if permitted.
+    ///
+    /// Take care: this returns the mutex guard, keeping this node locked.
+    /// Concurrent accesses to this node will block, and attempts to update the
+    /// resource in this tree will be blocked.
+    fn guard_borrow(&self) -> Option<MutexGuard<'_, NodeEntry<T>>> {
         let local = self.0.lock().unwrap();
-        if let Some(leaf) = local.res_leaf.as_ref() {
-            Some(Guard { inner: leaf.clone(), _pd: PhantomData })
+        if let Some(_) = local.res_leaf.as_ref() {
+            Some(local)
         } else {
             drop(local);
             // Attempt to (re)derive leaf resource from root
-            self.lock_tree(|tree| {
+            self.lock_tree(|tree, mut local| {
                 if let Some(root) = tree.res_root.as_ref() {
-                    let mut local = self.0.lock().unwrap();
                     let leaf = T::derive(root);
                     local.res_leaf = Some(leaf.clone());
 
-                    Some(Guard { inner: leaf, _pd: PhantomData })
+                    Some(local)
                 } else {
                     None
                 }
@@ -480,9 +508,9 @@ impl<T: AccessedResource> Node<T> {
 
     fn drop_from_tree(self: &mut Arc<Node<T>>) {
         let key = NodeKey::from(&*self);
-        self.lock_tree(|mut guard| {
+        self.lock_tree(|mut guard, mut local| {
             // drop any lingering access to the resource immediately
-            let _ = self.0.lock().unwrap().res_leaf.take();
+            let _ = local.res_leaf.take();
 
             // Since we hold the Tree lock (thus eliminating the chance of any
             // racing adopt/orphan activity to be manipulating the refcount on
@@ -505,6 +533,21 @@ impl<T: AccessedResource> std::ops::Deref for Guard<'_, T> {
     type Target = T::Target;
     fn deref(&self) -> &Self::Target {
         T::deref(&self.inner)
+    }
+}
+
+pub struct LockedView<'node, T: AccessedResource> {
+    guard: MutexGuard<'node, NodeEntry<T>>,
+}
+
+impl<'node, T: AccessedResource> LockedView<'node, T> {
+    pub fn view(&self) -> &T::Target {
+        let leaf = self
+            .guard
+            .res_leaf
+            .as_ref()
+            .expect("LockedView is returned only when res_leaf is Some()");
+        T::deref(&leaf)
     }
 }
 
@@ -538,8 +581,10 @@ impl<T: AccessedResource> Accessor<T> {
 
         assert_ne!(parent_key, child_key, "cannot adopt self");
 
-        self.0.lock_tree(|mut parent_guard| {
-            child.0.lock_tree(|mut child_guard| {
+        self.0.lock_tree(|mut parent_guard, node_guard| {
+            drop(node_guard);
+            child.0.lock_tree(|mut child_guard, node_guard| {
+                drop(node_guard);
                 if !child_guard.node_is_root(&child.0) {
                     // Drop all mutex guards prior to panic in order to allow
                     // unwinder to do its job, rather than getting tripped up by
@@ -564,7 +609,8 @@ impl<T: AccessedResource> Accessor<T> {
     ///
     /// If this is called on a non-root node.
     pub fn remove_resource(&self) -> Option<T::Root> {
-        self.0.lock_tree(|mut guard| {
+        self.0.lock_tree(|mut guard, node_guard| {
+            drop(node_guard);
             if !guard.node_is_root(&self.0) {
                 drop(guard);
                 panic!("removal of root resource only allowed at root node");
@@ -578,18 +624,42 @@ impl<T: AccessedResource> Accessor<T> {
     ///
     /// Will return [None] if any ancestor node disables access, or if the node
     /// is not attached to a hierarchy containing a valid resource.
+    ///
+    /// TODO: an outstanding `Guard` does not synchronize with changes to the
+    /// underlying resource; the resource could be changed, the tree adopted,
+    /// access disallowed, etc, but an existing `Guard` will still reference the
+    /// resource as it was at the point the access was allowed.
     pub fn access(&self) -> Option<Guard<'_, T>> {
         self.0.guard()
     }
 
+    /// Attempt to get a reference to the underlying resource.
+    ///
+    /// Will return [None] if any ancestor node disables access, or if the node
+    /// is not attached to a hierarchy containing a valid resource.
+    ///
+    /// Unlike [`Accesor::access()`], this returns a guard on the node's Mutex.
+    /// This will block other calls to `access()` or `access_borrow()`, as well
+    /// as attempts to replace or modify the tree's guarded resource. Prefer
+    /// frequently refreshing borrows with calls to `access_borrow()` to holding
+    /// a `LockedView` for substantial durations.
+    pub fn access_borrow(&self) -> Option<LockedView<'_, T>> {
+        let guard = self.0.guard_borrow()?;
+        if guard.res_leaf.is_some() {
+            Some(LockedView { guard })
+        } else {
+            None
+        }
+    }
+
     /// How many nodes exist in this Accessor hierarchy
     pub fn node_count(&self) -> usize {
-        self.0.lock_tree(|guard| guard.node_count())
+        self.0.lock_tree(|guard, _| guard.node_count())
     }
 
     /// Print the hierarchy that this node is a member of
     pub fn print(&self, highlight_self: bool) {
-        self.0.lock_tree(|tree| {
+        self.0.lock_tree(|tree, _| {
             tree.print(print_basic(
                 highlight_self.then_some(NodeKey::from(&self.0)),
             ));
