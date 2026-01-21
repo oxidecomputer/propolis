@@ -30,10 +30,10 @@ use propolis_api_types::instance_spec::{
             SerialPortNumber, VirtioDisk, VirtioNic,
         },
     },
-    v0::{ComponentV0, InstanceSpecV0},
     PciPath, SpecKey,
 };
-use propolis_api_types::{InstanceSpec, SmbiosType1Input};
+use propolis_api_types::instance_spec::{InstanceSpec, SmbiosType1Input};
+use propolis_api_types_versions::v1;
 use thiserror::Error;
 
 #[cfg(feature = "failure-injection")]
@@ -53,7 +53,8 @@ pub(crate) mod builder;
 impl From<Spec> for InstanceSpec {
     fn from(val: Spec) -> Self {
         let smbios = val.smbios_type1_input.clone();
-        let InstanceSpecV0 { board, components } = InstanceSpecV0::from(val);
+        let v1::instance_spec::InstanceSpec { board, components } =
+            v1::instance_spec::InstanceSpec::from(val);
         InstanceSpec { board, components, smbios }
     }
 }
@@ -64,7 +65,7 @@ impl TryFrom<InstanceSpec> for Spec {
 
     fn try_from(value: InstanceSpec) -> Result<Self, Self::Error> {
         let InstanceSpec { board, components, smbios } = value;
-        let v0 = InstanceSpecV0 { board, components };
+        let v0 = v1::instance_spec::InstanceSpec { board, components };
         let mut spec: Spec = v0.try_into()?;
         spec.smbios_type1_input = smbios;
         Ok(spec)
@@ -109,8 +110,8 @@ pub(crate) struct Spec {
     // backwards compatibility, but that isn't currently possible.
     //
     // One way to fix this would be to remove the `Builder` and directly
-    // construct `Spec` from a function that takes an `InstanceSpecV0` and the
-    // VM UUID. This would replace `impl TryFrom<InstanceSpecV0> for Spec`, and
+    // construct `Spec` from a function that takes an `v1::instance_spec::InstanceSpec` and the
+    // VM UUID. This would replace `impl TryFrom<v1::instance_spec::InstanceSpec> for Spec`, and
     // would allow removing the `Default` derive on `Spec`, and the `Option`
     // from the `smbios_type1_input` field.
     pub smbios_type1_input: Option<SmbiosType1Input>,
@@ -202,7 +203,7 @@ impl StorageDevice {
     }
 }
 
-impl From<StorageDevice> for ComponentV0 {
+impl From<StorageDevice> for v1::instance_spec::Component {
     fn from(value: StorageDevice) -> Self {
         match value {
             StorageDevice::Virtio(d) => Self::VirtioDisk(d),
@@ -211,13 +212,15 @@ impl From<StorageDevice> for ComponentV0 {
     }
 }
 
-impl TryFrom<ComponentV0> for StorageDevice {
+impl TryFrom<v1::instance_spec::Component> for StorageDevice {
     type Error = ComponentTypeMismatch;
 
-    fn try_from(value: ComponentV0) -> Result<Self, Self::Error> {
+    fn try_from(
+        value: v1::instance_spec::Component,
+    ) -> Result<Self, Self::Error> {
         match value {
-            ComponentV0::VirtioDisk(d) => Ok(Self::Virtio(d)),
-            ComponentV0::NvmeDisk(d) => Ok(Self::Nvme(d)),
+            v1::instance_spec::Component::VirtioDisk(d) => Ok(Self::Virtio(d)),
+            v1::instance_spec::Component::NvmeDisk(d) => Ok(Self::Nvme(d)),
             _ => Err(ComponentTypeMismatch),
         }
     }
@@ -249,7 +252,7 @@ impl StorageBackend {
     }
 }
 
-impl From<StorageBackend> for ComponentV0 {
+impl From<StorageBackend> for v1::instance_spec::Component {
     fn from(value: StorageBackend) -> Self {
         match value {
             StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),
@@ -259,14 +262,22 @@ impl From<StorageBackend> for ComponentV0 {
     }
 }
 
-impl TryFrom<ComponentV0> for StorageBackend {
+impl TryFrom<v1::instance_spec::Component> for StorageBackend {
     type Error = ComponentTypeMismatch;
 
-    fn try_from(value: ComponentV0) -> Result<Self, Self::Error> {
+    fn try_from(
+        value: v1::instance_spec::Component,
+    ) -> Result<Self, Self::Error> {
         match value {
-            ComponentV0::CrucibleStorageBackend(be) => Ok(Self::Crucible(be)),
-            ComponentV0::FileStorageBackend(be) => Ok(Self::File(be)),
-            ComponentV0::BlobStorageBackend(be) => Ok(Self::Blob(be)),
+            v1::instance_spec::Component::CrucibleStorageBackend(be) => {
+                Ok(Self::Crucible(be))
+            }
+            v1::instance_spec::Component::FileStorageBackend(be) => {
+                Ok(Self::File(be))
+            }
+            v1::instance_spec::Component::BlobStorageBackend(be) => {
+                Ok(Self::Blob(be))
+            }
             _ => Err(ComponentTypeMismatch),
         }
     }
