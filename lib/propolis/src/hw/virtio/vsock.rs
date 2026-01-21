@@ -1,4 +1,5 @@
 use lazy_static::lazy_static;
+use slog::Logger;
 use std::sync::Arc;
 
 use crate::accessors::MemAccessor;
@@ -136,8 +137,10 @@ impl VsockVq {
     /// to return an iterator over GuestRegions to avoid copying packet data.
     pub fn recv_packet(&self) -> Option<Result<VsockPacket, VsockPacketError>> {
         let mem = self.acc_mem.access()?;
-        let vq =
-            self.queues.get(VSOCK_TX_QUEUE as usize).expect("vsock has tx queue");
+        let vq = self
+            .queues
+            .get(VSOCK_TX_QUEUE as usize)
+            .expect("vsock has tx queue");
 
         let mut chain = Chain::with_capacity(10);
         let Some((_idx, _clen)) = vq.pop_avail(&mut chain, &mem) else {
@@ -159,8 +162,10 @@ impl VsockVq {
 
     pub fn send_packet(&self, packet: &VsockPacket) -> Option<usize> {
         let mem = self.acc_mem.access()?;
-        let vq =
-            self.queues.get(VSOCK_RX_QUEUE as usize).expect("vsock has rx queue");
+        let vq = self
+            .queues
+            .get(VSOCK_RX_QUEUE as usize)
+            .expect("vsock has rx queue");
 
         let VsockPacket { header, data } = packet;
         let mut data_offset = 0;
@@ -233,7 +238,7 @@ pub struct PciVirtioSock {
 }
 
 impl PciVirtioSock {
-    pub fn new(queue_size: u16, cid: u32) -> Arc<Self> {
+    pub fn new(queue_size: u16, cid: u32, log: Logger) -> Arc<Self> {
         let queues = VirtQueues::new(&[
             // VSOCK_RX_QUEUE
             VqSize::new(queue_size),
@@ -257,7 +262,7 @@ impl PciVirtioSock {
             virtio_state.queues.iter().map(Clone::clone).collect(),
             pci_state.acc_mem.child(Some("vsock rx queue".to_string())),
         );
-        let backend = VsockProxy::new(cid, vvq);
+        let backend = VsockProxy::new(cid, vvq, log);
 
         Arc::new(Self { cid, backend, virtio_state, pci_state })
     }

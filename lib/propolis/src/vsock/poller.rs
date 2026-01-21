@@ -6,6 +6,8 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
+use slog::{error, Logger};
+
 use crate::hw::virtio::vsock::VsockVq;
 use crate::hw::virtio::vsock::VSOCK_RX_QUEUE;
 use crate::hw::virtio::vsock::VSOCK_TX_QUEUE;
@@ -92,6 +94,7 @@ enum RxEvent {
 }
 
 pub struct VsockPoller {
+    log: Logger,
     guest_cid: u32,
     port_fd: Arc<OwnedFd>,
     queues: VsockVq,
@@ -107,7 +110,11 @@ impl VsockPoller {
     ///
     /// This poller is responsible for driving virtio-socket connections between
     /// the guest VM and host sockets.
-    pub fn new(cid: u32, queues: VsockVq) -> std::io::Result<Self> {
+    pub fn new(
+        cid: u32,
+        queues: VsockVq,
+        log: Logger,
+    ) -> std::io::Result<Self> {
         // XXX: set cloexec
         let port_fd = unsafe { libc::port_create() };
         if port_fd == -1 {
@@ -115,6 +122,7 @@ impl VsockPoller {
         }
 
         Ok(Self {
+            log,
             guest_cid: cid,
             port_fd: Arc::new(unsafe { OwnedFd::from_raw_fd(port_fd) }),
             queues,
@@ -148,13 +156,23 @@ impl VsockPoller {
             return;
         }
 
-        let mut conn = VsockProxyConn::new();
-        conn.update_peer_credit(
-            packet.header.buf_alloc(),
-            packet.header.fwd_cnt(),
-        );
-        self.connections.insert(key, conn);
-        self.rx.push_back(RxEvent::NewConnection(key));
+        match VsockProxyConn::new() {
+            Ok(mut conn) => {
+                conn.update_peer_credit(
+                    packet.header.buf_alloc(),
+                    packet.header.fwd_cnt(),
+                );
+                self.connections.insert(key, conn);
+                self.rx.push_back(RxEvent::NewConnection(key));
+            }
+            Err(e) => {
+                self.rx.push_back(RxEvent::Reset {
+                    src_port: key.host_port,
+                    dst_port: key.guest_port,
+                });
+                error!(self.log, "{e}");
+            }
+        };
     }
 
     /// Handle a SHUTDOWN packet - begin graceful close.

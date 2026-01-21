@@ -4,6 +4,9 @@ use std::num::Wrapping;
 use std::os::fd::AsRawFd;
 use std::os::fd::RawFd;
 use std::thread::JoinHandle;
+use std::time::Duration;
+
+use slog::Logger;
 
 use crate::hw::virtio::vsock::VsockVq;
 use crate::vsock::buffer::VsockBuf;
@@ -50,6 +53,14 @@ impl ConnKey {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ProxyConnError {
+    #[error("Failed to connect to backend: {0}")]
+    Socket(#[source] std::io::Error),
+    #[error("Failed to put socket into nonblocking mode: {0}")]
+    NonBlocking(#[source] std::io::Error),
+}
+
 /// An established guest<=>host connection
 #[derive(Debug)]
 pub(crate) struct VsockProxyConn {
@@ -71,11 +82,17 @@ pub(crate) struct VsockProxyConn {
 }
 
 impl VsockProxyConn {
-    pub fn new() -> Self {
-        let socket = TcpStream::connect("127.0.0.1:3000").unwrap();
-        socket.set_nonblocking(true).expect("failed to set socket nonblocking");
+    pub fn new() -> Result<Self, ProxyConnError> {
+        // XXX connect_timeout - we are not async and potentially blocking the
+        // event loop?
+        let socket = TcpStream::connect_timeout(
+            &"127.0.0.1:3000".parse().unwrap(),
+            Duration::from_millis(100),
+        )
+        .map_err(ProxyConnError::Socket)?;
+        socket.set_nonblocking(true).map_err(ProxyConnError::NonBlocking)?;
 
-        Self {
+        Ok(Self {
             socket,
             state: ConnState::Established,
             vbuf: VsockBuf::new(NonZeroUsize::new(CONN_TX_BUF_SIZE).unwrap()),
@@ -84,7 +101,7 @@ impl VsockProxyConn {
             tx_cnt: Wrapping(0),
             peer_buf_alloc: 0,
             peer_fwd_cnt: Wrapping(0),
-        }
+        })
     }
 
     pub fn has_buffered_data(&self) -> bool {
@@ -196,8 +213,8 @@ pub struct VsockProxy {
 }
 
 impl VsockProxy {
-    pub fn new(cid: u32, queues: VsockVq) -> Self {
-        let evloop = VsockPoller::new(cid, queues).unwrap();
+    pub fn new(cid: u32, queues: VsockVq, log: Logger) -> Self {
+        let evloop = VsockPoller::new(cid, queues, log).unwrap();
         let poller = evloop.notify_handle();
         let jh = evloop.run();
 
