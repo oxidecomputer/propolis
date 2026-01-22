@@ -55,7 +55,9 @@ impl ConnKey {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyConnError {
-    #[error("Failed to connect to backend: {0}")]
+    // XXX we want to expand this to specify *which* backend once we support
+    // multiple
+    #[error("Failed to connect to vsock backend: {0}")]
     Socket(#[source] std::io::Error),
     #[error("Failed to put socket into nonblocking mode: {0}")]
     NonBlocking(#[source] std::io::Error),

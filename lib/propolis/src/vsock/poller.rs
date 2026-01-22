@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::Arc;
@@ -387,7 +387,7 @@ impl VsockPoller {
                         ));
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                 Err(e) => {
                     eprintln!("error writing to socket: {e}");
                     break;
@@ -467,7 +467,7 @@ impl VsockPoller {
                         &read_buf[..nbytes],
                     );
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                 Err(_e) => {
                     // Socket error - send RST to indicate abnormal termination
                     connections.remove(&key);
@@ -537,6 +537,8 @@ impl VsockPoller {
         loop {
             let mut nget = 1;
 
+            // XXX consider a timeout so that we can perform other cleanup type
+            // actions?
             let ret = unsafe {
                 libc::port_getn(
                     self.port_fd.as_raw_fd(),
@@ -548,7 +550,27 @@ impl VsockPoller {
             };
 
             if ret < 0 {
-                todo!("handle the errors")
+                let err = std::io::Error::last_os_error();
+                // SAFETY: The docs state that `raw_os_error` will always return
+                // a `Some` variant when obtained via `las_os_error`.
+                match err.raw_os_error().unwrap() {
+                    // A signal was caught so process the loop again
+                    libc::EINTR => continue,
+                    libc::EBADF => {
+                        // XXX This means our event loop is effectively no
+                        // longer servicable and the vsock device is useless.
+                        // Can we attempt to recover from this?
+                        error!(
+                            &self.log,
+                            "vsock port fd is no longer valid: {err}"
+                        );
+                        break;
+                    }
+                    _ => {
+                        error!(&self.log, "vsock port_getn returned: {err}");
+                        continue;
+                    }
+                }
             }
 
             for i in 0..nget as usize {
