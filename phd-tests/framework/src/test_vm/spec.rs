@@ -10,7 +10,7 @@ use crate::{
 };
 use camino::Utf8PathBuf;
 use propolis_client::instance_spec::{
-    ComponentV0, InstanceMetadata, InstanceSpec,
+    Component, InstanceMetadata, InstanceSpec,
 };
 use uuid::Uuid;
 
@@ -90,10 +90,10 @@ impl VmSpec {
                 .into_backend_name()
                 .into_string()
                 .into();
-            if let Some(ComponentV0::CrucibleStorageBackend(_)) =
+            if let Some(Component::CrucibleStorageBackend(_)) =
                 spec.components.get(&backend_name)
             {
-                spec.components.insert(backend_name, backend_spec);
+                spec.components.insert(backend_name, backend_spec.into());
             }
         }
     }

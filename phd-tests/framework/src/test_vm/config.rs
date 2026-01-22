@@ -324,36 +324,42 @@ impl<'dr> VmConfig<'dr> {
                     ),
                     pci_path,
                 }),
-                DiskInterface::Nvme => ComponentV0::NvmeDisk(NvmeDisk {
-                    backend_id: SpecKey::Name(
-                        backend_name.clone().into_string(),
-                    ),
-                    pci_path,
-                    serial_number: nvme_serial_from_str(
-                        device_name.as_str(),
-                        // Omicron supplies (or will supply, as of this writing)
-                        // 0 as the padding byte to maintain compatibility for
-                        // existing disks. Match that behavior here so that PHD
-                        // and Omicron VM configurations are as similar as
-                        // possible.
-                        0,
-                    ),
-                }),
+                DiskInterface::Nvme => {
+                    let nvme = NvmeDisk {
+                        backend_id: SpecKey::Name(
+                            backend_name.clone().into_string(),
+                        ),
+                        pci_path,
+                        serial_number: nvme_serial_from_str(
+                            device_name.as_str(),
+                            // Omicron supplies (or will supply, as of this writing)
+                            // 0 as the padding byte to maintain compatibility for
+                            // existing disks. Match that behavior here so that PHD
+                            // and Omicron VM configurations are as similar as
+                            // possible.
+                            0,
+                        ),
+                        // TODO: populate model_number
+                        model_number: [0u8; 40],
+                    };
+                    ComponentV0::NvmeDisk(nvme.into())
+                }
             };
 
             let _old = spec
                 .components
-                .insert(device_name.into_string().into(), device_spec);
+                .insert(device_name.into_string().into(), device_spec.into());
             assert!(_old.is_none());
             let _old = spec
                 .components
-                .insert(backend_name.into_string().into(), backend_spec);
+                .insert(backend_name.into_string().into(), backend_spec.into());
             assert!(_old.is_none());
         }
 
         let _old = spec.components.insert(
             "com1".into(),
-            ComponentV0::SerialPort(SerialPort { num: SerialPortNumber::Com1 }),
+            ComponentV0::SerialPort(SerialPort { num: SerialPortNumber::Com1 })
+                .into(),
         );
         assert!(_old.is_none());
 
@@ -367,7 +373,8 @@ impl<'dr> VmConfig<'dr> {
                             id: SpecKey::Name(item.to_string()),
                         })
                         .collect(),
-                }),
+                })
+                .into(),
             );
             assert!(_old.is_none());
         }
@@ -375,7 +382,7 @@ impl<'dr> VmConfig<'dr> {
         if let Some(mig) = migration_failure.as_ref() {
             let _old = spec.components.insert(
                 "migration-failure".into(),
-                ComponentV0::MigrationFailureInjector(mig.clone()),
+                ComponentV0::MigrationFailureInjector(mig.clone()).into(),
             );
             assert!(_old.is_none());
         }

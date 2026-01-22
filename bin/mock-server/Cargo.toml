@@ -45,6 +45,7 @@ tokio-tungstenite.workspace = true
 # internal dependencies (like crucible-client-types).  Although we are not
 # using the client itself, its deps (reqwest, etc) are required.
 progenitor.workspace = true
+regress.workspace = true
 reqwest.workspace = true
 schemars.workspace = true
 rand.workspace = true

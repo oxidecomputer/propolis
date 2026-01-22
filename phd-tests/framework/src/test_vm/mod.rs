@@ -28,7 +28,7 @@ use camino::Utf8PathBuf;
 use core::result::Result as StdResult;
 use propolis_client::{
     instance_spec::{
-        ComponentV0, InstanceProperties, InstanceSpecGetResponse,
+        Component, InstanceProperties, InstanceSpecGetResponse,
         ReplacementComponent,
     },
     support::{InstanceSerialConsoleHelper, WSClientOffset},
@@ -602,7 +602,7 @@ impl TestVm {
         let mut map = ReplacementComponents::new();
         for (id, comp) in &self.spec.instance_spec().components {
             match comp {
-                ComponentV0::MigrationFailureInjector(inj) => {
+                Component::MigrationFailureInjector(inj) => {
                     map.insert(
                         id.to_string(),
                         ReplacementComponent::MigrationFailureInjector(
@@ -610,7 +610,7 @@ impl TestVm {
                         ),
                     );
                 }
-                ComponentV0::CrucibleStorageBackend(be) => {
+                Component::CrucibleStorageBackend(be) => {
                     map.insert(
                         id.to_string(),
                         ReplacementComponent::CrucibleStorageBackend(
