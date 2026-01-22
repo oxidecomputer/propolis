@@ -143,21 +143,6 @@ impl From<Component> for v1::instance_spec::Component {
     }
 }
 
-// Conversions from v1 InstanceSpec to v3 InstanceSpec.
-impl From<v1::instance_spec::InstanceSpec> for InstanceSpec {
-    fn from(old: v1::instance_spec::InstanceSpec) -> Self {
-        Self {
-            board: old.board,
-            components: old
-                .components
-                .into_iter()
-                .map(|(k, v)| (k, v.into()))
-                .collect(),
-            smbios: None,
-        }
-    }
-}
-
 // Conversions from v2 InstanceSpec to v3 InstanceSpec.
 impl From<v2::instance_spec::InstanceSpec> for InstanceSpec {
     fn from(old: v2::instance_spec::InstanceSpec) -> Self {
@@ -169,20 +154,6 @@ impl From<v2::instance_spec::InstanceSpec> for InstanceSpec {
                 .map(|(k, v)| (k, v.into()))
                 .collect(),
             smbios: old.smbios,
-        }
-    }
-}
-
-// Conversions from v3 InstanceSpec to v1 InstanceSpec.
-impl From<InstanceSpec> for v1::instance_spec::InstanceSpec {
-    fn from(new: InstanceSpec) -> Self {
-        Self {
-            board: new.board,
-            components: new
-                .components
-                .into_iter()
-                .map(|(k, v)| (k, v.into()))
-                .collect(),
         }
     }
 }
