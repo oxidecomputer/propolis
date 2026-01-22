@@ -15,7 +15,6 @@ progenitor.workspace = true
 progenitor-client.workspace = true
 propolis-api-types-versions.workspace = true
 rand.workspace = true
-regress.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 schemars = { workspace = true, features = ["uuid1"] }
 serde = { workspace = true, features = ["derive"] }
