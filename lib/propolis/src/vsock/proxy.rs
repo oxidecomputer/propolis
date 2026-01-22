@@ -6,6 +6,7 @@ use std::os::fd::RawFd;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use slog::error;
 use slog::Logger;
 
 use crate::hw::virtio::vsock::VsockVq;
@@ -14,23 +15,24 @@ use crate::vsock::packet::VsockPacket;
 use crate::vsock::poller::VsockPoller;
 use crate::vsock::poller::VsockPollerNotify;
 use crate::vsock::VsockBackend;
+use crate::vsock::VsockError;
 
 /// Default buffer size for guest->host data.
 pub(crate) const CONN_TX_BUF_SIZE: usize = 1024 * 128;
 
 /// Connection lifecycle state for a vsock connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ConnState {
-    /// Connection is fully established and can send/receive data.
+pub enum ConnState {
+    // The guest has sent us a VIRTIO_VSOCK_OP_REQUEST
+    Init,
+    /// We have sent VIRTIO_VSOCK_OP_RESPONSE - connection can send/recv data
     Established,
-    /// Host socket closed for reading (received EOF).
-    /// We can still write data to the socket but won't receive more.
-    ShutdownRead,
-    /// Guest requested shutdown of send direction.
-    /// We can still read from socket but won't send more to it.
-    ShutdownWrite,
-    /// Both directions are shut down, connection is closing.
-    Closing,
+    /// The connection is in the process of closing - read and write halves are
+    /// tracked seperately
+    Closing {
+        read: bool,
+        write: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Eq, Hash, PartialEq)]
@@ -61,6 +63,8 @@ pub enum ProxyConnError {
     Socket(#[source] std::io::Error),
     #[error("Failed to put socket into nonblocking mode: {0}")]
     NonBlocking(#[source] std::io::Error),
+    #[error("Cannot transition connection from {from:?} to {to:?}")]
+    InvalidStateTransition { from: ConnState, to: ConnState },
 }
 
 /// An established guest<=>host connection
@@ -96,7 +100,7 @@ impl VsockProxyConn {
 
         Ok(Self {
             socket,
-            state: ConnState::Established,
+            state: ConnState::Init,
             vbuf: VsockBuf::new(NonZeroUsize::new(CONN_TX_BUF_SIZE).unwrap()),
             fwd_cnt: Wrapping(0),
             last_fwd_cnt_sent: Wrapping(0),
@@ -110,37 +114,70 @@ impl VsockProxyConn {
         !self.vbuf.is_empty()
     }
 
+    /// Set the connection to established.
+    pub fn set_established(&mut self) -> Result<(), ProxyConnError> {
+        match self.state {
+            ConnState::Init => self.state = ConnState::Established,
+            current => {
+                return Err(ProxyConnError::InvalidStateTransition {
+                    from: current,
+                    to: ConnState::Established,
+                })
+            }
+        }
+
+        Ok(())
+    }
+
     /// Check if the connection can read from the host socket.
     pub fn can_read(&self) -> bool {
-        matches!(self.state, ConnState::Established | ConnState::ShutdownWrite)
+        matches!(
+            self.state,
+            ConnState::Established | ConnState::Closing { read: false, .. }
+        )
     }
 
-    /// Check if the connection can write to the host socket.
-    pub fn can_write(&self) -> bool {
-        matches!(self.state, ConnState::Established | ConnState::ShutdownRead)
-    }
-
-    /// Mark that we received EOF from the host socket.
-    pub fn shutdown_read(&mut self) {
+    pub fn shutdown_read(&mut self) -> Result<(), ProxyConnError> {
         self.state = match self.state {
-            ConnState::Established => ConnState::ShutdownRead,
-            ConnState::ShutdownWrite => ConnState::Closing,
-            other => other,
+            ConnState::Established => {
+                ConnState::Closing { read: true, write: false }
+            }
+            ConnState::Closing { write, .. } => {
+                ConnState::Closing { read: true, write: write }
+            }
+            current => {
+                return Err(ProxyConnError::InvalidStateTransition {
+                    from: current,
+                    to: ConnState::Closing { read: true, write: false },
+                })
+            }
         };
+
+        Ok(())
     }
 
-    /// Mark that the guest requested shutdown of the send direction.
-    pub fn shutdown_write(&mut self) {
+    pub fn shutdown_write(&mut self) -> Result<(), ProxyConnError> {
         self.state = match self.state {
-            ConnState::Established => ConnState::ShutdownWrite,
-            ConnState::ShutdownRead => ConnState::Closing,
-            other => other,
+            ConnState::Established => {
+                ConnState::Closing { read: false, write: true }
+            }
+            ConnState::Closing { read, .. } => {
+                ConnState::Closing { read, write: true }
+            }
+            current => {
+                return Err(ProxyConnError::InvalidStateTransition {
+                    from: current,
+                    to: ConnState::Closing { read: true, write: false },
+                })
+            }
         };
+
+        Ok(())
     }
 
     /// Check if the connection should be removed.
     pub fn should_close(&self) -> bool {
-        self.state == ConnState::Closing
+        matches!(self.state, ConnState::Closing { read: true, write: true })
     }
 
     /// Update peer credit info from a packet header.
@@ -210,28 +247,38 @@ impl VsockProxyConn {
 
 /// virtio-socket backend that proxies between a guest and a host UDS.
 pub struct VsockProxy {
+    log: Logger,
     poller: VsockPollerNotify,
     _evloop_handle: JoinHandle<()>,
 }
 
 impl VsockProxy {
     pub fn new(cid: u32, queues: VsockVq, log: Logger) -> Self {
-        let evloop = VsockPoller::new(cid, queues, log).unwrap();
+        let evloop = VsockPoller::new(cid, queues, log.clone()).unwrap();
         let poller = evloop.notify_handle();
         let jh = evloop.run();
 
-        Self { poller, _evloop_handle: jh }
+        Self { log, poller, _evloop_handle: jh }
     }
 
     /// Notification from the vsock device that one of the queues has had an
     /// event.
-    fn queue_notify(&self, vq_id: u16) {
-        self.poller.queue_notify(vq_id).unwrap();
+    fn queue_notify(&self, vq_id: u16) -> std::io::Result<()> {
+        self.poller.queue_notify(vq_id)
     }
 }
 
 impl VsockBackend for VsockProxy {
-    fn queue_notify(&self, queue_id: u16) {
-        self.queue_notify(queue_id);
+    fn queue_notify(&self, queue_id: u16) -> Result<(), VsockError> {
+        self.queue_notify(queue_id)
+            // Log the raw error in additon to returning the top level
+            // `VsockError`
+            .inspect_err(|_e| {
+                error!(&self.log,
+                    "failed to send virtqueue notification";
+                    "queue" => %queue_id,
+                )
+            })
+            .map_err(|_| VsockError::QueueNotify(queue_id))
     }
 }

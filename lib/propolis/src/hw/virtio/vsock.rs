@@ -47,48 +47,27 @@ impl RxPermit<'_> {
         self.available_data_space
     }
 
-    /// Write an RW packet directly into the descriptor chain.
-    ///
-    /// Consumes the permit and pushes to the used ring.
-    pub fn write_rw(
-        self,
-        guest_cid: u32,
-        src_port: u32,
-        dst_port: u32,
-        buf_alloc: u32,
-        fwd_cnt: u32,
-        data: &[u8],
-    ) {
-        let mem = self.vq.acc_mem.access().expect("mem access for write_rw");
+    pub fn write(self, header: &VsockPacketHeader, data: &[u8]) {
+        let mem = self.vq.acc_mem.access().expect("mem access for write");
         let queue =
             self.vq.queues.get(VSOCK_RX_QUEUE as usize).expect("rx queue");
         let mut chain = self.vq.rx_chain.take().expect("rx_chain should exist");
 
-        let mut header = VsockPacketHeader::default();
-        header
-            .set_src_cid(crate::vsock::VSOCK_HOST_CID as u32)
-            .set_dst_cid(guest_cid)
-            .set_src_port(src_port)
-            .set_dst_port(dst_port)
-            .set_len(data.len() as u32)
-            .set_socket_type(crate::vsock::packet::VIRTIO_VSOCK_TYPE_STREAM)
-            .set_op(crate::vsock::packet::VIRTIO_VSOCK_OP_RW)
-            .set_buf_alloc(buf_alloc)
-            .set_fwd_cnt(fwd_cnt);
+        chain.write(header, &mem);
 
-        chain.write(&header, &mem);
-
-        let mut done = 0;
-        chain.for_remaining_type(false, |addr, len| {
-            let to_write = &data[done..];
-            if let Some(copied) = mem.write_from(addr, to_write, len) {
-                let need_more = copied != to_write.len();
-                done += copied;
-                (copied, need_more)
-            } else {
-                (0, false)
-            }
-        });
+        if !data.is_empty() {
+            let mut done = 0;
+            chain.for_remaining_type(false, |addr, len| {
+                let to_write = &data[done..];
+                if let Some(copied) = mem.write_from(addr, to_write, len) {
+                    let need_more = copied != to_write.len();
+                    done += copied;
+                    (copied, need_more)
+                } else {
+                    (0, false)
+                }
+            });
+        }
 
         queue.push_used(&mut chain, &mem);
     }
@@ -151,82 +130,6 @@ impl VsockVq {
         vq.push_used(&mut chain, &mem);
 
         Some(packet)
-    }
-
-    /// Check if the rx queue has available descriptors for sending to guest.
-    pub fn rx_queue_has_space(&self) -> bool {
-        let mem = self.acc_mem.access().unwrap();
-        let vq = self.queues.get(VSOCK_RX_QUEUE as usize).unwrap();
-        !vq.avail_is_empty(&mem)
-    }
-
-    pub fn send_packet(&self, packet: &VsockPacket) -> Option<usize> {
-        let mem = self.acc_mem.access()?;
-        let vq = self
-            .queues
-            .get(VSOCK_RX_QUEUE as usize)
-            .expect("vsock has rx queue");
-
-        let VsockPacket { header, data } = packet;
-        let mut data_offset = 0;
-        let mut total_sent = 0;
-
-        // Loop to send data across multiple descriptor chains if needed
-        while data_offset < data.len() || data_offset == 0 {
-            let mut chain = Chain::with_capacity(10);
-            let Some((_idx, _clen)) = vq.pop_avail(&mut chain, &mem) else {
-                eprintln!("send_packet: no descriptor available");
-                if total_sent > 0 {
-                    // Partial send - return what we sent
-                    return Some(total_sent);
-                }
-                return None;
-            };
-
-            // Calculate how much data we can fit in this descriptor
-            // First check available space, subtract header size
-            let header_size = std::mem::size_of::<VsockPacketHeader>();
-            let available_for_data =
-                chain.remain_write_bytes().saturating_sub(header_size);
-            let remaining_data = &data[data_offset..];
-            let chunk_len =
-                std::cmp::min(remaining_data.len(), available_for_data);
-
-            // Create header for this chunk with correct length
-            let mut chunk_header = *header;
-            chunk_header.set_len(chunk_len as u32);
-
-            chain.write(&chunk_header, &mem);
-
-            let mut done = 0;
-            chain.for_remaining_type(false, |addr, len| {
-                let to_write = &remaining_data[done..chunk_len];
-                if let Some(copied) = mem.write_from(addr, to_write, len) {
-                    let need_more = copied != to_write.len();
-                    done += copied;
-                    (copied, need_more)
-                } else {
-                    (0, false)
-                }
-            });
-
-            vq.push_used(&mut chain, &mem);
-
-            data_offset += done;
-            total_sent += done;
-
-            // If we couldn't write any data in this iteration (and we had data), stop
-            if done == 0 && !remaining_data.is_empty() {
-                break;
-            }
-
-            // If no data to send (e.g., RST packet), exit after one iteration
-            if data.is_empty() {
-                break;
-            }
-        }
-
-        Some(total_sent)
     }
 }
 
@@ -314,7 +217,7 @@ impl VirtioDevice for PciVirtioSock {
     }
 
     fn queue_notify(&self, vq: &VirtQueue) {
-        self.backend.queue_notify(vq.id);
+        let _ = self.backend.queue_notify(vq.id);
     }
 }
 

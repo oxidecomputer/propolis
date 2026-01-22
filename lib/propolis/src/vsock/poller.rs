@@ -6,13 +6,14 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use slog::{error, Logger};
+use slog::{error, warn, Logger};
 
 use crate::hw::virtio::vsock::VsockVq;
 use crate::hw::virtio::vsock::VSOCK_RX_QUEUE;
 use crate::hw::virtio::vsock::VSOCK_TX_QUEUE;
 use crate::vsock::packet::{
-    VsockPacket, VIRTIO_VSOCK_OP_CREDIT_REQUEST, VIRTIO_VSOCK_OP_REQUEST,
+    VsockPacket, VsockPacketHeader, VIRTIO_VSOCK_OP_CREDIT_REQUEST,
+    VIRTIO_VSOCK_OP_CREDIT_UPDATE, VIRTIO_VSOCK_OP_REQUEST,
     VIRTIO_VSOCK_OP_RST, VIRTIO_VSOCK_OP_RW, VIRTIO_VSOCK_OP_SHUTDOWN,
     VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE, VIRTIO_VSOCK_SHUTDOWN_F_SEND,
     VIRTIO_VSOCK_TYPE_STREAM,
@@ -115,11 +116,24 @@ impl VsockPoller {
         queues: VsockVq,
         log: Logger,
     ) -> std::io::Result<Self> {
-        // XXX: set cloexec
-        let port_fd = unsafe { libc::port_create() };
-        if port_fd == -1 {
-            return Err(std::io::Error::last_os_error());
-        }
+        let port_fd = unsafe {
+            let fd = match libc::port_create() {
+                -1 => return Err(std::io::Error::last_os_error()),
+                fd => fd,
+            };
+
+            // Set CLOEXEC on the event port fd
+            if libc::fcntl(
+                fd,
+                libc::F_SETFD,
+                libc::fcntl(fd, libc::F_GETFD) | libc::FD_CLOEXEC,
+            ) < 0
+            {
+                return Err(std::io::Error::last_os_error());
+            };
+
+            fd
+        };
 
         Ok(Self {
             log,
@@ -145,10 +159,10 @@ impl VsockPoller {
             .expect("failed to spawn vsock event loop")
     }
 
-    /// Handle a REQUEST packet - create a new connection.
-    fn handle_request(&mut self, key: ConnKey, packet: VsockPacket) {
+    /// Handle the guest's VIRTIO_VSOCK_OP_REQUEST packet.
+    fn handle_connection_request(&mut self, key: ConnKey, packet: VsockPacket) {
         if self.connections.contains_key(&key) {
-            // Connection already exists - send RST
+            // Connection already exists
             self.rx.push_back(RxEvent::Reset {
                 src_port: key.host_port,
                 dst_port: key.guest_port,
@@ -175,32 +189,45 @@ impl VsockPoller {
         };
     }
 
-    /// Handle a SHUTDOWN packet - begin graceful close.
+    /// Handle the guest's VIRTIO_VSOCK_OP_SHUTDOWN packet.
     fn handle_shutdown(&mut self, key: ConnKey, flags: u32) {
         if let Some(conn) = self.connections.get_mut(&key) {
-            // Guest won't receive more data - stop reading from socket
+            // Guest won't receive more data
             if flags & VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE != 0 {
-                conn.shutdown_read();
+                conn.shutdown_read().unwrap();
             }
-            // Guest won't send more data - stop expecting writes
+            // Guest won't send more data
             if flags & VIRTIO_VSOCK_SHUTDOWN_F_SEND != 0 {
-                conn.shutdown_write();
+                conn.shutdown_write().unwrap();
             }
+            // XXX how do we register this for future cleanup if there is data
+            // we have not synced locally yet? We need a cleanup loop...
             if conn.should_close() {
-                self.connections.remove(&key);
+                if !conn.has_buffered_data() {
+                    self.connections.remove(&key);
+                    // virtio spec states:
+                    //
+                    // Clean disconnect is achieved by one or more
+                    // VIRTIO_VSOCK_OP_SHUTDOWN packets that indicate no more data
+                    // will be sent and received, followed by a VIRTIO_VSOCK_OP_RST
+                    // response from the peer.
+                    self.rx.push_back(RxEvent::Reset {
+                        src_port: key.host_port,
+                        dst_port: key.guest_port,
+                    });
+                }
             }
         }
     }
 
+    /// Handle the guest's VIRTIO_VSOCK_OP_RW packet.
     fn handle_rw_packet(&mut self, key: ConnKey, packet: VsockPacket) {
         if let Some(conn) = self.connections.get_mut(&key) {
             // If we a valid connection attempt to consume the guest's packet.
             conn.recv_packet(packet);
 
-            // Check the connection for:
-            // - ring buffered guest packet data
-            // - the guest is expecting data from us
-            if !conn.has_buffered_data() || !conn.can_write() {
+            // If we have buffered data, register for POLLOUT to flush it.
+            if !conn.has_buffered_data() {
                 return;
             }
 
@@ -216,21 +243,23 @@ impl VsockPoller {
 
     fn handle_tx_queue_event(&mut self) {
         loop {
-            let Some(packet) = self.queues.recv_packet() else {
-                break;
-            };
-
-            let packet = match packet {
-                Ok(packet) => packet,
+            let packet = match self.queues.recv_packet().transpose() {
+                Ok(Some(packet)) => packet,
+                // No more packets on the guests tx queue
+                Ok(None) => break,
                 Err(e) => {
-                    eprintln!("{e}");
+                    warn!(&self.log, "dropping invalid vsock packet: {e}");
                     continue;
                 }
             };
 
             // If the packet is not destined for the host drop it.
             if packet.header.dst_cid() != VSOCK_HOST_CID {
-                // TODO: info!(self.log, "received packet for...")
+                warn!(
+                    &self.log,
+                    "droppping vsock packet not destined for the host";
+                    "packet" => ?packet,
+                );
                 continue;
             }
 
@@ -245,30 +274,60 @@ impl VsockPoller {
                     src_port: key.host_port,
                     dst_port: key.guest_port,
                 });
-                // TODO log the packets info
+                warn!(&self.log,
+                    "received invalid vsock packet";
+                    "type" => %packet.header.socket_type(),
+                );
                 continue;
             }
 
-            match packet.header.op() {
-                VIRTIO_VSOCK_OP_REQUEST => {
-                    self.handle_request(key, packet);
-                }
-                VIRTIO_VSOCK_OP_RST => {
-                    self.connections.remove(&key);
-                }
-                VIRTIO_VSOCK_OP_SHUTDOWN => {
-                    self.handle_shutdown(key, packet.header.flags());
-                }
-                VIRTIO_VSOCK_OP_CREDIT_REQUEST => {
-                    if self.connections.contains_key(&key) {
-                        self.rx.push_back(RxEvent::CreditUpdate(key));
+            if let Some(conn) = self.connections.get_mut(&key) {
+                // Regardless of the vsock operation we need to record the peers
+                // credit info
+                conn.update_peer_credit(
+                    packet.header.buf_alloc(),
+                    packet.header.fwd_cnt(),
+                );
+                match packet.header.op() {
+                    VIRTIO_VSOCK_OP_RST => {
+                        self.connections.remove(&key);
+                    }
+                    VIRTIO_VSOCK_OP_SHUTDOWN => {
+                        self.handle_shutdown(key, packet.header.flags());
+                    }
+                    // Handled above for every packet
+                    VIRTIO_VSOCK_OP_CREDIT_UPDATE => continue,
+                    VIRTIO_VSOCK_OP_CREDIT_REQUEST => {
+                        if self.connections.contains_key(&key) {
+                            self.rx.push_back(RxEvent::CreditUpdate(key));
+                        }
+                    }
+                    VIRTIO_VSOCK_OP_RW => {
+                        self.handle_rw_packet(key, packet);
+                    }
+                    _ => {
+                        warn!(
+                            &self.log,
+                            "received vsock packet with unknown op code";
+                            "packet" => ?packet,
+                        );
                     }
                 }
-                VIRTIO_VSOCK_OP_RW => {
-                    self.handle_rw_packet(key, packet);
+            } else {
+                match packet.header.op() {
+                    VIRTIO_VSOCK_OP_REQUEST => {
+                        self.handle_connection_request(key, packet)
+                    }
+                    // VIRTIO_VSOCK_OP_RST => {}
+                    _ => {
+                        warn!(
+                            &self.log,
+                            "received a vsock packet for an unknown connection \
+                            that was not a REQUEST or RST";
+                            "packet" => ?packet,
+                        );
+                    }
                 }
-                // TODO log some info
-                _ => {}
             }
         }
     }
@@ -302,39 +361,45 @@ impl VsockPoller {
     }
 
     fn process_pending_rx(&mut self) {
-        while let Some(rx_event) = self.rx.pop_front() {
+        while let Some(permit) = self.queues.try_rx_permit() {
+            let Some(rx_event) = self.rx.pop_front() else {
+                break;
+            };
+
             match rx_event {
                 RxEvent::Reset { src_port, dst_port } => {
-                    self.queues.send_packet(&VsockPacket::new_reset(
+                    let packet = VsockPacket::new_reset(
                         self.guest_cid,
                         src_port,
                         dst_port,
-                    ));
+                    );
+                    permit.write(&packet.header, &packet.data);
                 }
                 RxEvent::NewConnection(key) => {
-                    self.queues.send_packet(&VsockPacket::new_response(
+                    let packet = VsockPacket::new_response(
                         self.guest_cid,
                         key.host_port,
                         key.guest_port,
                         CONN_TX_BUF_SIZE as u32,
-                    ));
-                    // Now that RESPONSE is sent, register fd for POLLIN
-                    if let Some(conn) = self.connections.get(&key) {
+                    );
+                    permit.write(&packet.header, &packet.data);
+
+                    if let Some(conn) = self.connections.get_mut(&key) {
+                        conn.set_established().unwrap();
                         let fd = conn.get_fd();
                         self.associate_fd(key, fd, PollInterests::POLLIN);
                     }
                 }
                 RxEvent::CreditUpdate(key) => {
                     if let Some(conn) = self.connections.get_mut(&key) {
-                        self.queues.send_packet(
-                            &VsockPacket::new_credit_update(
-                                self.guest_cid,
-                                key.host_port,
-                                key.guest_port,
-                                conn.buf_alloc(),
-                                conn.fwd_cnt(),
-                            ),
+                        let packet = VsockPacket::new_credit_update(
+                            self.guest_cid,
+                            key.host_port,
+                            key.guest_port,
+                            conn.buf_alloc(),
+                            conn.fwd_cnt(),
                         );
+                        permit.write(&packet.header, &packet.data);
                         conn.mark_credit_sent();
                     }
                 }
@@ -365,9 +430,7 @@ impl VsockPoller {
 
     /// Handle POLLOUT - drain buffered guest data to the host socket.
     fn handle_pollout(&mut self, key: ConnKey, fd: RawFd) {
-        let VsockPoller { queues, connections, guest_cid, .. } = self;
-
-        let Some(conn) = connections.get_mut(&key) else {
+        let Some(conn) = self.connections.get_mut(&key) else {
             return;
         };
 
@@ -377,14 +440,7 @@ impl VsockPoller {
                 Ok(nbytes) => {
                     conn.update_fwd_cnt(nbytes as u32);
                     if conn.needs_credit_update() {
-                        conn.mark_credit_sent();
-                        queues.send_packet(&VsockPacket::new_credit_update(
-                            *guest_cid,
-                            key.host_port,
-                            key.guest_port,
-                            conn.buf_alloc(),
-                            conn.fwd_cnt(),
-                        ));
+                        self.rx.push_back(RxEvent::CreditUpdate(key));
                     }
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
@@ -395,9 +451,10 @@ impl VsockPoller {
             }
         }
 
-        // Check for close or re-register
+        // We have finished draining our buffered data to the host, so check if
+        // we should remove ourselves from the active connections.
         if conn.should_close() {
-            connections.remove(&key);
+            self.connections.remove(&key);
             return;
         }
 
@@ -405,7 +462,7 @@ impl VsockPoller {
         if conn.can_read() {
             interests |= PollInterests::POLLIN;
         }
-        if conn.has_buffered_data() && conn.can_write() {
+        if conn.has_buffered_data() {
             interests |= PollInterests::POLLOUT;
         }
         if !interests.is_empty() {
@@ -422,20 +479,22 @@ impl VsockPoller {
             return;
         };
 
+        // The guest is no longer expecting any data
         if !conn.can_read() {
             return;
         }
 
-        let mut rx_queue_blocked = false;
-
         loop {
             let Some(permit) = queues.try_rx_permit() else {
-                rx_queue_blocked = true;
+                dbg!("blocked");
+                rx_blocked.push(key);
                 break;
             };
 
             let credit = conn.peer_credit();
             if credit == 0 {
+                // XXX when this happens we need to not sit in a tight loop
+                dbg!("no credit");
                 break;
             }
 
@@ -446,56 +505,57 @@ impl VsockPoller {
 
             match conn.socket.read(&mut read_buf[..max_read]) {
                 Ok(0) => {
-                    // EOF from host socket - graceful close
-                    conn.shutdown_read();
-                    queues.send_packet(&VsockPacket::new_shutdown(
+                    let packet = VsockPacket::new_shutdown(
                         *guest_cid,
                         key.host_port,
                         key.guest_port,
                         VIRTIO_VSOCK_SHUTDOWN_F_SEND,
-                    ));
-                    break;
+                    );
+                    permit.write(&packet.header, &packet.data);
+                    return;
                 }
                 Ok(nbytes) => {
                     conn.update_tx_cnt(nbytes as u32);
-                    permit.write_rw(
-                        *guest_cid,
-                        key.host_port,
-                        key.guest_port,
-                        conn.buf_alloc(),
-                        conn.fwd_cnt(),
-                        &read_buf[..nbytes],
-                    );
+                    let mut header = VsockPacketHeader::default();
+                    header
+                        .set_src_cid(VSOCK_HOST_CID as u32)
+                        .set_dst_cid(*guest_cid)
+                        .set_src_port(key.host_port)
+                        .set_dst_port(key.guest_port)
+                        .set_len(nbytes as u32)
+                        .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
+                        .set_op(VIRTIO_VSOCK_OP_RW)
+                        .set_buf_alloc(conn.buf_alloc())
+                        .set_fwd_cnt(conn.fwd_cnt());
+                    permit.write(&header, &read_buf[..nbytes]);
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                 Err(_e) => {
-                    // Socket error - send RST to indicate abnormal termination
                     connections.remove(&key);
-                    queues.send_packet(&VsockPacket::new_reset(
+                    let packet = VsockPacket::new_reset(
                         *guest_cid,
                         key.host_port,
                         key.guest_port,
-                    ));
+                    );
+                    permit.write(&packet.header, &packet.data);
                     return;
                 }
             }
         }
 
+        // XXX why check this here we got woken up for POLLIN
         // Check for close or re-register
-        if conn.should_close() {
-            connections.remove(&key);
-            return;
-        }
-
-        if rx_queue_blocked {
-            rx_blocked.push(key);
-        }
+        // if conn.should_close() {
+        //     // XXX we need to send a RST according to the spec?
+        //     connections.remove(&key);
+        //     return;
+        // }
 
         let mut interests = PollInterests::default();
-        if conn.can_read() && !rx_queue_blocked {
+        if conn.can_read() {
             interests |= PollInterests::POLLIN;
         }
-        if conn.has_buffered_data() && conn.can_write() {
+        if conn.has_buffered_data() {
             interests |= PollInterests::POLLOUT;
         }
         if !interests.is_empty() {
@@ -618,15 +678,15 @@ impl EventSource {
 /// This represents an event from one of the various event sources (file
 /// descriptors, timers, user events, etc.).
 #[derive(Debug, Clone)]
-pub struct PortEvent {
+struct PortEvent {
     /// The events that occurred (source-specific)
-    pub events: i32,
+    events: i32,
     /// The source of the event
-    pub source: EventSource,
+    source: EventSource,
     /// The object associated with the event (interpretation depends on source)
-    pub object: usize,
+    object: usize,
     /// User-defined data provided during association
-    pub user: usize,
+    user: usize,
 }
 
 impl PortEvent {
