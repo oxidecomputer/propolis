@@ -8,7 +8,7 @@ use dropshot::{
     WebsocketChannelResult, WebsocketConnection,
 };
 use dropshot_api_manager_types::api_versions;
-use propolis_api_types_versions::{latest, v1};
+use propolis_api_types_versions::{latest, v1, v2};
 
 api_versions!([
     // WHEN CHANGING THE API (part 1 of 2):
@@ -22,6 +22,7 @@ api_versions!([
     // |  example for the next person.
     // v
     // (next_int, IDENT),
+    (3, NVME_MODEL_NUMBER),
     (2, PROGRAMMABLE_SMBIOS),
     (1, INITIAL),
 ]);
@@ -45,7 +46,7 @@ pub trait PropolisServerApi {
     #[endpoint {
         method = PUT,
         path = "/instance",
-        versions = VERSION_PROGRAMMABLE_SMBIOS..
+        versions = VERSION_NVME_MODEL_NUMBER..
     }]
     async fn instance_ensure(
         rqctx: RequestContext<Self::Context>,
@@ -54,6 +55,26 @@ pub trait PropolisServerApi {
         HttpResponseCreated<latest::instance::InstanceEnsureResponse>,
         HttpError,
     >;
+
+    #[endpoint {
+        operation_id = "instance_ensure",
+        method = PUT,
+        path = "/instance",
+        versions = VERSION_PROGRAMMABLE_SMBIOS..VERSION_NVME_MODEL_NUMBER
+    }]
+    async fn instance_ensure_v2(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<v2::api::InstanceEnsureRequest>,
+    ) -> Result<
+        HttpResponseCreated<latest::instance::InstanceEnsureResponse>,
+        HttpError,
+    > {
+        Self::instance_ensure(
+            rqctx,
+            request.map(latest::instance::InstanceEnsureRequest::from),
+        )
+        .await
+    }
 
     #[endpoint {
         operation_id = "instance_ensure",
@@ -68,9 +89,9 @@ pub trait PropolisServerApi {
         HttpResponseCreated<latest::instance::InstanceEnsureResponse>,
         HttpError,
     > {
-        Self::instance_ensure(
+        Self::instance_ensure_v2(
             rqctx,
-            request.map(latest::instance::InstanceEnsureRequest::from),
+            request.map(v2::api::InstanceEnsureRequest::from),
         )
         .await
     }
@@ -78,7 +99,7 @@ pub trait PropolisServerApi {
     #[endpoint {
         method = GET,
         path = "/instance/spec",
-        versions = VERSION_PROGRAMMABLE_SMBIOS..
+        versions = VERSION_NVME_MODEL_NUMBER..
     }]
     async fn instance_spec_get(
         rqctx: RequestContext<Self::Context>,
@@ -86,6 +107,23 @@ pub trait PropolisServerApi {
         HttpResponseOk<latest::instance_spec::InstanceSpecGetResponse>,
         HttpError,
     >;
+
+    #[endpoint {
+        operation_id = "instance_spec_get",
+        method = GET,
+        path = "/instance/spec",
+        versions = VERSION_PROGRAMMABLE_SMBIOS..VERSION_NVME_MODEL_NUMBER
+    }]
+    async fn instance_spec_get_v2(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<
+        HttpResponseOk<v2::instance_spec::InstanceSpecGetResponse>,
+        HttpError,
+    > {
+        Ok(Self::instance_spec_get(rqctx)
+            .await?
+            .map(v2::instance_spec::InstanceSpecGetResponse::from))
+    }
 
     #[endpoint {
         operation_id = "instance_spec_get",
@@ -99,7 +137,7 @@ pub trait PropolisServerApi {
         HttpResponseOk<v1::instance_spec::InstanceSpecGetResponse>,
         HttpError,
     > {
-        Ok(Self::instance_spec_get(rqctx)
+        Ok(Self::instance_spec_get_v2(rqctx)
             .await?
             .map(v1::instance_spec::InstanceSpecGetResponse::from))
     }

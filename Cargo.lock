@@ -2402,9 +2402,6 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
-dependencies = [
- "serde",
-]
 
 [[package]]
 name = "hickory-proto"
@@ -5389,6 +5386,7 @@ dependencies = [
  "propolis_types",
  "schemars",
  "serde",
+ "serde_human_bytes",
  "serde_json",
  "thiserror 1.0.64",
  "uuid",
@@ -6524,10 +6522,12 @@ dependencies = [
 [[package]]
 name = "serde_human_bytes"
 version = "0.1.0"
-source = "git+http://github.com/oxidecomputer/serde_human_bytes?branch=main#0a09794501b6208120528c3b457d5f3a8cb17424"
+source = "git+https://github.com/oxidecomputer/serde_human_bytes?branch=main#8f60acdfe7c6d9e2a01f59be920c1c2b19129322"
 dependencies = [
+ "base64 0.22.1",
  "hex",
- "serde",
+ "schemars",
+ "serde_core",
 ]
 
 [[package]]

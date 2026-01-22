@@ -55,6 +55,8 @@ impl From<Spec> for InstanceSpec {
         let smbios = val.smbios_type1_input.clone();
         let v1::instance_spec::InstanceSpec { board, components } =
             v1::instance_spec::InstanceSpec::from(val);
+        let components =
+            components.into_iter().map(|(k, v)| (k, v.into())).collect();
         InstanceSpec { board, components, smbios }
     }
 }
@@ -65,6 +67,8 @@ impl TryFrom<InstanceSpec> for Spec {
 
     fn try_from(value: InstanceSpec) -> Result<Self, Self::Error> {
         let InstanceSpec { board, components, smbios } = value;
+        let components =
+            components.into_iter().map(|(k, v)| (k, v.into())).collect();
         let v0 = v1::instance_spec::InstanceSpec { board, components };
         let mut spec: Spec = v0.try_into()?;
         spec.smbios_type1_input = smbios;
@@ -207,7 +211,7 @@ impl From<StorageDevice> for v1::instance_spec::Component {
     fn from(value: StorageDevice) -> Self {
         match value {
             StorageDevice::Virtio(d) => Self::VirtioDisk(d),
-            StorageDevice::Nvme(d) => Self::NvmeDisk(d),
+            StorageDevice::Nvme(d) => Self::NvmeDisk(d.into()),
         }
     }
 }
@@ -220,7 +224,9 @@ impl TryFrom<v1::instance_spec::Component> for StorageDevice {
     ) -> Result<Self, Self::Error> {
         match value {
             v1::instance_spec::Component::VirtioDisk(d) => Ok(Self::Virtio(d)),
-            v1::instance_spec::Component::NvmeDisk(d) => Ok(Self::Nvme(d)),
+            v1::instance_spec::Component::NvmeDisk(d) => {
+                Ok(Self::Nvme(d.into()))
+            }
             _ => Err(ComponentTypeMismatch),
         }
     }

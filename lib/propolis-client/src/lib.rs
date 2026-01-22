@@ -53,6 +53,7 @@ progenitor::generate_api!(
         InstanceProperties = propolis_api_types_versions::latest::instance::InstanceProperties,
         InstanceMetadata = propolis_api_types_versions::latest::instance::InstanceMetadata,
         InstanceSpecGetResponse = propolis_api_types_versions::latest::instance_spec::InstanceSpecGetResponse,
+        NvmeDisk = propolis_api_types_versions::latest::components::devices::NvmeDisk,
         SmbiosType1Input = propolis_api_types_versions::latest::instance_spec::SmbiosType1Input,
         VersionedInstanceSpec = propolis_api_types_versions::latest::instance_spec::VersionedInstanceSpec,
         CpuidEntry = propolis_api_types_versions::latest::components::board::CpuidEntry,
