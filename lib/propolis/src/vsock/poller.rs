@@ -416,7 +416,7 @@ impl VsockPoller {
     }
 
     fn handle_fd_event(&mut self, event: PortEvent, read_buf: &mut [u8]) {
-        let key = ConnKey::from_usize(event.user);
+        let key = ConnKey::from_portev_user(event.user);
         let fd = event.object as RawFd;
 
         if event.events & i32::from(libc::POLLOUT) != 0 {
@@ -575,7 +575,7 @@ impl VsockPoller {
                 libc::PORT_SOURCE_FD,
                 fd as usize,
                 interests.0.into(),
-                key.to_usize() as *mut c_void,
+                key.to_portev_user() as *mut c_void,
             )
         };
 

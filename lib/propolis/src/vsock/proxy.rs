@@ -43,14 +43,23 @@ pub(crate) struct ConnKey {
     pub(crate) guest_port: u32,
 }
 
+// This impl allows us to convert to and from a portev_user object (see
+// port_associate3C). The conversion to and from a usize allows us to encode
+// the key in the pointer value itself rather than allocating memory.
+//
+// NB: This object is defined as a `*mut c_void` and therefore will not be
+// 64bits on all platforms, but we currently only support x86_64 hardware,
+// therefore we are leaving a static assertion behind as a future hint to
+// ourselves.
 impl ConnKey {
-    /// Pack into a usize to avoid boxing when passing to port_associate.
-    pub(crate) fn to_usize(self) -> usize {
+    /// Pack the host + port into a usize
+    pub(crate) fn to_portev_user(self) -> usize {
+        static_assertions::assert_eq_size!(u64, usize);
         ((self.host_port as usize) << 32) | (self.guest_port as usize)
     }
 
-    /// Unpack from a usize.
-    pub(crate) fn from_usize(val: usize) -> Self {
+    /// Unpack the host + port from a usize
+    pub(crate) fn from_portev_user(val: usize) -> Self {
         Self { host_port: (val >> 32) as u32, guest_port: val as u32 }
     }
 }
