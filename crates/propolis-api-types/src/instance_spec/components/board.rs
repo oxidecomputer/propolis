@@ -178,5 +178,14 @@ pub struct Board {
     /// default values from the host's CPUID values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpuid: Option<Cpuid>,
+
+    /// Use native ACPI tables (via fw_cfg) instead of OVMF provided tables.
+    ///
+    /// VMs created before propolis supported ACPI table generation will not
+    /// have this field. For backwards compatibility with live migration,
+    /// `None` is treated as `false` (use OVMF tables). New VMs should set
+    /// this to `true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_acpi_tables: Option<bool>,
     // TODO: Processor and NUMA topology.
 }
