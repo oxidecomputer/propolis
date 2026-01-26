@@ -463,6 +463,7 @@ impl NvmeCtrl {
         }
     }
 
+    #[allow(dead_code)]
     pub(super) fn acmd_doorbell_buf_cfg(
         &mut self,
         cmd: &cmds::DoorbellBufCfgCmd,
