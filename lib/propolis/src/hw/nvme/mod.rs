@@ -844,8 +844,9 @@ impl PciNvme {
             nn: 1,
             // bit 0 indicates volatile write cache is present
             vwc: 1,
-            // bit 8 indicates Doorbell Buffer support
-            oacs: (1 << 8),
+            // bit 8 indicates Doorbell Buffer support. Theoretically supported,
+            // but disabled for Propolis issue #1008.
+            oacs: (0 << 8),
             ..Default::default()
         };
 
@@ -1339,8 +1340,16 @@ impl PciNvme {
                     // this can detect it and stop posting async events.
                     cmds::Completion::generic_err(bits::STS_INVAL_OPC).dnr()
                 }
-                AdminCmd::DoorbellBufCfg(cmd) => {
-                    state.acmd_doorbell_buf_cfg(&cmd)
+                AdminCmd::DoorbellBufCfg(_cmd) => {
+                    // XXX: issue #1008 suggests that Doorbell Buffer support
+                    // can end up with guest disks in a state that *looks like*
+                    // we've failed to notify after writing a completion. While
+                    // we're debugging this, we hide Doorbell Buffer support
+                    // from OACS. Instead, treat this the same as an
+                    // `AdminCmd::Unknown`.
+
+                    // state.acmd_doorbell_buf_cfg(&cmd)
+                    cmds::Completion::generic_err(bits::STS_INTERNAL_ERR)
                 }
                 AdminCmd::Unknown(_) => {
                     cmds::Completion::generic_err(bits::STS_INTERNAL_ERR)
