@@ -27,6 +27,7 @@ use crate::vsock::VSOCK_HOST_CID;
 enum VsockEvent {
     TxQueue,
     RxQueue,
+    Shutdown,
 }
 
 pub struct VsockPollerNotify {
@@ -60,6 +61,10 @@ impl VsockPollerNotify {
             VSOCK_TX_QUEUE => self.port_send(VsockEvent::TxQueue),
             _ => Ok(()),
         }
+    }
+
+    pub fn shutdown(&self) -> std::io::Result<()> {
+        self.port_send(VsockEvent::Shutdown)
     }
 }
 
@@ -421,12 +426,15 @@ impl VsockPoller {
         }
     }
 
-    fn handle_user_event(&mut self, event: PortEvent) {
+    /// Handle a user event. Returns `true` if the event loop should shut down.
+    fn handle_user_event(&mut self, event: PortEvent) -> bool {
         let event = unsafe { Box::from_raw(event.user as *mut VsockEvent) };
         match *event {
             VsockEvent::TxQueue => self.handle_tx_queue_event(),
             VsockEvent::RxQueue => self.handle_rx_queue_event(),
+            VsockEvent::Shutdown => return true,
         }
+        false
     }
 
     fn handle_fd_event(&mut self, event: PortEvent, read_buf: &mut [u8]) {
@@ -651,12 +659,16 @@ impl VsockPoller {
                 let event = PortEvent::from_raw(unsafe {
                     events[i].assume_init_read()
                 });
-                match event.source {
+                let should_shutdown = match event.source {
                     EventSource::User => self.handle_user_event(event),
                     EventSource::Fd => {
-                        self.handle_fd_event(event, &mut read_buf)
+                        self.handle_fd_event(event, &mut read_buf);
+                        false
                     }
-                    _ => {}
+                    _ => false,
+                };
+                if should_shutdown {
+                    return;
                 }
             }
 
@@ -716,8 +728,13 @@ impl PortEvent {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
 
+    use iddqd::IdHashMap;
     use zerocopy::FromBytes;
 
     use crate::accessors::MemAccessor;
@@ -726,9 +743,12 @@ mod tests {
     use crate::hw::virtio::vsock::{VsockVq, VSOCK_RX_QUEUE};
     use crate::vmm::mem::PhysMap;
     use crate::vsock::packet::{
-        VsockPacketHeader, VIRTIO_VSOCK_OP_REQUEST, VIRTIO_VSOCK_OP_RESPONSE,
-        VIRTIO_VSOCK_OP_RST, VIRTIO_VSOCK_OP_RW, VIRTIO_VSOCK_TYPE_STREAM,
+        VsockPacketHeader, VIRTIO_VSOCK_OP_CREDIT_UPDATE,
+        VIRTIO_VSOCK_OP_REQUEST, VIRTIO_VSOCK_OP_RESPONSE, VIRTIO_VSOCK_OP_RST,
+        VIRTIO_VSOCK_OP_RW, VIRTIO_VSOCK_OP_SHUTDOWN,
+        VIRTIO_VSOCK_SHUTDOWN_F_SEND, VIRTIO_VSOCK_TYPE_STREAM,
     };
+    use crate::vsock::proxy::{BackendListener, ConnKey, CONN_TX_BUF_SIZE};
     use crate::vsock::VSOCK_HOST_CID;
 
     use super::VsockPoller;
@@ -742,7 +762,20 @@ mod tests {
     }
 
     const PAGE_SIZE: u64 = 0x1000;
-    const QUEUE_SIZE: u16 = 16;
+    const QUEUE_SIZE: u16 = 64;
+
+    /// Bind a TCP listener on an ephemeral port and return it along with an
+    /// `IdHashMap<BackendListener>` that maps `vsock_port` to the listener's
+    /// actual address.
+    fn bind_test_backend(
+        vsock_port: u32,
+    ) -> (TcpListener, IdHashMap<BackendListener>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut backends = IdHashMap::new();
+        backends.insert_overwrite(BackendListener::new(vsock_port, addr));
+        (listener, backends)
+    }
 
     const fn align_up(val: u64, align: u64) -> u64 {
         (val + align - 1) & !(align - 1)
@@ -781,9 +814,11 @@ mod tests {
         }
     }
 
-    /// All the pieces produced by [`make_test_vsock_vq`].
+    /// Test guest memory and queue layout produced by [`make_test_vsock_vq`].
+    ///
+    /// The `VsockVq` is returned separately so it can be moved into the
+    /// `VsockPoller` while this struct remains borrowed.
     struct TestVsockVq {
-        vq: VsockVq,
         mem_acc: MemAccessor,
         /// Must stay alive to keep memory mappings valid.
         _phys: PhysMap,
@@ -796,14 +831,15 @@ mod tests {
 
     /// Build a VsockVq backed by test guest memory with 3 queues
     /// (RX, TX, EVENT).
-    fn make_test_vsock_vq() -> TestVsockVq {
+    fn make_test_vsock_vq() -> (VsockVq, TestVsockVq) {
         // Lay out 3 queues sequentially
         let rx = QueueLayout::new(0, QUEUE_SIZE);
         let tx = QueueLayout::new(rx.end, QUEUE_SIZE);
         let event = QueueLayout::new(tx.end, 1);
 
-        // Data area after all rings
-        let data_area_size = PAGE_SIZE * 8;
+        // Data area after all rings — sized generously to support tests that
+        // send large amounts of data (e.g. credit update tests with >64KB).
+        let data_area_size = PAGE_SIZE * 64;
         let total_size =
             align_up(event.end + data_area_size, PAGE_SIZE) as usize;
 
@@ -844,7 +880,7 @@ mod tests {
         let vsock_acc = mem_acc.child(Some("vsock-vq-acc".to_string()));
         let vq = VsockVq::new(vq_arcs, vsock_acc);
 
-        TestVsockVq { vq, mem_acc, _phys: phys, raw_queues, rx, tx, event }
+        (vq, TestVsockVq { mem_acc, _phys: phys, raw_queues, rx, tx, event })
     }
 
     /// State for injecting descriptors into a specific queue's rings.
@@ -928,7 +964,6 @@ mod tests {
         }
 
         /// Chain two descriptors together via NEXT flag.
-        #[allow(dead_code)]
         fn chain(&self, mem_acc: &MemAccessor, from: u16, to: u16) {
             let gpa = self.layout.desc_base + u64::from(from) * 16;
             let mem = mem_acc.access().unwrap();
@@ -944,6 +979,48 @@ mod tests {
             *mem.read(GuestAddr(self.layout.used_base + 2)).unwrap()
         }
 
+        /// Read the header and data payload from a used ring entry by index.
+        fn read_used_entry(
+            &self,
+            mem_acc: &MemAccessor,
+            used_index: u16,
+        ) -> (VsockPacketHeader, Vec<u8>) {
+            let mem = mem_acc.access().unwrap();
+            let entry_gpa = self.layout.used_base
+                + 4
+                + u64::from(used_index % QUEUE_SIZE) * 8;
+            let desc_id: u32 = *mem.read(GuestAddr(entry_gpa)).unwrap();
+
+            let desc_gpa =
+                self.layout.desc_base + u64::from(desc_id as u16) * 16;
+            let raw_desc: RawDesc = *mem.read(GuestAddr(desc_gpa)).unwrap();
+
+            let hdr_size = std::mem::size_of::<VsockPacketHeader>();
+            let mut hdr = VsockPacketHeader::default();
+            mem.read_into(
+                GuestAddr(raw_desc.addr),
+                &mut crate::common::GuestData::from(unsafe {
+                    std::slice::from_raw_parts_mut(
+                        &mut hdr as *mut VsockPacketHeader as *mut u8,
+                        hdr_size,
+                    )
+                }),
+                hdr_size,
+            );
+
+            let data_len = hdr.len() as usize;
+            let mut data = vec![0u8; data_len];
+            if data_len > 0 {
+                mem.read_into(
+                    GuestAddr(raw_desc.addr + hdr_size as u64),
+                    &mut crate::common::GuestData::from(data.as_mut_slice()),
+                    data_len,
+                );
+            }
+
+            (hdr, data)
+        }
+
         /// Change a descriptor's flags from writable to readable so its
         /// contents can be read back via `chain.read()` after re-publishing.
         fn set_desc_readable(&self, mem_acc: &MemAccessor, idx: u16) {
@@ -957,14 +1034,15 @@ mod tests {
 
     #[test]
     fn request_receives_response() {
-        // Start a TCP listener so VsockProxyConn::new() can connect
-        let listener = TcpListener::bind("127.0.0.1:3000").unwrap();
+        let vsock_port = 3000;
+        let (_listener, backends) = bind_test_backend(vsock_port);
 
         let guest_cid: u32 = 50;
-        let tv = make_test_vsock_vq();
+        let (vq, tv) = make_test_vsock_vq();
 
         let log = test_logger();
-        let mut poller = VsockPoller::new(guest_cid, tv.vq, log).unwrap();
+        let mut poller =
+            VsockPoller::new(guest_cid, vq, log, backends).unwrap();
 
         // -- Populate RX queue with a writable descriptor chain --
         // The poller will need somewhere to write the RESPONSE.
@@ -990,14 +1068,7 @@ mod tests {
             .set_buf_alloc(65536)
             .set_fwd_cnt(0);
 
-        // Write header as a readable descriptor
-        let hdr_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                &hdr as *const VsockPacketHeader as *const u8,
-                std::mem::size_of::<VsockPacketHeader>(),
-            )
-        };
-        let d_tx = tx_writer.add_readable(&tv.mem_acc, hdr_bytes);
+        let d_tx = tx_writer.add_readable(&tv.mem_acc, hdr_as_bytes(&hdr));
         tx_writer.publish_avail(&tv.mem_acc, d_tx);
 
         // -- Drive the poller --
@@ -1031,16 +1102,18 @@ mod tests {
         assert_eq!(resp_hdr.dst_port(), 1234);
         assert_eq!(resp_hdr.socket_type(), VIRTIO_VSOCK_TYPE_STREAM);
 
-        drop(listener);
+        // Verify the connection was tracked
+        assert_eq!(poller.connections.len(), 1);
     }
 
     #[test]
     fn rw_with_invalid_socket_type_receives_rst() {
         let guest_cid: u32 = 50;
-        let tv = make_test_vsock_vq();
+        let (vq, tv) = make_test_vsock_vq();
 
         let log = test_logger();
-        let mut poller = VsockPoller::new(guest_cid, tv.vq, log).unwrap();
+        let mut poller =
+            VsockPoller::new(guest_cid, vq, log, IdHashMap::new()).unwrap();
 
         // -- Populate RX queue with a writable descriptor for the RST --
         let rx_data_start = tv.event.end + PAGE_SIZE;
@@ -1064,13 +1137,7 @@ mod tests {
             .set_buf_alloc(65536)
             .set_fwd_cnt(0);
 
-        let hdr_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                &hdr as *const VsockPacketHeader as *const u8,
-                std::mem::size_of::<VsockPacketHeader>(),
-            )
-        };
-        let d_tx = tx_writer.add_readable(&tv.mem_acc, hdr_bytes);
+        let d_tx = tx_writer.add_readable(&tv.mem_acc, hdr_as_bytes(&hdr));
         tx_writer.publish_avail(&tv.mem_acc, d_tx);
 
         // -- Drive the poller --
@@ -1099,5 +1166,848 @@ mod tests {
         assert_eq!(resp_hdr.dst_cid(), guest_cid as u64);
         assert_eq!(resp_hdr.src_port(), 8080);
         assert_eq!(resp_hdr.dst_port(), 5555);
+    }
+
+    #[test]
+    fn request_then_rw_delivers_data() {
+        let vsock_port = 3000;
+        let guest_port = 1234;
+        let (listener, backends) = bind_test_backend(vsock_port);
+        listener.set_nonblocking(false).unwrap();
+
+        let guest_cid: u32 = 50;
+        let (vq, tv) = make_test_vsock_vq();
+
+        let log = test_logger();
+        let mut poller =
+            VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+
+        // -- Populate RX queue with a writable descriptor for the RESPONSE --
+        let rx_data_start = tv.event.end + PAGE_SIZE;
+        let mut rx_writer = QueueWriter::new(tv.rx, rx_data_start);
+        let d_rx = rx_writer.add_writable(&tv.mem_acc, 256);
+        rx_writer.publish_avail(&tv.mem_acc, d_rx);
+
+        // -- Inject REQUEST on TX queue --
+        let tx_data_start = rx_data_start + PAGE_SIZE;
+        let mut tx_writer = QueueWriter::new(tv.tx, tx_data_start);
+
+        let mut req_hdr = VsockPacketHeader::default();
+        req_hdr
+            .set_src_cid(guest_cid)
+            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_src_port(guest_port)
+            .set_dst_port(vsock_port)
+            .set_len(0)
+            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
+            .set_op(VIRTIO_VSOCK_OP_REQUEST)
+            .set_buf_alloc(65536)
+            .set_fwd_cnt(0);
+
+        let d_tx = tx_writer.add_readable(&tv.mem_acc, hdr_as_bytes(&req_hdr));
+        tx_writer.publish_avail(&tv.mem_acc, d_tx);
+
+        // Drive REQUEST handling
+        poller.handle_tx_queue_event();
+        poller.process_pending_rx();
+
+        // Verify RESPONSE was sent
+        assert_eq!(rx_writer.used_idx(&tv.mem_acc), 1);
+        assert_eq!(poller.connections.len(), 1);
+
+        // Accept the TCP connection from the backend listener
+        let mut accepted = listener.accept().unwrap().0;
+        accepted.set_nonblocking(false).unwrap();
+        accepted.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+
+        // -- Inject RW packet with data payload on TX queue --
+        let payload = b"hello from guest via vsock!";
+
+        let mut rw_hdr = VsockPacketHeader::default();
+        rw_hdr
+            .set_src_cid(guest_cid)
+            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_src_port(guest_port)
+            .set_dst_port(vsock_port)
+            .set_len(payload.len() as u32)
+            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
+            .set_op(VIRTIO_VSOCK_OP_RW)
+            .set_buf_alloc(65536)
+            .set_fwd_cnt(0);
+
+        let rw_hdr_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                &rw_hdr as *const VsockPacketHeader as *const u8,
+                std::mem::size_of::<VsockPacketHeader>(),
+            )
+        };
+
+        // Header and body as chained readable descriptors
+        let d_hdr = tx_writer.add_readable(&tv.mem_acc, rw_hdr_bytes);
+        let d_body = tx_writer.add_readable(&tv.mem_acc, payload);
+        tx_writer.chain(&tv.mem_acc, d_hdr, d_body);
+        tx_writer.publish_avail(&tv.mem_acc, d_hdr);
+
+        // Drive RW handling — this buffers data in conn.vbuf
+        poller.handle_tx_queue_event();
+
+        // Flush the buffered data to the TCP socket
+        let key = ConnKey { host_port: vsock_port, guest_port };
+        let fd = poller.connections.get(&key).unwrap().get_fd();
+        poller.handle_pollout(key, fd);
+
+        // Read from the accepted TCP stream and verify the data
+        let mut buf = vec![0u8; payload.len()];
+        accepted.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, payload);
+    }
+
+    /// Helper: serialize a VsockPacketHeader to bytes.
+    fn hdr_as_bytes(hdr: &VsockPacketHeader) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                hdr as *const VsockPacketHeader as *const u8,
+                std::mem::size_of::<VsockPacketHeader>(),
+            )
+        }
+    }
+
+    /// Helper: establish a vsock connection (REQUEST → RESPONSE) and return
+    /// the key, accepted TCP stream, and queue writers positioned after setup.
+    fn establish_connection(
+        poller: &mut VsockPoller,
+        tv: &TestVsockVq,
+        listener: &TcpListener,
+        guest_cid: u32,
+        vsock_port: u32,
+        guest_port: u32,
+    ) -> (ConnKey, std::net::TcpStream, QueueWriter, QueueWriter) {
+        let rx_data_start = tv.event.end + PAGE_SIZE;
+        let mut rx_writer = QueueWriter::new(tv.rx, rx_data_start);
+
+        // Provide a writable descriptor for the RESPONSE
+        let d_rx = rx_writer.add_writable(&tv.mem_acc, 256);
+        rx_writer.publish_avail(&tv.mem_acc, d_rx);
+
+        let tx_data_start = rx_data_start + PAGE_SIZE * 4;
+        let mut tx_writer = QueueWriter::new(tv.tx, tx_data_start);
+
+        let mut req_hdr = VsockPacketHeader::default();
+        req_hdr
+            .set_src_cid(guest_cid)
+            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_src_port(guest_port)
+            .set_dst_port(vsock_port)
+            .set_len(0)
+            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
+            .set_op(VIRTIO_VSOCK_OP_REQUEST)
+            .set_buf_alloc(65536)
+            .set_fwd_cnt(0);
+
+        let d_tx = tx_writer.add_readable(&tv.mem_acc, hdr_as_bytes(&req_hdr));
+        tx_writer.publish_avail(&tv.mem_acc, d_tx);
+
+        poller.handle_tx_queue_event();
+        poller.process_pending_rx();
+
+        assert_eq!(rx_writer.used_idx(&tv.mem_acc), 1);
+
+        let accepted = listener.accept().unwrap().0;
+        accepted.set_nonblocking(false).unwrap();
+        accepted.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+
+        let key = ConnKey { host_port: vsock_port, guest_port };
+        (key, accepted, rx_writer, tx_writer)
+    }
+
+    #[test]
+    fn credit_update_sent_after_flushing_half_buffer() {
+        let vsock_port = 4000;
+        let guest_port = 2000;
+        let guest_cid: u32 = 50;
+        let (listener, backends) = bind_test_backend(vsock_port);
+        listener.set_nonblocking(false).unwrap();
+
+        let (vq, tv) = make_test_vsock_vq();
+        let log = test_logger();
+        let mut poller =
+            VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+
+        let (key, mut accepted, mut rx_writer, mut tx_writer) =
+            establish_connection(
+                &mut poller,
+                &tv,
+                &listener,
+                guest_cid,
+                vsock_port,
+                guest_port,
+            );
+
+        // Send enough data to exceed half the buffer capacity (64KB).
+        // We send multiple 8KB chunks, flushing each time, until fwd_cnt
+        // crosses the threshold.
+        let chunk_size = 8192;
+        let num_chunks = (CONN_TX_BUF_SIZE / 2) / chunk_size + 1;
+        let payload = vec![0xAB_u8; chunk_size];
+        let mut total_sent = 0usize;
+
+        for _ in 0..num_chunks {
+            let mut rw_hdr = VsockPacketHeader::default();
+            rw_hdr
+                .set_src_cid(guest_cid)
+                .set_dst_cid(VSOCK_HOST_CID as u32)
+                .set_src_port(guest_port)
+                .set_dst_port(vsock_port)
+                .set_len(payload.len() as u32)
+                .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
+                .set_op(VIRTIO_VSOCK_OP_RW)
+                .set_buf_alloc(65536)
+                .set_fwd_cnt(0);
+
+            let d_hdr =
+                tx_writer.add_readable(&tv.mem_acc, hdr_as_bytes(&rw_hdr));
+            let d_body = tx_writer.add_readable(&tv.mem_acc, &payload);
+            tx_writer.chain(&tv.mem_acc, d_hdr, d_body);
+            tx_writer.publish_avail(&tv.mem_acc, d_hdr);
+
+            poller.handle_tx_queue_event();
+
+            let fd = poller.connections.get(&key).unwrap().get_fd();
+            poller.handle_pollout(key, fd);
+
+            total_sent += chunk_size;
+        }
+
+        // Provide an RX descriptor for the credit update packet
+        let d_rx_credit = rx_writer.add_writable(&tv.mem_acc, 256);
+        rx_writer.publish_avail(&tv.mem_acc, d_rx_credit);
+
+        // Drain pending rx to write the credit update to the RX queue
+        poller.process_pending_rx();
+
+        // Verify we got a CREDIT_UPDATE on the RX queue
+        // used_idx should be 2: one for the RESPONSE, one for the credit update
+        assert_eq!(
+            rx_writer.used_idx(&tv.mem_acc),
+            2,
+            "expected credit update to be written to RX queue"
+        );
+
+        // Read back the credit update packet
+        rx_writer.set_desc_readable(&tv.mem_acc, d_rx_credit);
+        rx_writer.publish_avail(&tv.mem_acc, d_rx_credit);
+
+        let rx_vq = tv.raw_queues.get(VSOCK_RX_QUEUE).unwrap();
+        let mem = tv.mem_acc.access().unwrap();
+        let mut chain = Chain::with_capacity(16);
+        rx_vq.pop_avail(&mut chain, &mem).expect("credit update desc");
+
+        let mut credit_hdr = VsockPacketHeader::default();
+        assert!(chain.read(&mut credit_hdr, &mem));
+
+        assert_eq!(credit_hdr.op(), VIRTIO_VSOCK_OP_CREDIT_UPDATE);
+        assert_eq!(credit_hdr.src_cid(), VSOCK_HOST_CID);
+        assert_eq!(credit_hdr.dst_cid(), guest_cid as u64);
+        assert_eq!(credit_hdr.src_port(), vsock_port);
+        assert_eq!(credit_hdr.dst_port(), guest_port);
+        assert_eq!(credit_hdr.buf_alloc(), CONN_TX_BUF_SIZE as u32);
+        assert!(
+            credit_hdr.fwd_cnt() >= total_sent as u32,
+            "fwd_cnt ({}) should be >= total_sent ({})",
+            credit_hdr.fwd_cnt(),
+            total_sent,
+        );
+
+        // Drain the data from the accepted socket to confirm it arrived
+        let mut buf = vec![0u8; total_sent];
+        accepted.read_exact(&mut buf).unwrap();
+        assert!(buf.iter().all(|&b| b == 0xAB));
+    }
+
+    #[test]
+    fn rst_removes_established_connection() {
+        let vsock_port = 5000;
+        let guest_port = 3000;
+        let guest_cid: u32 = 50;
+        let (listener, backends) = bind_test_backend(vsock_port);
+        listener.set_nonblocking(false).unwrap();
+
+        let (vq, tv) = make_test_vsock_vq();
+        let log = test_logger();
+        let mut poller =
+            VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+
+        let (_key, _accepted, _rx_writer, mut tx_writer) = establish_connection(
+            &mut poller,
+            &tv,
+            &listener,
+            guest_cid,
+            vsock_port,
+            guest_port,
+        );
+
+        assert_eq!(poller.connections.len(), 1);
+
+        // -- Inject RST on the TX queue --
+        let mut rst_hdr = VsockPacketHeader::default();
+        rst_hdr
+            .set_src_cid(guest_cid)
+            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_src_port(guest_port)
+            .set_dst_port(vsock_port)
+            .set_len(0)
+            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
+            .set_op(VIRTIO_VSOCK_OP_RST)
+            .set_buf_alloc(0)
+            .set_fwd_cnt(0);
+
+        let d_tx = tx_writer.add_readable(&tv.mem_acc, hdr_as_bytes(&rst_hdr));
+        tx_writer.publish_avail(&tv.mem_acc, d_tx);
+
+        poller.handle_tx_queue_event();
+
+        assert_eq!(
+            poller.connections.len(),
+            0,
+            "connection should be removed after receiving RST"
+        );
+    }
+
+    /// Spin on `used_idx` until it reaches `expected`, with a timeout.
+    fn wait_for_used(
+        writer: &QueueWriter,
+        mem_acc: &MemAccessor,
+        expected: u16,
+        timeout_ms: u64,
+    ) {
+        let start = std::time::Instant::now();
+        let timeout = Duration::from_millis(timeout_ms);
+        loop {
+            if writer.used_idx(mem_acc) >= expected {
+                return;
+            }
+            if start.elapsed() > timeout {
+                panic!(
+                    "timed out waiting for used_idx to reach {} (current: {})",
+                    expected,
+                    writer.used_idx(mem_acc),
+                );
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn end_to_end_guest_to_host() {
+        let vsock_port = 7000;
+        let guest_port = 5000;
+        let guest_cid: u32 = 50;
+        let (listener, backends) = bind_test_backend(vsock_port);
+        listener.set_nonblocking(false).unwrap();
+
+        let (vq, tv) = make_test_vsock_vq();
+        let log = test_logger();
+        let poller = VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+
+        // Pre-populate RX queue with writable descriptors for RESPONSE + data
+        let rx_data_start = tv.event.end + PAGE_SIZE;
+        let mut rx_writer = QueueWriter::new(tv.rx, rx_data_start);
+        for _ in 0..8 {
+            let d = rx_writer.add_writable(&tv.mem_acc, 4096);
+            rx_writer.publish_avail(&tv.mem_acc, d);
+        }
+
+        let notify = poller.notify_handle();
+        let handle = poller.run();
+
+        // -- Write REQUEST packet into TX queue --
+        let tx_data_start = rx_data_start + PAGE_SIZE * 16;
+        let mut tx_writer = QueueWriter::new(tv.tx, tx_data_start);
+
+        let mut req_hdr = VsockPacketHeader::default();
+        req_hdr
+            .set_src_cid(guest_cid)
+            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_src_port(guest_port)
+            .set_dst_port(vsock_port)
+            .set_len(0)
+            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
+            .set_op(VIRTIO_VSOCK_OP_REQUEST)
+            .set_buf_alloc(65536)
+            .set_fwd_cnt(0);
+
+        let d_tx = tx_writer.add_readable(&tv.mem_acc, hdr_as_bytes(&req_hdr));
+        tx_writer.publish_avail(&tv.mem_acc, d_tx);
+        notify.queue_notify(crate::hw::virtio::vsock::VSOCK_TX_QUEUE).unwrap();
+
+        // Accept the TCP connection (blocks until poller connects)
+        let mut accepted = listener.accept().unwrap().0;
+        accepted.set_nonblocking(false).unwrap();
+        accepted.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+
+        // Wait for RESPONSE on RX queue
+        wait_for_used(&rx_writer, &tv.mem_acc, 1, 5000);
+
+        // -- Guest→Host: send RW packet with payload --
+        let payload = b"hello from guest via vsock end-to-end!";
+        let mut rw_hdr = VsockPacketHeader::default();
+        rw_hdr
+            .set_src_cid(guest_cid)
+            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_src_port(guest_port)
+            .set_dst_port(vsock_port)
+            .set_len(payload.len() as u32)
+            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
+            .set_op(VIRTIO_VSOCK_OP_RW)
+            .set_buf_alloc(65536)
+            .set_fwd_cnt(0);
+
+        let d_hdr = tx_writer.add_readable(&tv.mem_acc, hdr_as_bytes(&rw_hdr));
+        let d_body = tx_writer.add_readable(&tv.mem_acc, payload);
+        tx_writer.chain(&tv.mem_acc, d_hdr, d_body);
+        tx_writer.publish_avail(&tv.mem_acc, d_hdr);
+        notify.queue_notify(crate::hw::virtio::vsock::VSOCK_TX_QUEUE).unwrap();
+
+        // Read from accepted TCP stream — verify guest→host data
+        let mut buf = vec![0u8; payload.len()];
+        accepted.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, payload, "guest→host data mismatch");
+
+        // -- Host→Guest: write data into accepted TCP stream --
+        let host_payload = b"reply from host via vsock!";
+        accepted.write_all(host_payload).unwrap();
+        accepted.flush().unwrap();
+
+        // Wait for RW packet on RX queue (RESPONSE was 1, now expect 2+)
+        wait_for_used(&rx_writer, &tv.mem_acc, 2, 5000);
+
+        // Read back the RW packet from RX used ring entry 1
+        let (resp_hdr, host_buf) = rx_writer.read_used_entry(&tv.mem_acc, 1);
+
+        assert_eq!(resp_hdr.op(), VIRTIO_VSOCK_OP_RW);
+        assert_eq!(resp_hdr.src_port(), vsock_port);
+        assert_eq!(resp_hdr.dst_port(), guest_port);
+        assert_eq!(&host_buf, host_payload, "host→guest data mismatch");
+
+        // Shutdown and join
+        notify.shutdown().unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn rx_blocked_resumes_when_descriptors_available() {
+        let vsock_port = 6000;
+        let guest_port = 4000;
+        let guest_cid: u32 = 50;
+        let (listener, backends) = bind_test_backend(vsock_port);
+        listener.set_nonblocking(false).unwrap();
+
+        let (vq, tv) = make_test_vsock_vq();
+        let log = test_logger();
+        let mut poller =
+            VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+
+        let (key, mut accepted, mut rx_writer, _tx_writer) =
+            establish_connection(
+                &mut poller,
+                &tv,
+                &listener,
+                guest_cid,
+                vsock_port,
+                guest_port,
+            );
+
+        // The RESPONSE consumed the only RX descriptor we provided in
+        // establish_connection, so the RX queue is now empty.
+
+        // Write data from the host side into the accepted TCP stream.
+        // handle_pollin will try to read this and forward it to the guest.
+        let host_data = b"data from the host side";
+        accepted.write_all(host_data).unwrap();
+        accepted.flush().unwrap();
+
+        // Call handle_pollin with no RX descriptors available.
+        // This should add the connection to rx_blocked.
+        let fd = poller.connections.get(&key).unwrap().get_fd();
+        let mut read_buf = vec![0u8; 4096];
+        poller.handle_pollin(key, fd, &mut read_buf);
+
+        assert!(
+            poller.rx_blocked.contains(&key),
+            "connection should be in rx_blocked when RX queue is full"
+        );
+
+        // Verify no data was delivered (used_idx should still be 1 from
+        // the RESPONSE only).
+        assert_eq!(rx_writer.used_idx(&tv.mem_acc), 1);
+
+        // -- Guest adds new RX descriptors --
+        let d_rx = rx_writer.add_writable(&tv.mem_acc, 4096);
+        rx_writer.publish_avail(&tv.mem_acc, d_rx);
+
+        // Simulate the guest notifying us that new RX descriptors are
+        // available. This drains pending rx events and re-registers
+        // blocked connections.
+        poller.handle_rx_queue_event();
+
+        assert!(
+            poller.rx_blocked.is_empty(),
+            "rx_blocked should be drained after handle_rx_queue_event"
+        );
+
+        // The connection was re-registered for POLLIN but handle_pollin
+        // hasn't been called again yet. Call it now to deliver the data.
+        let fd = poller.connections.get(&key).unwrap().get_fd();
+        poller.handle_pollin(key, fd, &mut read_buf);
+
+        // Verify data was delivered to the RX queue.
+        assert_eq!(
+            rx_writer.used_idx(&tv.mem_acc),
+            2,
+            "expected data to be delivered after RX descriptors were added"
+        );
+
+        // Read back the RW packet the poller wrote to the RX queue.
+        rx_writer.set_desc_readable(&tv.mem_acc, d_rx);
+        rx_writer.publish_avail(&tv.mem_acc, d_rx);
+
+        let rx_vq = tv.raw_queues.get(VSOCK_RX_QUEUE).unwrap();
+        let mem = tv.mem_acc.access().unwrap();
+        let mut chain = Chain::with_capacity(16);
+        rx_vq.pop_avail(&mut chain, &mem).expect("rx descriptor");
+
+        let mut rw_hdr = VsockPacketHeader::default();
+        assert!(chain.read(&mut rw_hdr, &mem));
+
+        assert_eq!(rw_hdr.op(), VIRTIO_VSOCK_OP_RW);
+        assert_eq!(rw_hdr.src_port(), vsock_port);
+        assert_eq!(rw_hdr.dst_port(), guest_port);
+        assert_eq!(rw_hdr.len(), host_data.len() as u32);
+
+        // Read the data payload from the chain.
+        let expected_len = rw_hdr.len() as usize;
+        let mut payload = vec![0u8; expected_len];
+        let mut done = 0;
+        chain.for_remaining_type(true, |addr, len| {
+            let remain = expected_len - done;
+            let mut guest_buf =
+                crate::common::GuestData::from(&mut payload[done..]);
+            if let Some(copied) = mem.read_into(addr, &mut guest_buf, len) {
+                done += copied;
+                (copied, copied < remain)
+            } else {
+                (0, false)
+            }
+        });
+        assert_eq!(&payload, host_data);
+    }
+
+    /// End-to-end test with large data transfers in both directions,
+    /// exercising rx_blocked, credit updates, and descriptor replenishment
+    /// across many batches of reused descriptor slots.
+    #[test]
+    fn end_to_end_large_data() {
+        let total_bytes: usize = 10 * 1024 * 1024;
+
+        let vsock_port = 8000;
+        let guest_port = 6000;
+        let guest_cid: u32 = 50;
+        let (listener, backends) = bind_test_backend(vsock_port);
+        listener.set_nonblocking(false).unwrap();
+
+        let (vq, tv) = make_test_vsock_vq();
+        let log = test_logger();
+        let poller = VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+
+        // Provide initial RX descriptors for RESPONSE + credit updates
+        let rx_data_start = tv.event.end + PAGE_SIZE;
+        let rx_data_base = rx_data_start;
+        let mut rx_writer = QueueWriter::new(tv.rx, rx_data_start);
+        for _ in 0..8 {
+            let d = rx_writer.add_writable(&tv.mem_acc, 4096);
+            rx_writer.publish_avail(&tv.mem_acc, d);
+        }
+
+        let notify = poller.notify_handle();
+        let handle = poller.run();
+
+        // -- Establish connection --
+        let tx_data_start = rx_data_start + PAGE_SIZE * 32;
+        let tx_data_base = tx_data_start;
+        let mut tx_writer = QueueWriter::new(tv.tx, tx_data_start);
+
+        // Use a large buf_alloc so host→guest credit doesn't run out
+        // before we've transferred all the data.
+        let buf_alloc = total_bytes as u32 * 2;
+
+        let mut req_hdr = VsockPacketHeader::default();
+        req_hdr
+            .set_src_cid(guest_cid)
+            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_src_port(guest_port)
+            .set_dst_port(vsock_port)
+            .set_len(0)
+            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
+            .set_op(VIRTIO_VSOCK_OP_REQUEST)
+            .set_buf_alloc(buf_alloc)
+            .set_fwd_cnt(0);
+
+        let d_tx = tx_writer.add_readable(&tv.mem_acc, hdr_as_bytes(&req_hdr));
+        tx_writer.publish_avail(&tv.mem_acc, d_tx);
+        notify.queue_notify(crate::hw::virtio::vsock::VSOCK_TX_QUEUE).unwrap();
+
+        let accepted = listener.accept().unwrap().0;
+        accepted.set_nonblocking(false).unwrap();
+
+        wait_for_used(&rx_writer, &tv.mem_acc, 1, 5000);
+
+        // ============================================================
+        // Phase 1: Guest→Host
+        //
+        // A reader thread drains the TCP socket while the main thread
+        // injects RW packets in batches, reusing descriptor slots and
+        // guest memory between batches.
+        // ============================================================
+        let guest_data: Vec<u8> =
+            (0..total_bytes).map(|i| (i % 251) as u8).collect();
+
+        // Track how many bytes the reader has consumed so we can apply
+        // backpressure and avoid overflowing the poller's VsockBuf.
+        let bytes_read = Arc::new(AtomicUsize::new(0));
+        let tcp_reader = {
+            let mut stream = accepted.try_clone().unwrap();
+            let len = total_bytes;
+            let progress = Arc::clone(&bytes_read);
+            std::thread::spawn(move || {
+                let mut result = Vec::with_capacity(len);
+                let mut chunk = vec![0u8; 65536];
+                let mut total = 0;
+                while total < len {
+                    let n = stream.read(&mut chunk).unwrap();
+                    assert!(n > 0, "unexpected EOF after {total}/{len}");
+                    result.extend_from_slice(&chunk[..n]);
+                    total += n;
+                    progress.store(total, Ordering::Release);
+                }
+                result
+            })
+        };
+
+        let chunk_size = 4096;
+        let batch_packets = 8; // 8 packets × 2 descs = 16 descs per batch
+        let mut guest_sent = 0usize;
+        // TX used_idx starts at 1 (the REQUEST was consumed)
+        let mut tx_consumed = 1u16;
+
+        while guest_sent < total_bytes {
+            let remaining =
+                (total_bytes - guest_sent + chunk_size - 1) / chunk_size;
+            let this_batch = std::cmp::min(batch_packets, remaining);
+            // Backpressure: don't let in-flight data exceed VsockBuf
+            // capacity. The poller buffers TX data in VsockBuf (128KB)
+            // and flushes via POLLOUT. If we push faster than the
+            // flush rate, the buffer overflows and panics.
+            let after_send = guest_sent + this_batch * chunk_size;
+            loop {
+                let read = bytes_read.load(Ordering::Acquire);
+                if after_send <= read + CONN_TX_BUF_SIZE {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+
+            // Reuse the same descriptor slots and data region each batch.
+            // Safe because we wait for the previous batch to be fully
+            // consumed before overwriting.
+            tx_writer.next_desc = 0;
+            tx_writer.data_cursor = tx_data_base;
+
+            for i in 0..this_batch {
+                let offset = guest_sent + i * chunk_size;
+                let end = std::cmp::min(offset + chunk_size, total_bytes);
+                let payload = &guest_data[offset..end];
+
+                let mut rw_hdr = VsockPacketHeader::default();
+                rw_hdr
+                    .set_src_cid(guest_cid)
+                    .set_dst_cid(VSOCK_HOST_CID as u32)
+                    .set_src_port(guest_port)
+                    .set_dst_port(vsock_port)
+                    .set_len(payload.len() as u32)
+                    .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
+                    .set_op(VIRTIO_VSOCK_OP_RW)
+                    .set_buf_alloc(buf_alloc)
+                    .set_fwd_cnt(0);
+
+                let d_hdr =
+                    tx_writer.add_readable(&tv.mem_acc, hdr_as_bytes(&rw_hdr));
+                let d_body = tx_writer.add_readable(&tv.mem_acc, payload);
+                tx_writer.chain(&tv.mem_acc, d_hdr, d_body);
+                tx_writer.publish_avail(&tv.mem_acc, d_hdr);
+            }
+
+            notify
+                .queue_notify(crate::hw::virtio::vsock::VSOCK_TX_QUEUE)
+                .unwrap();
+
+            // Wait for the poller to consume this entire batch before
+            // we overwrite the descriptor slots in the next iteration.
+            tx_consumed += this_batch as u16;
+            wait_for_used(&tx_writer, &tv.mem_acc, tx_consumed, 10000);
+
+            guest_sent += this_batch * chunk_size;
+            if guest_sent > total_bytes {
+                guest_sent = total_bytes;
+            }
+        }
+
+        let received = tcp_reader.join().unwrap();
+        assert_eq!(received.len(), total_bytes);
+        assert!(received == guest_data, "guest→host data mismatch");
+
+        // ============================================================
+        // Phase 2: Host→Guest
+        //
+        // A writer thread pushes data into the TCP socket while the
+        // main thread replenishes RX descriptors in batches, reads
+        // completed used entries, and reuses descriptor slots once
+        // the entire batch has been consumed.
+        // ============================================================
+        let host_data: Vec<u8> =
+            (0..total_bytes).map(|i| ((i + 7) % 251) as u8).collect();
+
+        let tcp_writer = {
+            let mut stream = accepted.try_clone().unwrap();
+            let data = host_data.clone();
+            std::thread::spawn(move || {
+                stream.write_all(&data).unwrap();
+            })
+        };
+
+        let mut host_to_guest = Vec::with_capacity(total_bytes);
+
+        // Skip all used entries produced before this phase (RESPONSE +
+        // any credit updates from Phase 1).
+        let mut rx_next_used = rx_writer.used_idx(&tv.mem_acc);
+        let rx_batch = 16u16;
+        let mut descs_outstanding = 0u16;
+
+        while host_to_guest.len() < total_bytes {
+            // When all outstanding descriptors have been consumed we can
+            // safely reuse the descriptor slots and data region.
+            if descs_outstanding == 0 {
+                rx_writer.next_desc = 0;
+                rx_writer.data_cursor = rx_data_base;
+
+                for _ in 0..rx_batch {
+                    let d = rx_writer.add_writable(&tv.mem_acc, 4096);
+                    rx_writer.publish_avail(&tv.mem_acc, d);
+                    descs_outstanding += 1;
+                }
+                notify
+                    .queue_notify(crate::hw::virtio::vsock::VSOCK_RX_QUEUE)
+                    .unwrap();
+            }
+
+            // Wait for at least one new used entry.
+            wait_for_used(&rx_writer, &tv.mem_acc, rx_next_used + 1, 10000);
+
+            // Drain all currently available used entries.
+            let current_used = rx_writer.used_idx(&tv.mem_acc);
+            while rx_next_used < current_used {
+                let (hdr, data) =
+                    rx_writer.read_used_entry(&tv.mem_acc, rx_next_used);
+                rx_next_used += 1;
+                descs_outstanding -= 1;
+
+                if hdr.op() == VIRTIO_VSOCK_OP_RW {
+                    host_to_guest.extend_from_slice(&data);
+                }
+                // Credit updates and other control packets are
+                // silently consumed — they're expected here.
+            }
+        }
+
+        tcp_writer.join().unwrap();
+        assert_eq!(host_to_guest.len(), total_bytes);
+        assert!(host_to_guest == host_data, "host→guest data mismatch");
+
+        // Shutdown and join
+        notify.shutdown().unwrap();
+        handle.join().unwrap();
+    }
+
+    /// Closing the host-side TCP socket should cause the poller to send
+    /// a VIRTIO_VSOCK_OP_SHUTDOWN packet with VIRTIO_VSOCK_SHUTDOWN_F_SEND
+    /// to the guest, indicating the host will no longer send data.
+    #[test]
+    fn host_socket_eof_sends_shutdown() {
+        let vsock_port = 9000;
+        let guest_port = 7000;
+        let guest_cid: u32 = 50;
+        let (listener, backends) = bind_test_backend(vsock_port);
+        listener.set_nonblocking(false).unwrap();
+
+        let (vq, tv) = make_test_vsock_vq();
+        let log = test_logger();
+        let poller = VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+
+        // Provide RX descriptors for RESPONSE + SHUTDOWN
+        let rx_data_start = tv.event.end + PAGE_SIZE;
+        let mut rx_writer = QueueWriter::new(tv.rx, rx_data_start);
+        for _ in 0..4 {
+            let d = rx_writer.add_writable(&tv.mem_acc, 4096);
+            rx_writer.publish_avail(&tv.mem_acc, d);
+        }
+
+        let notify = poller.notify_handle();
+        let handle = poller.run();
+
+        // -- Establish connection --
+        let tx_data_start = rx_data_start + PAGE_SIZE * 16;
+        let mut tx_writer = QueueWriter::new(tv.tx, tx_data_start);
+
+        let mut req_hdr = VsockPacketHeader::default();
+        req_hdr
+            .set_src_cid(guest_cid)
+            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_src_port(guest_port)
+            .set_dst_port(vsock_port)
+            .set_len(0)
+            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
+            .set_op(VIRTIO_VSOCK_OP_REQUEST)
+            .set_buf_alloc(65536)
+            .set_fwd_cnt(0);
+
+        let d_tx =
+            tx_writer.add_readable(&tv.mem_acc, hdr_as_bytes(&req_hdr));
+        tx_writer.publish_avail(&tv.mem_acc, d_tx);
+        notify
+            .queue_notify(crate::hw::virtio::vsock::VSOCK_TX_QUEUE)
+            .unwrap();
+
+        // Accept the connection, wait for RESPONSE
+        let accepted = listener.accept().unwrap().0;
+        wait_for_used(&rx_writer, &tv.mem_acc, 1, 5000);
+
+        // -- Close the host-side socket to produce EOF --
+        drop(accepted);
+
+        // The poller should detect EOF on the next POLLIN and send
+        // a SHUTDOWN packet to the guest.
+        wait_for_used(&rx_writer, &tv.mem_acc, 2, 5000);
+
+        // Read back the packet from RX used ring entry 1
+        let (hdr, _data) = rx_writer.read_used_entry(&tv.mem_acc, 1);
+
+        assert_eq!(hdr.op(), VIRTIO_VSOCK_OP_SHUTDOWN);
+        assert_eq!(hdr.src_cid(), VSOCK_HOST_CID);
+        assert_eq!(hdr.dst_cid(), guest_cid as u64);
+        assert_eq!(hdr.src_port(), vsock_port);
+        assert_eq!(hdr.dst_port(), guest_port);
+        assert_eq!(hdr.flags(), VIRTIO_VSOCK_SHUTDOWN_F_SEND);
+
+        notify.shutdown().unwrap();
+        handle.join().unwrap();
     }
 }
