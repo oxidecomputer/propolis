@@ -38,8 +38,11 @@ slog-bunyan.workspace = true
 slog-term.workspace = true
 strum = { workspace = true, features = ["derive"] }
 tar.workspace = true
-uuid.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+vm-attest-proto.workspace = true
 pbind.workspace = true
+sha2 = "0.10.9"
+dice-verifier = { git = "https://github.com/oxidecomputer/dice-util", features = ["ipcc", "mock"] }
 
 [features]
 default = []
