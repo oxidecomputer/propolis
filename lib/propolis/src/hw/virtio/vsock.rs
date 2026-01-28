@@ -1,5 +1,7 @@
+use iddqd::IdHashMap;
 use lazy_static::lazy_static;
 use slog::Logger;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use crate::accessors::MemAccessor;
@@ -15,6 +17,7 @@ use crate::vmm::MemCtx;
 use crate::vsock::packet::VsockPacket;
 use crate::vsock::packet::VsockPacketError;
 use crate::vsock::packet::VsockPacketHeader;
+use crate::vsock::proxy::BackendListener;
 use crate::vsock::VsockBackend;
 use crate::vsock::VsockProxy;
 
@@ -81,7 +84,10 @@ pub struct VsockVq {
 }
 
 impl VsockVq {
-    pub(crate) fn new(queues: Vec<Arc<VirtQueue>>, acc_mem: MemAccessor) -> Self {
+    pub(crate) fn new(
+        queues: Vec<Arc<VirtQueue>>,
+        acc_mem: MemAccessor,
+    ) -> Self {
         Self { queues, acc_mem, rx_chain: None }
     }
 
@@ -165,7 +171,13 @@ impl PciVirtioSock {
             virtio_state.queues.iter().map(Clone::clone).collect(),
             pci_state.acc_mem.child(Some("vsock rx queue".to_string())),
         );
-        let backend = VsockProxy::new(cid, vvq, log);
+        let mut listeners = IdHashMap::new();
+        listeners.insert_overwrite(BackendListener::new(
+            3000,
+            "127.0.0.1:3000".parse().unwrap(),
+        ));
+
+        let backend = VsockProxy::new(cid, vvq, log, listeners);
 
         Arc::new(Self { cid, backend, virtio_state, pci_state })
     }

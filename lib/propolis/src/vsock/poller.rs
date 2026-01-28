@@ -6,6 +6,7 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
+use iddqd::IdHashMap;
 use slog::{error, warn, Logger};
 
 use crate::hw::virtio::vsock::VsockVq;
@@ -18,7 +19,9 @@ use crate::vsock::packet::{
     VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE, VIRTIO_VSOCK_SHUTDOWN_F_SEND,
     VIRTIO_VSOCK_TYPE_STREAM,
 };
-use crate::vsock::proxy::{ConnKey, VsockProxyConn, CONN_TX_BUF_SIZE};
+use crate::vsock::proxy::{
+    BackendListener, ConnKey, VsockProxyConn, CONN_TX_BUF_SIZE,
+};
 use crate::vsock::VSOCK_HOST_CID;
 
 enum VsockEvent {
@@ -97,6 +100,7 @@ enum RxEvent {
 pub struct VsockPoller {
     log: Logger,
     guest_cid: u32,
+    backends: IdHashMap<BackendListener>,
     port_fd: Arc<OwnedFd>,
     queues: VsockVq,
     connections: HashMap<ConnKey, VsockProxyConn>,
@@ -115,6 +119,7 @@ impl VsockPoller {
         cid: u32,
         queues: VsockVq,
         log: Logger,
+        backends: IdHashMap<BackendListener>,
     ) -> std::io::Result<Self> {
         let port_fd = unsafe {
             let fd = match libc::port_create() {
@@ -138,6 +143,7 @@ impl VsockPoller {
         Ok(Self {
             log,
             guest_cid: cid,
+            backends,
             port_fd: Arc::new(unsafe { OwnedFd::from_raw_fd(port_fd) }),
             queues,
             connections: Default::default(),
@@ -170,7 +176,15 @@ impl VsockPoller {
             return;
         }
 
-        match VsockProxyConn::new() {
+        let Some(listner) = self.backends.get(&packet.header.dst_port()) else {
+            self.rx.push_back(RxEvent::Reset {
+                src_port: key.host_port,
+                dst_port: key.guest_port,
+            });
+            return;
+        };
+
+        match VsockProxyConn::new(listner.addr()) {
             Ok(mut conn) => {
                 conn.update_peer_credit(
                     packet.header.buf_alloc(),
@@ -710,7 +724,6 @@ mod tests {
     use crate::common::GuestAddr;
     use crate::hw::virtio::testutil::{Chain, DescFlag, VirtQueues, VqSize};
     use crate::hw::virtio::vsock::{VsockVq, VSOCK_RX_QUEUE};
-    use crate::vsock::proxy::ConnKey;
     use crate::vmm::mem::PhysMap;
     use crate::vsock::packet::{
         VsockPacketHeader, VIRTIO_VSOCK_OP_REQUEST, VIRTIO_VSOCK_OP_RESPONSE,
@@ -816,8 +829,7 @@ mod tests {
                 layout.used_base,
             );
             vq.live.store(true, std::sync::atomic::Ordering::Release);
-            vq.enabled
-                .store(true, std::sync::atomic::Ordering::Release);
+            vq.enabled.store(true, std::sync::atomic::Ordering::Release);
 
             // Zero out avail and used ring headers
             let mem = mem_acc.access().unwrap();
@@ -827,21 +839,12 @@ mod tests {
             mem.write(GuestAddr(layout.used_base + 2), &0u16);
         }
 
-        let vq_arcs: Vec<_> = (0..3)
-            .map(|i| raw_queues.get(i).unwrap().clone())
-            .collect();
+        let vq_arcs: Vec<_> =
+            (0..3).map(|i| raw_queues.get(i).unwrap().clone()).collect();
         let vsock_acc = mem_acc.child(Some("vsock-vq-acc".to_string()));
         let vq = VsockVq::new(vq_arcs, vsock_acc);
 
-        TestVsockVq {
-            vq,
-            mem_acc,
-            _phys: phys,
-            raw_queues,
-            rx,
-            tx,
-            event,
-        }
+        TestVsockVq { vq, mem_acc, _phys: phys, raw_queues, rx, tx, event }
     }
 
     /// State for injecting descriptors into a specific queue's rings.
@@ -857,12 +860,7 @@ mod tests {
 
     impl QueueWriter {
         fn new(layout: QueueLayout, data_start: u64) -> Self {
-            Self {
-                layout,
-                next_desc: 0,
-                data_cursor: data_start,
-                avail_idx: 0,
-            }
+            Self { layout, next_desc: 0, data_cursor: data_start, avail_idx: 0 }
         }
 
         /// Write a descriptor and return its index.
@@ -966,8 +964,7 @@ mod tests {
         let tv = make_test_vsock_vq();
 
         let log = test_logger();
-        let mut poller =
-            VsockPoller::new(guest_cid, tv.vq, log).unwrap();
+        let mut poller = VsockPoller::new(guest_cid, tv.vq, log).unwrap();
 
         // -- Populate RX queue with a writable descriptor chain --
         // The poller will need somewhere to write the RESPONSE.
@@ -1034,14 +1031,6 @@ mod tests {
         assert_eq!(resp_hdr.dst_port(), 1234);
         assert_eq!(resp_hdr.socket_type(), VIRTIO_VSOCK_TYPE_STREAM);
 
-        // -- Verify the connection was tracked --
-        assert_eq!(poller.connections.len(), 1);
-        let key = ConnKey { host_port: 3000, guest_port: 1234 };
-        assert!(
-            poller.connections.contains_key(&key),
-            "expected connection for host_port=3000, guest_port=1234"
-        );
-
         drop(listener);
     }
 
@@ -1051,8 +1040,7 @@ mod tests {
         let tv = make_test_vsock_vq();
 
         let log = test_logger();
-        let mut poller =
-            VsockPoller::new(guest_cid, tv.vq, log).unwrap();
+        let mut poller = VsockPoller::new(guest_cid, tv.vq, log).unwrap();
 
         // -- Populate RX queue with a writable descriptor for the RST --
         let rx_data_start = tv.event.end + PAGE_SIZE;

@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::net::TcpStream;
 use std::num::NonZeroUsize;
 use std::num::Wrapping;
@@ -6,6 +7,8 @@ use std::os::fd::RawFd;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use iddqd::IdHashItem;
+use iddqd::IdHashMap;
 use slog::error;
 use slog::Logger;
 
@@ -97,14 +100,12 @@ pub(crate) struct VsockProxyConn {
 }
 
 impl VsockProxyConn {
-    pub fn new() -> Result<Self, ProxyConnError> {
+    pub fn new(addr: &SocketAddr) -> Result<Self, ProxyConnError> {
         // XXX connect_timeout - we are not async and potentially blocking the
         // event loop?
-        let socket = TcpStream::connect_timeout(
-            &"127.0.0.1:3000".parse().unwrap(),
-            Duration::from_millis(100),
-        )
-        .map_err(ProxyConnError::Socket)?;
+        let socket =
+            TcpStream::connect_timeout(addr, Duration::from_millis(100))
+                .map_err(ProxyConnError::Socket)?;
         socket.set_nonblocking(true).map_err(ProxyConnError::NonBlocking)?;
 
         Ok(Self {
@@ -254,6 +255,32 @@ impl VsockProxyConn {
     }
 }
 
+pub struct BackendListener {
+    port: u32,
+    // TODO this could be extended to support Unix sockets as well.
+    addr: SocketAddr,
+}
+
+impl BackendListener {
+    pub fn new(port: u32, addr: SocketAddr) -> Self {
+        Self { port, addr }
+    }
+
+    pub fn addr(&self) -> &SocketAddr {
+        &self.addr
+    }
+}
+
+impl IdHashItem for BackendListener {
+    type Key<'a> = u32;
+
+    fn key(&self) -> Self::Key<'_> {
+        self.port
+    }
+
+    iddqd::id_upcast!();
+}
+
 /// virtio-socket backend that proxies between a guest and a host UDS.
 pub struct VsockProxy {
     log: Logger,
@@ -262,8 +289,14 @@ pub struct VsockProxy {
 }
 
 impl VsockProxy {
-    pub fn new(cid: u32, queues: VsockVq, log: Logger) -> Self {
-        let evloop = VsockPoller::new(cid, queues, log.clone()).unwrap();
+    pub fn new(
+        cid: u32,
+        queues: VsockVq,
+        log: Logger,
+        listeners: IdHashMap<BackendListener>,
+    ) -> Self {
+        let evloop =
+            VsockPoller::new(cid, queues, log.clone(), listeners).unwrap();
         let poller = evloop.notify_handle();
         let jh = evloop.run();
 
