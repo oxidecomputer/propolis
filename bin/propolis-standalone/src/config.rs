@@ -35,6 +35,17 @@ pub struct Config {
     pub cpuid_profiles: BTreeMap<String, CpuidProfile>,
 
     pub cloudinit: Option<CloudInit>,
+
+    pub attestation: Option<AttestationConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AttestationConfig {
+    pub pki_path: String,
+    pub log_path: String,
+    pub alias_key_path: String,
+    pub vm_uuid: String,
+    pub image_digest: String,
 }
 impl Config {
     pub fn cpuid_profile(&self) -> Option<&CpuidProfile> {

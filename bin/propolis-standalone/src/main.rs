@@ -37,6 +37,7 @@ use propolis::*;
 
 mod cidata;
 mod config;
+mod dumb_socket_server;
 mod snapshot;
 
 const PAGE_OFFSET: u64 = 0xfff;
@@ -1542,6 +1543,7 @@ fn main() -> anyhow::Result<ExitCode> {
     let _rt_guard = rt.enter();
 
     // Create the VM afresh or restore it from a snapshot
+    let attest_config = config.attestation.clone();
     let (inst, com1_sock) = if restore {
         snapshot::restore(&target, config, &log)
     } else {
@@ -1568,6 +1570,35 @@ fn main() -> anyhow::Result<ExitCode> {
         }
     })
     .context("Failed to register Ctrl-C signal handler.")?;
+
+    // Run a dumb RoT socket server
+    if let Some(attest_cfg) = attest_config {
+        let l = log.clone();
+        std::thread::spawn(move || {
+            slog::info!(l, "thread spawned");
+            let vm_uuid = uuid::Uuid::parse_str(&attest_cfg.vm_uuid)
+                .expect("Invalid UUID");
+            let vm_conf = vm_attest_proto::mock::VmInstanceConf {
+                uuid: vm_uuid,
+                image_digest: vm_attest_proto::mock::Measurement {
+                    algorithm: "sha256".to_string(),
+                    digest: attest_cfg.image_digest.clone(),
+                },
+            };
+            let oxattest = Box::new(
+                dice_verifier::AttestMock::load(
+                    &attest_cfg.pki_path,
+                    &attest_cfg.log_path,
+                    &attest_cfg.alias_key_path,
+                )
+                .expect("Failed to load AttestMock"),
+            );
+            let rot = vm_attest_proto::mock::VmInstanceRotMock::new(
+                oxattest, vm_conf,
+            );
+            let _ = dumb_socket_server::run_server(&l, rot);
+        });
+    }
 
     // Wait until someone connects to ttya
     slog::info!(log, "Waiting for a connection to ttya");
