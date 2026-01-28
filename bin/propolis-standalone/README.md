@@ -6,7 +6,7 @@ prototyping, `propolis-standalone`. It uses a static toml configuration:
 ## Running
 
 ```
-# propolis-standalone <config_file>
+# pfexec propolis-standalone <config_file>
 ```
 
 Example configuration:
