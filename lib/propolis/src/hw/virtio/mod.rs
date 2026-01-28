@@ -23,6 +23,9 @@ pub mod softnpu;
 pub mod viona;
 pub mod vsock;
 
+#[cfg(test)]
+pub(crate) mod testutil;
+
 use crate::common::RWOp;
 use crate::hw::pci as pci_hw;
 use crate::lifecycle::Lifecycle;

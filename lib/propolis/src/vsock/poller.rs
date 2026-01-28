@@ -699,3 +699,417 @@ impl PortEvent {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::TcpListener;
+
+    use zerocopy::FromBytes;
+
+    use crate::accessors::MemAccessor;
+    use crate::common::GuestAddr;
+    use crate::hw::virtio::testutil::{Chain, DescFlag, VirtQueues, VqSize};
+    use crate::hw::virtio::vsock::{VsockVq, VSOCK_RX_QUEUE};
+    use crate::vsock::proxy::ConnKey;
+    use crate::vmm::mem::PhysMap;
+    use crate::vsock::packet::{
+        VsockPacketHeader, VIRTIO_VSOCK_OP_REQUEST, VIRTIO_VSOCK_OP_RESPONSE,
+        VIRTIO_VSOCK_OP_RST, VIRTIO_VSOCK_OP_RW, VIRTIO_VSOCK_TYPE_STREAM,
+    };
+    use crate::vsock::VSOCK_HOST_CID;
+
+    use super::VsockPoller;
+
+    fn test_logger() -> slog::Logger {
+        use slog::Drain;
+        let decorator = slog_term::TermDecorator::new().stderr().build();
+        let drain = slog_term::FullFormat::new(decorator).build().fuse();
+        let drain = slog_async::Async::new(drain).build().fuse();
+        slog::Logger::root(drain, slog::o!("component" => "vsock-test"))
+    }
+
+    const PAGE_SIZE: u64 = 0x1000;
+    const QUEUE_SIZE: u16 = 16;
+
+    const fn align_up(val: u64, align: u64) -> u64 {
+        (val + align - 1) & !(align - 1)
+    }
+
+    /// 16-byte virtio descriptor, matching the on-wire/in-memory layout.
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, FromBytes)]
+    struct RawDesc {
+        addr: u64,
+        len: u32,
+        flags: u16,
+        next: u16,
+    }
+
+    /// Guest physical address layout for a single virtqueue's ring structures.
+    #[derive(Copy, Clone)]
+    struct QueueLayout {
+        desc_base: u64,
+        avail_base: u64,
+        used_base: u64,
+        /// First GPA after this queue's structures (start of next region).
+        end: u64,
+    }
+
+    impl QueueLayout {
+        /// Compute the ring layout for a queue of `size` entries starting
+        /// at `base`.
+        fn new(base: u64, size: u16) -> Self {
+            let qsz = size as u64;
+            let desc_base = base;
+            let avail_base = desc_base + 16 * qsz;
+            let used_base = align_up(avail_base + 4 + 2 * qsz, PAGE_SIZE);
+            let end = align_up(used_base + 4 + 8 * qsz, PAGE_SIZE);
+            Self { desc_base, avail_base, used_base, end }
+        }
+    }
+
+    /// All the pieces produced by [`make_test_vsock_vq`].
+    struct TestVsockVq {
+        vq: VsockVq,
+        mem_acc: MemAccessor,
+        /// Must stay alive to keep memory mappings valid.
+        _phys: PhysMap,
+        /// The underlying VirtQueues, for direct queue access in assertions.
+        raw_queues: VirtQueues,
+        rx: QueueLayout,
+        tx: QueueLayout,
+        event: QueueLayout,
+    }
+
+    /// Build a VsockVq backed by test guest memory with 3 queues
+    /// (RX, TX, EVENT).
+    fn make_test_vsock_vq() -> TestVsockVq {
+        // Lay out 3 queues sequentially
+        let rx = QueueLayout::new(0, QUEUE_SIZE);
+        let tx = QueueLayout::new(rx.end, QUEUE_SIZE);
+        let event = QueueLayout::new(tx.end, 1);
+
+        // Data area after all rings
+        let data_area_size = PAGE_SIZE * 8;
+        let total_size =
+            align_up(event.end + data_area_size, PAGE_SIZE) as usize;
+
+        let mut phys = PhysMap::new_test(total_size);
+        phys.add_test_mem("vsock-test".to_string(), 0, total_size)
+            .expect("add test mem");
+        let mem_acc = phys.finalize();
+
+        // Create 3 queues via VirtQueues
+        let raw_queues = VirtQueues::new(&[
+            VqSize::new(QUEUE_SIZE),
+            VqSize::new(QUEUE_SIZE),
+            VqSize::new(1),
+        ]);
+
+        let layouts = [rx, tx, event];
+        for (i, layout) in layouts.iter().enumerate() {
+            let vq = raw_queues.get(i as u16).unwrap();
+            mem_acc.adopt(&vq.acc_mem, Some(format!("test-vq-{i}")));
+            vq.map_virtqueue(
+                layout.desc_base,
+                layout.avail_base,
+                layout.used_base,
+            );
+            vq.live.store(true, std::sync::atomic::Ordering::Release);
+            vq.enabled
+                .store(true, std::sync::atomic::Ordering::Release);
+
+            // Zero out avail and used ring headers
+            let mem = mem_acc.access().unwrap();
+            mem.write(GuestAddr(layout.avail_base), &0u16);
+            mem.write(GuestAddr(layout.avail_base + 2), &0u16);
+            mem.write(GuestAddr(layout.used_base), &0u16);
+            mem.write(GuestAddr(layout.used_base + 2), &0u16);
+        }
+
+        let vq_arcs: Vec<_> = (0..3)
+            .map(|i| raw_queues.get(i).unwrap().clone())
+            .collect();
+        let vsock_acc = mem_acc.child(Some("vsock-vq-acc".to_string()));
+        let vq = VsockVq::new(vq_arcs, vsock_acc);
+
+        TestVsockVq {
+            vq,
+            mem_acc,
+            _phys: phys,
+            raw_queues,
+            rx,
+            tx,
+            event,
+        }
+    }
+
+    /// State for injecting descriptors into a specific queue's rings.
+    struct QueueWriter {
+        layout: QueueLayout,
+        /// Next free descriptor index.
+        next_desc: u16,
+        /// Next free data area offset (GPA).
+        data_cursor: u64,
+        /// Avail ring index we've published up to.
+        avail_idx: u16,
+    }
+
+    impl QueueWriter {
+        fn new(layout: QueueLayout, data_start: u64) -> Self {
+            Self {
+                layout,
+                next_desc: 0,
+                data_cursor: data_start,
+                avail_idx: 0,
+            }
+        }
+
+        /// Write a descriptor and return its index.
+        fn write_desc(
+            &mut self,
+            mem_acc: &MemAccessor,
+            addr: u64,
+            len: u32,
+            flags: u16,
+            next: u16,
+        ) -> u16 {
+            let idx = self.next_desc;
+            self.next_desc += 1;
+            let desc = RawDesc { addr, len, flags, next };
+            let gpa = self.layout.desc_base + u64::from(idx) * 16;
+            let mem = mem_acc.access().unwrap();
+            mem.write(GuestAddr(gpa), &desc);
+            idx
+        }
+
+        /// Allocate data space and write bytes into it. Returns the GPA.
+        fn write_data(&mut self, mem_acc: &MemAccessor, data: &[u8]) -> u64 {
+            let gpa = self.data_cursor;
+            self.data_cursor += data.len() as u64;
+            let mem = mem_acc.access().unwrap();
+            mem.write_from(GuestAddr(gpa), data, data.len());
+            gpa
+        }
+
+        /// Allocate data space without writing. Returns the GPA.
+        fn alloc_data(&mut self, len: u32) -> u64 {
+            let gpa = self.data_cursor;
+            self.data_cursor += u64::from(len);
+            gpa
+        }
+
+        /// Add a readable descriptor with the given data.
+        fn add_readable(&mut self, mem_acc: &MemAccessor, data: &[u8]) -> u16 {
+            let gpa = self.write_data(mem_acc, data);
+            self.write_desc(
+                mem_acc,
+                gpa,
+                data.len() as u32,
+                0, // readable
+                0,
+            )
+        }
+
+        /// Add a writable descriptor of the given size.
+        fn add_writable(&mut self, mem_acc: &MemAccessor, len: u32) -> u16 {
+            let gpa = self.alloc_data(len);
+            self.write_desc(mem_acc, gpa, len, DescFlag::WRITE.bits(), 0)
+        }
+
+        /// Publish a descriptor chain head on the available ring.
+        fn publish_avail(&mut self, mem_acc: &MemAccessor, head: u16) {
+            let slot = self.layout.avail_base
+                + 4
+                + u64::from(self.avail_idx % QUEUE_SIZE) * 2;
+            self.avail_idx += 1;
+            let new_idx = self.avail_idx;
+            let mem = mem_acc.access().unwrap();
+            mem.write(GuestAddr(slot), &head);
+            mem.write(GuestAddr(self.layout.avail_base + 2), &new_idx);
+        }
+
+        /// Chain two descriptors together via NEXT flag.
+        #[allow(dead_code)]
+        fn chain(&self, mem_acc: &MemAccessor, from: u16, to: u16) {
+            let gpa = self.layout.desc_base + u64::from(from) * 16;
+            let mem = mem_acc.access().unwrap();
+            let mut raw: RawDesc = *mem.read(GuestAddr(gpa)).unwrap();
+            raw.flags |= DescFlag::NEXT.bits();
+            raw.next = to;
+            mem.write(GuestAddr(gpa), &raw);
+        }
+
+        /// Read the used ring index.
+        fn used_idx(&self, mem_acc: &MemAccessor) -> u16 {
+            let mem = mem_acc.access().unwrap();
+            *mem.read(GuestAddr(self.layout.used_base + 2)).unwrap()
+        }
+
+        /// Change a descriptor's flags from writable to readable so its
+        /// contents can be read back via `chain.read()` after re-publishing.
+        fn set_desc_readable(&self, mem_acc: &MemAccessor, idx: u16) {
+            let gpa = self.layout.desc_base + u64::from(idx) * 16;
+            let mem = mem_acc.access().unwrap();
+            let mut raw: RawDesc = *mem.read(GuestAddr(gpa)).unwrap();
+            raw.flags &= !DescFlag::WRITE.bits();
+            mem.write(GuestAddr(gpa), &raw);
+        }
+    }
+
+    #[test]
+    fn request_receives_response() {
+        // Start a TCP listener so VsockProxyConn::new() can connect
+        let listener = TcpListener::bind("127.0.0.1:3000").unwrap();
+
+        let guest_cid: u32 = 50;
+        let tv = make_test_vsock_vq();
+
+        let log = test_logger();
+        let mut poller =
+            VsockPoller::new(guest_cid, tv.vq, log).unwrap();
+
+        // -- Populate RX queue with a writable descriptor chain --
+        // The poller will need somewhere to write the RESPONSE.
+        let rx_data_start = tv.event.end + PAGE_SIZE;
+        let mut rx_writer = QueueWriter::new(tv.rx, rx_data_start);
+
+        // Single writable descriptor large enough for header + data
+        let d_rx = rx_writer.add_writable(&tv.mem_acc, 256);
+        rx_writer.publish_avail(&tv.mem_acc, d_rx);
+
+        // -- Build a REQUEST packet on the TX queue --
+        let tx_data_start = rx_data_start + PAGE_SIZE;
+        let mut tx_writer = QueueWriter::new(tv.tx, tx_data_start);
+
+        let mut hdr = VsockPacketHeader::default();
+        hdr.set_src_cid(guest_cid)
+            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_src_port(1234)
+            .set_dst_port(3000)
+            .set_len(0)
+            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
+            .set_op(VIRTIO_VSOCK_OP_REQUEST)
+            .set_buf_alloc(65536)
+            .set_fwd_cnt(0);
+
+        // Write header as a readable descriptor
+        let hdr_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                &hdr as *const VsockPacketHeader as *const u8,
+                std::mem::size_of::<VsockPacketHeader>(),
+            )
+        };
+        let d_tx = tx_writer.add_readable(&tv.mem_acc, hdr_bytes);
+        tx_writer.publish_avail(&tv.mem_acc, d_tx);
+
+        // -- Drive the poller --
+        poller.handle_tx_queue_event();
+        poller.process_pending_rx();
+
+        // -- Verify the RX queue got a RESPONSE --
+        let rx_used_idx = rx_writer.used_idx(&tv.mem_acc);
+        assert_eq!(rx_used_idx, 1, "expected one used entry on RX queue");
+
+        // The poller wrote the response into the writable descriptor's
+        // buffer. To read it back using pop_avail + chain.read, we flip the
+        // descriptor to readable and re-publish it on the avail ring.
+        rx_writer.set_desc_readable(&tv.mem_acc, d_rx);
+        rx_writer.publish_avail(&tv.mem_acc, d_rx);
+
+        let rx_vq = tv.raw_queues.get(VSOCK_RX_QUEUE).unwrap();
+        let mem = tv.mem_acc.access().unwrap();
+        let mut chain = Chain::with_capacity(16);
+        rx_vq
+            .pop_avail(&mut chain, &mem)
+            .expect("re-published descriptor should be poppable");
+
+        let mut resp_hdr = VsockPacketHeader::default();
+        assert!(chain.read(&mut resp_hdr, &mem));
+
+        assert_eq!(resp_hdr.op(), VIRTIO_VSOCK_OP_RESPONSE);
+        assert_eq!(resp_hdr.src_cid(), VSOCK_HOST_CID);
+        assert_eq!(resp_hdr.dst_cid(), guest_cid as u64);
+        assert_eq!(resp_hdr.src_port(), 3000);
+        assert_eq!(resp_hdr.dst_port(), 1234);
+        assert_eq!(resp_hdr.socket_type(), VIRTIO_VSOCK_TYPE_STREAM);
+
+        // -- Verify the connection was tracked --
+        assert_eq!(poller.connections.len(), 1);
+        let key = ConnKey { host_port: 3000, guest_port: 1234 };
+        assert!(
+            poller.connections.contains_key(&key),
+            "expected connection for host_port=3000, guest_port=1234"
+        );
+
+        drop(listener);
+    }
+
+    #[test]
+    fn rw_with_invalid_socket_type_receives_rst() {
+        let guest_cid: u32 = 50;
+        let tv = make_test_vsock_vq();
+
+        let log = test_logger();
+        let mut poller =
+            VsockPoller::new(guest_cid, tv.vq, log).unwrap();
+
+        // -- Populate RX queue with a writable descriptor for the RST --
+        let rx_data_start = tv.event.end + PAGE_SIZE;
+        let mut rx_writer = QueueWriter::new(tv.rx, rx_data_start);
+        let d_rx = rx_writer.add_writable(&tv.mem_acc, 256);
+        rx_writer.publish_avail(&tv.mem_acc, d_rx);
+
+        // -- Build an RW packet with an invalid socket_type --
+        let tx_data_start = rx_data_start + PAGE_SIZE;
+        let mut tx_writer = QueueWriter::new(tv.tx, tx_data_start);
+
+        let invalid_socket_type: u16 = 0xBEEF;
+        let mut hdr = VsockPacketHeader::default();
+        hdr.set_src_cid(guest_cid)
+            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_src_port(5555)
+            .set_dst_port(8080)
+            .set_len(0)
+            .set_socket_type(invalid_socket_type)
+            .set_op(VIRTIO_VSOCK_OP_RW)
+            .set_buf_alloc(65536)
+            .set_fwd_cnt(0);
+
+        let hdr_bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(
+                &hdr as *const VsockPacketHeader as *const u8,
+                std::mem::size_of::<VsockPacketHeader>(),
+            )
+        };
+        let d_tx = tx_writer.add_readable(&tv.mem_acc, hdr_bytes);
+        tx_writer.publish_avail(&tv.mem_acc, d_tx);
+
+        // -- Drive the poller --
+        poller.handle_tx_queue_event();
+        poller.process_pending_rx();
+
+        // -- Verify the RX queue got a RST --
+        let rx_used_idx = rx_writer.used_idx(&tv.mem_acc);
+        assert_eq!(rx_used_idx, 1, "expected one used entry on RX queue");
+
+        rx_writer.set_desc_readable(&tv.mem_acc, d_rx);
+        rx_writer.publish_avail(&tv.mem_acc, d_rx);
+
+        let rx_vq = tv.raw_queues.get(VSOCK_RX_QUEUE).unwrap();
+        let mem = tv.mem_acc.access().unwrap();
+        let mut chain = Chain::with_capacity(16);
+        rx_vq
+            .pop_avail(&mut chain, &mem)
+            .expect("re-published descriptor should be poppable");
+
+        let mut resp_hdr = VsockPacketHeader::default();
+        assert!(chain.read(&mut resp_hdr, &mem));
+
+        assert_eq!(resp_hdr.op(), VIRTIO_VSOCK_OP_RST);
+        assert_eq!(resp_hdr.src_cid(), VSOCK_HOST_CID);
+        assert_eq!(resp_hdr.dst_cid(), guest_cid as u64);
+        assert_eq!(resp_hdr.src_port(), 8080);
+        assert_eq!(resp_hdr.dst_port(), 5555);
+    }
+}

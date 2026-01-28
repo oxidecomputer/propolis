@@ -81,7 +81,7 @@ pub struct VsockVq {
 }
 
 impl VsockVq {
-    fn new(queues: Vec<Arc<VirtQueue>>, acc_mem: MemAccessor) -> Self {
+    pub(crate) fn new(queues: Vec<Arc<VirtQueue>>, acc_mem: MemAccessor) -> Self {
         Self { queues, acc_mem, rx_chain: None }
     }
 
