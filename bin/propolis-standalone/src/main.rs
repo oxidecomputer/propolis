@@ -1247,6 +1247,13 @@ fn setup_instance(
                         dev.options.get("vnic").unwrap().as_str().unwrap();
                     let bdf = bdf.unwrap();
 
+                    if hw::virtio::viona::api_version()
+                        .expect("can query viona version")
+                        < hw::virtio::viona::ApiVersion::V6
+                    {
+                        panic!("Kernel viona API is too old; need >= V6");
+                    }
+
                     let viona_params =
                         config::VionaDeviceParams::from_opts(&dev.options)
                             .expect("viona params are valid");

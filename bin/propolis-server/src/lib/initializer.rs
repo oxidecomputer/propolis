@@ -771,6 +771,12 @@ impl MachineInitializer<'_> {
             info!(self.log, "Creating vNIC {}", device_name);
             let bdf: pci::Bdf = nic.device_spec.pci_path.into();
 
+            if virtio::viona::api_version().expect("can query viona version")
+                < virtio::viona::ApiVersion::V6
+            {
+                panic!("Kernel viona API is too old; need >= V6");
+            }
+
             // Set viona device parameters if possible.
             //
             // The values chosen here are tuned to maximize performance when
