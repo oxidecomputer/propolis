@@ -283,7 +283,7 @@ impl VsockPoller {
 
             // If the packet is not destined for the host drop it.
             if packet.header.dst_cid() != VSOCK_HOST_CID {
-                warn!(
+                debug!(
                     &self.log,
                     "droppping vsock packet not destined for the host";
                     "packet" => ?packet,
