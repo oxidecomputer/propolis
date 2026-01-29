@@ -1251,15 +1251,9 @@ fn setup_instance(
                         config::VionaDeviceParams::from_opts(&dev.options)
                             .expect("viona params are valid");
 
-                    if viona_params.is_some()
-                        && hw::virtio::viona::api_version()
-                            .expect("can query viona version")
-                            < hw::virtio::viona::ApiVersion::V3
-                    {
-                        // lazy cop-out for now
-                        panic!("can't set viona params on too-old version");
-                    }
-
+                    // The viona_params here (currently just copy_data and
+                    // header_pad) require `viona::ApiVersion::V3`, below
+                    // Propolis' minimum of V6, so we can always set them.
                     let viona = hw::virtio::PciVirtioViona::new(
                         vnic_name,
                         &hdl,
@@ -1452,18 +1446,12 @@ fn api_version_checks(log: &slog::Logger) -> std::io::Result<()> {
         }
         Err(VersionCheckError {
             component,
+            err: source @ Error::TooLow { .. },
             path: _,
-            err: Error::Mismatch(act, exp),
         }) => {
             // Make noise about version mismatch, but soldier on and let the
             // user decide if they want to quit
-            slog::error!(
-                log,
-                "{} API version mismatch {} != {}",
-                component,
-                act,
-                exp
-            );
+            slog::error!(log, "{component}: {source}");
             Ok(())
         }
         Ok(_) => Ok(()),

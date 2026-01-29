@@ -19,10 +19,10 @@ pub(crate) fn check_api_version() -> Result<(), crate::api_version::Error> {
     let vers = ctl.api_version()?;
 
     // propolis only requires the bits provided by V8, currently
-    let compare = bhyve_api::ApiVersion::V8;
+    let want = bhyve_api::ApiVersion::V8 as u32;
 
-    if vers < compare {
-        return Err(crate::api_version::Error::Mismatch(vers, compare as u32));
+    if vers < want {
+        return Err(crate::api_version::Error::TooLow { have: vers, want });
     }
 
     Ok(())
