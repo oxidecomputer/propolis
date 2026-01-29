@@ -220,7 +220,7 @@ impl CrucibleBackend {
         let info = block::DeviceInfo {
             block_size: block_size as u32,
             total_size: sectors,
-            read_only: opts.read_only.unwrap_or(false),
+            read_only: opts.is_read_only(),
             supports_discard: false,
         };
 
