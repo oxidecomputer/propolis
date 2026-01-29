@@ -1,7 +1,6 @@
 use iddqd::IdHashMap;
 use lazy_static::lazy_static;
 use slog::Logger;
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use crate::accessors::MemAccessor;
@@ -147,7 +146,12 @@ pub struct PciVirtioSock {
 }
 
 impl PciVirtioSock {
-    pub fn new(queue_size: u16, cid: u32, log: Logger) -> Arc<Self> {
+    pub fn new(
+        queue_size: u16,
+        cid: u32,
+        log: Logger,
+        backends: Vec<BackendListener>,
+    ) -> Arc<Self> {
         let queues = VirtQueues::new(&[
             // VSOCK_RX_QUEUE
             VqSize::new(queue_size),
@@ -172,10 +176,9 @@ impl PciVirtioSock {
             pci_state.acc_mem.child(Some("vsock rx queue".to_string())),
         );
         let mut listeners = IdHashMap::new();
-        listeners.insert_overwrite(BackendListener::new(
-            3000,
-            "127.0.0.1:3000".parse().unwrap(),
-        ));
+        for bl in backends {
+            listeners.insert_overwrite(bl);
+        }
 
         let backend = VsockProxy::new(cid, vvq, log, listeners);
 

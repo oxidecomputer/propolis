@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use cpuid_utils::CpuidSet;
+use propolis::vsock::proxy::BackendListener;
 use propolis_types::CpuidIdent;
 use propolis_types::CpuidValues;
 use propolis_types::CpuidVendor;
@@ -173,7 +174,7 @@ impl VionaDeviceParams {
 #[derive(Deserialize)]
 pub struct VsockDevice {
     pub guest_cid: u32,
-    pub uds_path: String,
+    pub backends: Vec<BackendListener>,
 }
 
 impl VsockDevice {

@@ -91,10 +91,8 @@ impl TestVirtQueue {
 
         let desc_offset: u64 = 0;
         let avail_offset = desc_offset + desc_table_size;
-        let used_offset =
-            align_up(avail_offset + avail_ring_size, PAGE_SIZE);
-        let data_offset =
-            align_up(used_offset + used_ring_size, PAGE_SIZE);
+        let used_offset = align_up(avail_offset + avail_ring_size, PAGE_SIZE);
+        let data_offset = align_up(used_offset + used_ring_size, PAGE_SIZE);
 
         // Allocate enough for rings + a generous data area
         let data_area_size = PAGE_SIZE * 4;
@@ -116,10 +114,8 @@ impl TestVirtQueue {
 
         // Map the virtqueue to our layout
         vq.map_virtqueue(desc_offset, avail_offset, used_offset);
-        vq.live
-            .store(true, std::sync::atomic::Ordering::Release);
-        vq.enabled
-            .store(true, std::sync::atomic::Ordering::Release);
+        vq.live.store(true, std::sync::atomic::Ordering::Release);
+        vq.enabled.store(true, std::sync::atomic::Ordering::Release);
 
         // Initialize avail ring: flags=0, idx=0
         {
@@ -155,20 +151,11 @@ impl TestVirtQueue {
         self.mem_acc.access().expect("test mem should be accessible")
     }
 
-    /// Return a child `MemAccessor` suitable for wiring into other components
-    /// (e.g. `VsockVq`).
-    pub fn mem_accessor(&self) -> MemAccessor {
-        self.mem_acc.child(Some("test-child".to_string()))
-    }
-
     /// Allocate a region from the data area and return its GPA.
     fn alloc_data(&mut self, len: u32) -> u64 {
         let addr = self.data_cursor;
         self.data_cursor += u64::from(len);
-        assert!(
-            self.data_cursor <= self.data_end,
-            "test data area exhausted"
-        );
+        assert!(self.data_cursor <= self.data_end, "test data area exhausted");
         addr
     }
 
@@ -224,8 +211,7 @@ impl TestVirtQueue {
         let mem = self.mem();
         for i in 0..descs.len() - 1 {
             let desc_addr = self.desc_base + u64::from(descs[i]) * 16;
-            let mut raw: RawDesc =
-                *mem.read(GuestAddr(desc_addr)).unwrap();
+            let mut raw: RawDesc = *mem.read(GuestAddr(desc_addr)).unwrap();
             raw.flags |= DescFlag::NEXT.bits();
             raw.next = descs[i + 1];
             mem.write(GuestAddr(desc_addr), &raw);
@@ -234,9 +220,8 @@ impl TestVirtQueue {
 
     /// Publish a descriptor chain head on the available ring.
     pub fn publish_avail(&mut self, head: u16) {
-        let ring_entry_addr = self.avail_base
-            + 4
-            + u64::from(self.avail_idx % self.size) * 2;
+        let ring_entry_addr =
+            self.avail_base + 4 + u64::from(self.avail_idx % self.size) * 2;
         self.avail_idx += 1;
         let new_idx = self.avail_idx;
 
@@ -250,15 +235,12 @@ impl TestVirtQueue {
     /// Returns `(descriptor_id, bytes_written)` pairs.
     pub fn read_used(&self) -> Vec<(u32, u32)> {
         let mem = self.mem();
-        let used_idx: u16 =
-            *mem.read(GuestAddr(self.used_base + 2)).unwrap();
+        let used_idx: u16 = *mem.read(GuestAddr(self.used_base + 2)).unwrap();
 
         let mut entries = Vec::new();
         for i in 0..used_idx {
-            let entry_addr =
-                self.used_base + 4 + u64::from(i % self.size) * 8;
-            let elem: RawUsedElem =
-                *mem.read(GuestAddr(entry_addr)).unwrap();
+            let entry_addr = self.used_base + 4 + u64::from(i % self.size) * 8;
+            let elem: RawUsedElem = *mem.read(GuestAddr(entry_addr)).unwrap();
             entries.push((elem.id, elem.len));
         }
         entries
@@ -268,8 +250,7 @@ impl TestVirtQueue {
     pub fn read_guest_mem(&self, addr: u64, len: usize) -> Vec<u8> {
         let mem = self.mem();
         let mut buf = vec![0u8; len];
-        let mut guest_buf =
-            crate::common::GuestData::from(buf.as_mut_slice());
+        let mut guest_buf = crate::common::GuestData::from(buf.as_mut_slice());
         mem.read_into(GuestAddr(addr), &mut guest_buf, len);
         buf
     }

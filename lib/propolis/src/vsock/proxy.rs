@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use iddqd::IdHashItem;
 use iddqd::IdHashMap;
+use serde::Deserialize;
 use slog::error;
 use slog::Logger;
 
@@ -255,6 +256,7 @@ impl VsockProxyConn {
     }
 }
 
+#[derive(Deserialize, Clone, Copy)]
 pub struct BackendListener {
     port: u32,
     // TODO this could be extended to support Unix sockets as well.
