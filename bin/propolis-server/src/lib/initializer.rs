@@ -771,32 +771,27 @@ impl MachineInitializer<'_> {
             info!(self.log, "Creating vNIC {}", device_name);
             let bdf: pci::Bdf = nic.device_spec.pci_path.into();
 
-            // Set viona device parameters if possible.
+            // Set viona device parameters. The parameters here (copy_data and
+            // header_pad) require `viona::ApiVersion::V3`, below Propolis'
+            // minimum of V6, so we can always set them.
             //
             // The values chosen here are tuned to maximize performance when
             // Propolis is used with OPTE in a full Oxide rack deployment,
             // although they should not negatively impact use outside those
             // conditions.  These parameters and their effects (save for
             // performance delta) are not guest-visible.
-            let params = if virtio::viona::api_version()
-                .expect("can query viona version")
-                >= virtio::viona::ApiVersion::V3
-            {
-                Some(virtio::viona::DeviceParams {
-                    // Loan guest packet data, rather than allocating fresh
-                    // buffers and copying it.
-                    copy_data: false,
-                    // Leave room for underlay encapsulation:
-                    // - ethernet: 14
-                    // - IPv6: 40
-                    // - UDP: 8
-                    // - Geneve: 8–16 (due to options)
-                    // - (and then round up to nearest 8)
-                    header_pad: 80,
-                })
-            } else {
-                None
-            };
+            let params = Some(virtio::viona::DeviceParams {
+                // Loan guest packet data, rather than allocating fresh
+                // buffers and copying it.
+                copy_data: false,
+                // Leave room for underlay encapsulation:
+                // - ethernet: 14
+                // - IPv6: 40
+                // - UDP: 8
+                // - Geneve: 8–16 (due to options)
+                // - (and then round up to nearest 8)
+                header_pad: 80,
+            });
 
             let viona = virtio::PciVirtioViona::new(
                 &nic.backend_spec.vnic_name,

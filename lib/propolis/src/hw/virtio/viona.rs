@@ -226,8 +226,6 @@ impl Inner {
 }
 
 /// Configuration parmaeters for the underlying viona device
-///
-/// These parameters assume an [viona_api::ApiVersion::V3] device
 #[derive(Copy, Clone)]
 pub struct DeviceParams {
     /// When transmitting packets, should viona (allocate and) copy the entire
@@ -237,12 +235,18 @@ pub struct DeviceParams {
     /// There is a performance cost to copying the full packet, but it avoids
     /// certain issues pertaining to looped-back viona packets being delivered
     /// to native zones on the machine.
+    ///
+    /// This parameter requires [viona_api::ApiVersion::V3] or greater. This is
+    /// before Propolis' minimum viona API version and can always be set.
     pub copy_data: bool,
 
     /// Byte count for padding added to the head of transmitted packets.  This
     /// padding can be used by subsequent operations in the transmission chain,
     /// such as encapsulation, which would otherwise need to re-allocate for the
     /// larger header.
+    ///
+    /// This parameter requires [viona_api::ApiVersion::V3] or greater. This is
+    /// before Propolis' minimum viona API version and can always be set.
     pub header_pad: u16,
 }
 impl DeviceParams {
@@ -1393,11 +1397,12 @@ use bits::*;
 pub(crate) fn check_api_version() -> Result<(), crate::api_version::Error> {
     let vers = viona_api::api_version()?;
 
-    // viona only requires the V2 bits for now
-    let compare = viona_api::ApiVersion::V2;
+    // when setting up a vNIC, Propolis will unconditionally do the SET_PAIRS
+    // ioctl, which requires V6.
+    let want = viona_api::ApiVersion::V6 as u32;
 
-    if vers < compare {
-        Err(crate::api_version::Error::Mismatch(vers, compare as u32))
+    if vers < want {
+        Err(crate::api_version::Error::TooLow { have: vers, want })
     } else {
         Ok(())
     }
