@@ -256,14 +256,14 @@ impl VsockProxyConn {
     }
 }
 
-#[derive(Deserialize, Clone, Copy)]
-pub struct BackendListener {
+#[derive(Deserialize, Debug, Clone, Copy)]
+pub struct VsockPortMapping {
     port: u32,
     // TODO this could be extended to support Unix sockets as well.
     addr: SocketAddr,
 }
 
-impl BackendListener {
+impl VsockPortMapping {
     pub fn new(port: u32, addr: SocketAddr) -> Self {
         Self { port, addr }
     }
@@ -273,7 +273,7 @@ impl BackendListener {
     }
 }
 
-impl IdHashItem for BackendListener {
+impl IdHashItem for VsockPortMapping {
     type Key<'a> = u32;
 
     fn key(&self) -> Self::Key<'_> {
@@ -295,10 +295,10 @@ impl VsockProxy {
         cid: u32,
         queues: VsockVq,
         log: Logger,
-        listeners: IdHashMap<BackendListener>,
+        port_mappings: IdHashMap<VsockPortMapping>,
     ) -> Self {
         let evloop =
-            VsockPoller::new(cid, queues, log.clone(), listeners).unwrap();
+            VsockPoller::new(cid, queues, log.clone(), port_mappings).unwrap();
         let poller = evloop.notify_handle();
         let jh = evloop.run();
 

@@ -1322,7 +1322,7 @@ fn setup_instance(
                         512,
                         config.guest_cid,
                         log.new(slog::o!("dev" => "vsock")),
-                        config.backends,
+                        config.port_mappings,
                     );
                     guard.inventory.register(&vsock);
                     chipset_pci_attach(bdf, vsock);

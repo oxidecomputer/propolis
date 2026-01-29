@@ -1,4 +1,3 @@
-use iddqd::IdHashMap;
 use lazy_static::lazy_static;
 use slog::Logger;
 use std::sync::Arc;
@@ -16,7 +15,7 @@ use crate::vmm::MemCtx;
 use crate::vsock::packet::VsockPacket;
 use crate::vsock::packet::VsockPacketError;
 use crate::vsock::packet::VsockPacketHeader;
-use crate::vsock::proxy::BackendListener;
+use crate::vsock::proxy::VsockPortMapping;
 use crate::vsock::VsockBackend;
 use crate::vsock::VsockProxy;
 
@@ -150,7 +149,7 @@ impl PciVirtioSock {
         queue_size: u16,
         cid: u32,
         log: Logger,
-        backends: Vec<BackendListener>,
+        port_mappings: Vec<VsockPortMapping>,
     ) -> Arc<Self> {
         let queues = VirtQueues::new(&[
             // VSOCK_RX_QUEUE
@@ -175,12 +174,9 @@ impl PciVirtioSock {
             virtio_state.queues.iter().map(Clone::clone).collect(),
             pci_state.acc_mem.child(Some("vsock rx queue".to_string())),
         );
-        let mut listeners = IdHashMap::new();
-        for bl in backends {
-            listeners.insert_overwrite(bl);
-        }
+        let port_mappings = port_mappings.into_iter().collect();
 
-        let backend = VsockProxy::new(cid, vvq, log, listeners);
+        let backend = VsockProxy::new(cid, vvq, log, port_mappings);
 
         Arc::new(Self { cid, backend, virtio_state, pci_state })
     }

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use iddqd::IdHashMap;
-use slog::{error, warn, Logger};
+use slog::{debug, error, info, warn, Logger};
 
 use crate::hw::virtio::vsock::VsockVq;
 use crate::hw::virtio::vsock::VSOCK_RX_QUEUE;
@@ -20,7 +20,7 @@ use crate::vsock::packet::{
     VIRTIO_VSOCK_TYPE_STREAM,
 };
 use crate::vsock::proxy::{
-    BackendListener, ConnKey, VsockProxyConn, CONN_TX_BUF_SIZE,
+    ConnKey, VsockPortMapping, VsockProxyConn, CONN_TX_BUF_SIZE,
 };
 use crate::vsock::VSOCK_HOST_CID;
 
@@ -105,7 +105,7 @@ enum RxEvent {
 pub struct VsockPoller {
     log: Logger,
     guest_cid: u32,
-    backends: IdHashMap<BackendListener>,
+    port_mappings: IdHashMap<VsockPortMapping>,
     port_fd: Arc<OwnedFd>,
     queues: VsockVq,
     connections: HashMap<ConnKey, VsockProxyConn>,
@@ -124,7 +124,7 @@ impl VsockPoller {
         cid: u32,
         queues: VsockVq,
         log: Logger,
-        backends: IdHashMap<BackendListener>,
+        port_mappings: IdHashMap<VsockPortMapping>,
     ) -> std::io::Result<Self> {
         let port_fd = unsafe {
             let fd = match libc::port_create() {
@@ -145,10 +145,16 @@ impl VsockPoller {
             fd
         };
 
+        info!(
+            &log,
+            "vsock poller configured with";
+            "mappings" => ?port_mappings,
+        );
+
         Ok(Self {
             log,
             guest_cid: cid,
-            backends,
+            port_mappings,
             port_fd: Arc::new(unsafe { OwnedFd::from_raw_fd(port_fd) }),
             queues,
             connections: Default::default(),
@@ -181,15 +187,18 @@ impl VsockPoller {
             return;
         }
 
-        let Some(listner) = self.backends.get(&packet.header.dst_port()) else {
-            self.rx.push_back(RxEvent::Reset {
-                src_port: key.host_port,
-                dst_port: key.guest_port,
-            });
+        let Some(mapping) = self.port_mappings.get(&packet.header.dst_port())
+        else {
+            // Drop the unknown connection so that it times out in the guest.
+            debug!(
+                &self.log,
+                "dropping connect request to unknown mapping";
+                "packet" => ?packet,
+            );
             return;
         };
 
-        match VsockProxyConn::new(listner.addr()) {
+        match VsockProxyConn::new(mapping.addr()) {
             Ok(mut conn) => {
                 conn.update_peer_credit(
                     packet.header.buf_alloc(),
@@ -337,7 +346,7 @@ impl VsockPoller {
                     VIRTIO_VSOCK_OP_REQUEST => {
                         self.handle_connection_request(key, packet)
                     }
-                    // VIRTIO_VSOCK_OP_RST => {}
+                    VIRTIO_VSOCK_OP_RST => {}
                     _ => {
                         warn!(
                             &self.log,
@@ -748,7 +757,7 @@ mod tests {
         VIRTIO_VSOCK_OP_RW, VIRTIO_VSOCK_OP_SHUTDOWN,
         VIRTIO_VSOCK_SHUTDOWN_F_SEND, VIRTIO_VSOCK_TYPE_STREAM,
     };
-    use crate::vsock::proxy::{BackendListener, ConnKey, CONN_TX_BUF_SIZE};
+    use crate::vsock::proxy::{ConnKey, VsockPortMapping, CONN_TX_BUF_SIZE};
     use crate::vsock::VSOCK_HOST_CID;
 
     use super::VsockPoller;
@@ -769,11 +778,11 @@ mod tests {
     /// actual address.
     fn bind_test_backend(
         vsock_port: u32,
-    ) -> (TcpListener, IdHashMap<BackendListener>) {
+    ) -> (TcpListener, IdHashMap<VsockPortMapping>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let mut backends = IdHashMap::new();
-        backends.insert_overwrite(BackendListener::new(vsock_port, addr));
+        backends.insert_overwrite(VsockPortMapping::new(vsock_port, addr));
         (listener, backends)
     }
 
@@ -1979,12 +1988,9 @@ mod tests {
             .set_buf_alloc(65536)
             .set_fwd_cnt(0);
 
-        let d_tx =
-            tx_writer.add_readable(&tv.mem_acc, hdr_as_bytes(&req_hdr));
+        let d_tx = tx_writer.add_readable(&tv.mem_acc, hdr_as_bytes(&req_hdr));
         tx_writer.publish_avail(&tv.mem_acc, d_tx);
-        notify
-            .queue_notify(crate::hw::virtio::vsock::VSOCK_TX_QUEUE)
-            .unwrap();
+        notify.queue_notify(crate::hw::virtio::vsock::VSOCK_TX_QUEUE).unwrap();
 
         // Accept the connection, wait for RESPONSE
         let accepted = listener.accept().unwrap().0;
