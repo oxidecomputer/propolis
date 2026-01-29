@@ -16,6 +16,7 @@ use slog::Logger;
 use crate::hw::virtio::vsock::VsockVq;
 use crate::vsock::buffer::VsockBuf;
 use crate::vsock::packet::VsockPacket;
+use crate::vsock::packet::VsockPacketHeader;
 use crate::vsock::poller::VsockPoller;
 use crate::vsock::poller::VsockPollerNotify;
 use crate::vsock::VsockBackend;
@@ -70,10 +71,12 @@ impl ConnKey {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyConnError {
-    // XXX we want to expand this to specify *which* backend once we support
-    // multiple
-    #[error("Failed to connect to vsock backend: {0}")]
-    Socket(#[source] std::io::Error),
+    #[error("Failed to connect to vsock backend {backend}: {source}")]
+    Socket {
+        backend: SocketAddr,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("Failed to put socket into nonblocking mode: {0}")]
     NonBlocking(#[source] std::io::Error),
     #[error("Cannot transition connection from {from:?} to {to:?}")]
@@ -102,11 +105,12 @@ pub(crate) struct VsockProxyConn {
 
 impl VsockProxyConn {
     pub fn new(addr: &SocketAddr) -> Result<Self, ProxyConnError> {
-        // XXX connect_timeout - we are not async and potentially blocking the
-        // event loop?
         let socket =
             TcpStream::connect_timeout(addr, Duration::from_millis(100))
-                .map_err(ProxyConnError::Socket)?;
+                .map_err(|e| ProxyConnError::Socket {
+                    backend: *addr,
+                    source: e,
+                })?;
         socket.set_nonblocking(true).map_err(ProxyConnError::NonBlocking)?;
 
         Ok(Self {
@@ -192,18 +196,15 @@ impl VsockProxyConn {
     }
 
     /// Update peer credit info from a packet header.
-    pub fn update_peer_credit(&mut self, buf_alloc: u32, fwd_cnt: u32) {
-        self.peer_buf_alloc = buf_alloc;
-        self.peer_fwd_cnt = Wrapping(fwd_cnt);
+    pub fn update_peer_credit(&mut self, header: &VsockPacketHeader) {
+        self.peer_buf_alloc = header.buf_alloc();
+        self.peer_fwd_cnt = Wrapping(header.fwd_cnt());
     }
 
     /// Process a packet received from the guest tx queue.
     pub fn recv_packet(&mut self, packet: VsockPacket) {
+        // XXX MTZ: make this a real error type
         self.vbuf.push(packet.data).unwrap();
-        self.update_peer_credit(
-            packet.header.buf_alloc(),
-            packet.header.fwd_cnt(),
-        );
     }
 
     pub fn flush(&mut self) -> std::io::Result<usize> {
