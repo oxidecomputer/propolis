@@ -16,8 +16,8 @@ phddir="$PWD/phd-test"
 
 # Find usable disks to make a zpool on. Note that this only works on Oxide
 # compute sled runners such as `lab-2.0-gimlet`.
-disks=$(pilot local disk list -H -o type,disk | grep -v 'M.2' | cut -f 2 | tr "\n" ' ')
-pfexec zpool create -f phd-artifacts ${disks}
+disks=( $(pilot local disk list -H -o type,disk | grep -v 'M.2' | cut -f 2) )
+pfexec zpool create -f phd-artifacts ${disks[@]}
 artifactdir="/phd-artifacts"
 
 banner 'Inputs'
