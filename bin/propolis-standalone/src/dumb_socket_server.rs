@@ -3,7 +3,7 @@ use std::net::{TcpListener, TcpStream};
 
 use sha2::{Digest, Sha256};
 use vm_attest_proto::mock::VmInstanceRotMock;
-use vm_attest_proto::{QualifyingData, VmInstanceRot};
+use vm_attest_proto::{QualifyingData, Response, VmInstanceRot};
 
 fn handle_client(
     mut stream: TcpStream,
@@ -37,9 +37,8 @@ fn handle_client(
                             "attestation_len" => attestation.attestation.len(),
                         );
 
-                        // send as a string?
-                        let response =
-                            serde_json::to_vec(&attestation).unwrap();
+                        let response = Response::Success(attestation);
+                        let response = serde_json::to_vec(&response).unwrap();
                         if let Err(e) = stream.write_all(&response) {
                             slog::error!(
                                 log,
