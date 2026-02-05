@@ -514,7 +514,7 @@ impl MachineInitializer<'_> {
                 // And Crucible workers are not currently tunable, so this is
                 // how many there are
                 // (see propolis::block::crucible::Crucible::WORKER_COUNT)
-                *wanted_heap = 8 * PER_WORKER_HEAP;
+                *wanted_heap += 8 * PER_WORKER_HEAP;
 
                 let be = propolis::block::CrucibleBackend::create(
                     vcr,
@@ -577,7 +577,7 @@ impl MachineInitializer<'_> {
                 // 1MB (assuming we're limited by NVMe MDTS) of data in each
                 // worker. This is a hack in its own right, see Propolis#985.
                 const PER_WORKER_HEAP: usize = MB;
-                *wanted_heap = nworkers.get() * PER_WORKER_HEAP;
+                *wanted_heap += nworkers.get() * PER_WORKER_HEAP;
 
                 let be = propolis::block::FileBackend::create(
                     &spec.path,
