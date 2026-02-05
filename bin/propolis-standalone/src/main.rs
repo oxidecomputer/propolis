@@ -1582,7 +1582,7 @@ fn main() -> anyhow::Result<ExitCode> {
             let vm_conf = vm_attest_proto::mock::VmInstanceConf {
                 uuid: vm_uuid,
                 image_digest: vm_attest_proto::mock::Measurement {
-                    algorithm: "sha256".to_string(),
+                    algorithm: "sha-256".to_string(),
                     digest: attest_cfg.image_digest.clone(),
                 },
             };
