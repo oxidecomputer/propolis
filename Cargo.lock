@@ -5350,6 +5350,7 @@ dependencies = [
  "dlpi 0.2.0 (git+https://github.com/oxidecomputer/dlpi-sys?branch=main)",
  "erased-serde 0.4.5",
  "futures",
+ "iddqd",
  "ispf",
  "lazy_static",
  "libc",
