@@ -1,85 +1,81 @@
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use anyhow::Result;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpListener;
 
-use sha2::{Digest, Sha256};
 use vm_attest_proto::mock::VmInstanceRotMock;
 use vm_attest_proto::{QualifyingData, Response, VmInstanceRot};
 
-fn handle_client(
-    mut stream: TcpStream,
-    rot: &VmInstanceRotMock,
-    log: &slog::Logger,
-) {
-    let mut buffer = [0; 1024];
-
-    loop {
-        match stream.read(&mut buffer) {
-            Ok(0) => {
-                slog::info!(log, "Client disconnected");
-                break;
-            }
-            Ok(n) => {
-                let received_data = &buffer[..n];
-                slog::info!(log, "Received {} bytes from client", n);
-
-                let mut hasher = Sha256::new();
-                hasher.update(received_data);
-                let digest: [u8; 32] = hasher.finalize().into();
-                let qualifying_data = QualifyingData::from(digest);
-
-                match rot.attest(&qualifying_data) {
-                    Ok(attestation) => {
-                        slog::info!(
-                            log,
-                            "Attestation generated successfully";
-                            "cert_chain_len" => attestation.cert_chain.len(),
-                            "measurement_logs_len" => attestation.measurement_logs.len(),
-                            "attestation_len" => attestation.attestation.len(),
-                        );
-
-                        let response = Response::Success(attestation);
-                        let response = serde_json::to_vec(&response).unwrap();
-                        if let Err(e) = stream.write_all(&response) {
-                            slog::error!(
-                                log,
-                                "Failed to send attestation: {}",
-                                e
-                            );
-                        }
-                        let _ = stream.write(b"\n");
-                    }
-                    Err(e) => {
-                        slog::error!(
-                            log,
-                            "Failed to generate attestation: {:?}",
-                            e
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                slog::error!(log, "Error reading from stream: {}", e);
-                break;
-            }
-        }
-    }
-}
-
-pub fn run_server(
-    log: &slog::Logger,
-    rot: VmInstanceRotMock,
-) -> std::io::Result<()> {
+const MAX_LINE_LENGTH: usize = 1024;
+pub fn run_server(log: &slog::Logger, rot: VmInstanceRotMock) -> Result<()> {
     let listener = TcpListener::bind("0.0.0.0:3000")?;
     slog::info!(log, "Attestation server listening on port 3000");
 
-    for stream in listener.incoming() {
-        slog::info!(log, "incoming listener");
-        match stream {
-            Ok(stream) => {
-                slog::info!(log, "New client: {}", stream.peer_addr().unwrap());
-                handle_client(stream, &rot, log);
+    let mut msg = String::new();
+    for client in listener.incoming() {
+        slog::info!(log, "new client connected");
+
+        // create `BufReader` w/ capacity & `take` reader w/ same limit
+        let reader = BufReader::with_capacity(MAX_LINE_LENGTH, client?);
+        let mut limited_reader = reader.take(MAX_LINE_LENGTH as u64);
+
+        loop {
+            let bytes_read = limited_reader.read_line(&mut msg)?;
+
+            if bytes_read == 0 {
+                break;
             }
-            Err(e) => slog::error!(log, "Connection failed: {}", e),
+
+            // Check if the limit was hit and a newline wasn't found
+            if bytes_read == MAX_LINE_LENGTH && !msg.ends_with('\n') {
+                slog::warn!(
+                    log,
+                    "Error: Line length exceeded the limit of {} bytes.",
+                    MAX_LINE_LENGTH
+                );
+                let response = Response::Error("Request too long".to_string());
+                let mut response = serde_json::to_string(&response)?;
+                response.push('\n');
+                slog::info!(log, "sending error response: {response}");
+                limited_reader
+                    .get_mut()
+                    .get_mut()
+                    .write_all(response.as_bytes())?;
+                break;
+            }
+
+            slog::debug!(log, "JSON received: {msg}");
+
+            let result: Result<QualifyingData, serde_json::Error> =
+                serde_json::from_str(&msg);
+            let qualifying_data = match result {
+                Ok(q) => q,
+                Err(e) => {
+                    let response = Response::Error(e.to_string());
+                    let mut response = serde_json::to_string(&response)?;
+                    response.push('\n');
+                    slog::info!(log, "sending error response: {response}");
+                    limited_reader
+                        .get_mut()
+                        .get_mut()
+                        .write_all(response.as_bytes())?;
+                    break;
+                }
+            };
+            slog::debug!(log, "qualifying data received: {qualifying_data:?}");
+
+            let response = match rot.attest(&qualifying_data) {
+                Ok(a) => Response::Success(a),
+                Err(e) => Response::Error(e.to_string()),
+            };
+            let mut response = serde_json::to_string(&response)?;
+            response.push('\n');
+
+            slog::debug!(log, "sending response: {response}");
+            limited_reader
+                .get_mut()
+                .get_mut()
+                .write_all(response.as_bytes())?;
+            msg.clear();
         }
     }
 
