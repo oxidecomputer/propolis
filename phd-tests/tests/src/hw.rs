@@ -7,8 +7,8 @@ use phd_testcase::*;
 
 #[phd_testcase]
 async fn lspci_lifecycle_test(ctx: &Framework) {
-    const LSPCI: &str = "sudo lspci -vvx";
-    const LSHW: &str = "sudo lshw -notime";
+    const LSPCI: &str = "lspci -vvx";
+    const LSHW: &str = "lshw -notime";
 
     let mut vm = ctx
         .spawn_vm(&ctx.vm_config_builder("lspci_lifecycle_test"), None)
