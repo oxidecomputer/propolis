@@ -667,10 +667,10 @@ impl MachineInitializer<'_> {
             // each emulated device queue to storage backends. The minder and
             // structures in its supporting logic don't have much state, but may
             // do some dynamic allocation. Assume they won't need more than 1KiB
-            // of state (`in_flight` at most nworkers entries currently and will
-            // need to grow only once or twice to a small capacity, the number
-            // of outstanding boxed requests and responses is at most nworkers,
-            // etc).
+            // of state (`in_flight` has at most nworkers entries currently and
+            // will need to grow only once or twice to a small capacity. The
+            // number of outstanding boxed requests and responses is at most
+            // nworkers. Might be more, but not much).
             //
             // 64 * 1K is a wild over-estimate while we support 1-15 queues
             // across virtio-block and nvme.
