@@ -1106,6 +1106,17 @@ impl PciVirtioState {
         dev: &dyn VirtioDevice,
         mut state: MutexGuard<VirtioState>,
     ) {
+        // To make sure we reset all queues, temporarily crank the number of
+        // queues up to as many as could be supported. This way we reset all
+        // queues, regardless of how many the guest happens to have configured
+        // at the point of reset.
+        //
+        // We're going to go back to one queue pair on the far end of the reset
+        // anyway, so queue count on entry isn't useful.
+        self.queues
+            .set_len(self.queues.max_capacity())
+            .expect("VirtQueues supports its own reported capacity");
+
         for queue in self.queues.iter() {
             queue.reset();
             if dev.queue_change(queue, VqChange::Reset).is_err() {

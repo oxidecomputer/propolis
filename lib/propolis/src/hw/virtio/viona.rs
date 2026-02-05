@@ -637,12 +637,22 @@ impl PciVirtioViona {
                 }
             }
         }
+
         res
     }
 
     /// Make sure all in-kernel virtqueue processing is stopped
     fn queues_kill(&self) {
         let mut inner = self.inner.lock().unwrap();
+
+        // The guest may have negotiated some number of queue pairs below all
+        // those that Propolis set up for the device. To make sure we stop all
+        // viona rings, raise the number of queues up to PROPOLIS_MAX_MQ_PAIRS.
+        self.virtio_state
+            .queues
+            .set_len(PROPOLIS_MAX_MQ_PAIRS as usize * 2 + 1)
+            .expect("VirtQueues supports PROPOLIS_MAX_MQ_PAIRS");
+
         for vq in self.virtio_state.queues.iter() {
             let rs = inner.for_vq(vq);
             match *rs {
