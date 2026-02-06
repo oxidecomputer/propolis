@@ -573,7 +573,8 @@ async fn initialize_vm_objects(
         init.initialize_9pfs(&chipset);
     }
 
-    init.initialize_storage_devices(&chipset, options.nexus_client.clone())
+    let wanted_heap = init
+        .initialize_storage_devices(&chipset, options.nexus_client.clone())
         .await?;
 
     let ramfb =
@@ -630,7 +631,7 @@ async fn initialize_vm_objects(
         devices, block_backends, crucible_backends, ..
     } = init;
 
-    Ok(InputVmObjects {
+    let res = InputVmObjects {
         instance_spec: spec.clone(),
         vcpu_tasks,
         machine,
@@ -640,7 +641,35 @@ async fn initialize_vm_objects(
         com1,
         framebuffer: Some(ramfb),
         ps2ctrl,
-    })
+    };
+
+    // Another really terrible hack. As we've found in Propolis#1008, brk()
+    // can end end up starved by a long stream of page faults. We allocate
+    // and deallocate often enough in the hot parts of Propolis at runtime,
+    // but the working set is expected to be relatively tiny; we'd brk()
+    // once or twice, get up to a reasonable size, and never thing twice a
+    // bout it.
+    //
+    // In practice that later allocation may be blocked for tens of
+    // *minutes*, and might be while holding locks for device state (in
+    // 1008 we hold a queue state lock, for example). Everything goes off
+    // the rails from there, as vCPUs can easily get dragged into the mess,
+    // guest NMIs aren't acknowledged because vCPUs can't run, etc.
+    //
+    // So, the awful hack. Most of the runtime growth, that we can think of,
+    // comes from storage backend implementation. We guess at that amount in
+    // `initialize_storage_devices`. Now' we'll alloc at least that much, free
+    // it, and try to avoid brk() when the OS won't be able to get to it.
+    //
+    // This should be able to be removed when we are confident we can
+    // actually brk() at runtime without starving ourselves out.
+    //
+    // As one last step, include an extra 16 MiB of heap as space we might want
+    // when running `propolis-server`, handling HTTP requests, etc.
+    let balloon = vec![0u8; wanted_heap + 16 * propolis::common::MB];
+    std::mem::drop(balloon);
+
+    Ok(res)
 }
 
 /// Create an object used to sample kstats.
