@@ -1005,6 +1005,15 @@ impl VirtQueues {
         self.queues[..len].iter().chain([self.get_control()])
     }
 
+    /// Iterate all queues, regardless of the device's current configuration
+    /// happening to use them or not.
+    ///
+    /// This is primarily useful for operations like device reset and teardown
+    /// where we need to manage all *possible* device state.
+    pub fn iter_all(&self) -> impl std::iter::Iterator<Item = &Arc<VirtQueue>> {
+        self.queues.iter()
+    }
+
     pub fn export(&self) -> migrate::VirtQueuesV1 {
         let len = self.len() as u64;
         let queues = self.queues.iter().map(|q| q.export()).collect();

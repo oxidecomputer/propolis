@@ -637,40 +637,12 @@ impl PciVirtioViona {
                 }
             }
         }
-
         res
     }
 
     /// Make sure all in-kernel virtqueue processing is stopped
     fn queues_kill(&self) {
-        let mut inner = self.inner.lock().unwrap();
-
-        // The guest may have negotiated some number of queue pairs below all
-        // those that Propolis set up for the device. To make sure we stop all
-        // viona rings, raise the number of queues up to PROPOLIS_MAX_MQ_PAIRS.
-        self.virtio_state
-            .queues
-            .set_len(PROPOLIS_MAX_MQ_PAIRS as usize * 2 + 1)
-            .expect("VirtQueues supports PROPOLIS_MAX_MQ_PAIRS");
-
-        for vq in self.virtio_state.queues.iter() {
-            let rs = inner.for_vq(vq);
-            match *rs {
-                VRingState::Init => {
-                    // Already at rest
-                }
-                VRingState::Fatal => {
-                    // No sense in attempting a reset
-                }
-                _ => {
-                    if self.hdl.ring_reset(vq).is_err() {
-                        *rs = VRingState::Fatal;
-                    } else {
-                        *rs = VRingState::Init;
-                    }
-                }
-            }
-        }
+        self.virtio_state.reset_queues(self);
     }
 
     fn poller_start(&self) {
@@ -836,6 +808,8 @@ impl Lifecycle for PciVirtioViona {
     }
     fn reset(&self) {
         self.virtio_state.reset(self);
+        self.set_use_pairs(1).expect("can set viona back to one queue pair");
+        self.hdl.set_pairs(1).expect("can set viona back to one queue pair");
     }
     fn start(&self) -> anyhow::Result<()> {
         self.run();

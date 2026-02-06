@@ -1098,6 +1098,25 @@ impl PciVirtioState {
         }
     }
 
+    /// Reset all non-control queues as part of a device reset (or shutdown).
+    pub fn reset_queues(&self, dev: &dyn VirtioDevice) {
+        let mut state = self.state.lock().unwrap();
+        self.reset_queues_locked(dev, &mut state);
+    }
+
+    fn reset_queues_locked(
+        &self,
+        dev: &dyn VirtioDevice,
+        state: &mut MutexGuard<VirtioState>,
+    ) {
+        for queue in self.queues.iter_all() {
+            queue.reset();
+            if dev.queue_change(queue, VqChange::Reset).is_err() {
+                self.needs_reset_locked(dev, state);
+            }
+        }
+    }
+
     /// Reset the virtio portion of the device
     ///
     /// This leaves PCI state (such as configured BARs) unchanged
@@ -1106,23 +1125,7 @@ impl PciVirtioState {
         dev: &dyn VirtioDevice,
         mut state: MutexGuard<VirtioState>,
     ) {
-        // To make sure we reset all queues, temporarily crank the number of
-        // queues up to as many as could be supported. This way we reset all
-        // queues, regardless of how many the guest happens to have configured
-        // at the point of reset.
-        //
-        // We're going to go back to one queue pair on the far end of the reset
-        // anyway, so queue count on entry isn't useful.
-        self.queues
-            .set_len(self.queues.max_capacity())
-            .expect("VirtQueues supports its own reported capacity");
-
-        for queue in self.queues.iter() {
-            queue.reset();
-            if dev.queue_change(queue, VqChange::Reset).is_err() {
-                self.needs_reset_locked(dev, &mut state);
-            }
-        }
+        self.reset_queues_locked(dev, &mut state);
         state.reset();
         let _ = self.isr_state.read_clear();
     }
