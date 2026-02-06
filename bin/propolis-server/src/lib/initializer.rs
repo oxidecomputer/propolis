@@ -686,6 +686,11 @@ impl MachineInitializer<'_> {
                     &mut wanted_heap,
                 )
                 .await?;
+            info!(
+                self.log,
+                "raised balloon size";
+                "ballon_size" => wanted_heap
+            );
 
             self.block_backends.insert(backend_id.clone(), backend.clone());
             let block_dev: Arc<dyn block::Device> = match device_interface {
