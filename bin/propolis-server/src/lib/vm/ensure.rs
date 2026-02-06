@@ -664,9 +664,23 @@ async fn initialize_vm_objects(
     // This should be able to be removed when we are confident we can
     // actually brk() at runtime without starving ourselves out.
     //
-    // As one last step, include an extra 16 MiB of heap as space we might want
-    // when running `propolis-server`, handling HTTP requests, etc.
-    let balloon = vec![0u8; wanted_heap + 16 * propolis::common::MB];
+    // As one last step, include an extra 134 MiB in the balloon. In the happy
+    // case, even just 16 MiB was sufficient for Oximeter and regular check-ins
+    // with Propolis. In at least one case, though, we saw a Propolis with a
+    // heap about 126 MiB larger than the balloon had wanted. We don't know what
+    // happened to grow the heap like that, but size against the worst case for
+    // now for safety.
+    //
+    // All in all the worst case balloon puts propolis-server's heap a bit over
+    // (around 483 MiB + 30MiB) the RFD 413 expectation of 0.5 GiB for Propolis
+    // memory.
+    let balloon_size = wanted_heap + 134 * propolis::common::MB;
+    info!(log, "inflating balloon";
+        "balloon_size" => balloon_size);
+    let balloon = vec![0u8; balloon_size];
+    // Do a volatile access to the Vec to make sure Rust doesn't optimize it
+    // out...
+    unsafe { std::ptr::read_volatile(balloon.as_ptr()) };
     std::mem::drop(balloon);
 
     Ok(res)
