@@ -56,7 +56,7 @@ impl OutputMode {
     ///   the selected discipline.
     ///
     ///   If this directory does not already exist, it (and any parents) will
-    ///    be created.
+    ///   be created.
     /// - `file_prefix`: The prefix to add to the names of any files written
     ///   under the selected discipline.
     pub(crate) fn get_handles(
@@ -70,7 +70,7 @@ impl OutputMode {
 
                 // Make sure the output dir actually exists before creating log
                 // files.
-                std::fs::create_dir_all(&directory).with_context(|| {
+                std::fs::create_dir_all(directory).with_context(|| {
                     format!(
                         "failed to create log file directory {}",
                         directory.display()
