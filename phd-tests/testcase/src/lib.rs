@@ -9,6 +9,7 @@ use thiserror::Error;
 
 pub use phd_framework::Framework;
 pub use phd_framework::FrameworkParameters;
+pub use phd_framework::TestCtx;
 
 #[derive(Debug, Error)]
 pub enum TestSkippedError {
@@ -34,7 +35,7 @@ pub enum TestOutcome {
 /// A wrapper for test functions. This is needed to allow [`TestCase`] to have a
 /// `const` constructor for the inventory crate.
 pub struct TestFunction {
-    pub f: fn(&Framework) -> futures::future::BoxFuture<'_, TestOutcome>,
+    pub f: fn(&TestCtx) -> futures::future::BoxFuture<'_, TestOutcome>,
 }
 
 /// A description of a single test case.
@@ -74,7 +75,7 @@ impl TestCase {
 
     /// Runs the test case's body with the supplied test context and returns its
     /// outcome.
-    pub async fn run(&self, ctx: &Framework) -> TestOutcome {
+    pub async fn run(&self, ctx: &TestCtx) -> TestOutcome {
         (self.function.f)(ctx).await
     }
 }

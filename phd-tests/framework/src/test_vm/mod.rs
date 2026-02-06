@@ -20,7 +20,7 @@ use crate::{
     test_vm::{
         environment::Environment, server::ServerProcessParameters, spec::VmSpec,
     },
-    Framework,
+    TestCtx,
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -165,7 +165,7 @@ pub struct TestVm {
     metrics: Option<metrics::FakeOximeterServer>,
     spec: VmSpec,
     environment_spec: EnvironmentSpec,
-    data_dir: Utf8PathBuf,
+    output_dir: Utf8PathBuf,
 
     guest_os: Box<dyn GuestOs>,
 
@@ -198,7 +198,7 @@ impl TestVm {
     /// - guest_os_kind: The kind of guest OS this VM will host.
     #[instrument(skip_all)]
     pub(crate) async fn new(
-        framework: &Framework,
+        ctx: &TestCtx,
         spec: VmSpec,
         environment: &EnvironmentSpec,
     ) -> Result<Self> {
@@ -217,7 +217,7 @@ impl TestVm {
         info!(%vm_name, ?guest_os_kind, ?environment);
 
         match environment
-            .build(framework)
+            .build(ctx)
             .await
             .context("building environment for new VM")?
         {
@@ -226,7 +226,7 @@ impl TestVm {
                 spec,
                 environment.clone(),
                 params,
-                framework.cleanup_task_channel(),
+                ctx.framework.cleanup_task_channel(),
             ),
         }
     }
@@ -250,7 +250,7 @@ impl TestVm {
             }
         });
 
-        let data_dir = params.data_dir.to_path_buf();
+        let output_dir = params.output_dir.to_path_buf();
         let server_addr = params.server_addr;
         let server = server::PropolisServer::new(
             &vm_spec.vm_name,
@@ -267,7 +267,7 @@ impl TestVm {
             metrics,
             spec: vm_spec,
             environment_spec,
-            data_dir,
+            output_dir,
             guest_os,
             state: VmState::New,
             cleanup_task_tx,
@@ -997,7 +997,7 @@ impl TestVm {
     /// can log serial console output.
     fn serial_log_file_path(&self) -> Utf8PathBuf {
         let filename = format!("{}.serial.log", self.spec.vm_name);
-        let mut path = self.data_dir.clone();
+        let mut path = self.output_dir.clone();
         path.push(filename);
         path
     }

@@ -13,12 +13,12 @@ use tracing::info;
 use uuid::Uuid;
 
 #[phd_testcase]
-async fn smoke_test(ctx: &Framework) {
+async fn smoke_test(ctx: &TestCtx) {
     run_smoke_test(ctx, ctx.spawn_default_vm("migration_smoke").await?).await?;
 }
 
 #[phd_testcase]
-async fn serial_history(ctx: &Framework) {
+async fn serial_history(ctx: &TestCtx) {
     run_serial_history_test(
         ctx,
         ctx.spawn_default_vm("migration_serial_history").await?,
@@ -32,13 +32,13 @@ mod from_base {
     use super::*;
 
     #[phd_testcase]
-    async fn can_migrate_from_base(ctx: &Framework) {
+    async fn can_migrate_from_base(ctx: &TestCtx) {
         run_smoke_test(ctx, spawn_base_vm(ctx, "migration_from_base").await?)
             .await?;
     }
 
     #[phd_testcase]
-    async fn serial_history(ctx: &Framework) {
+    async fn serial_history(ctx: &TestCtx) {
         run_serial_history_test(
             ctx,
             spawn_base_vm(ctx, "migration_serial_history_base").await?,
@@ -50,7 +50,7 @@ mod from_base {
     // version under test, back to "base", and back to the version under
     // test.
     #[phd_testcase]
-    async fn migration_from_base_and_back(ctx: &Framework) {
+    async fn migration_from_base_and_back(ctx: &TestCtx) {
         let mut source =
             spawn_base_vm(ctx, "migration_from_base_and_back").await?;
         source.launch().await?;
@@ -83,7 +83,7 @@ mod from_base {
         .await?;
     }
 
-    async fn spawn_base_vm(ctx: &Framework, name: &str) -> Result<TestVm> {
+    async fn spawn_base_vm(ctx: &TestCtx, name: &str) -> Result<TestVm> {
         if !ctx.migration_base_enabled() {
             phd_skip!("No 'migration base' Propolis revision available");
         }
@@ -109,7 +109,7 @@ mod running_process {
     use super::*;
 
     #[phd_testcase]
-    async fn migrate_running_process(ctx: &Framework) {
+    async fn migrate_running_process(ctx: &TestCtx) {
         let mut source =
             ctx.spawn_default_vm("migrate_running_process_source").await?;
         let mut target = ctx
@@ -129,7 +129,7 @@ mod running_process {
     }
 
     #[phd_testcase]
-    async fn import_failure(ctx: &Framework) {
+    async fn import_failure(ctx: &TestCtx) {
         let mut cfg = ctx.vm_config_builder(
             "migrate_running_process::import_failure_source",
         );
@@ -199,7 +199,7 @@ mod running_process {
     }
 
     #[phd_testcase]
-    async fn export_failure(ctx: &Framework) {
+    async fn export_failure(ctx: &TestCtx) {
         let mut source = {
             let mut cfg = ctx.vm_config_builder(
                 "migrate_running_process::export_failure_source",
@@ -293,7 +293,7 @@ mod running_process {
 }
 
 #[phd_testcase]
-async fn multiple_migrations(ctx: &Framework) {
+async fn multiple_migrations(ctx: &TestCtx) {
     let mut vm0 = ctx.spawn_default_vm("multiple_migrations_0").await?;
     let mut vm1 =
         ctx.spawn_successor_vm("multiple_migrations_1", &vm0, None).await?;
@@ -311,7 +311,7 @@ async fn multiple_migrations(ctx: &Framework) {
     );
 }
 
-async fn run_smoke_test(ctx: &Framework, mut source: TestVm) -> Result<()> {
+async fn run_smoke_test(ctx: &TestCtx, mut source: TestVm) -> Result<()> {
     source.launch().await?;
     source.wait_to_boot().await?;
     let lsout = source.run_shell_command("ls foo.bar 2> /dev/null").await?;
@@ -339,7 +339,7 @@ async fn run_smoke_test(ctx: &Framework, mut source: TestVm) -> Result<()> {
 }
 
 async fn run_serial_history_test(
-    ctx: &Framework,
+    ctx: &TestCtx,
     mut source: TestVm,
 ) -> Result<()> {
     source.launch().await?;
@@ -377,7 +377,7 @@ async fn run_serial_history_test(
 }
 
 #[phd_testcase]
-async fn migration_ensures_instance_metadata(ctx: &Framework) {
+async fn migration_ensures_instance_metadata(ctx: &TestCtx) {
     // Create a source instance, and fetch the instance metadata its metrics are
     // generated with.
     let mut source = ctx
@@ -422,7 +422,7 @@ async fn migration_ensures_instance_metadata(ctx: &Framework) {
 }
 
 #[phd_testcase]
-async fn vm_reaches_destroyed_after_migration_out(ctx: &Framework) {
+async fn vm_reaches_destroyed_after_migration_out(ctx: &TestCtx) {
     let mut source = ctx
         .spawn_default_vm("vm_reaches_destroyed_after_migration_out_source")
         .await?;

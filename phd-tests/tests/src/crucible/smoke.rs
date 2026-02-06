@@ -12,7 +12,7 @@ use phd_testcase::*;
 use propolis_client::types::InstanceState;
 
 #[phd_testcase]
-async fn boot_test(ctx: &Framework) {
+async fn boot_test(ctx: &TestCtx) {
     let mut config = ctx.vm_config_builder("crucible_boot_test");
     super::add_default_boot_disk(ctx, &mut config)?;
     let mut vm = ctx.spawn_vm(&config, None).await?;
@@ -21,7 +21,7 @@ async fn boot_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
-async fn api_reboot_test(ctx: &Framework) {
+async fn api_reboot_test(ctx: &TestCtx) {
     let mut config = ctx.vm_config_builder("crucible_guest_reboot_test");
     super::add_default_boot_disk(ctx, &mut config)?;
 
@@ -33,7 +33,7 @@ async fn api_reboot_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
-async fn guest_reboot_test(ctx: &Framework) {
+async fn guest_reboot_test(ctx: &TestCtx) {
     let mut config = ctx.vm_config_builder("crucible_guest_reboot_test");
     super::add_default_boot_disk(ctx, &mut config)?;
 
@@ -45,7 +45,7 @@ async fn guest_reboot_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
-async fn shutdown_persistence_test(ctx: &Framework) {
+async fn shutdown_persistence_test(ctx: &TestCtx) {
     let mut config =
         ctx.vm_config_builder("crucible_shutdown_persistence_test");
     super::add_default_boot_disk(ctx, &mut config)?;
@@ -88,7 +88,7 @@ async fn shutdown_persistence_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
-async fn vcr_replace_during_start_test(ctx: &Framework) {
+async fn vcr_replace_during_start_test(ctx: &TestCtx) {
     if !ctx.crucible_enabled() {
         phd_skip!("Crucible backends not enabled (no downstairs path)");
     }

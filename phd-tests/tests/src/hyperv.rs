@@ -51,7 +51,7 @@ async fn guest_detect_hyperv(vm: &TestVm) -> anyhow::Result<()> {
 }
 
 #[phd_testcase]
-async fn hyperv_smoke_test(ctx: &Framework) {
+async fn hyperv_smoke_test(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("hyperv_smoke_test");
     cfg.guest_hv_interface(GuestHypervisorInterface::HyperV {
         features: Default::default(),
@@ -64,7 +64,7 @@ async fn hyperv_smoke_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
-async fn hyperv_lifecycle_test(ctx: &Framework) {
+async fn hyperv_lifecycle_test(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("hyperv_lifecycle_test");
     cfg.guest_hv_interface(GuestHypervisorInterface::HyperV {
         features: Default::default(),
@@ -89,7 +89,7 @@ async fn hyperv_lifecycle_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
-async fn hyperv_reference_tsc_clocksource_test(ctx: &Framework) {
+async fn hyperv_reference_tsc_clocksource_test(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("hyperv_reference_tsc_test");
     cfg.guest_hv_interface(GuestHypervisorInterface::HyperV {
         features: [HyperVFeatureFlag::ReferenceTsc].into_iter().collect(),
@@ -149,7 +149,7 @@ async fn hyperv_reference_tsc_clocksource_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
-async fn hyperv_reference_tsc_elapsed_time_test(ctx: &Framework) {
+async fn hyperv_reference_tsc_elapsed_time_test(ctx: &TestCtx) {
     #[derive(Debug)]
     struct Reading {
         taken_at: Instant,
