@@ -7,6 +7,7 @@
 
 use std::{path::Path, process::Stdio, str::FromStr};
 
+use anyhow::Context;
 use tracing::info;
 
 /// Specifies how a test's logging should be managed.
@@ -69,10 +70,9 @@ impl OutputMode {
                 stderr_path.push(format!("{file_prefix}.stderr.log"));
 
                 info!(?stdout_path, ?stderr_path, "Opening server log files");
-                Ok((
-                    std::fs::File::create(stdout_path)?.into(),
-                    std::fs::File::create(stderr_path)?.into(),
-                ))
+                let stdout = create_file(&stdout_path)?.into();
+                let stderr = create_file(&stderr_path)?.into();
+                Ok((stdout, stderr))
             }
             OutputMode::Stdio => Ok((Stdio::inherit(), Stdio::inherit())),
             OutputMode::Null => Ok((Stdio::null(), Stdio::null())),
@@ -89,4 +89,10 @@ pub enum LogFormat {
     /// Format logs as Bunyan output, more suitable for machine processing (such
     /// as in CI).
     Bunyan,
+}
+
+fn create_file(path: &impl AsRef<Path>) -> anyhow::Result<std::fs::File> {
+    let path = path.as_ref();
+    std::fs::File::create(path)
+        .with_context(|| format!("failed to create file {}", path.display()))
 }
