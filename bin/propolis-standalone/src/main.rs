@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
+use std::net::TcpListener;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1543,6 +1544,44 @@ fn main() -> anyhow::Result<ExitCode> {
     };
     let _rt_guard = rt.enter();
 
+    // search through devices for one bound to the vsock driver
+    // NOTE: this will find the first such device, all others are ignored
+    let (vsock_device_name, _) = config
+        .devices
+        .iter()
+        .find(|&(_, device)| device.driver == "pci-virtio-vsock")
+        .ok_or(anyhow::anyhow!("could not find 'pci-virtio-vsock' "))?;
+
+    // find the expected 'port_mappings' for attestation service from the
+    // vsock device
+    let attest_port_mapping = config.devices[vsock_device_name]
+        .options
+        .get("port_mappings")
+        .ok_or(anyhow::anyhow!("No port_mappings for sock0"))?
+        .as_array()
+        .context("array of 'port_mappings'")?
+        .iter()
+        .find(|&m| {
+            // panic if the port_mappings tables are malformed
+            let port = m
+                .get("port")
+                .expect("extract 'port' from sock0 mapping")
+                .as_integer()
+                .expect("convert 'port' from sock0 mapping to string");
+            port == 3000
+        })
+        .ok_or(anyhow::anyhow!("no mapping for the expected port: 3000"))?;
+
+    // get the localhost address from the attestation server vsock port mapping
+    let attest_bind_addr = String::from(
+        attest_port_mapping
+            .get("addr")
+            .ok_or(anyhow::anyhow!("no port mapping 'addr' field found"))?
+            .as_str()
+            .context("attest port mapping addr to_string()")?,
+    );
+    slog::info!(log, "bind address for attestation server: {attest_bind_addr}");
+
     // Create the VM afresh or restore it from a snapshot
     let attest_config = config.attestation.clone();
     let (inst, com1_sock) = if restore {
@@ -1618,7 +1657,15 @@ fn main() -> anyhow::Result<ExitCode> {
             let rot = vm_attest_proto::mock::VmInstanceRotMock::new(
                 oxattest, vm_conf,
             );
-            let _ = dumb_socket_server::run_server(&l, rot);
+            slog::info!(
+                &l,
+                "Attestation server binding to address: {attest_bind_addr}"
+            );
+
+            let listener =
+                TcpListener::bind(attest_bind_addr).expect("bind TcpListener");
+
+            let _ = dumb_socket_server::run_server(&l, rot, listener);
         });
     }
 

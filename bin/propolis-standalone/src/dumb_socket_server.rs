@@ -6,10 +6,12 @@ use vm_attest_proto::mock::VmInstanceRotMock;
 use vm_attest_proto::{QualifyingData, Response, VmInstanceRot};
 
 const MAX_LINE_LENGTH: usize = 1024;
-pub fn run_server(log: &slog::Logger, rot: VmInstanceRotMock) -> Result<()> {
-    let listener = TcpListener::bind("0.0.0.0:3000")?;
-    slog::info!(log, "Attestation server listening on port 3000");
 
+pub fn run_server(
+    log: &slog::Logger,
+    rot: VmInstanceRotMock,
+    listener: TcpListener,
+) -> Result<()> {
     let mut msg = String::new();
     for client in listener.incoming() {
         slog::info!(log, "new client connected");
