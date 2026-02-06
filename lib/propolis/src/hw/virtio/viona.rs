@@ -642,25 +642,7 @@ impl PciVirtioViona {
 
     /// Make sure all in-kernel virtqueue processing is stopped
     fn queues_kill(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        for vq in self.virtio_state.queues.iter() {
-            let rs = inner.for_vq(vq);
-            match *rs {
-                VRingState::Init => {
-                    // Already at rest
-                }
-                VRingState::Fatal => {
-                    // No sense in attempting a reset
-                }
-                _ => {
-                    if self.hdl.ring_reset(vq).is_err() {
-                        *rs = VRingState::Fatal;
-                    } else {
-                        *rs = VRingState::Init;
-                    }
-                }
-            }
-        }
+        self.virtio_state.reset_queues(self);
     }
 
     fn poller_start(&self) {
@@ -826,6 +808,8 @@ impl Lifecycle for PciVirtioViona {
     }
     fn reset(&self) {
         self.virtio_state.reset(self);
+        self.set_use_pairs(1).expect("can set viona back to one queue pair");
+        self.hdl.set_pairs(1).expect("can set viona back to one queue pair");
     }
     fn start(&self) -> anyhow::Result<()> {
         self.run();

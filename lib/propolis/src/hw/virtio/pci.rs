@@ -1098,6 +1098,25 @@ impl PciVirtioState {
         }
     }
 
+    /// Reset all non-control queues as part of a device reset (or shutdown).
+    pub fn reset_queues(&self, dev: &dyn VirtioDevice) {
+        let mut state = self.state.lock().unwrap();
+        self.reset_queues_locked(dev, &mut state);
+    }
+
+    fn reset_queues_locked(
+        &self,
+        dev: &dyn VirtioDevice,
+        state: &mut MutexGuard<VirtioState>,
+    ) {
+        for queue in self.queues.iter_all() {
+            queue.reset();
+            if dev.queue_change(queue, VqChange::Reset).is_err() {
+                self.needs_reset_locked(dev, state);
+            }
+        }
+    }
+
     /// Reset the virtio portion of the device
     ///
     /// This leaves PCI state (such as configured BARs) unchanged
@@ -1106,12 +1125,7 @@ impl PciVirtioState {
         dev: &dyn VirtioDevice,
         mut state: MutexGuard<VirtioState>,
     ) {
-        for queue in self.queues.iter() {
-            queue.reset();
-            if dev.queue_change(queue, VqChange::Reset).is_err() {
-                self.needs_reset_locked(dev, &mut state);
-            }
-        }
+        self.reset_queues_locked(dev, &mut state);
         state.reset();
         let _ = self.isr_state.read_clear();
     }
