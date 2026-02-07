@@ -971,15 +971,12 @@ impl VirtQueues {
         }
         self.len.store(len, Ordering::Release);
         let mut peak = self.peak.load(Ordering::Acquire);
-        loop {
-            if len <= peak {
-                break;
-            }
+        while len > peak {
             match self.peak.compare_exchange(
                 peak,
                 len,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
             ) {
                 Ok(_) => {
                     // We've updated the peak, all done
