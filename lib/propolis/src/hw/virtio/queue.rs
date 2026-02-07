@@ -933,6 +933,7 @@ pub struct Info {
 
 pub struct VirtQueues {
     len: AtomicUsize,
+    peak: AtomicUsize,
     queues: Vec<Arc<VirtQueue>>,
 }
 
@@ -947,9 +948,11 @@ impl VirtQueues {
         Self::new_with_len(sizes.len(), sizes)
     }
 
-    pub fn new_with_len(len: usize, sizes: &[VqSize]) -> Self {
+    pub fn new_with_len(initial_len: usize, sizes: &[VqSize]) -> Self {
         assert!(
-            0 < len && len <= sizes.len() && sizes.len() <= MAX_QUEUES,
+            0 < initial_len
+                && initial_len <= sizes.len()
+                && sizes.len() <= MAX_QUEUES,
             "virtqueue size must be positive u16 and len must be smaller pos"
         );
         let queues = sizes
@@ -957,8 +960,9 @@ impl VirtQueues {
             .enumerate()
             .map(|(id, size)| Arc::new(VirtQueue::new(id as u16, *size)))
             .collect::<Vec<_>>();
-        let len = AtomicUsize::new(len);
-        Self { len, queues }
+        let len = AtomicUsize::new(initial_len);
+        let peak = AtomicUsize::new(initial_len);
+        Self { len, peak, queues }
     }
 
     pub fn set_len(&self, len: usize) -> Result<(), usize> {
@@ -966,6 +970,23 @@ impl VirtQueues {
             return Err(len);
         }
         self.len.store(len, Ordering::Release);
+        let mut peak = self.peak.load(Ordering::Acquire);
+        while len > peak {
+            match self.peak.compare_exchange(
+                peak,
+                len,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    // We've updated the peak, all done
+                    break;
+                }
+                Err(next_peak) => {
+                    peak = next_peak;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -976,6 +997,10 @@ impl VirtQueues {
 
     pub fn len(&self) -> usize {
         self.len.load(Ordering::Relaxed)
+    }
+
+    pub fn peak(&self) -> usize {
+        self.peak.load(Ordering::Relaxed)
     }
 
     pub const fn max_capacity(&self) -> usize {
@@ -1005,13 +1030,13 @@ impl VirtQueues {
         self.queues[..len].iter().chain([self.get_control()])
     }
 
-    /// Iterate all queues, regardless of the device's current configuration
-    /// happening to use them or not.
-    ///
-    /// This is primarily useful for operations like device reset and teardown
-    /// where we need to manage all *possible* device state.
+    /// Iterate all queues the device may have used; the current number of
+    /// VirtQueues may be lower than a previous high watermark, but in cases
+    /// like device reset and teardown we must manage all viona rings
+    /// corresponding to ever-active VirtQueues.
     pub fn iter_all(&self) -> impl std::iter::Iterator<Item = &Arc<VirtQueue>> {
-        self.queues.iter()
+        let peak = self.peak() - 1;
+        self.queues[..peak].iter().chain([self.get_control()])
     }
 
     pub fn export(&self) -> migrate::VirtQueuesV1 {
