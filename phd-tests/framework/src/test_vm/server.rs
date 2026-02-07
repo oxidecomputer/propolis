@@ -24,7 +24,7 @@ pub struct ServerProcessParameters<'a> {
     /// The path to the server binary to launch.
     pub server_path: Utf8PathBuf,
 
-    /// The directory in which toplace files that are written by this server
+    /// The directory in which to place files that are written by this server
     /// process.
     pub output_dir: &'a Utf8Path,
 
