@@ -46,7 +46,7 @@ fn handle_client(
                                 e
                             );
                         }
-                        stream.write(b"\n");
+                        let _ = stream.write(b"\n");
                     }
                     Err(e) => {
                         slog::error!(
@@ -67,7 +67,7 @@ fn handle_client(
 
 pub fn run_server(
     log: &slog::Logger,
-    mut rot: VmInstanceRotMock,
+    rot: VmInstanceRotMock,
 ) -> std::io::Result<()> {
     let listener = TcpListener::bind("0.0.0.0:3000")?;
     slog::info!(log, "Attestation server listening on port 3000");
@@ -77,7 +77,7 @@ pub fn run_server(
         match stream {
             Ok(stream) => {
                 slog::info!(log, "New client: {}", stream.peer_addr().unwrap());
-                handle_client(stream, &mut rot, log);
+                handle_client(stream, &rot, log);
             }
             Err(e) => slog::error!(log, "Connection failed: {}", e),
         }
