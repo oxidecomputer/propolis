@@ -49,7 +49,7 @@ use efi_utils::{
 // Unlike later tests, this test does not manipulate boot configuration from
 // inside the guest OS.
 #[phd_testcase]
-async fn configurable_boot_order(ctx: &Framework) {
+async fn configurable_boot_order(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("configurable_boot_order");
 
     // Create a second disk backed by the same artifact as the default
@@ -115,7 +115,7 @@ async fn configurable_boot_order(ctx: &Framework) {
 // system booting means that boot order is respected and a non-bootable disk
 // does not wedge startup.
 #[phd_testcase]
-async fn unbootable_disk_skipped(ctx: &Framework) {
+async fn unbootable_disk_skipped(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("unbootable_disk_skipped");
 
     cfg.data_disk(
@@ -234,7 +234,7 @@ async fn unbootable_disk_skipped(ctx: &Framework) {
 // so that next boot we'll boot from `unbootable` first. Then reboot and verify
 // that the boot order is still "boot-disk" first.
 #[phd_testcase]
-async fn guest_can_adjust_boot_order(ctx: &Framework) {
+async fn guest_can_adjust_boot_order(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("guest_can_adjust_boot_order");
 
     cfg.data_disk(
@@ -395,7 +395,7 @@ async fn guest_can_adjust_boot_order(ctx: &Framework) {
 // store of NvVar variables is the source of boot order, and guests can control
 // their boot fates.
 #[phd_testcase]
-async fn boot_order_source_priority(ctx: &Framework) {
+async fn boot_order_source_priority(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("boot_order_source_priority");
 
     cfg.data_disk(
@@ -502,7 +502,7 @@ async fn boot_order_source_priority(ctx: &Framework) {
 }
 
 #[phd_testcase]
-async fn nvme_boot_option_description(ctx: &Framework) {
+async fn nvme_boot_option_description(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("nvme_boot_option_description");
 
     cfg.data_disk(

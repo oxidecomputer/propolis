@@ -58,6 +58,13 @@ mod serial;
 pub mod test_vm;
 pub(crate) mod zfs;
 
+/// A test context for an individual PHD test, containing a `Framework` plus
+/// test specific information.
+pub struct TestCtx {
+    pub(crate) framework: Arc<Framework>,
+    pub(crate) output_dir: Utf8PathBuf,
+}
+
 /// An instance of the PHD test framework.
 pub struct Framework {
     pub(crate) tmp_directory: Utf8PathBuf,
@@ -121,6 +128,117 @@ pub enum BasePropolisSource<'a> {
     BuildomatGitRev(&'a artifacts::buildomat::Commit),
     BuildomatBranch(&'a str),
     Local(&'a Utf8PathBuf),
+}
+
+impl TestCtx {
+    /// Creates a new VM configuration builder using the default configuration
+    /// from this framework instance.
+    pub fn vm_config_builder(&self, vm_name: &str) -> VmConfig<'_> {
+        self.framework.vm_config_builder(vm_name)
+    }
+
+    /// Yields an environment builder with default settings (run the VM on the
+    /// test runner's machine using the default Propolis from the command line).
+    pub fn environment_builder(&self) -> EnvironmentSpec {
+        self.framework.environment_builder()
+    }
+
+    /// Yields this framework instance's default guest OS artifact name. This
+    /// can be used to configure boot disks with different parameters than the
+    /// builder defaults.
+    pub fn default_guest_os_artifact(&self) -> &str {
+        self.framework.default_guest_os_artifact()
+    }
+
+    /// Yields the guest OS adapter corresponding to the default guest OS
+    /// artifact.
+    pub async fn default_guest_os_kind(&self) -> anyhow::Result<GuestOsKind> {
+        self.framework.default_guest_os_kind().await
+    }
+
+    /// Indicates whether the disk factory in this framework supports the
+    /// creation of Crucible disks. This can be used to skip tests that require
+    /// Crucible support.
+    pub fn crucible_enabled(&self) -> bool {
+        self.framework.crucible_enabled
+    }
+
+    /// Indicates whether a "migration base" Propolis server artifact is
+    /// available for migration-from-base tests.
+    pub fn migration_base_enabled(&self) -> bool {
+        self.framework.migration_base_enabled
+    }
+    /// Spawns a test VM using the default configuration returned from
+    /// `vm_builder` and the default environment returned from
+    /// `environment_builder`.
+    pub async fn spawn_default_vm(
+        &self,
+        vm_name: &str,
+    ) -> anyhow::Result<TestVm> {
+        self.spawn_vm(&self.vm_config_builder(vm_name), None).await
+    }
+
+    /// Spawns a new test VM using the supplied `config`. If `environment` is
+    /// `Some`, the VM is spawned using the supplied environment; otherwise it
+    /// is spawned using the default `environment_builder`.
+    pub async fn spawn_vm(
+        &self,
+        config: &VmConfig<'_>,
+        environment: Option<&EnvironmentSpec>,
+    ) -> anyhow::Result<TestVm> {
+        self.spawn_vm_with_spec(
+            config
+                .vm_spec(self)
+                .await
+                .context("building VM spec from VmConfig")?,
+            environment,
+        )
+        .await
+    }
+
+    /// Spawns a new test VM using the supplied `spec`. If `environment` is
+    /// `Some`, the VM is spawned using the supplied environment; otherwise it
+    /// is spawned using the default `environment_builder`.
+    pub async fn spawn_vm_with_spec(
+        &self,
+        spec: VmSpec,
+        environment: Option<&EnvironmentSpec>,
+    ) -> anyhow::Result<TestVm> {
+        TestVm::new(
+            self,
+            spec,
+            environment.unwrap_or(&self.environment_builder()),
+        )
+        .await
+        .context("constructing test VM")
+    }
+
+    /// Spawns a "successor" to the supplied `vm`. The successor has the same
+    /// configuration and takes additional references to all of its
+    /// predecessor's backing objects (e.g. disk handles). If `environment` is
+    /// `None`, the successor is launched using the predecessor's environment
+    /// spec.
+    pub async fn spawn_successor_vm(
+        &self,
+        vm_name: &str,
+        vm: &TestVm,
+        environment: Option<&EnvironmentSpec>,
+    ) -> anyhow::Result<TestVm> {
+        let mut vm_spec = vm.vm_spec().clone();
+        vm_spec.set_vm_name(vm_name.to_owned());
+
+        // Create new metadata for an instance based on this predecessor. It
+        // should have the same project and silo IDs, but the sled identifiers
+        // will be different.
+        vm_spec.refresh_sled_identifiers();
+
+        TestVm::new(
+            self,
+            vm_spec,
+            environment.unwrap_or(&vm.environment_spec()),
+        )
+        .await
+    }
 }
 
 // The framework implementation includes some "runner-only" functions
@@ -209,6 +327,12 @@ impl Framework {
         })
     }
 
+    pub fn test_ctx(self: &Arc<Self>, fully_qualified_name: String) -> TestCtx {
+        let output_dir =
+            self.tmp_directory.as_path().join(&fully_qualified_name);
+        TestCtx { framework: self.clone(), output_dir }
+    }
+
     /// Resets the state of any stateful objects in the framework to prepare it
     /// to run a new test case.
     pub async fn reset(&self) {
@@ -227,83 +351,10 @@ impl Framework {
             &self.default_guest_os_artifact,
         )
     }
-
     /// Yields an environment builder with default settings (run the VM on the
     /// test runner's machine using the default Propolis from the command line).
     pub fn environment_builder(&self) -> EnvironmentSpec {
         EnvironmentSpec::new(VmLocation::Local, DEFAULT_PROPOLIS_ARTIFACT)
-    }
-
-    /// Spawns a test VM using the default configuration returned from
-    /// `vm_builder` and the default environment returned from
-    /// `environment_builder`.
-    pub async fn spawn_default_vm(
-        &self,
-        vm_name: &str,
-    ) -> anyhow::Result<TestVm> {
-        self.spawn_vm(&self.vm_config_builder(vm_name), None).await
-    }
-
-    /// Spawns a new test VM using the supplied `config`. If `environment` is
-    /// `Some`, the VM is spawned using the supplied environment; otherwise it
-    /// is spawned using the default `environment_builder`.
-    pub async fn spawn_vm(
-        &self,
-        config: &VmConfig<'_>,
-        environment: Option<&EnvironmentSpec>,
-    ) -> anyhow::Result<TestVm> {
-        self.spawn_vm_with_spec(
-            config
-                .vm_spec(self)
-                .await
-                .context("building VM spec from VmConfig")?,
-            environment,
-        )
-        .await
-    }
-
-    /// Spawns a new test VM using the supplied `spec`. If `environment` is
-    /// `Some`, the VM is spawned using the supplied environment; otherwise it
-    /// is spawned using the default `environment_builder`.
-    pub async fn spawn_vm_with_spec(
-        &self,
-        spec: VmSpec,
-        environment: Option<&EnvironmentSpec>,
-    ) -> anyhow::Result<TestVm> {
-        TestVm::new(
-            self,
-            spec,
-            environment.unwrap_or(&self.environment_builder()),
-        )
-        .await
-        .context("constructing test VM")
-    }
-
-    /// Spawns a "successor" to the supplied `vm`. The successor has the same
-    /// configuration and takes additional references to all of its
-    /// predecessor's backing objects (e.g. disk handles). If `environment` is
-    /// `None`, the successor is launched using the predecessor's environment
-    /// spec.
-    pub async fn spawn_successor_vm(
-        &self,
-        vm_name: &str,
-        vm: &TestVm,
-        environment: Option<&EnvironmentSpec>,
-    ) -> anyhow::Result<TestVm> {
-        let mut vm_spec = vm.vm_spec().clone();
-        vm_spec.set_vm_name(vm_name.to_owned());
-
-        // Create new metadata for an instance based on this predecessor. It
-        // should have the same project and silo IDs, but the sled identifiers
-        // will be different.
-        vm_spec.refresh_sled_identifiers();
-
-        TestVm::new(
-            self,
-            vm_spec,
-            environment.unwrap_or(&vm.environment_spec()),
-        )
-        .await
     }
 
     /// Yields this framework instance's default guest OS artifact name. This

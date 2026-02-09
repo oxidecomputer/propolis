@@ -22,7 +22,7 @@ fn cpuid_entry(
 }
 
 #[phd_testcase]
-async fn cpuid_instance_spec_round_trip_test(ctx: &Framework) {
+async fn cpuid_instance_spec_round_trip_test(ctx: &TestCtx) {
     // The guest isn't actually going to boot with these nonsense settings. The
     // goal is simply to verify that the ensure API properly records these
     // options and reflects them back out on request.
@@ -106,7 +106,7 @@ async fn verify_guest_brand_string(vm: &TestVm) -> anyhow::Result<()> {
 /// Launches a test VM with a synthetic brand string injected into its CPUID
 /// leaves.
 async fn launch_cpuid_smoke_test_vm(
-    ctx: &Framework,
+    ctx: &TestCtx,
     vm_name: &str,
 ) -> anyhow::Result<TestVm> {
     let mut host_cpuid = cpuid_utils::host::query_complete(
@@ -139,13 +139,13 @@ async fn launch_cpuid_smoke_test_vm(
 }
 
 #[phd_testcase]
-async fn cpuid_boot_test(ctx: &Framework) {
+async fn cpuid_boot_test(ctx: &TestCtx) {
     let vm = launch_cpuid_smoke_test_vm(ctx, "cpuid_boot_test").await?;
     verify_guest_brand_string(&vm).await?;
 }
 
 #[phd_testcase]
-async fn cpuid_migrate_smoke_test(ctx: &Framework) {
+async fn cpuid_migrate_smoke_test(ctx: &TestCtx) {
     let vm = launch_cpuid_smoke_test_vm(ctx, "cpuid_boot_test").await?;
     verify_guest_brand_string(&vm).await?;
 
@@ -276,7 +276,7 @@ impl<'a> LinuxGuestTopo<'a> {
 }
 
 #[phd_testcase]
-async fn guest_cpu_topo_test(ctx: &Framework) {
+async fn guest_cpu_topo_test(ctx: &TestCtx) {
     let vm = launch_cpuid_smoke_test_vm(ctx, "guest_cpu_topo_test").await?;
 
     // The topology-checking is Linux-specific, though it should be appropriate

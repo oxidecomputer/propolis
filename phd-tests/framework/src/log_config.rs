@@ -7,6 +7,7 @@
 
 use std::{path::Path, process::Stdio, str::FromStr};
 
+use anyhow::Context;
 use tracing::info;
 
 /// Specifies how a test's logging should be managed.
@@ -51,9 +52,12 @@ impl OutputMode {
     ///
     /// # Parameters
     ///
-    /// - directory: The directory in which to store any files written under
+    /// - `directory`: The directory in which to store any files written under
     ///   the selected discipline.
-    /// - file_prefix: The prefix to add to the names of any files written
+    ///
+    ///   If this directory does not already exist, it (and any parents) will
+    ///   be created.
+    /// - `file_prefix`: The prefix to add to the names of any files written
     ///   under the selected discipline.
     pub(crate) fn get_handles(
         &self,
@@ -62,17 +66,26 @@ impl OutputMode {
     ) -> anyhow::Result<(Stdio, Stdio)> {
         match self {
             OutputMode::TmpFile => {
-                let mut stdout_path = directory.as_ref().to_path_buf();
-                stdout_path.push(format!("{file_prefix}.stdout.log"));
+                let directory = directory.as_ref();
 
-                let mut stderr_path = directory.as_ref().to_path_buf();
-                stderr_path.push(format!("{file_prefix}.stderr.log"));
+                // Make sure the output dir actually exists before creating log
+                // files.
+                std::fs::create_dir_all(directory).with_context(|| {
+                    format!(
+                        "failed to create log file directory {}",
+                        directory.display()
+                    )
+                })?;
 
+                let stdout_path =
+                    directory.join(format!("{file_prefix}.stdout.log"));
+                let stderr_path =
+                    directory.join(format!("{file_prefix}.stderr.log"));
                 info!(?stdout_path, ?stderr_path, "Opening server log files");
-                Ok((
-                    std::fs::File::create(stdout_path)?.into(),
-                    std::fs::File::create(stderr_path)?.into(),
-                ))
+                let stdout = create_file(&stdout_path)?.into();
+                let stderr = create_file(&stderr_path)?.into();
+
+                Ok((stdout, stderr))
             }
             OutputMode::Stdio => Ok((Stdio::inherit(), Stdio::inherit())),
             OutputMode::Null => Ok((Stdio::null(), Stdio::null())),
@@ -89,4 +102,10 @@ pub enum LogFormat {
     /// Format logs as Bunyan output, more suitable for machine processing (such
     /// as in CI).
     Bunyan,
+}
+
+fn create_file(path: &impl AsRef<Path>) -> anyhow::Result<std::fs::File> {
+    let path = path.as_ref();
+    std::fs::File::create(path)
+        .with_context(|| format!("failed to create file {}", path.display()))
 }

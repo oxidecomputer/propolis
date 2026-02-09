@@ -24,9 +24,9 @@ pub struct ServerProcessParameters<'a> {
     /// The path to the server binary to launch.
     pub server_path: Utf8PathBuf,
 
-    /// The directory in which to find or place files that are read or written
-    /// by this server process.
-    pub data_dir: &'a Utf8Path,
+    /// The directory in which to place files that are written by this server
+    /// process.
+    pub output_dir: &'a Utf8Path,
 
     /// The address at which the server should serve.
     pub server_addr: SocketAddrV4,
@@ -54,7 +54,7 @@ impl PropolisServer {
     ) -> Result<Self> {
         let ServerProcessParameters {
             server_path,
-            data_dir,
+            output_dir,
             server_addr,
             metrics_addr,
             vnc_addr,
@@ -69,7 +69,7 @@ impl PropolisServer {
         );
 
         let (server_stdout, server_stderr) =
-            log_config.output_mode.get_handles(&data_dir, vm_name)?;
+            log_config.output_mode.get_handles(&output_dir, vm_name)?;
 
         let mut args = vec![server_path.into_string(), "run".to_string()];
 

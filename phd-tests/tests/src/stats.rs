@@ -196,7 +196,7 @@ impl VirtualMachineMetrics {
 }
 
 #[phd_testcase]
-async fn instance_vcpu_stats(ctx: &Framework) {
+async fn instance_vcpu_stats(ctx: &TestCtx) {
     /// Allow as much as 20% measurement error for time comparisons in this
     /// test. When measuring active guest time, some guests (looking at you
     /// Windows) may have services that continue running in the time period
