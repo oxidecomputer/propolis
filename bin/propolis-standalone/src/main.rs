@@ -1586,33 +1586,35 @@ fn main() -> anyhow::Result<ExitCode> {
                     digest: attest_cfg.image_digest.clone(),
                 },
             };
-            let oxattest: Box<dyn dice_verifier::Attest> = match attest_cfg.backend {
-                config::AttestBackend::Mock => {
-                    let pki_path = attest_cfg.pki_path
-                        .as_ref()
-                        .expect("pki_path required for mock backend");
-                    let log_path = attest_cfg.log_path
-                        .as_ref()
-                        .expect("log_path required for mock backend");
-                    let alias_key_path = attest_cfg.alias_key_path
-                        .as_ref()
-                        .expect("alias_key_path required for mock backend");
-                    Box::new(
-                        dice_verifier::AttestMock::load(
-                            pki_path,
-                            log_path,
-                            alias_key_path,
+            let oxattest: Box<dyn dice_verifier::Attest> =
+                match attest_cfg.backend {
+                    config::AttestBackend::Mock => {
+                        let pki_path = attest_cfg
+                            .pki_path
+                            .as_ref()
+                            .expect("pki_path required for mock backend");
+                        let log_path = attest_cfg
+                            .log_path
+                            .as_ref()
+                            .expect("log_path required for mock backend");
+                        let alias_key_path = attest_cfg
+                            .alias_key_path
+                            .as_ref()
+                            .expect("alias_key_path required for mock backend");
+                        Box::new(
+                            dice_verifier::AttestMock::load(
+                                pki_path,
+                                log_path,
+                                alias_key_path,
+                            )
+                            .expect("Failed to load AttestMock"),
                         )
-                        .expect("Failed to load AttestMock"),
-                    )
-                }
-                config::AttestBackend::Ipcc => {
-                    Box::new(
+                    }
+                    config::AttestBackend::Ipcc => Box::new(
                         dice_verifier::ipcc::AttestIpcc::new()
                             .expect("Failed to create AttestIpcc"),
-                    )
-                }
-            };
+                    ),
+                };
             let rot = vm_attest_proto::mock::VmInstanceRotMock::new(
                 oxattest, vm_conf,
             );
