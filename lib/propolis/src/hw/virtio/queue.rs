@@ -1003,6 +1003,11 @@ impl VirtQueues {
         self.peak.load(Ordering::Relaxed)
     }
 
+    pub fn reset_peak(&self) {
+        let current = self.len.load(Ordering::Relaxed);
+        self.peak.store(current, Ordering::Relaxed);
+    }
+
     pub const fn max_capacity(&self) -> usize {
         self.queues.len()
     }

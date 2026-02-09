@@ -51,6 +51,21 @@ pub const fn max_num_queues() -> usize {
 
 const ETHERADDRL: usize = 6;
 
+/// The caller of `set_use_pairs` will probably be inlined into a larger
+/// function that is difficult to spot in a ustack(). This gives us a hint
+/// about why we were `set_usepairs()`'ing.
+#[repr(u8)]
+enum MqSetPairsCause {
+    Reset = 0,
+    MqEnabled = 1,
+    Commanded = 2,
+}
+
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn virtio_viona_mq_set_use_pairs(cause: u8, npairs: u16) {}
+}
+
 /// Types and so forth for supporting the control queue.
 /// Note that these come from the VirtIO spec, section
 /// 5.1.6.2 in VirtIO 1.2.
@@ -510,7 +525,12 @@ impl PciVirtioViona {
                 if !chain.read(&mut msg, &mem) {
                     return Err(());
                 }
-                self.set_use_pairs(msg.npairs)
+                let npairs = msg.npairs;
+                probes::virtio_viona_mq_set_use_pairs!(|| (
+                    MqSetPairsCause::Commanded as u8,
+                    npairs
+                ));
+                self.set_use_pairs(npairs)
             }
             MqCmd::RssConfig => Err(()),
             MqCmd::HashConfig => Err(()),
@@ -717,6 +737,10 @@ impl VirtioDevice for PciVirtioViona {
         self.hdl.set_features(feat).map_err(|_| ())?;
         if (feat & VIRTIO_NET_F_MQ) != 0 {
             self.hdl.set_pairs(PROPOLIS_MAX_MQ_PAIRS).map_err(|_| ())?;
+            probes::virtio_viona_mq_set_use_pairs!(|| (
+                MqSetPairsCause::MqEnabled as u8,
+                PROPOLIS_MAX_MQ_PAIRS
+            ));
             self.set_use_pairs(PROPOLIS_MAX_MQ_PAIRS)?;
         }
         Ok(())
@@ -808,8 +832,13 @@ impl Lifecycle for PciVirtioViona {
     }
     fn reset(&self) {
         self.virtio_state.reset(self);
+        probes::virtio_viona_mq_set_use_pairs!(|| (
+            MqSetPairsCause::Reset as u8,
+            1
+        ));
         self.set_use_pairs(1).expect("can set viona back to one queue pair");
         self.hdl.set_pairs(1).expect("can set viona back to one queue pair");
+        self.virtio_state.queues.reset_peak();
     }
     fn start(&self) -> anyhow::Result<()> {
         self.run();
