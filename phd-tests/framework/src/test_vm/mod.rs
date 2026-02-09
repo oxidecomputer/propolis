@@ -23,7 +23,7 @@ use crate::{
     TestCtx,
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use camino::Utf8PathBuf;
 use core::result::Result as StdResult;
 use propolis_client::{
@@ -150,6 +150,107 @@ enum InstanceConsoleSource<'a> {
 enum VmState {
     New,
     Ensured { serial: SerialConsole },
+}
+
+/// Description of the acceptable status codes from executing a command in a
+/// [`TestVm::run_shell_command`].
+// This could reasonably have a `Status(u16)` variant to check specific non-zero
+// statuses, but specific codes are not terribly portable! In the few cases we
+// can expect a specific status for errors, those specific codes change between
+// f.ex illumos and Linux guests.
+enum StatusCheck {
+    Ok,
+    NotOk,
+}
+
+pub struct ShellOutputExecutor<'ctx> {
+    vm: &'ctx TestVm,
+    cmd: &'ctx str,
+    status_check: Option<StatusCheck>,
+}
+
+impl<'a> ShellOutputExecutor<'a> {
+    pub fn ignore_status(mut self) -> ShellOutputExecutor<'a> {
+        self.status_check = None;
+        self
+    }
+
+    pub fn check_ok(mut self) -> ShellOutputExecutor<'a> {
+        self.status_check = Some(StatusCheck::Ok);
+        self
+    }
+
+    pub fn check_err(mut self) -> ShellOutputExecutor<'a> {
+        self.status_check = Some(StatusCheck::NotOk);
+        self
+    }
+}
+use futures::FutureExt;
+
+impl<'a> std::future::IntoFuture for ShellOutputExecutor<'a> {
+    type Output = Result<String>;
+    type IntoFuture = futures::future::BoxFuture<'a, Result<String>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move {
+            // Allow the guest OS to transform the input command into a
+            // guest-specific command sequence. This accounts for the guest's
+            // shell type (which affects e.g. affects how it displays multi-line
+            // commands) and serial console buffering discipline.
+            let command_sequence =
+                self.vm.guest_os.shell_command_sequence(self.cmd);
+            self.vm.run_command_sequence(command_sequence).await?;
+
+            // `shell_command_sequence` promises that the generated command
+            // sequence clears buffer of everything up to and including the
+            // input command before actually issuing the final '\n' that issues
+            // the command.  This ensures that the buffer contents returned by
+            // this call contain only the command's output.
+            let output = self
+                .vm
+                .wait_for_serial_output(
+                    self.vm.guest_os.get_shell_prompt(),
+                    Duration::from_secs(300),
+                )
+                .await?;
+
+            // Trim any leading newlines inserted when the command was issued
+            // and any trailing whitespace that isn't actually part of the
+            // command output. Any other embedded whitespace is the caller's
+            // problem.
+            let output = output.trim().to_string();
+
+            if let Some(check) = self.status_check {
+                let status_command_sequence =
+                    self.vm.guest_os.shell_command_sequence("echo $?");
+                self.vm.run_command_sequence(status_command_sequence).await?;
+                let status = self
+                    .vm
+                    .wait_for_serial_output(
+                        self.vm.guest_os.get_shell_prompt(),
+                        Duration::from_secs(300),
+                    )
+                    .await?;
+                let status = status.trim().parse::<u16>()?;
+
+                match check {
+                    StatusCheck::Ok => {
+                        if status != 0 {
+                            bail!("expected status 0, got {}", status);
+                        }
+                    }
+                    StatusCheck::NotOk => {
+                        if status == 0 {
+                            bail!("expected non-zero status, got {}", status);
+                        }
+                    }
+                }
+            }
+
+            Ok(output)
+        })
+        .boxed()
+    }
 }
 
 /// A virtual machine running in a Propolis server. Test cases create these VMs
@@ -885,30 +986,23 @@ impl TestVm {
     /// waits for another shell prompt to appear using
     /// [`Self::wait_for_serial_output`] and returns any text that was buffered
     /// to the serial console after the command was sent.
-    pub async fn run_shell_command(&self, cmd: &str) -> Result<String> {
-        // Allow the guest OS to transform the input command into a
-        // guest-specific command sequence. This accounts for the guest's shell
-        // type (which affects e.g. affects how it displays multi-line commands)
-        // and serial console buffering discipline.
-        let command_sequence = self.guest_os.shell_command_sequence(cmd);
-        self.run_command_sequence(command_sequence).await?;
-
-        // `shell_command_sequence` promises that the generated command sequence
-        // clears buffer of everything up to and including the input command
-        // before actually issuing the final '\n' that issues the command.
-        // This ensures that the buffer contents returned by this call contain
-        // only the command's output.
-        let out = self
-            .wait_for_serial_output(
-                self.guest_os.get_shell_prompt(),
-                Duration::from_secs(300),
-            )
-            .await?;
-
-        // Trim any leading newlines inserted when the command was issued and
-        // any trailing whitespace that isn't actually part of the command
-        // output. Any other embedded whitespace is the caller's problem.
-        Ok(out.trim().to_string())
+    ///
+    /// After running the shell command, sends `echo $?` to query and return the
+    /// command's return status as well.
+    ///
+    /// This will return an error if the command returns a non-zero status by
+    /// default; to ignore the status or expect a non-zero as a positive
+    /// condition, see [`ShellOutputExecutor::ignore_status`] or
+    /// [`ShellOutputExecutor::check_err`].
+    pub fn run_shell_command<'a>(
+        &'a self,
+        cmd: &'a str,
+    ) -> ShellOutputExecutor<'a> {
+        ShellOutputExecutor {
+            vm: self,
+            cmd,
+            status_check: Some(StatusCheck::Ok),
+        }
     }
 
     pub async fn graceful_reboot(&self) -> Result<()> {

@@ -24,20 +24,19 @@ use uuid::Uuid;
 /// startup and shutdown with Hyper-V emulation enabled.
 async fn guest_detect_hyperv(vm: &TestVm) -> anyhow::Result<()> {
     if vm.guest_os_kind().is_linux() {
-        // Many Linux distros come with systemd installed out of the box. On
-        // these distros, it's easiest to use `systemd-detect-virt` to determine
-        // whether the guest thinks it's running on a Hyper-V-compatible
-        // hypervisor. (Whether any actual enlightenments are enabled is another
-        // story, but those can often be detected by other means.)
-        let out = vm.run_shell_command("systemd-detect-virt").await?;
-        if out.contains("systemd-detect-virt: not found") {
-            warn!(
-                "guest doesn't support systemd-detect-virt, can't verify it \
-                detected Hyper-V support"
-            );
-        } else {
-            assert_eq!(out, "microsoft");
-        }
+        // One might imagine we could simply use `systemd-detect-virt` to check
+        // hypervisor information here, but it's not present out of the box on
+        // Alpine. In the interest of exercising Hyper-V in typical CI runs on a
+        // standard Alpine image, detect Hyper-V in a.. worse but reliable way:
+        // looking for relevant logs in dmesg. This should work for all Linuxes
+        // from later than May-ish 2010 (>2.6.34 or so). If we don't see Hyper-V
+        // reported in dmesg either it's genuinely not detected, it's a very old
+        // Linux, or it's a new Linux and dmesg text has changed.
+        const HV_TEXT: &str = "Hypervisor detected: Microsoft Hyper-V";
+
+        // No "sudo" here because Alpine doesn't have sudo; for Linux tests we
+        // expect to run test commands as root anyway.
+        vm.run_shell_command(&format!("dmesg | grep \"{HV_TEXT}\"")).await?;
     } else if vm.guest_os_kind().is_windows() {
         // Windows is good about giving signals that it's running in a Hyper-V
         // *root partition*, but offers no clear signal as to whether it has
@@ -45,6 +44,8 @@ async fn guest_detect_hyperv(vm: &TestVm) -> anyhow::Result<()> {
         // are methods for detecting whether Windows is running as a guest, but
         // these don't identify the detected hypervisor type.)
         warn!("running on Windows, can't verify it detected Hyper-V support");
+    } else {
+        warn!("unknown guest type, can't verify it detected Hyper-V support");
     }
 
     Ok(())
@@ -56,6 +57,16 @@ async fn hyperv_smoke_test(ctx: &TestCtx) {
     cfg.guest_hv_interface(GuestHypervisorInterface::HyperV {
         features: Default::default(),
     });
+    // For reasons absolutely indecipherable to me, Alpine (3.16, kernel
+    // 5.15.41-0-virt) seems to lose some early dmesg lines if booted with less
+    // than four vCPUs. Among the early dmesg lines are `Hypervisor detected:
+    // Microsoft Hyper-V` that we look for as confirmation that Linux knows
+    // there's a Hyper-V-like hypervisor present.
+    //
+    // I'd love to debug exactly why this is relevant to the contents of dmesg
+    // (the remaining log is identical and it doesn't seem that the ring buffer
+    // is full), but I really can't justify the time!
+    cfg.cpus(4);
     let mut vm = ctx.spawn_vm(&cfg, None).await?;
     vm.launch().await?;
     vm.wait_to_boot().await?;
@@ -69,6 +80,9 @@ async fn hyperv_lifecycle_test(ctx: &TestCtx) {
     cfg.guest_hv_interface(GuestHypervisorInterface::HyperV {
         features: Default::default(),
     });
+    // Spooky load-bearing vCPU count to preserve dmesg log lines. See the
+    // comment in `hyperv_smoke_test`.
+    cfg.cpus(4);
     let mut vm = ctx.spawn_vm(&cfg, None).await?;
     vm.launch().await?;
     vm.wait_to_boot().await?;
