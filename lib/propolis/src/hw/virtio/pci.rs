@@ -1072,6 +1072,11 @@ impl PciVirtioState {
         _dev: &dyn VirtioDevice,
         state: &mut MutexGuard<VirtioState>,
     ) {
+        // TODO: would be *great* to know which device needs a reset.. compare
+        // with device_id in nvme and how we can give out per-device IDs when
+        // setting things up.
+        probes::virtio_device_needs_reset!(|| ());
+
         if !state.status.contains(Status::NEEDS_RESET) {
             state.status.insert(Status::NEEDS_RESET);
             // XXX: interrupt needed?
