@@ -10,8 +10,8 @@ use propolis::migrate::{
     MigrateCtx, MigrateStateError, Migrator, PayloadOffer, PayloadOffers,
 };
 use propolis::vmm;
+use propolis_api_types::instance::ReplacementComponent;
 use propolis_api_types::instance_spec::SpecKey;
-use propolis_api_types::ReplacementComponent;
 use slog::{error, info, trace, warn};
 use std::collections::BTreeMap;
 use std::convert::TryInto;
