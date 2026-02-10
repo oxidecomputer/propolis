@@ -27,7 +27,7 @@ async fn guest_detect_hyperv(vm: &TestVm) -> anyhow::Result<()> {
         // One might imagine we could simply use `systemd-detect-virt` to check
         // hypervisor information here, but it's not present out of the box on
         // Alpine. In the interest of exercising Hyper-V in typical CI runs on a
-        // standard Alpine image, detect Hyper-V in a.. worse but reliable way:
+        // standard Alpine image, detect Hyper-V in a... worse but reliable way:
         // looking for relevant logs in dmesg. This should work for all Linuxes
         // from later than May-ish 2010 (>2.6.34 or so). If we don't see Hyper-V
         // reported in dmesg either it's genuinely not detected, it's a very old

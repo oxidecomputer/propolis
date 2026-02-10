@@ -193,6 +193,7 @@ impl<'a> LinuxGuestTopo<'a> {
                 "ls {}",
                 Self::cpu_stem(this.cpus().await)
             ))
+            .ignore_status()
             .await
             .expect("can run ls of a directory that doesn't exist");
         assert!(out.contains("No such file or directory"));

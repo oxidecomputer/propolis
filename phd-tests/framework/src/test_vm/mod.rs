@@ -26,6 +26,7 @@ use crate::{
 use anyhow::{anyhow, bail, Context, Result};
 use camino::Utf8PathBuf;
 use core::result::Result as StdResult;
+use futures::FutureExt;
 use propolis_client::{
     instance_spec::{
         ComponentV0, InstanceProperties, InstanceSpecGetResponse,
@@ -185,7 +186,6 @@ impl<'a> ShellOutputExecutor<'a> {
         self
     }
 }
-use futures::FutureExt;
 
 impl<'a> std::future::IntoFuture for ShellOutputExecutor<'a> {
     type Output = Result<String>;

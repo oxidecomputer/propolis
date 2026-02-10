@@ -22,6 +22,8 @@ async fn lspci_lifecycle_test(ctx: &TestCtx) {
     // * sudo may not exist (some Alpine)
     // * lshw may not exist (Debian)
     // * we may not input a sudo password (Ubuntu)
+    //
+    // see also: https://github.com/oxidecomputer/propolis/issues/792
 
     let lspci = vm.run_shell_command(LSPCI).ignore_status().await?;
     let lshw = vm.run_shell_command(LSHW).ignore_status().await?;
