@@ -65,7 +65,8 @@ async fn shutdown_persistence_test(ctx: &TestCtx) {
 
     // Verify that the test file doesn't exist yet, then touch it, flush it, and
     // shut down the VM.
-    let lsout = vm.run_shell_command("ls foo.bar 2> /dev/null").await?;
+    let lsout =
+        vm.run_shell_command("ls foo.bar 2> /dev/null").check_err().await?;
     assert_eq!(lsout, "");
     vm.run_shell_command("touch ./foo.bar").await?;
     vm.run_shell_command("sync ./foo.bar").await?;

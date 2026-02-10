@@ -19,7 +19,8 @@ async fn smoke_test(ctx: &TestCtx) {
     source.launch().await?;
     source.wait_to_boot().await?;
 
-    let lsout = source.run_shell_command("ls foo.bar 2> /dev/null").await?;
+    let lsout =
+        source.run_shell_command("ls foo.bar 2> /dev/null").check_err().await?;
     assert_eq!(lsout, "");
     source.run_shell_command("touch ./foo.bar").await?;
     source.run_shell_command("sync ./foo.bar").await?;

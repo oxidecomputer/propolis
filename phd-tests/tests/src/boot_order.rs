@@ -256,7 +256,8 @@ async fn guest_can_adjust_boot_order(ctx: &TestCtx) {
 
     // If the guest doesn't have an EFI partition then there's no way for boot
     // order preferences to be persisted.
-    let mountline = vm.run_shell_command("mount | grep efivarfs").await?;
+    let mountline =
+        vm.run_shell_command("mount | grep efivarfs").ignore_status().await?;
 
     if !mountline.starts_with("efivarfs on ") {
         warn!(
@@ -268,11 +269,16 @@ async fn guest_can_adjust_boot_order(ctx: &TestCtx) {
 
     // Try adding a few new boot options, then add them to the boot order,
     // reboot, and make sure they're all as we set them.
-    if !vm
-        .run_shell_command(&format!("ls {}", efipath(&bootvar(0xffff))))
-        .await?
-        .is_empty()
-    {
+    let bootffff_path = efipath(&bootvar(0xffff));
+    let bootffff_res = vm
+        .run_shell_command(&format!("ls {bootffff_path}"))
+        .ignore_status()
+        .await?;
+    // `ls` just prints the file path if it exists, but the error text varies a
+    // bit depending on Alpine, Ubuntu, Busybox, etc. Notionally we could
+    // `check_err()` above, but having a `BootFFFF` entry already is merely
+    // weird; we can still replace it and continue with the test.
+    if bootffff_res == bootffff_path {
         warn!(
             "guest environment already has a BootFFFF entry; \
             is this not a fresh image?"

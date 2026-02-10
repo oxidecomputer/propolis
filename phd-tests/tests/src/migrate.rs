@@ -55,7 +55,11 @@ mod from_base {
             spawn_base_vm(ctx, "migration_from_base_and_back").await?;
         source.launch().await?;
         source.wait_to_boot().await?;
-        let lsout = source.run_shell_command("ls foo.bar 2> /dev/null").await?;
+        // `ls` with no results exits non-zero, so expect an error here.
+        let lsout = source
+            .run_shell_command("ls foo.bar 2> /dev/null")
+            .check_err()
+            .await?;
         assert_eq!(lsout, "");
 
         // create an empty file on the source VM.
@@ -74,8 +78,9 @@ mod from_base {
                     // the file should still exist on the target VM after migration.
                     let lsout = target
                         .run_shell_command("ls foo.bar")
+                        .ignore_status()
                         .await
-                        .expect("`ls foo.bar` should succeed");
+                        .expect("can try to run `ls foo.bar`");
                     assert_eq!(lsout, "foo.bar");
                 })
             },
@@ -275,7 +280,9 @@ mod running_process {
         ))
         .await?;
         vm.run_shell_command("chmod +x dirt.sh").await?;
-        let run_dirt = vm.run_shell_command("./dirt.sh").await?;
+        // When dirt.sh suspends itself, the parent shell will report a non-zero
+        // status (one example is 148: 128 + SIGTSTP aka 20 on Linux).
+        let run_dirt = vm.run_shell_command("./dirt.sh").check_err().await?;
         assert!(run_dirt.contains("made dirt"), "dirt.sh failed: {run_dirt:?}");
         assert!(
             run_dirt.contains("Stopped"),
@@ -314,7 +321,8 @@ async fn multiple_migrations(ctx: &TestCtx) {
 async fn run_smoke_test(ctx: &TestCtx, mut source: TestVm) -> Result<()> {
     source.launch().await?;
     source.wait_to_boot().await?;
-    let lsout = source.run_shell_command("ls foo.bar 2> /dev/null").await?;
+    let lsout =
+        source.run_shell_command("ls foo.bar 2> /dev/null").check_err().await?;
     assert_eq!(lsout, "");
 
     // create an empty file on the source VM.
@@ -329,8 +337,9 @@ async fn run_smoke_test(ctx: &TestCtx, mut source: TestVm) -> Result<()> {
                 // the file should still exist on the target VM after migration.
                 let lsout = target
                     .run_shell_command("ls foo.bar")
+                    .ignore_status()
                     .await
-                    .expect("`ls foo.bar` should succeed after migration");
+                    .expect("can try to run `ls foo.bar`");
                 assert_eq!(lsout, "foo.bar");
             })
         },
