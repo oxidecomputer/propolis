@@ -257,6 +257,7 @@ struct InstInner {
     eq: Arc<EventQueue>,
     cv: Condvar,
     config: config::Config,
+    com1_sock: Arc<UDSock>,
 }
 
 struct Instance(Arc<InstInner>);
@@ -266,6 +267,7 @@ impl Instance {
         config: config::Config,
         from_restore: bool,
         log: slog::Logger,
+        com1_sock: Arc<UDSock>,
     ) -> Self {
         let this = Self(Arc::new(InstInner {
             state: Mutex::new(InstState {
@@ -279,6 +281,7 @@ impl Instance {
             eq: EventQueue::new(),
             cv: Condvar::new(),
             config,
+            com1_sock,
         }));
 
         // Some gymnastics required for the split borrow through the MutexGuard
@@ -548,6 +551,9 @@ impl Instance {
                 State::Destroy => {
                     // Drop the machine
                     let _ = guard.machine.take().unwrap();
+
+                    // Abort any pending serial connection
+                    inner.com1_sock.shutdown();
 
                     // Clean up the inventory as well
                     guard.inventory.destroy();
@@ -1098,14 +1104,19 @@ fn setup_instance(
         cpus, lowmem, highmem;);
     let machine = build_machine(vm_name, cpus, lowmem, highmem, use_reservoir)
         .context("Failed to create VM Machine")?;
-    let inst =
-        Instance::new(machine, config.clone(), from_restore, log.clone());
+    let com1_sock =
+        UDSock::bind(Path::new("./ttya")).context("Cannot open UD socket")?;
+    let inst = Instance::new(
+        machine,
+        config.clone(),
+        from_restore,
+        log.clone(),
+        com1_sock.clone(),
+    );
     slog::info!(log, "VM created"; "name" => vm_name);
 
     let (romfp, rom_len) =
         open_bootrom(&config.main.bootrom).context("Cannot open bootrom")?;
-    let com1_sock =
-        UDSock::bind(Path::new("./ttya")).context("Cannot open UD socket")?;
 
     // Get necessary access to innards, now that it is nestled in `Instance`
     let mut inst_guard = inst.lock().unwrap();
@@ -1547,14 +1558,14 @@ fn main() -> anyhow::Result<ExitCode> {
 
     // Wait until someone connects to ttya
     slog::info!(log, "Waiting for a connection to ttya");
-    com1_sock.wait_for_connect();
-
-    // Let the VM start and we're off to the races
-    slog::info!(log, "Starting instance...");
-    inst.eq().push(
-        InstEvent::ReqStart,
-        EventCtx::User("UDS connection".to_string()),
-    );
+    if com1_sock.wait_for_connect() {
+        // Let the VM start and we're off to the races
+        slog::info!(log, "Starting instance...");
+        inst.eq().push(
+            InstEvent::ReqStart,
+            EventCtx::User("UDS connection".to_string()),
+        );
+    }
 
     // wait for instance to be destroyed
     Ok(inst.wait_destroyed())
