@@ -319,8 +319,8 @@ impl PciVirtioViona {
     ) -> io::Result<Arc<PciVirtioViona>> {
         Self::new_with_queue_sizes(
             vnic_name,
-            TX_QUEUE_SIZE,
             RX_QUEUE_SIZE,
+            TX_QUEUE_SIZE,
             CTL_QUEUE_SIZE,
             vm,
             viona_params,
