@@ -7,6 +7,7 @@ use std::io::{ErrorKind, Result};
 use std::num::NonZeroUsize;
 use std::os::unix::net::UnixListener as StdUnixListener;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -28,6 +29,7 @@ struct Inner {
 pub struct UDSock {
     inner: Mutex<Inner>,
     cv: Condvar,
+    abort: AtomicBool,
     sink_buf: Arc<pollers::SinkBuffer>,
     source_buf: Arc<pollers::SourceBuffer>,
 }
@@ -49,6 +51,7 @@ impl UDSock {
         let this = Arc::new(Self {
             inner: Mutex::new(Inner { std_sock: Some(lsock), client: None }),
             cv: Condvar::new(),
+            abort: AtomicBool::new(false),
             sink_buf: pollers::SinkBuffer::new(
                 NonZeroUsize::new(BUF_SIZE).unwrap(),
             ),
@@ -82,12 +85,19 @@ impl UDSock {
         self.cv.notify_all();
     }
 
-    pub fn wait_for_connect(&self) {
+    pub fn wait_for_connect(&self) -> bool {
         let inner = self.inner.lock().unwrap();
         if inner.client.is_some() {
-            return;
+            return true;
         }
-        let _inner = self.cv.wait_while(inner, |i| i.client.is_none());
+        let inner = self
+            .cv
+            .wait_while(inner, |i| {
+                let abort = self.abort.load(Ordering::Relaxed);
+                !abort && i.client.is_none()
+            })
+            .unwrap();
+        inner.client.is_some()
     }
 
     #[cfg(test)]
@@ -97,6 +107,11 @@ impl UDSock {
             return;
         }
         let _inner = self.cv.wait_while(inner, |i| i.client.is_some());
+    }
+
+    pub fn shutdown(&self) {
+        self.abort.store(true, Ordering::Relaxed);
+        self.cv.notify_all();
     }
 
     pub async fn run(
@@ -210,12 +225,13 @@ mod test {
         }
     }
 
-    async fn wait_connected(sock: &Arc<UDSock>) {
+    async fn wait_connected(sock: &Arc<UDSock>) -> bool {
         let wsock = sock.clone();
-        let _ = tokio::spawn(async move {
+        tokio::spawn(async move {
             tokio::task::block_in_place(|| wsock.wait_for_connect())
         })
-        .await;
+        .await
+        .expect("failed to join on wait_for_connect")
     }
     async fn wait_disconnected(sock: &Arc<UDSock>) {
         let wsock = sock.clone();
@@ -242,7 +258,7 @@ mod test {
 
         let csock = UnixStream::connect(&sockpath)
             .expect("can connect to chardev sock");
-        wait_connected(&sock).await;
+        assert!(wait_connected(&sock).await);
         drop(csock);
 
         tokio::time::timeout(Duration::from_secs(1), wait_disconnected(&sock))
@@ -251,7 +267,32 @@ mod test {
 
         let csock = UnixStream::connect(&sockpath)
             .expect("can connect to chardev sock");
-        wait_connected(&sock).await;
+        assert!(wait_connected(&sock).await);
         drop(csock);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn abort_wait_for_connect() {
+        let tempf = NamedTempFile::new().expect("can create tempfile");
+        let sockpath = tempf.into_temp_path();
+
+        let testdev = Arc::new(TestChardev::new());
+
+        std::fs::remove_file(&sockpath)
+            .expect("can unlink tempfile prior to sock bind");
+        let sock = UDSock::bind(&sockpath).expect("socket bind succeeds");
+
+        sock.spawn(testdev.clone(), testdev.clone());
+
+        // Spawn a task to wait for a connection
+        let wait_sock = sock.clone();
+        let wait_task =
+            tokio::spawn(async move { wait_connected(&wait_sock).await });
+
+        // Now let's try to have it abort waiting for a connection
+        sock.shutdown();
+
+        let connected = wait_task.await.expect("failed to join wait_task");
+        assert!(!connected);
     }
 }
