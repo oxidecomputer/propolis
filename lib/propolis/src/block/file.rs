@@ -59,6 +59,24 @@ impl SharedState {
     }
 
     fn processing_loop(&self, wctx: SyncWorkerCtx) {
+        // Conspire with gross hack in `preadv()` and `pwritev()`: there, we
+        // want to give the OS a buffer backed by Propolis heap, rather than a
+        // VMM segment, to avoid a slow fallback to lock pages in memory during
+        // the I/O. We could either allocate buffers on-demand sized for the
+        // I/O, or up front in the worker thread, here. On-demand allocation
+        // works, but when I/O sizes are mixed the high malloc/free rates
+        // (X00k/sec/process) get a bit busy on locks in libumem. So instead,
+        // retain a buffer across I/Os, which is passed into `process_request()`
+        // and on.
+        //
+        // This buffer is grown on-demand when handling an I/O because some
+        // guests' maximum I/O size seems to be smaller than maximums we
+        // indicate (for example, Linux seems to send NVMe I/Os 256 KiB or
+        // smaller, even though we report we'll tolerate up to 1 MiB). In those
+        // cases, sizing against an expected maximum will grossly oversize
+        // buffers and increase memory pressure for no good reason.
+        let mut scratch = Vec::new();
+
         while let Some(dreq) = wctx.block_for_req() {
             let req = dreq.req();
             if self.info.read_only && req.op.is_write() {
@@ -74,7 +92,8 @@ impl SharedState {
                 dreq.complete(block::Result::Failure);
                 continue;
             };
-            let res = match self.process_request(&req, &mem) {
+            let res = match self.process_request(&req, &mem, Some(&mut scratch))
+            {
                 Ok(_) => block::Result::Success,
                 Err(_) => block::Result::Failure,
             };
@@ -86,13 +105,14 @@ impl SharedState {
         &self,
         req: &block::Request,
         mem: &MemCtx,
+        scratch: Option<&mut Vec<u8>>,
     ) -> std::result::Result<(), &'static str> {
         match req.op {
             block::Operation::Read(off, len) => {
                 let maps = req.mappings(mem).ok_or("mapping unavailable")?;
 
                 let nbytes = maps
-                    .preadv(self.fp.as_raw_fd(), off as i64)
+                    .preadv(self.fp.as_raw_fd(), off as i64, scratch)
                     .map_err(|_| "io error")?;
                 if nbytes != len {
                     return Err("bad read length");
@@ -102,7 +122,7 @@ impl SharedState {
                 let maps = req.mappings(mem).ok_or("bad guest region")?;
 
                 let nbytes = maps
-                    .pwritev(self.fp.as_raw_fd(), off as i64)
+                    .pwritev(self.fp.as_raw_fd(), off as i64, scratch)
                     .map_err(|_| "io error")?;
                 if nbytes != len {
                     return Err("bad write length");
