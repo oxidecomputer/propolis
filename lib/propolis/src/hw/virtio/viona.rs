@@ -8,6 +8,7 @@ use std::io::{self, Error, ErrorKind};
 use std::num::NonZeroU16;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::sync::atomic::{Ordering, AtomicBool};
 
 use crate::common::{RWOp, ReadOp};
 use crate::hw::pci;
@@ -308,6 +309,7 @@ pub struct PciVirtioViona {
     mac_addr: [u8; ETHERADDRL],
     mtu: Option<u16>,
     hdl: VionaHdl,
+    mq_active: AtomicBool,
     inner: Mutex<Inner>,
 }
 
@@ -396,6 +398,7 @@ impl PciVirtioViona {
             dev_features,
             mac_addr: [0; ETHERADDRL],
             mtu: info.mtu,
+            mq_active: AtomicBool::new(false),
             hdl,
             inner: Mutex::new(Inner::new(nqueues)),
         };
@@ -735,13 +738,21 @@ impl VirtioDevice for PciVirtioViona {
 
     fn set_features(&self, feat: u64) -> Result<(), ()> {
         self.hdl.set_features(feat).map_err(|_| ())?;
-        if (feat & VIRTIO_NET_F_MQ) != 0 {
-            self.hdl.set_pairs(PROPOLIS_MAX_MQ_PAIRS).map_err(|_| ())?;
-            probes::virtio_viona_mq_set_use_pairs!(|| (
-                MqSetPairsCause::MqEnabled as u8,
-                PROPOLIS_MAX_MQ_PAIRS
-            ));
-            self.set_use_pairs(PROPOLIS_MAX_MQ_PAIRS)?;
+        let want_mq = feat & VIRTIO_NET_F_MQ != 0;
+
+        if want_mq {
+            // This might be the first we're hearing from the guest about
+            // wanting multi-queue. If it is, we'll have a bit of work to do.
+            let mq_active = self.mq_active.swap(true, Ordering::Relaxed);
+
+            if !mq_active {
+                self.hdl.set_pairs(PROPOLIS_MAX_MQ_PAIRS).map_err(|_| ())?;
+                probes::virtio_viona_mq_set_use_pairs!(|| (
+                    MqSetPairsCause::MqEnabled as u8,
+                    PROPOLIS_MAX_MQ_PAIRS
+                ));
+                self.set_use_pairs(PROPOLIS_MAX_MQ_PAIRS)?;
+            }
         }
         Ok(())
     }
@@ -838,6 +849,7 @@ impl Lifecycle for PciVirtioViona {
         ));
         self.set_use_pairs(1).expect("can set viona back to one queue pair");
         self.hdl.set_pairs(1).expect("can set viona back to one queue pair");
+        self.mq_active.store(false, Ordering::Relaxed);
         self.virtio_state.queues.reset_peak();
     }
     fn start(&self) -> anyhow::Result<()> {
