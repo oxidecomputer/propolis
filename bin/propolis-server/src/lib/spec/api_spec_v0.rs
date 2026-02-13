@@ -101,6 +101,7 @@ impl From<Spec> for InstanceSpecV0 {
             chipset: board.chipset,
             guest_hv_interface: board.guest_hv_interface,
             cpuid: Some(cpuid.into_instance_spec_cpuid()),
+            native_acpi_tables: board.native_acpi_tables,
         };
         let mut spec = InstanceSpecV0 { board, components: Default::default() };
 

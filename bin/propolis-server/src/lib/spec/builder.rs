@@ -96,6 +96,7 @@ impl SpecBuilder {
                     memory_mb: board.memory_mb,
                     chipset: board.chipset,
                     guest_hv_interface: board.guest_hv_interface,
+                    native_acpi_tables: board.native_acpi_tables,
                 },
                 cpuid,
                 ..Default::default()
@@ -380,6 +381,7 @@ mod test {
             memory_mb: 512,
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
             guest_hv_interface: GuestHypervisorInterface::Bhyve,
+            native_acpi_tables: Some(false),
         };
 
         SpecBuilder {

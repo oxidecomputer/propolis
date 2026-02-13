@@ -43,6 +43,12 @@ const PAGE_OFFSET: u64 = 0xfff;
 // Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
 
+const PCIE_ECAM_BASE: usize = 0xe000_0000;
+const PCIE_ECAM_SIZE: usize = 0x1000_0000;
+const MEM_32BIT_DEVICES_START: usize = 0xc000_0000;
+const MEM_32BIT_DEVICES_END: usize = 0xfc00_0000;
+const HIGHMEM_START: usize = 0x1_0000_0000;
+
 const MIN_RT_THREADS: usize = 8;
 const BASE_RT_THREADS: usize = 4;
 
@@ -776,15 +782,18 @@ fn build_machine(
     .max_cpus(max_cpu)?
     .add_mem_region(0, lowmem, "lowmem")?
     .add_rom_region(0x1_0000_0000 - MAX_ROM_SIZE, MAX_ROM_SIZE, "bootrom")?
-    .add_mmio_region(0xc000_0000, 0x2000_0000, "dev32")?
-    .add_mmio_region(0xe000_0000, 0x1000_0000, "pcicfg")?;
+    .add_mmio_region(lowmem, PCIE_ECAM_BASE - lowmem, "dev32")?
+    .add_mmio_region(
+        PCIE_ECAM_BASE,
+        MEM_32BIT_DEVICES_END - PCIE_ECAM_BASE,
+        "pcicfg",
+    )?;
 
-    let highmem_start = 0x1_0000_0000;
     if highmem > 0 {
-        builder = builder.add_mem_region(highmem_start, highmem, "highmem")?;
+        builder = builder.add_mem_region(HIGHMEM_START, highmem, "highmem")?;
     }
 
-    let dev64_start = highmem_start + highmem;
+    let dev64_start = HIGHMEM_START + highmem;
     builder = builder.add_mmio_region(
         dev64_start,
         vmm::MAX_PHYSMEM - dev64_start,
@@ -1012,8 +1021,12 @@ fn generate_e820(
             MapType::Dram => {
                 e820_table.add_mem(addr, len);
             }
-            _ => {
+            MapType::Rom => {
                 e820_table.add_reserved(addr, len);
+            }
+            MapType::Mmio => {
+                // MMIO is described in the DSDT _CRS and should not
+                // appear in E820.
             }
         }
     }
@@ -1182,10 +1195,30 @@ fn setup_instance(
     guard.inventory.register(&hpet);
 
     // UARTs
-    let com1 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM1).unwrap());
-    let com2 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM2).unwrap());
-    let com3 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM3).unwrap());
-    let com4 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM4).unwrap());
+    let com1 = LpcUart::new(
+        chipset_lpc.irq_pin(ibmpc::IRQ_COM1).unwrap(),
+        ibmpc::PORT_COM1,
+        ibmpc::IRQ_COM1,
+        "COM1",
+    );
+    let com2 = LpcUart::new(
+        chipset_lpc.irq_pin(ibmpc::IRQ_COM2).unwrap(),
+        ibmpc::PORT_COM2,
+        ibmpc::IRQ_COM2,
+        "COM2",
+    );
+    let com3 = LpcUart::new(
+        chipset_lpc.irq_pin(ibmpc::IRQ_COM3).unwrap(),
+        ibmpc::PORT_COM3,
+        ibmpc::IRQ_COM3,
+        "COM3",
+    );
+    let com4 = LpcUart::new(
+        chipset_lpc.irq_pin(ibmpc::IRQ_COM4).unwrap(),
+        ibmpc::PORT_COM4,
+        ibmpc::IRQ_COM4,
+        "COM4",
+    );
 
     com1_sock.spawn(
         Arc::clone(&com1) as Arc<dyn Sink>,
@@ -1199,10 +1232,10 @@ fn setup_instance(
     com4.set_autodiscard(true);
 
     let pio = &machine.bus_pio;
-    LpcUart::attach(&com1, pio, ibmpc::PORT_COM1);
-    LpcUart::attach(&com2, pio, ibmpc::PORT_COM2);
-    LpcUart::attach(&com3, pio, ibmpc::PORT_COM3);
-    LpcUart::attach(&com4, pio, ibmpc::PORT_COM4);
+    com1.attach(pio);
+    com2.attach(pio);
+    com3.attach(pio);
+    com4.attach(pio);
     guard.inventory.register_instance(&com1, "com1");
     guard.inventory.register_instance(&com2, "com2");
     guard.inventory.register_instance(&com3, "com3");
@@ -1409,6 +1442,54 @@ fn setup_instance(
     }
     let e820_entry = generate_e820(machine, log).expect("can build E820 table");
     fwcfg.insert_named("etc/e820", e820_entry).unwrap();
+
+    // Collect DSDT generators from devices that implement the trait
+    let generators: Vec<_> = guard
+        .inventory
+        .devs
+        .values()
+        .filter_map(|dev| dev.as_dsdt_generator())
+        .collect();
+
+    // Get the physical address width from CPUID leaf 0x8000_0008.
+    // EAX[7:0] contains the physical address bits supported by the CPU.
+    // The 64-bit MMIO limit must not exceed what the CPU can address.
+    let phys_addr_bits = cpuid_profile
+        .as_ref()
+        .and_then(|p| p.get(CpuidIdent::leaf(0x8000_0008)))
+        .map(|v| v.eax & 0xff)
+        .unwrap_or(48) as u64;
+    let max_phys_addr = (1u64 << phys_addr_bits) - 1;
+    let mmio64_limit = max_phys_addr.min(vmm::MAX_PHYSMEM as u64 - 1);
+
+    let acpi_tables = fwcfg::formats::build_acpi_tables(
+        &fwcfg::formats::AcpiConfig {
+            num_cpus: cpus,
+            pcie_ecam_base: PCIE_ECAM_BASE as u64,
+            pcie_ecam_size: PCIE_ECAM_SIZE as u64,
+            pcie_mmio32_base: MEM_32BIT_DEVICES_START as u64,
+            pcie_mmio32_limit: (MEM_32BIT_DEVICES_END - 1) as u64,
+            pcie_mmio64_base: (HIGHMEM_START + highmem) as u64,
+            pcie_mmio64_limit: mmio64_limit,
+            ..Default::default()
+        },
+        &generators,
+    );
+    fwcfg
+        .insert_named(
+            "etc/acpi/tables",
+            fwcfg::Entry::Bytes(acpi_tables.tables),
+        )
+        .context("failed to insert ACPI tables")?;
+    fwcfg
+        .insert_named("etc/acpi/rsdp", fwcfg::Entry::Bytes(acpi_tables.rsdp))
+        .context("failed to insert ACPI RSDP")?;
+    fwcfg
+        .insert_named(
+            "etc/table-loader",
+            fwcfg::Entry::Bytes(acpi_tables.loader),
+        )
+        .context("failed to insert ACPI table-loader")?;
 
     fwcfg.attach(pio, &machine.acc_mem);
 
