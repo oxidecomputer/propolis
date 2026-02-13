@@ -94,7 +94,7 @@ impl VqAvail {
         }
         if let Some(idx) = mem.read::<u16>(self.gpa_idx) {
             let ndesc = Wrapping(*idx) - self.cur_avail_idx;
-            if ndesc.0 != 0 && ndesc.0 < rsize {
+            if ndesc.0 != 0 && ndesc.0 <= rsize {
                 let avail_idx = self.cur_avail_idx.0 & (rsize - 1);
                 self.cur_avail_idx += Wrapping(1);
 
