@@ -13,29 +13,22 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use bitflags::bitflags;
 use iddqd::IdHashMap;
+use nix::poll::PollFlags;
 use slog::{debug, error, info, warn, Logger};
 
 use crate::hw::virtio::vsock::VsockVq;
 use crate::hw::virtio::vsock::VSOCK_RX_QUEUE;
 use crate::hw::virtio::vsock::VSOCK_TX_QUEUE;
 use crate::vsock::packet::VsockPacket;
-use crate::vsock::packet::VsockPacketHeader;
-use crate::vsock::packet::VIRTIO_VSOCK_OP_CREDIT_REQUEST;
-use crate::vsock::packet::VIRTIO_VSOCK_OP_CREDIT_UPDATE;
-use crate::vsock::packet::VIRTIO_VSOCK_OP_REQUEST;
-use crate::vsock::packet::VIRTIO_VSOCK_OP_RST;
-use crate::vsock::packet::VIRTIO_VSOCK_OP_RW;
-use crate::vsock::packet::VIRTIO_VSOCK_OP_SHUTDOWN;
-use crate::vsock::packet::VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE;
-use crate::vsock::packet::VIRTIO_VSOCK_SHUTDOWN_F_SEND;
-use crate::vsock::packet::VIRTIO_VSOCK_TYPE_STREAM;
+use crate::vsock::packet::VsockPacketFlags;
+use crate::vsock::packet::VsockSocketType;
 use crate::vsock::proxy::ConnKey;
 use crate::vsock::proxy::VsockPortMapping;
 use crate::vsock::proxy::VsockProxyConn;
-use crate::vsock::proxy::CONN_TX_BUF_SIZE;
 use crate::vsock::VSOCK_HOST_CID;
+
+use super::packet::VsockPacketOp;
 
 #[repr(usize)]
 enum VsockEvent {
@@ -78,26 +71,25 @@ impl VsockPollerNotify {
     }
 }
 
-bitflags! {
-    #[repr(transparent)]
-    #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-    pub struct PollEvents: i32 {
-        const IN = libc::POLLIN as i32;
-        const PRI = libc::POLLPRI as i32;
-        const OUT = libc::POLLOUT as i32;
-        const ERR = libc::POLLERR as i32;
-        const HUP = libc::POLLHUP as i32;
-    }
+/// Set of `PollFlags` that signifies a readable event.
+const fn is_readable(flags: PollFlags) -> bool {
+    const READABLE: PollFlags = PollFlags::from_bits_truncate(
+        PollFlags::POLLIN.bits()
+            | PollFlags::POLLHUP.bits()
+            | PollFlags::POLLERR.bits()
+            | PollFlags::POLLPRI.bits(),
+    );
+    READABLE.intersects(flags)
 }
 
-/// Set of `PollEvents` that signifies a readable event.
-fn fd_readable() -> PollEvents {
-    PollEvents::IN | PollEvents::HUP | PollEvents::ERR | PollEvents::PRI
-}
-
-/// Set of `PollEvents` that signifies a writable event.
-fn fd_writable() -> PollEvents {
-    PollEvents::OUT | PollEvents::HUP | PollEvents::ERR
+/// Set of `PollFlags` that signifies a writable event.
+const fn is_writable(flags: PollFlags) -> bool {
+    const WRITABLE: PollFlags = PollFlags::from_bits_truncate(
+        PollFlags::POLLOUT.bits()
+            | PollFlags::POLLHUP.bits()
+            | PollFlags::POLLERR.bits(),
+    );
+    WRITABLE.intersects(flags)
 }
 
 #[derive(Debug)]
@@ -222,12 +214,13 @@ impl VsockPoller {
     }
 
     /// Handle the guest's VIRTIO_VSOCK_OP_SHUTDOWN packet.
-    fn handle_shutdown(&mut self, key: ConnKey, flags: u32) {
+    fn handle_shutdown(&mut self, key: ConnKey, flags: VsockPacketFlags) {
         if let Entry::Occupied(mut entry) = self.connections.entry(key) {
             let conn = entry.get_mut();
 
             // Guest won't receive more data
-            if flags & VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE != 0 {
+            if flags.contains(VsockPacketFlags::VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE)
+            {
                 if let Err(e) = conn.shutdown_guest_read() {
                     error!(
                         &self.log,
@@ -240,7 +233,7 @@ impl VsockPoller {
                 };
             }
             // Guest won't send more data
-            if flags & VIRTIO_VSOCK_SHUTDOWN_F_SEND != 0 {
+            if flags.contains(VsockPacketFlags::VIRTIO_VSOCK_SHUTDOWN_F_SEND) {
                 if let Err(e) = conn.shutdown_guest_write() {
                     error!(
                         &self.log,
@@ -324,50 +317,57 @@ impl VsockPoller {
             };
 
             // We only support stream connections
-            if packet.header.socket_type() != VIRTIO_VSOCK_TYPE_STREAM {
+            let Some(VsockSocketType::Stream) = packet.header.socket_type()
+            else {
                 self.send_conn_rst(key);
                 warn!(&self.log,
                     "received invalid vsock packet";
-                    "type" => %packet.header.socket_type(),
+                    "packet" => ?packet,
                 );
                 continue;
-            }
+            };
+
+            let Some(packet_op) = packet.header.op() else {
+                warn!(
+                    &self.log,
+                    "received vsock packet with unknown op code";
+                    "packet" => ?packet,
+                );
+                return;
+            };
 
             if let Some(conn) = self.connections.get_mut(&key) {
                 // Regardless of the vsock operation we need to record the peers
                 // credit info
                 conn.update_peer_credit(&packet.header);
-                match packet.header.op() {
-                    VIRTIO_VSOCK_OP_RST => {
+                match packet_op {
+                    VsockPacketOp::Reset => {
                         self.connections.remove(&key);
                     }
-                    VIRTIO_VSOCK_OP_SHUTDOWN => {
+                    VsockPacketOp::Shutdown => {
                         self.handle_shutdown(key, packet.header.flags());
                     }
-                    // Handled above for every packet
-                    VIRTIO_VSOCK_OP_CREDIT_UPDATE => continue,
-                    VIRTIO_VSOCK_OP_CREDIT_REQUEST => {
+                    VsockPacketOp::CreditUpdate => continue,
+                    VsockPacketOp::CreditRequest => {
                         if self.connections.contains_key(&key) {
                             self.rx.push_back(RxEvent::CreditUpdate(key));
                         }
                     }
-                    VIRTIO_VSOCK_OP_RW => {
+                    VsockPacketOp::ReadWrite => {
                         self.handle_rw_packet(key, packet);
                     }
-                    _ => {
-                        warn!(
-                            &self.log,
-                            "received vsock packet with unknown op code";
-                            "packet" => ?packet,
-                        );
-                    }
+                    // We are operating on an existing connection either of
+                    // these should not be received
+                    //
+                    // XXX: send a RST, but what about our orignal connection?
+                    VsockPacketOp::Request | VsockPacketOp::Response => (),
                 }
             } else {
-                match packet.header.op() {
-                    VIRTIO_VSOCK_OP_REQUEST => {
+                match packet_op {
+                    VsockPacketOp::Request => {
                         self.handle_connection_request(key, packet)
                     }
-                    VIRTIO_VSOCK_OP_RST => {}
+                    VsockPacketOp::Reset => {}
                     _ => {
                         warn!(
                             &self.log,
@@ -421,7 +421,6 @@ impl VsockPoller {
                         self.guest_cid,
                         key.host_port,
                         key.guest_port,
-                        CONN_TX_BUF_SIZE as u32,
                     );
                     permit.write(&packet.header, &packet.data);
 
@@ -452,7 +451,6 @@ impl VsockPoller {
                             self.guest_cid,
                             key.host_port,
                             key.guest_port,
-                            conn.buf_alloc(),
                             conn.fwd_cnt(),
                         );
                         permit.write(&packet.header, &packet.data);
@@ -483,13 +481,13 @@ impl VsockPoller {
     /// sending it to the guest as a `VIRTIO_VSOCK_OP_RW` packet.
     fn handle_fd_event(&mut self, event: PortEvent, read_buf: &mut [u8]) {
         let key = ConnKey::from_portev_user(event.user);
-        let events = PollEvents::from_bits_retain(event.events);
+        let events = PollFlags::from_bits_retain(event.events as i16);
 
-        if fd_writable().intersects(events) {
+        if is_writable(events) {
             self.handle_writable_fd(key);
         }
 
-        if fd_readable().intersects(events) {
+        if is_readable(events) {
             self.handle_readable_fd(key, read_buf);
         }
     }
@@ -576,26 +574,23 @@ impl VsockPoller {
                         *guest_cid,
                         key.host_port,
                         key.guest_port,
-                        VIRTIO_VSOCK_SHUTDOWN_F_SEND
-                            | VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE,
+                        VsockPacketFlags::VIRTIO_VSOCK_SHUTDOWN_F_SEND
+                            | VsockPacketFlags::VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE,
+                        conn.fwd_cnt(),
                     );
                     permit.write(&packet.header, &packet.data);
                     return;
                 }
                 Ok(nbytes) => {
                     conn.update_tx_cnt(nbytes as u32);
-                    let mut header = VsockPacketHeader::default();
-                    header
-                        .set_src_cid(VSOCK_HOST_CID as u32)
-                        .set_dst_cid(*guest_cid)
-                        .set_src_port(key.host_port)
-                        .set_dst_port(key.guest_port)
-                        .set_len(nbytes as u32)
-                        .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
-                        .set_op(VIRTIO_VSOCK_OP_RW)
-                        .set_buf_alloc(conn.buf_alloc())
-                        .set_fwd_cnt(conn.fwd_cnt());
-                    permit.write(&header, &read_buf[..nbytes]);
+                    let VsockPacket { header, data } = VsockPacket::new_rw(
+                        *guest_cid,
+                        key.host_port,
+                        key.guest_port,
+                        conn.fwd_cnt(),
+                        &read_buf[..nbytes],
+                    );
+                    permit.write(&header, &data);
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                 Err(e) => {
@@ -625,13 +620,13 @@ impl VsockPoller {
     }
 
     /// Associate a connections underlying socket fd with our port fd.
-    fn associate_fd(&mut self, key: ConnKey, fd: RawFd, interests: PollEvents) {
+    fn associate_fd(&mut self, key: ConnKey, fd: RawFd, interests: PollFlags) {
         let ret = unsafe {
             libc::port_associate(
                 self.port_fd.as_raw_fd(),
                 libc::PORT_SOURCE_FD,
                 fd as usize,
-                interests.bits(),
+                interests.bits() as i32,
                 key.to_portev_user() as *mut c_void,
             )
         };
@@ -789,11 +784,7 @@ mod tests {
     use crate::hw::virtio::testutil::{QueueWriter, TestVirtQueues, VqSize};
     use crate::hw::virtio::vsock::{VsockVq, VSOCK_RX_QUEUE, VSOCK_TX_QUEUE};
     use crate::vsock::packet::{
-        VsockPacketHeader, VIRTIO_VSOCK_OP_CREDIT_UPDATE,
-        VIRTIO_VSOCK_OP_REQUEST, VIRTIO_VSOCK_OP_RESPONSE, VIRTIO_VSOCK_OP_RST,
-        VIRTIO_VSOCK_OP_RW, VIRTIO_VSOCK_OP_SHUTDOWN,
-        VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE, VIRTIO_VSOCK_SHUTDOWN_F_SEND,
-        VIRTIO_VSOCK_TYPE_STREAM,
+        VsockPacketFlags, VsockPacketHeader, VsockPacketOp, VsockSocketType,
     };
     use crate::vsock::proxy::{VsockPortMapping, CONN_TX_BUF_SIZE};
     use crate::vsock::VSOCK_HOST_CID;
@@ -955,14 +946,14 @@ mod tests {
         let notify = poller.notify_handle();
         let handle = poller.run();
 
-        let mut hdr = VsockPacketHeader::default();
+        let mut hdr = VsockPacketHeader::new();
         hdr.set_src_cid(guest_cid)
             .set_dst_cid(VSOCK_HOST_CID as u32)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(0)
-            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
-            .set_op(VIRTIO_VSOCK_OP_REQUEST)
+            .set_socket_type(VsockSocketType::Stream)
+            .set_op(crate::vsock::packet::VsockPacketOp::Request)
             .set_buf_alloc(65536)
             .set_fwd_cnt(0);
 
@@ -973,12 +964,12 @@ mod tests {
         wait_for_condition(|| harness.rx_used_idx() >= 1, 5000);
 
         let (resp_hdr, _) = harness.read_vsock_packet(0);
-        assert_eq!(resp_hdr.op(), VIRTIO_VSOCK_OP_RESPONSE);
+        assert_eq!(resp_hdr.op(), Some(VsockPacketOp::Response));
         assert_eq!(resp_hdr.src_cid(), VSOCK_HOST_CID);
         assert_eq!(resp_hdr.dst_cid(), guest_cid as u64);
         assert_eq!(resp_hdr.src_port(), vsock_port);
         assert_eq!(resp_hdr.dst_port(), guest_port);
-        assert_eq!(resp_hdr.socket_type(), VIRTIO_VSOCK_TYPE_STREAM);
+        assert_eq!(resp_hdr.socket_type(), Some(VsockSocketType::Stream));
 
         notify.shutdown().unwrap();
         handle.join().unwrap();
@@ -999,15 +990,14 @@ mod tests {
         let notify = poller.notify_handle();
         let handle = poller.run();
 
-        let invalid_socket_type: u16 = 0xBEEF;
-        let mut hdr = VsockPacketHeader::default();
+        let mut hdr = VsockPacketHeader::new();
         hdr.set_src_cid(guest_cid)
             .set_dst_cid(VSOCK_HOST_CID as u32)
             .set_src_port(5555)
             .set_dst_port(8080)
             .set_len(0)
-            .set_socket_type(invalid_socket_type)
-            .set_op(VIRTIO_VSOCK_OP_RW)
+            .set_socket_type(VsockSocketType::InvalidTestValue)
+            .set_op(VsockPacketOp::ReadWrite)
             .set_buf_alloc(65536)
             .set_fwd_cnt(0);
 
@@ -1018,7 +1008,7 @@ mod tests {
         wait_for_condition(|| harness.rx_used_idx() >= 1, 5000);
 
         let (resp_hdr, _) = harness.read_vsock_packet(0);
-        assert_eq!(resp_hdr.op(), VIRTIO_VSOCK_OP_RST);
+        assert_eq!(resp_hdr.op(), Some(VsockPacketOp::Reset));
         assert_eq!(resp_hdr.src_cid(), VSOCK_HOST_CID);
         assert_eq!(resp_hdr.dst_cid(), guest_cid as u64);
         assert_eq!(resp_hdr.src_port(), 8080);
@@ -1049,15 +1039,15 @@ mod tests {
         let handle = poller.run();
 
         // Send REQUEST
-        let mut req_hdr = VsockPacketHeader::default();
+        let mut req_hdr = VsockPacketHeader::new();
         req_hdr
             .set_src_cid(guest_cid)
             .set_dst_cid(VSOCK_HOST_CID as u32)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(0)
-            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
-            .set_op(VIRTIO_VSOCK_OP_REQUEST)
+            .set_socket_type(VsockSocketType::Stream)
+            .set_op(VsockPacketOp::Request)
             .set_buf_alloc(65536)
             .set_fwd_cnt(0);
 
@@ -1073,15 +1063,15 @@ mod tests {
 
         // Send RW packet with data payload
         let payload = b"hello from guest via vsock!";
-        let mut rw_hdr = VsockPacketHeader::default();
+        let mut rw_hdr = VsockPacketHeader::new();
         rw_hdr
             .set_src_cid(guest_cid)
             .set_dst_cid(VSOCK_HOST_CID as u32)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(payload.len() as u32)
-            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
-            .set_op(VIRTIO_VSOCK_OP_RW)
+            .set_socket_type(VsockSocketType::Stream)
+            .set_op(VsockPacketOp::ReadWrite)
             .set_buf_alloc(65536)
             .set_fwd_cnt(0);
 
@@ -1122,15 +1112,15 @@ mod tests {
         let handle = poller.run();
 
         // Establish connection
-        let mut req_hdr = VsockPacketHeader::default();
+        let mut req_hdr = VsockPacketHeader::new();
         req_hdr
             .set_src_cid(guest_cid)
             .set_dst_cid(VSOCK_HOST_CID as u32)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(0)
-            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
-            .set_op(VIRTIO_VSOCK_OP_REQUEST)
+            .set_socket_type(VsockSocketType::Stream)
+            .set_op(VsockPacketOp::Request)
             .set_buf_alloc(65536)
             .set_fwd_cnt(0);
 
@@ -1154,15 +1144,15 @@ mod tests {
             // Reuse descriptor slots each iteration
             harness.reset_tx_cursors();
 
-            let mut rw_hdr = VsockPacketHeader::default();
+            let mut rw_hdr = VsockPacketHeader::new();
             rw_hdr
                 .set_src_cid(guest_cid)
                 .set_dst_cid(VSOCK_HOST_CID as u32)
                 .set_src_port(guest_port)
                 .set_dst_port(vsock_port)
                 .set_len(payload.len() as u32)
-                .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
-                .set_op(VIRTIO_VSOCK_OP_RW)
+                .set_socket_type(VsockSocketType::Stream)
+                .set_op(VsockPacketOp::ReadWrite)
                 .set_buf_alloc(65536)
                 .set_fwd_cnt(0);
 
@@ -1188,7 +1178,7 @@ mod tests {
         let mut found_credit_update = false;
         for i in 1..rx_used {
             let (hdr, _) = harness.read_vsock_packet(i);
-            if hdr.op() == VIRTIO_VSOCK_OP_CREDIT_UPDATE {
+            if hdr.op() == Some(VsockPacketOp::CreditUpdate) {
                 assert_eq!(hdr.src_cid(), VSOCK_HOST_CID);
                 assert_eq!(hdr.dst_cid(), guest_cid as u64);
                 assert_eq!(hdr.src_port(), vsock_port);
@@ -1225,15 +1215,15 @@ mod tests {
         let handle = poller.run();
 
         // Send REQUEST
-        let mut req_hdr = VsockPacketHeader::default();
+        let mut req_hdr = VsockPacketHeader::new();
         req_hdr
             .set_src_cid(guest_cid)
             .set_dst_cid(VSOCK_HOST_CID as u32)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(0)
-            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
-            .set_op(VIRTIO_VSOCK_OP_REQUEST)
+            .set_socket_type(VsockSocketType::Stream)
+            .set_op(VsockPacketOp::Request)
             .set_buf_alloc(65536)
             .set_fwd_cnt(0);
 
@@ -1247,15 +1237,15 @@ mod tests {
         wait_for_condition(|| harness.rx_used_idx() >= 1, 5000);
 
         // Send RST
-        let mut rst_hdr = VsockPacketHeader::default();
+        let mut rst_hdr = VsockPacketHeader::new();
         rst_hdr
             .set_src_cid(guest_cid)
             .set_dst_cid(VSOCK_HOST_CID as u32)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(0)
-            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
-            .set_op(VIRTIO_VSOCK_OP_RST)
+            .set_socket_type(VsockSocketType::Stream)
+            .set_op(VsockPacketOp::Reset)
             .set_buf_alloc(0)
             .set_fwd_cnt(0);
 
@@ -1302,15 +1292,15 @@ mod tests {
         let handle = poller.run();
 
         // Write REQUEST packet into TX queue
-        let mut req_hdr = VsockPacketHeader::default();
+        let mut req_hdr = VsockPacketHeader::new();
         req_hdr
             .set_src_cid(guest_cid)
             .set_dst_cid(VSOCK_HOST_CID as u32)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(0)
-            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
-            .set_op(VIRTIO_VSOCK_OP_REQUEST)
+            .set_socket_type(VsockSocketType::Stream)
+            .set_op(VsockPacketOp::Request)
             .set_buf_alloc(65536)
             .set_fwd_cnt(0);
 
@@ -1328,15 +1318,15 @@ mod tests {
 
         // Guest->Host: send RW packet with payload
         let payload = b"hello from guest via vsock end-to-end!";
-        let mut rw_hdr = VsockPacketHeader::default();
+        let mut rw_hdr = VsockPacketHeader::new();
         rw_hdr
             .set_src_cid(guest_cid)
             .set_dst_cid(VSOCK_HOST_CID as u32)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(payload.len() as u32)
-            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
-            .set_op(VIRTIO_VSOCK_OP_RW)
+            .set_socket_type(VsockSocketType::Stream)
+            .set_op(VsockPacketOp::ReadWrite)
             .set_buf_alloc(65536)
             .set_fwd_cnt(0);
 
@@ -1362,7 +1352,7 @@ mod tests {
         // Read back the RW packet from RX used ring entry 1
         let (resp_hdr, host_buf) = harness.read_vsock_packet(1);
 
-        assert_eq!(resp_hdr.op(), VIRTIO_VSOCK_OP_RW);
+        assert_eq!(resp_hdr.op(), Some(VsockPacketOp::ReadWrite));
         assert_eq!(resp_hdr.src_port(), vsock_port);
         assert_eq!(resp_hdr.dst_port(), guest_port);
         assert_eq!(&host_buf, host_payload, "host->guest data mismatch");
@@ -1391,15 +1381,15 @@ mod tests {
         let handle = poller.run();
 
         // Send REQUEST
-        let mut req_hdr = VsockPacketHeader::default();
+        let mut req_hdr = VsockPacketHeader::new();
         req_hdr
             .set_src_cid(guest_cid)
             .set_dst_cid(VSOCK_HOST_CID as u32)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(0)
-            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
-            .set_op(VIRTIO_VSOCK_OP_REQUEST)
+            .set_socket_type(VsockSocketType::Stream)
+            .set_op(VsockPacketOp::Request)
             .set_buf_alloc(65536)
             .set_fwd_cnt(0);
 
@@ -1432,7 +1422,7 @@ mod tests {
         wait_for_condition(|| harness.rx_used_idx() >= 2, 5000);
 
         let (rw_hdr, payload) = harness.read_vsock_packet(1);
-        assert_eq!(rw_hdr.op(), VIRTIO_VSOCK_OP_RW);
+        assert_eq!(rw_hdr.op(), Some(VsockPacketOp::ReadWrite));
         assert_eq!(rw_hdr.src_port(), vsock_port);
         assert_eq!(rw_hdr.dst_port(), guest_port);
         assert_eq!(&payload, host_data);
@@ -1472,15 +1462,15 @@ mod tests {
         // before we've transferred all the data.
         let buf_alloc = total_bytes as u32 * 2;
 
-        let mut req_hdr = VsockPacketHeader::default();
+        let mut req_hdr = VsockPacketHeader::new();
         req_hdr
             .set_src_cid(guest_cid)
             .set_dst_cid(VSOCK_HOST_CID as u32)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(0)
-            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
-            .set_op(VIRTIO_VSOCK_OP_REQUEST)
+            .set_socket_type(VsockSocketType::Stream)
+            .set_op(VsockPacketOp::Request)
             .set_buf_alloc(buf_alloc)
             .set_fwd_cnt(0);
 
@@ -1553,15 +1543,15 @@ mod tests {
                 let end = std::cmp::min(offset + chunk_size, total_bytes);
                 let payload = &guest_data[offset..end];
 
-                let mut rw_hdr = VsockPacketHeader::default();
+                let mut rw_hdr = VsockPacketHeader::new();
                 rw_hdr
                     .set_src_cid(guest_cid)
                     .set_dst_cid(VSOCK_HOST_CID as u32)
                     .set_src_port(guest_port)
                     .set_dst_port(vsock_port)
                     .set_len(payload.len() as u32)
-                    .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
-                    .set_op(VIRTIO_VSOCK_OP_RW)
+                    .set_socket_type(VsockSocketType::Stream)
+                    .set_op(VsockPacketOp::ReadWrite)
                     .set_buf_alloc(buf_alloc)
                     .set_fwd_cnt(0);
 
@@ -1634,7 +1624,7 @@ mod tests {
                 rx_next_used += 1;
                 descs_outstanding -= 1;
 
-                if hdr.op() == VIRTIO_VSOCK_OP_RW {
+                if hdr.op() == Some(VsockPacketOp::ReadWrite) {
                     host_to_guest.extend_from_slice(&data);
                 }
                 // Credit updates and other control packets are
@@ -1674,16 +1664,16 @@ mod tests {
         let notify = poller.notify_handle();
         let handle = poller.run();
 
-        // -- Establish connection --
-        let mut req_hdr = VsockPacketHeader::default();
+        // Establish connection
+        let mut req_hdr = VsockPacketHeader::new();
         req_hdr
             .set_src_cid(guest_cid)
             .set_dst_cid(VSOCK_HOST_CID as u32)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(0)
-            .set_socket_type(VIRTIO_VSOCK_TYPE_STREAM)
-            .set_op(VIRTIO_VSOCK_OP_REQUEST)
+            .set_socket_type(VsockSocketType::Stream)
+            .set_op(VsockPacketOp::Request)
             .set_buf_alloc(65536)
             .set_fwd_cnt(0);
 
@@ -1705,14 +1695,15 @@ mod tests {
         // Read back the packet from RX used ring entry 1
         let (hdr, _data) = harness.read_vsock_packet(1);
 
-        assert_eq!(hdr.op(), VIRTIO_VSOCK_OP_SHUTDOWN);
+        assert_eq!(hdr.op(), Some(VsockPacketOp::Shutdown));
         assert_eq!(hdr.src_cid(), VSOCK_HOST_CID);
         assert_eq!(hdr.dst_cid(), guest_cid as u64);
         assert_eq!(hdr.src_port(), vsock_port);
         assert_eq!(hdr.dst_port(), guest_port);
         assert_eq!(
             hdr.flags(),
-            VIRTIO_VSOCK_SHUTDOWN_F_SEND | VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE
+            VsockPacketFlags::VIRTIO_VSOCK_SHUTDOWN_F_SEND
+                | VsockPacketFlags::VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE
         );
 
         notify.shutdown().unwrap();

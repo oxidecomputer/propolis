@@ -40,6 +40,7 @@ oximeter = { workspace = true, optional = true }
 nexus-client = { workspace = true, optional = true }
 async-trait.workspace = true
 iddqd.workspace = true
+nix.workspace = true
 
 # falcon
 libloading = { workspace = true, optional = true }

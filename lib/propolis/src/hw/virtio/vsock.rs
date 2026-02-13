@@ -184,25 +184,6 @@ impl PciVirtioSock {
 
         Arc::new(Self { cid, backend, virtio_state, pci_state })
     }
-
-    // fn _send_transport_reset(&self) {
-    //     let vq = &self.virtio_state.queues.get(VSOCK_EVENT_QUEUE).unwrap();
-    //     let mem = vq.acc_mem.access().unwrap();
-    //     let mut chain = Chain::with_capacity(1);
-
-    //     // Pop a buffer from the event queue
-    //     if let Some((_idx, _clen)) = vq.pop_avail(&mut chain, &mem) {
-    //         // Write the transport reset event
-    //         let event =
-    //             VirtioVsockEvent { id: VIRTIO_VSOCK_EVENT_TRANSPORT_RESET };
-    //         chain.write(&event, &mem);
-
-    //         // Push to used ring (this will also send interrupt to guest)
-    //         vq.push_used(&mut chain, &mem);
-    //     } else {
-    //         eprintln!("no event queue buffer available for transport reset");
-    //     }
-    // }
 }
 
 impl VirtioDevice for PciVirtioSock {
@@ -235,12 +216,6 @@ impl VirtioDevice for PciVirtioSock {
         let _ = self.backend.queue_notify(vq.id);
     }
 }
-
-// #[repr(C, packed)]
-// #[derive(Copy, Clone, Default, Debug)]
-// struct VirtioVsockEvent {
-//     id: u32,
-// }
 
 impl PciVirtio for PciVirtioSock {
     fn virtio_state(&self) -> &PciVirtioState {
@@ -309,11 +284,11 @@ impl VsockPacket {
 
         let len = usize::try_from(packet.header.len())
             .expect("running on a 64bit platform");
-        packet.data.resize(len, 0);
+        let mut data = vec![0; len];
 
         let mut done = 0;
         let copied = chain.for_remaining_type(true, |addr, len| {
-            let mut remain = GuestData::from(&mut packet.data[done..]);
+            let mut remain = GuestData::from(&mut data[done..]);
             if let Some(copied) = mem.read_into(addr, &mut remain, len) {
                 let need_more = copied != remain.len();
                 done += copied;
@@ -329,6 +304,8 @@ impl VsockPacket {
                 remaining: copied,
             });
         }
+
+        packet.data = data.into();
 
         Ok(packet)
     }

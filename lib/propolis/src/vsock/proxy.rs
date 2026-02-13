@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use iddqd::IdHashItem;
 use iddqd::IdHashMap;
+use nix::poll::PollFlags;
 use serde::Deserialize;
 use slog::error;
 use slog::Logger;
@@ -22,7 +23,6 @@ use crate::vsock::buffer::VsockBuf;
 use crate::vsock::buffer::VsockBufError;
 use crate::vsock::packet::VsockPacket;
 use crate::vsock::packet::VsockPacketHeader;
-use crate::vsock::poller::PollEvents;
 use crate::vsock::poller::VsockPoller;
 use crate::vsock::poller::VsockPollerNotify;
 use crate::vsock::VsockBackend;
@@ -143,10 +143,10 @@ impl VsockProxyConn {
     }
 
     /// Set of `PollEvents` that this connection is interested in.
-    pub fn poll_interests(&self) -> Option<PollEvents> {
-        let mut interests = PollEvents::empty();
-        interests.set(PollEvents::OUT, self.has_buffered_data());
-        interests.set(PollEvents::IN, self.guest_can_read());
+    pub fn poll_interests(&self) -> Option<PollFlags> {
+        let mut interests = PollFlags::empty();
+        interests.set(PollFlags::POLLOUT, self.has_buffered_data());
+        interests.set(PollFlags::POLLIN, self.guest_can_read());
 
         match interests.is_empty() {
             true => None,
