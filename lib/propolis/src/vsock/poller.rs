@@ -675,7 +675,7 @@ impl VsockPoller {
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
                 // SAFETY: The docs state that `raw_os_error` will always return
-                // a `Some` variant when obtained via `las_os_error`.
+                // a `Some` variant when obtained via `last_os_error`.
                 match err.raw_os_error().unwrap() {
                     // A signal was caught so process the loop again
                     libc::EINTR => continue,
