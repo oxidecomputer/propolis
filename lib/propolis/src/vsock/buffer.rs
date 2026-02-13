@@ -59,7 +59,12 @@ impl VsockBuf {
         self.head == self.tail
     }
 
-    pub fn push(&mut self, data: Vec<u8>) -> Result<(), VsockBufError> {
+    pub fn push(
+        &mut self,
+        data: impl AsRef<[u8]>,
+    ) -> Result<(), VsockBufError> {
+        let data = data.as_ref();
+
         if data.len() > self.free() {
             return Err(VsockBufError::InsufficientSpace {
                 pushed: data.len(),
@@ -70,12 +75,12 @@ impl VsockBuf {
         let head_offset = self.head.0 % self.buf.len();
         let available_len = self.buf.len() - head_offset;
 
-        // If the data can fit in the remaining space of the ring buffer copy it
-        // in one go.
+        // If the data can fit in the remaining space of the ring buffer, copy
+        // it in one go.
         if data.len() <= available_len {
             self.buf[head_offset..head_offset + data.len()]
                 .copy_from_slice(&data);
-        // Otherwise split it and write the remaining data to the front.
+        // Otherwise, split it and write the remaining data to the front.
         } else {
             let (fits, wrapped) = data.split_at(available_len);
             self.buf[head_offset..].copy_from_slice(fits);
@@ -90,7 +95,7 @@ impl VsockBuf {
         &mut self,
         writer: &mut W,
     ) -> std::io::Result<usize> {
-        // If we have no data to write bail early
+        // If we have no data to write, bail early
         if self.is_empty() {
             return Ok(0);
         }
@@ -98,15 +103,15 @@ impl VsockBuf {
         let tail_offset = self.tail.0 % self.buf.len();
         let head_offset = self.head.0 % self.buf.len();
 
-        // If the data is contiguous write it in one go
+        // If the data is contiguous, write it in one go
         let nwritten = if tail_offset < head_offset {
             writer.write(&self.buf[tail_offset..head_offset])?
-        // Data wraps around so try to write it in batches
         } else {
+            // Data wraps around, so try to write it in batches
             let available_len = self.buf.len() - tail_offset;
             let nwritten = writer.write(&self.buf[tail_offset..])?;
 
-            // If we failed to write the entire first segment return early
+            // If we failed to write the entire first segment, return early
             if nwritten < available_len {
                 self.tail += Wrapping(nwritten);
                 return Ok(nwritten);

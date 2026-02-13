@@ -2,6 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use zerocopy::byteorder::little_endian::{U16, U32, U64};
+use zerocopy::{FromBytes, Immutable, IntoBytes};
+
 use crate::vsock::VSOCK_HOST_CID;
 
 pub const VIRTIO_VSOCK_OP_REQUEST: VsockPacketOp = 1;
@@ -22,26 +25,26 @@ pub const VIRTIO_VSOCK_SHUTDOWN_F_SEND: u32 = 2;
 
 #[derive(thiserror::Error, Debug)]
 pub enum VsockPacketError {
-    #[error("Failed to read packet header from descriptor chain")]
+    #[error("failed to read packet header from descriptor chain")]
     ChainHeaderRead,
-    #[error("Packet only contained {remaining} bytes out of {expected} bytes")]
+    #[error("packet only contained {remaining} bytes out of {expected} bytes")]
     InsufficientBytes { expected: usize, remaining: usize },
 }
 
 #[repr(C, packed)]
-#[derive(Copy, Clone, Default, Debug)]
+#[derive(Copy, Clone, Default, Debug, FromBytes, IntoBytes, Immutable)]
 pub struct VsockPacketHeader {
-    src_cid: u64,
-    dst_cid: u64,
-    src_port: u32,
-    dst_port: u32,
-    len: u32,
+    src_cid: U64,
+    dst_cid: U64,
+    src_port: U32,
+    dst_port: U32,
+    len: U32,
     // Note this is "type" in the spec
-    socket_type: u16,
-    op: u16,
-    flags: u32,
-    buf_alloc: u32,
-    fwd_cnt: u32,
+    socket_type: U16,
+    op: U16,
+    flags: U32,
+    buf_alloc: U32,
+    fwd_cnt: U32,
 }
 
 impl VsockPacketHeader {
@@ -49,53 +52,53 @@ impl VsockPacketHeader {
         // The spec states:
         //
         // The upper 32 bits of src_cid and dst_cid are reserved and zeroed.
-        u64::from_le(self.src_cid) & u64::from(u32::MAX)
+        self.src_cid.get() & u64::from(u32::MAX)
     }
 
     pub fn dst_cid(&self) -> u64 {
         // The spec states:
         //
         // The upper 32 bits of src_cid and dst_cid are reserved and zeroed.
-        u64::from_le(self.dst_cid) & u64::from(u32::MAX)
+        self.dst_cid.get() & u64::from(u32::MAX)
     }
 
     pub fn src_port(&self) -> u32 {
-        u32::from_le(self.src_port)
+        self.src_port.get()
     }
 
     pub fn dst_port(&self) -> u32 {
-        u32::from_le(self.dst_port)
+        self.dst_port.get()
     }
 
     pub fn len(&self) -> u32 {
-        u32::from_le(self.len)
+        self.len.get()
     }
 
     pub fn socket_type(&self) -> u16 {
-        u16::from_le(self.socket_type)
+        self.socket_type.get()
     }
 
     pub fn op(&self) -> u16 {
-        u16::from_le(self.op)
+        self.op.get()
     }
 
     pub fn flags(&self) -> u32 {
-        u32::from_le(self.flags)
+        self.flags.get()
     }
 
     pub fn buf_alloc(&self) -> u32 {
-        u32::from_le(self.buf_alloc)
+        self.buf_alloc.get()
     }
 
     pub fn fwd_cnt(&self) -> u32 {
-        u32::from_le(self.fwd_cnt)
+        self.fwd_cnt.get()
     }
 
     pub fn set_src_cid(&mut self, cid: u32) -> &mut Self {
         // The spec states:
         //
         // The upper 32 bits of src_cid and dst_cid are reserved and zeroed.
-        self.src_cid = cid.to_le() as u64;
+        self.src_cid = U64::new(cid as u64);
         self
     }
 
@@ -103,55 +106,64 @@ impl VsockPacketHeader {
         // The spec states:
         //
         // The upper 32 bits of src_cid and dst_cid are reserved and zeroed.
-        self.dst_cid = cid.to_le() as u64;
+        self.dst_cid = U64::new(cid as u64);
         self
     }
 
     pub fn set_src_port(&mut self, port: u32) -> &mut Self {
-        self.src_port = port.to_le();
+        self.src_port = U32::new(port);
         self
     }
 
     pub fn set_dst_port(&mut self, port: u32) -> &mut Self {
-        self.dst_port = port.to_le();
+        self.dst_port = U32::new(port);
         self
     }
 
     pub fn set_len(&mut self, len: u32) -> &mut Self {
-        self.len = len.to_le();
+        self.len = U32::new(len);
         self
     }
 
     pub fn set_socket_type(&mut self, socket_type: u16) -> &mut Self {
-        self.socket_type = socket_type.to_le();
+        self.socket_type = U16::new(socket_type);
         self
     }
 
     pub fn set_op(&mut self, op: u16) -> &mut Self {
-        self.op = op.to_le();
+        self.op = U16::new(op);
         self
     }
 
     pub fn set_flags(&mut self, flags: u32) -> &mut Self {
-        self.flags = flags.to_le();
+        self.flags = U32::new(flags);
         self
     }
 
     pub fn set_buf_alloc(&mut self, buf_alloc: u32) -> &mut Self {
-        self.buf_alloc = buf_alloc.to_le();
+        self.buf_alloc = U32::new(buf_alloc);
         self
     }
 
     pub fn set_fwd_cnt(&mut self, fwd_cnt: u32) -> &mut Self {
-        self.fwd_cnt = fwd_cnt.to_le();
+        self.fwd_cnt = U32::new(fwd_cnt);
         self
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default)]
 pub struct VsockPacket {
     pub(crate) header: VsockPacketHeader,
     pub(crate) data: Vec<u8>,
+}
+
+impl std::fmt::Debug for VsockPacket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VsockPacket")
+            .field("header", &self.header)
+            .field("data_len", &self.data.len())
+            .finish()
+    }
 }
 
 impl VsockPacket {

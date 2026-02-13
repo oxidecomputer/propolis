@@ -278,7 +278,7 @@ lazy_static! {
 mod bits {
     pub const VIRTIO_VSOCK_CFG_SIZE: usize = 0x8;
 
-    pub const VIRTIO_VSOCK_F_STREAM: u64 = 0;
+    pub const VIRTIO_VSOCK_F_STREAM: u64 = 1 << 0;
 
     #[allow(unused)]
     pub const VIRTIO_VSOCK_EVENT_TRANSPORT_RESET: u32 = 0;

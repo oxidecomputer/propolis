@@ -662,7 +662,7 @@ impl VsockPoller {
 
         let mut events: [MaybeUninit<libc::port_event>; MAX_EVENTS as usize] =
             [const { MaybeUninit::uninit() }; MAX_EVENTS as usize];
-        let mut read_buf = vec![0u8; 1024 * 64];
+        let mut read_buf: Box<[u8]> = vec![0u8; 1024 * 64].into();
 
         loop {
             let mut nget = 1;
@@ -784,6 +784,8 @@ mod tests {
 
     use iddqd::IdHashMap;
 
+    use zerocopy::{FromBytes, IntoBytes};
+
     use crate::hw::virtio::testutil::{QueueWriter, TestVirtQueues, VqSize};
     use crate::hw::virtio::vsock::{VsockVq, VSOCK_RX_QUEUE, VSOCK_TX_QUEUE};
     use crate::vsock::packet::{
@@ -900,19 +902,11 @@ mod tests {
 
             // Parse header from the first bytes
             let hdr_size = std::mem::size_of::<VsockPacketHeader>();
-            let mut hdr = VsockPacketHeader::default();
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    buf.as_ptr(),
-                    &mut hdr as *mut VsockPacketHeader as *mut u8,
-                    hdr_size,
-                );
-            }
+            let (hdr, data) = buf.split_at(hdr_size);
+            let hdr = VsockPacketHeader::read_from_bytes(hdr)
+                .expect("buffer should contain valid header");
 
-            // Data is everything after the header
-            let data = buf[hdr_size..].to_vec();
-
-            (hdr, data)
+            (hdr, data.to_vec())
         }
 
         fn rx_used_idx(&self) -> u16 {
@@ -926,12 +920,7 @@ mod tests {
 
     /// Helper: serialize a VsockPacketHeader to bytes.
     fn hdr_as_bytes(hdr: &VsockPacketHeader) -> &[u8] {
-        unsafe {
-            std::slice::from_raw_parts(
-                hdr as *const VsockPacketHeader as *const u8,
-                std::mem::size_of::<VsockPacketHeader>(),
-            )
-        }
+        hdr.as_bytes()
     }
 
     /// Spin until a condition is met, with a timeout.

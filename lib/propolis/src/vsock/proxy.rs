@@ -89,7 +89,17 @@ pub enum ProxyConnError {
     InvalidStateTransition { from: ConnState, to: ConnState },
 }
 
-/// An established guest<=>host connection
+/// An established guest<=>host connection.
+///
+/// Note that the internal state of the proxy connection uses `Wrapping<u32>`
+/// because the virtio spec uses the following calculation to determine how much
+/// buffer space a guest has:
+///
+/// /* tx_cnt is the sender's free-running bytes transmitted counter */
+/// u32 peer_free = peer_buf_alloc - (tx_cnt - peer_fwd_cnt);
+///
+/// The lifetime of a connection can exceed u32::MAX bytes transmitted, so we
+/// rely on wrapping semantics to determine the difference.
 #[derive(Debug)]
 pub struct VsockProxyConn {
     pub(crate) socket: TcpStream,
@@ -347,6 +357,6 @@ impl VsockBackend for VsockProxy {
                     "queue" => %queue_id,
                 )
             })
-            .map_err(|_| VsockError::QueueNotify(queue_id))
+            .map_err(|_| VsockError::QueueNotify { queue: queue_id })
     }
 }

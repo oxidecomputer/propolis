@@ -20,8 +20,8 @@ pub(crate) const VSOCK_HOST_CID: u64 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VsockError {
-    #[error("failed to send virt queue notification for queue {0}")]
-    QueueNotify(u16),
+    #[error("failed to send virt queue notification for queue {}", queue)]
+    QueueNotify { queue: u16 },
 }
 
 pub trait VsockBackend: Send + Sync + 'static {
