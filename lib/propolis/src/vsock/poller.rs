@@ -8,7 +8,6 @@ use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::io::ErrorKind;
 use std::io::Read;
-use std::mem::MaybeUninit;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -311,6 +310,19 @@ impl VsockPoller {
                 continue;
             }
 
+            // If the packet is not coming from our guest drop it.
+            if packet.header.src_cid() != u64::from(self.guest_cid) {
+                // Note that we could send a RST here but technically we should
+                // not know how to address this guest cid as it's not the one
+                // we assigned to our guest.
+                debug!(
+                    &self.log,
+                    "droppping vsock packet not arriving from our guest cid";
+                    "packet" => ?packet,
+                );
+                continue;
+            }
+
             let key = ConnKey {
                 host_port: packet.header.dst_port(),
                 guest_port: packet.header.src_port(),
@@ -582,7 +594,10 @@ impl VsockPoller {
                     return;
                 }
                 Ok(nbytes) => {
-                    conn.update_tx_cnt(nbytes as u32);
+                    let read_u32: u32 = nbytes
+                        .try_into()
+                        .expect("max_read is <=u32::MAX by min() above");
+                    conn.update_tx_cnt(read_u32);
                     let VsockPacket { header, data } = VsockPacket::new_rw(
                         *guest_cid,
                         key.host_port,
@@ -655,8 +670,8 @@ impl VsockPoller {
     fn handle_events(&mut self) {
         const MAX_EVENTS: u32 = 32;
 
-        let mut events: [MaybeUninit<libc::port_event>; MAX_EVENTS as usize] =
-            [const { MaybeUninit::uninit() }; MAX_EVENTS as usize];
+        let mut events = [const { unsafe { std::mem::zeroed::<libc::port_event>() } };
+            MAX_EVENTS as usize];
         let mut read_buf: Box<[u8]> = vec![0u8; 1024 * 64].into();
 
         loop {
@@ -665,9 +680,13 @@ impl VsockPoller {
             let ret = unsafe {
                 libc::port_getn(
                     self.port_fd.as_raw_fd(),
-                    events.as_mut_ptr() as *mut libc::port_event,
+                    events.as_mut_ptr(),
                     MAX_EVENTS,
                     &mut nget,
+                    // TODO currently we are not supplying a timeout because
+                    // there is no other work to do unless we are woken up. In
+                    // the near future we will likely periodically wake up to
+                    // service the shutdown quiesce queue.
                     std::ptr::null_mut(),
                 )
             };
@@ -695,10 +714,15 @@ impl VsockPoller {
                 }
             }
 
-            for i in 0..nget as usize {
-                let event = PortEvent::from_raw(unsafe {
-                    events[i].assume_init_read()
-                });
+            assert!(
+                nget as usize <= events.len(),
+                "event port returned what we asked it for"
+            );
+            let events = unsafe {
+                std::slice::from_raw_parts(events.as_ptr(), nget as usize)
+            };
+            for event in events {
+                let event = PortEvent::from_raw(*event);
 
                 match event.source {
                     EventSource::User => {

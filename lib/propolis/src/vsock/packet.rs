@@ -33,8 +33,18 @@ pub enum VsockSocketType {
 pub enum VsockPacketError {
     #[error("failed to read packet header from descriptor chain")]
     ChainHeaderRead,
-    #[error("packet only contained {remaining} bytes out of {expected} bytes")]
+
+    #[error("vsock packet header reported {hdr_len} bytes but the descriptor chain cont ains {chain_len}")]
+    InvalidPacketLen { hdr_len: usize, chain_len: usize },
+
+    #[error("descriptor chain only yielded {remaining} bytes out of {expected} bytes")]
     InsufficientBytes { expected: usize, remaining: usize },
+
+    #[error("src_cid {src_cid} contains reserved bits")]
+    InvalidSrcCid { src_cid: u64 },
+
+    #[error("dst_cid {dst_cid} contains reserved bits")]
+    InvalidDstCid { dst_cid: u64 },
 }
 
 #[derive(Clone, Copy, Debug, FromRepr, Eq, PartialEq)]
@@ -230,6 +240,10 @@ impl VsockPacket {
         packet
     }
 
+    /// Create a new RW packet that sets the len field to the size of the data.
+    ///
+    /// Panics if the supplied data value is greater than u32::MAX as anything
+    /// larger would not fit within the peers buf_alloc which is defined as u32.
     pub fn new_rw(
         guest_cid: u32,
         src_port: u32,
@@ -237,10 +251,17 @@ impl VsockPacket {
         fwd_cnt: u32,
         data: impl Into<Box<[u8]>>,
     ) -> Self {
+        let data = data.into();
+        let len = data.len();
+        assert!(
+            len < u32::MAX as usize,
+            "vsock packets should not exceed u32::MAX"
+        );
         let mut packet =
             Self::new(guest_cid, src_port, dst_port, VsockPacketOp::ReadWrite);
+        packet.header.set_len(len as u32);
         packet.header.set_fwd_cnt(fwd_cnt);
-        packet.data = data.into();
+        packet.data = data;
         packet
     }
 

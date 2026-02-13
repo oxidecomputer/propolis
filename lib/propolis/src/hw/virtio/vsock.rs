@@ -40,24 +40,33 @@ pub const VSOCK_EVENT_QUEUE: u16 = 0x2;
 ///
 /// The permit holds a mutable reference to `VsockVq`, ensuring only one permit
 /// can exist at a time (enforced at compile time). If dropped without calling
-/// `write_rw`, the chain is retained in `VsockVq` for reuse.
+/// `write`, the chain is retained in `VsockVq` for reuse.
 pub struct RxPermit<'a> {
-    available_data_space: usize,
     vq: &'a mut VsockVq,
 }
 
 impl RxPermit<'_> {
     /// Returns the maximum data payload that can fit in this descriptor chain.
     pub fn available_data_space(&self) -> usize {
-        self.available_data_space
+        let header_size = std::mem::size_of::<VsockPacketHeader>();
+        self.vq
+            .rx_chain
+            .as_ref()
+            .expect("has chain")
+            .remain_write_bytes()
+            .saturating_sub(header_size)
     }
 
     pub fn write(self, header: &VsockPacketHeader, data: &[u8]) {
+        // TODO: cannot access memory?
         let mem = self.vq.acc_mem.access().expect("mem access for write");
         let queue =
             self.vq.queues.get(VSOCK_RX_QUEUE as usize).expect("rx queue");
-        let mut chain = self.vq.rx_chain.take().expect("rx_chain should exist");
 
+        // SAFETY: `RxPermit` should only be created if the owning `VsockVq`
+        // actually has a `Some(Chain)`. Unfortuantely there doesn't seem to be
+        // a way to enforce this at compile time.
+        let mut chain = self.vq.rx_chain.take().expect("has chain");
         chain.write(header, &mem);
 
         if !data.is_empty() {
@@ -81,7 +90,7 @@ impl RxPermit<'_> {
 pub struct VsockVq {
     queues: Vec<Arc<VirtQueue>>,
     acc_mem: MemAccessor,
-    /// Cached rx chain for permit reuse when dropped without write_rw
+    /// Cached rx chain for permit reuse when dropped without write
     rx_chain: Option<Chain>,
 }
 
@@ -100,22 +109,21 @@ impl VsockVq {
     pub fn try_rx_permit(&mut self) -> Option<RxPermit<'_>> {
         // Reuse cached chain or pop a new one
         if self.rx_chain.is_none() {
-            let mem = self.acc_mem.access()?;
+            // TODO: cannot access memory?
+            let mem = self.acc_mem.access().expect("mem access for write");
             let vq = self.queues.get(VSOCK_RX_QUEUE as usize)?;
             let mut chain = Chain::with_capacity(10);
-            vq.pop_avail(&mut chain, &mem)?;
-            self.rx_chain = Some(chain);
+            if let Some(_) = vq.pop_avail(&mut chain, &mem) {
+                self.rx_chain = Some(chain);
+            }
         }
 
-        let header_size = std::mem::size_of::<VsockPacketHeader>();
-        let available_data_space = self
-            .rx_chain
-            .as_ref()
-            .unwrap()
-            .remain_write_bytes()
-            .saturating_sub(header_size);
-
-        Some(RxPermit { available_data_space, vq: self })
+        // We only return a permit iff we know that we are holding onto a valid
+        // descriptor chain that can be used by the borrowing `RxPermit`
+        match self.rx_chain {
+            Some(_) => Some(RxPermit { vq: self }),
+            None => None,
+        }
     }
 
     /// Receive all available packets from the TX queue.
@@ -123,7 +131,8 @@ impl VsockVq {
     /// Returns a Vec of parsed packets. In the future this may be refactored
     /// to return an iterator over GuestRegions to avoid copying packet data.
     pub fn recv_packet(&self) -> Option<Result<VsockPacket, VsockPacketError>> {
-        let mem = self.acc_mem.access()?;
+        // TODO: cannot access memory?
+        let mem = self.acc_mem.access().expect("mem access for read");
         let vq = self
             .queues
             .get(VSOCK_TX_QUEUE as usize)
@@ -282,9 +291,32 @@ impl VsockPacket {
             return Ok(packet);
         }
 
-        let len = usize::try_from(packet.header.len())
+        let hdr_len = usize::try_from(packet.header.len())
             .expect("running on a 64bit platform");
-        let mut data = vec![0; len];
+        let chain_len = chain.remain_read_bytes();
+
+        // Ensure that the vsock packet header length matches the reality of
+        // the desc chain.
+        if hdr_len > chain_len {
+            return Err(VsockPacketError::InvalidPacketLen {
+                hdr_len,
+                chain_len,
+            });
+        }
+        let mut data = vec![0; hdr_len];
+
+        // While we are here we should validate that packets cid fields do no
+        // contain reserved bits
+        if packet.header.src_cid() >> 32 != 0 {
+            return Err(VsockPacketError::InvalidSrcCid {
+                src_cid: packet.header.src_cid(),
+            });
+        }
+        if packet.header.dst_cid() >> 32 != 0 {
+            return Err(VsockPacketError::InvalidDstCid {
+                dst_cid: packet.header.dst_cid(),
+            });
+        }
 
         let mut done = 0;
         let copied = chain.for_remaining_type(true, |addr, len| {
@@ -298,9 +330,11 @@ impl VsockPacket {
             }
         });
 
-        if copied != len {
+        // If we fail to copy the correct amount of bytes from the desc chain
+        // something is clearly wrong.
+        if copied != hdr_len {
             return Err(VsockPacketError::InsufficientBytes {
-                expected: len,
+                expected: hdr_len,
                 remaining: copied,
             });
         }
