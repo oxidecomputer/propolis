@@ -403,6 +403,13 @@ impl NvmeCtrl {
                 )
             }
 
+            cmds::FeatureIdent::OxideDeviceFeatures => {
+                cmds::Completion::success_val(
+                    cmds::OxideDeviceFeatures { read_only: self.read_only }
+                        .into(),
+                )
+            }
+
             cmds::FeatureIdent::Reserved
             | cmds::FeatureIdent::LbaRangeType
             | cmds::FeatureIdent::SoftwareProgressMarker
@@ -457,6 +464,7 @@ impl NvmeCtrl {
             | cmds::FeatureIdent::WriteAtomicity
             | cmds::FeatureIdent::AsynchronousEventConfiguration
             | cmds::FeatureIdent::SoftwareProgressMarker
+            | cmds::FeatureIdent::OxideDeviceFeatures
             | cmds::FeatureIdent::Vendor(_) => {
                 cmds::Completion::generic_err(STS_INVAL_FIELD).dnr()
             }

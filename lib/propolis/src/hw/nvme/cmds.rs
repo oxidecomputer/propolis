@@ -452,7 +452,12 @@ pub enum FeatureIdent {
     /// This feature is persistent across power states.
     /// See NVMe 1.0e Section 7.6.1.1 Software Progress Marker
     SoftwareProgressMarker,
-    /// Vendor specific feature.
+
+    // Vendor specific features.
+    /// Oxide-specific feature - returns relevant device features.
+    OxideDeviceFeatures,
+
+    /// All other vendor specific features.
     Vendor(#[allow(dead_code)] u8),
 }
 
@@ -476,6 +481,7 @@ impl From<u8> for FeatureIdent {
             0xC..=0x7F => Reserved,
             0x80 => SoftwareProgressMarker,
             0x81..=0xBF => Reserved,
+            FEAT_ID_OXIDE_DEVICE_FEATURES => OxideDeviceFeatures,
             0xC0..=0xFF => Vendor(fid),
         }
     }
@@ -648,6 +654,15 @@ impl From<u32> for FeatInterruptVectorConfig {
 impl From<FeatInterruptVectorConfig> for u32 {
     fn from(value: FeatInterruptVectorConfig) -> Self {
         u32::from(value.iv) | (u32::from(value.cd) << 16)
+    }
+}
+
+pub(crate) struct OxideDeviceFeatures {
+    pub read_only: bool,
+}
+impl From<OxideDeviceFeatures> for u32 {
+    fn from(value: OxideDeviceFeatures) -> u32 {
+        u32::from(value.read_only)
     }
 }
 
