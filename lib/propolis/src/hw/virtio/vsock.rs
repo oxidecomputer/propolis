@@ -210,11 +210,24 @@ impl VirtioDevice for PciVirtioSock {
     }
 
     fn features(&self) -> u64 {
-        VIRTIO_VSOCK_F_STREAM
+        // We support VIRTIO_VSOCK_F_STREAM
+        //
+        // virtio spec 1.3:
+        // The device SHOULD offer the VIRTIO_VSOCK_F_NO_IMPLIED_STREAM feature.
+        (VsockFeatures::NO_IMPLIED_STREAM | VsockFeatures::STREAM).bits()
     }
 
-    fn set_features(&self, _feat: u64) -> Result<(), ()> {
-        Ok(())
+    fn set_features(&self, feat: u64) -> Result<(), ()> {
+        // We only care about the vsock specific bits so grab just those
+        match VsockFeatures::from_bits_truncate(feat) {
+            // If no feature bit has been negotiated, the device SHOULD act as
+            // if VIRTIO_VSOCK_F_STREAM has been negotiated.
+            f if f.is_empty() => Ok(()),
+            f if f == VsockFeatures::STREAM => Ok(()),
+            // We have not advertised SEQPACKET so we don't expect it to show up
+            // here.
+            _ => Err(()),
+        }
     }
 
     fn mode(&self) -> virtio::Mode {
@@ -262,7 +275,14 @@ lazy_static! {
 mod bits {
     pub const VIRTIO_VSOCK_CFG_SIZE: usize = 0x8;
 
-    pub const VIRTIO_VSOCK_F_STREAM: u64 = 1 << 0;
+    bitflags! {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub struct VsockFeatures: u64 {
+            const STREAM    = 1 << 0;
+            const SEQPACKET = 1 << 1;
+            const NO_IMPLIED_STREAM = 1 << 2;
+        }
+    }
 
     #[allow(unused)]
     pub const VIRTIO_VSOCK_EVENT_TRANSPORT_RESET: u32 = 0;

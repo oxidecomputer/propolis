@@ -92,6 +92,7 @@ impl CrucibleDisk {
         read_only_parent: Option<&impl AsRef<Path>>,
         guest_os: Option<GuestOsKind>,
         log_config: LogConfig,
+        output_dir: &impl AsRef<Path>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             device_name,
@@ -105,6 +106,7 @@ impl CrucibleDisk {
                 data_dir_root,
                 read_only_parent,
                 log_config,
+                output_dir,
             )?),
         })
     }
@@ -209,6 +211,7 @@ impl Inner {
         data_dir_root: &impl AsRef<Path>,
         read_only_parent: Option<&impl AsRef<Path>>,
         log_config: LogConfig,
+        output_dir: &impl AsRef<Path>,
     ) -> anyhow::Result<Self> {
         // To create a region, Crucible requires a block size, an extent size
         // given as a number of blocks, and an extent count. Compute the latter
@@ -339,7 +342,7 @@ impl Inner {
             // nice to connect this more directly to the output desire expressed
             // by the test runner.
             let (stdout, stderr) = log_config.output_mode.get_handles(
-                data_dir_root,
+                output_dir,
                 &format!("crucible_{disk_uuid}_{port}"),
             )?;
 

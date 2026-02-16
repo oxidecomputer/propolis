@@ -2,7 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use bit_field::BitField;
 use strum::FromRepr;
 use zerocopy::byteorder::little_endian::{U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes};
@@ -77,17 +76,11 @@ pub struct VsockPacketHeader {
 
 impl VsockPacketHeader {
     pub fn src_cid(&self) -> u64 {
-        // The spec states:
-        //
-        // The upper 32 bits of src_cid and dst_cid are reserved and zeroed.
-        self.src_cid.get().get_bits(0..32)
+        self.src_cid.get()
     }
 
     pub fn dst_cid(&self) -> u64 {
-        // The spec states:
-        //
-        // The upper 32 bits of src_cid and dst_cid are reserved and zeroed.
-        self.dst_cid.get().get_bits(0..32)
+        self.dst_cid.get()
     }
 
     pub fn src_port(&self) -> u32 {

@@ -6,7 +6,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 
 use anyhow::Context;
 
-use crate::{test_vm::server::ServerProcessParameters, Framework};
+use crate::{test_vm::server::ServerProcessParameters, TestCtx};
 
 /// Specifies where the framework should start a new test VM.
 #[derive(Clone, Copy, Debug)]
@@ -60,9 +60,9 @@ impl EnvironmentSpec {
 
     pub(crate) async fn build<'a>(
         &self,
-        framework: &'a Framework,
+        ctx: &'a TestCtx,
     ) -> anyhow::Result<Environment<'a>> {
-        Environment::from_builder(self, framework).await
+        Environment::from_builder(self, ctx).await
     }
 }
 
@@ -79,8 +79,9 @@ pub(crate) enum Environment<'a> {
 impl<'a> Environment<'a> {
     async fn from_builder(
         builder: &EnvironmentSpec,
-        framework: &'a Framework,
+        ctx: &'a TestCtx,
     ) -> anyhow::Result<Self> {
+        let framework = &ctx.framework;
         match builder.location {
             VmLocation::Local => {
                 let propolis_server = framework
@@ -110,7 +111,7 @@ impl<'a> Environment<'a> {
                 });
                 let params = ServerProcessParameters {
                     server_path: propolis_server,
-                    data_dir: framework.tmp_directory.as_path(),
+                    output_dir: ctx.output_dir.as_path(),
                     server_addr: SocketAddrV4::new(
                         Ipv4Addr::new(127, 0, 0, 1),
                         server_port,

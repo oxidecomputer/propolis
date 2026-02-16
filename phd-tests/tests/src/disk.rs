@@ -17,7 +17,7 @@ use uuid::Uuid;
 /// Returns a tuple containing the created VM and the path to the guest disk
 /// device representing the in-memory disk.
 async fn launch_vm_and_find_in_memory_disk(
-    ctx: &Framework,
+    ctx: &TestCtx,
     vm_name: &str,
     data: DiskSource<'_>,
     readonly: bool,
@@ -113,7 +113,7 @@ async fn mount_in_memory_disk(
 }
 
 #[phd_testcase]
-async fn in_memory_backend_smoke_test(ctx: &Framework) {
+async fn in_memory_backend_smoke_test(ctx: &TestCtx) {
     if ctx.default_guest_os_kind().await?.is_windows() {
         phd_skip!(
             "in-memory disk tests use mount options not supported by Cygwin"
@@ -144,7 +144,7 @@ async fn in_memory_backend_smoke_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
-async fn in_memory_backend_migration_test(ctx: &Framework) {
+async fn in_memory_backend_migration_test(ctx: &TestCtx) {
     // A blank disk is fine for this test: the rest of the test will address the
     // disk device directly instead of assuming it has a file system. This works
     // around #824 for Windows guests (which may not recognize the FAT
