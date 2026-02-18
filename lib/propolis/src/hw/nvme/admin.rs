@@ -404,10 +404,16 @@ impl NvmeCtrl {
             }
 
             cmds::FeatureIdent::OxideDeviceFeatures => {
-                cmds::Completion::success_val(
-                    cmds::OxideDeviceFeatures { read_only: self.read_only }
-                        .into(),
-                )
+                if cmd.cdw11 != 0 {
+                    // We don't currently accept any parameters for this feature
+                    cmds::Completion::generic_err(STS_INVAL_FIELD)
+                } else {
+                    cmds::Completion::success_val(
+                        cmds::OxideDeviceFeatures(0)
+                            .with_read_only(self.read_only)
+                            .0,
+                    )
+                }
             }
 
             cmds::FeatureIdent::Reserved

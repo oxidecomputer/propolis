@@ -657,12 +657,14 @@ impl From<FeatInterruptVectorConfig> for u32 {
     }
 }
 
-pub(crate) struct OxideDeviceFeatures {
-    pub read_only: bool,
-}
-impl From<OxideDeviceFeatures> for u32 {
-    fn from(value: OxideDeviceFeatures) -> u32 {
-        u32::from(value.read_only)
+bitstruct! {
+    pub struct OxideDeviceFeatures(pub u32) {
+        /// Indicates the device is read-only and will complete all attempted
+        /// writes with `STS_WRITE_READ_ONLY_RANGE`.
+        pub read_only: bool = 0;
+
+        /// Reserved
+        reserved: u32 = 1..32;
     }
 }
 
