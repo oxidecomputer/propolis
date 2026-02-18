@@ -55,6 +55,7 @@ pub struct Main {
     pub memory: usize,
     pub use_reservoir: Option<bool>,
     pub cpuid_profile: Option<String>,
+    pub calc_boot_digest: Option<bool>,
     /// How vCPUs should be bound to physical processors, if at all. If not
     /// provided, vCPUs are not bound (equivalent to setting `any`).
     pub cpu_binding: Option<BindingStrategy>,

@@ -35,6 +35,7 @@ use propolis::vcpu::Vcpu;
 use propolis::vmm::{Builder, Machine};
 use propolis::*;
 
+mod attestation;
 mod cidata;
 mod config;
 mod snapshot;
@@ -485,6 +486,32 @@ impl Instance {
                     // TODO: bail if any vCPU tasks have exited already
                     for vcpu_task in guard.vcpu_tasks.iter_mut() {
                         let _ = vcpu_task.run();
+                    }
+
+                    // If requested, calculate the digest of the boot disk
+                    let calc_boot_digest =
+                        inner.config.main.calc_boot_digest.unwrap_or(false);
+
+                    if calc_boot_digest {
+
+                        let tlog = log.clone();
+                        let ccfg = inner.config.clone();
+
+                        // spawn a thread to read the digest
+                        let _ = std::thread::Builder::new()
+                            .name("boot-disk-hash".to_string())
+                            .spawn(move || {
+                                let digest =
+                                    attestation::calc_boot_digest(&ccfg, &tlog);
+                                slog::info!(
+                                    tlog,
+                                    "hash={}",
+                                    digest
+                                );
+                            })
+                            .unwrap();
+                    } else {
+                        slog::info!(&log, "NO calc boot digest");
                     }
                 }
                 State::Quiesce => {

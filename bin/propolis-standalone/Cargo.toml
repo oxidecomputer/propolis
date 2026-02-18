@@ -31,6 +31,7 @@ crucible-client-types = { workspace = true, optional = true }
 cpuid_profile_config.workspace = true
 erased-serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 slog.workspace = true
 slog-async.workspace = true
 slog-dtrace.workspace = true
