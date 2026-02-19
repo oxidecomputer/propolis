@@ -36,6 +36,35 @@ pub struct Config {
     pub cpuid_profiles: BTreeMap<String, CpuidProfile>,
 
     pub cloudinit: Option<CloudInit>,
+
+    pub attestation: Option<AttestationConfig>,
+}
+
+/// Backend type for attestation.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AttestBackend {
+    /// Mock backend using files for testing
+    #[default]
+    Mock,
+    /// Real IPCC backend communicating with the RoT
+    Ipcc,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AttestationConfig {
+    /// Backend to use for attestation (default: mock)
+    #[serde(default)]
+    pub backend: AttestBackend,
+
+    // Mock-specific fields (only required when backend = "mock")
+    pub pki_path: Option<String>,
+    pub log_path: Option<String>,
+    pub alias_key_path: Option<String>,
+
+    // Common fields
+    pub vm_uuid: String,
+    pub image_digest: String,
 }
 impl Config {
     pub fn cpuid_profile(&self) -> Option<&CpuidProfile> {

@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
+use std::net::TcpListener;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -38,6 +39,7 @@ use propolis::*;
 mod attestation;
 mod cidata;
 mod config;
+mod dumb_socket_server;
 mod snapshot;
 
 const PAGE_OFFSET: u64 = 0xfff;
@@ -1347,6 +1349,7 @@ fn setup_instance(
                     }
                 }
                 "pci-virtio-vsock" => {
+                    // XXX MTZ: add the vsock device
                     let config = config::VsockDevice::from_opts(&dev.options)?;
                     let bdf = bdf.unwrap();
                     let vsock = hw::virtio::PciVirtioSock::new(
@@ -1567,7 +1570,46 @@ fn main() -> anyhow::Result<ExitCode> {
     };
     let _rt_guard = rt.enter();
 
+    // search through devices for one bound to the vsock driver
+    // NOTE: this will find the first such device, all others are ignored
+    let (vsock_device_name, _) = config
+        .devices
+        .iter()
+        .find(|&(_, device)| device.driver == "pci-virtio-vsock")
+        .ok_or(anyhow::anyhow!("could not find 'pci-virtio-vsock' "))?;
+
+    // find the expected 'port_mappings' for attestation service from the
+    // vsock device
+    let attest_port_mapping = config.devices[vsock_device_name]
+        .options
+        .get("port_mappings")
+        .ok_or(anyhow::anyhow!("No port_mappings for sock0"))?
+        .as_array()
+        .context("array of 'port_mappings'")?
+        .iter()
+        .find(|&m| {
+            // panic if the port_mappings tables are malformed
+            let port = m
+                .get("port")
+                .expect("extract 'port' from sock0 mapping")
+                .as_integer()
+                .expect("convert 'port' from sock0 mapping to string");
+            port == 3000
+        })
+        .ok_or(anyhow::anyhow!("no mapping for the expected port: 3000"))?;
+
+    // get the localhost address from the attestation server vsock port mapping
+    let attest_bind_addr = String::from(
+        attest_port_mapping
+            .get("addr")
+            .ok_or(anyhow::anyhow!("no port mapping 'addr' field found"))?
+            .as_str()
+            .context("attest port mapping addr to_string()")?,
+    );
+    slog::info!(log, "bind address for attestation server: {attest_bind_addr}");
+
     // Create the VM afresh or restore it from a snapshot
+    let attest_config = config.attestation.clone();
     let (inst, com1_sock) = if restore {
         snapshot::restore(&target, config, &log)
     } else {
@@ -1594,6 +1636,64 @@ fn main() -> anyhow::Result<ExitCode> {
         }
     })
     .context("Failed to register Ctrl-C signal handler.")?;
+
+    // Run a dumb RoT socket server
+    if let Some(attest_cfg) = attest_config {
+        let l = log.clone();
+        std::thread::spawn(move || {
+            slog::info!(l, "thread spawned"; "backend" => ?attest_cfg.backend);
+            let vm_uuid = uuid::Uuid::parse_str(&attest_cfg.vm_uuid)
+                .expect("Invalid UUID");
+            let vm_conf = vm_attest_proto::mock::VmInstanceConf {
+                uuid: vm_uuid,
+                image_digest: vm_attest_proto::mock::Measurement {
+                    algorithm: "sha-256".to_string(),
+                    digest: attest_cfg.image_digest.clone(),
+                },
+            };
+            let oxattest: Box<dyn dice_verifier::Attest> =
+                match attest_cfg.backend {
+                    config::AttestBackend::Mock => {
+                        let pki_path = attest_cfg
+                            .pki_path
+                            .as_ref()
+                            .expect("pki_path required for mock backend");
+                        let log_path = attest_cfg
+                            .log_path
+                            .as_ref()
+                            .expect("log_path required for mock backend");
+                        let alias_key_path = attest_cfg
+                            .alias_key_path
+                            .as_ref()
+                            .expect("alias_key_path required for mock backend");
+                        Box::new(
+                            dice_verifier::AttestMock::load(
+                                pki_path,
+                                log_path,
+                                alias_key_path,
+                            )
+                            .expect("Failed to load AttestMock"),
+                        )
+                    }
+                    config::AttestBackend::Ipcc => Box::new(
+                        dice_verifier::ipcc::AttestIpcc::new()
+                            .expect("Failed to create AttestIpcc"),
+                    ),
+                };
+            let rot = vm_attest_proto::mock::VmInstanceRotMock::new(
+                oxattest, vm_conf,
+            );
+            slog::info!(
+                &l,
+                "Attestation server binding to address: {attest_bind_addr}"
+            );
+
+            let listener =
+                TcpListener::bind(attest_bind_addr).expect("bind TcpListener");
+
+            let _ = dumb_socket_server::run_server(&l, rot, listener);
+        });
+    }
 
     // Wait until someone connects to ttya
     slog::info!(log, "Waiting for a connection to ttya");
