@@ -13,5 +13,5 @@ kind = "bootrom"
 [artifacts.ovmf.source.buildomat]
 repo = "oxidecomputer/edk2"
 series = "image_debug"
-commit = "8c60ff4c271b0442b9a506a5cf9eab04cd5554aa"
-sha256 = "9ce2266aaefb671a1977ddabb5155f8235be134f797e6c831abeb6c97c705569"
+commit = "bf64f45b1a58e69d126a3c6ca1e4512c88668132"
+sha256 = "740187046a7267d0de72d3455070333547dbc0ea023531471fb2b2a61effa448"
