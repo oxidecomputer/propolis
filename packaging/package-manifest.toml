@@ -14,6 +14,6 @@ output.type = "zone"
 [[package.propolis-server.source.buildomat_blobs]]
 repo = "edk2"
 series = "image_debug"
-commit = "907a5fd1763ce5ddd74001261e5b52cd200a25f9"
+commit = "bf64f45b1a58e69d126a3c6ca1e4512c88668132"
 artifact = "OVMF_CODE.fd"
-sha256 = "ff12d5cb021e34447b44301f70434e861b07d2779c16abe2f2efef49ff02fffb"
+sha256 = "740187046a7267d0de72d3455070333547dbc0ea023531471fb2b2a61effa448"

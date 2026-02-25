@@ -98,10 +98,11 @@ pub async fn run_tests_with_ctx(
         }
 
         stats.tests_not_run -= 1;
-        let test_ctx = ctx.clone();
+        let framework = ctx.clone();
         let tc = execution.tc;
         let mut sigint_rx_task = sigint_rx.clone();
         let test_outcome = tokio::spawn(async move {
+            let test_ctx = framework.test_ctx(tc.fully_qualified_name());
             tokio::select! {
                 // Ensure interrupt signals are always handled instead of
                 // continuing to run the test.
@@ -116,7 +117,7 @@ pub async fn run_tests_with_ctx(
                         Some("test interrupted by SIGINT".to_string())
                     )
                 }
-                outcome = tc.run(test_ctx.as_ref()) => outcome
+                outcome = tc.run(&test_ctx) => outcome
             }
         })
         .await

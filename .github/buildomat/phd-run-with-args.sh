@@ -81,7 +81,7 @@ failcount=$?
 set -e
 
 tar -czvf /tmp/phd-tmp-files.tar.gz \
-	-C /tmp/propolis-phd /tmp/propolis-phd/*.log
+	-C "$tmpdir" .
 
 exitcode=0
 if [ $failcount -eq 0 ]; then

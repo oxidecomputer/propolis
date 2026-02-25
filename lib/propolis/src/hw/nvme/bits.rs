@@ -699,6 +699,15 @@ pub const FEAT_ID_WRITE_ATOMIC: u8 = 0x0A;
 /// See NVMe 1.0e Section 5.12.1.11 Asynchronous Event Configuration (Feature Identifier 0Bh)
 pub const FEAT_ID_ASYNC_EVENT_CFG: u8 = 0x0B;
 
+/// Oxide-specific feature.
+///
+/// Provides device-specific features beyond the standard NVMe capabilities as
+/// a single Dword result:
+///   Bit 0 [ReadOnly] - If set, the device will complete all writes with
+///                      STS_WRITE_READ_ONLY_RANGE.
+///   Bits 31-1        - Reserved.
+pub const FEAT_ID_OXIDE_DEVICE_FEATURES: u8 = 0xF0;
+
 // Identify CNS values
 
 /// Identify - Namespace Structure
