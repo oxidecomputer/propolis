@@ -440,8 +440,12 @@ impl TestVm {
         // it's possible to create a boxed future that abstracts over the
         // caller's chosen endpoint.
         let ensure_fn = || async {
-            let result =
-                self.client.instance_ensure().body(&ensure_req).send().await;
+            let result = self
+                .client
+                .instance_ensure()
+                .body(ensure_req.clone())
+                .send()
+                .await;
             if let Err(e) = result {
                 match e {
                     propolis_client::Error::CommunicationError(_) => {

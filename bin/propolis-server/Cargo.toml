@@ -73,7 +73,7 @@ schemars = { workspace = true, features = ["chrono", "uuid1"] }
 
 [dev-dependencies]
 hex.workspace = true
-reqwest = { workspace = true, features = ["rustls-tls"] }
+reqwest = { workspace = true, features = ["rustls"] }
 ring.workspace = true
 slog = { workspace = true, features = [ "max_level_trace", "release_max_level_debug" ] }
 expectorate.workspace = true
