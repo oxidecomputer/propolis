@@ -889,7 +889,9 @@ async fn monitor(addr: SocketAddr) -> anyhow::Result<()> {
         // known to Propolis.
         let response = client
             .instance_state_monitor()
-            .body(propolis_client::types::InstanceStateMonitorRequest { gen_: gen })
+            .body(propolis_client::types::InstanceStateMonitorRequest {
+                gen_: gen,
+            })
             .send()
             .await
             .with_context(|| anyhow!("failed to get new instance state"))?;
