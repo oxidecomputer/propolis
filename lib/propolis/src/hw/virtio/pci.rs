@@ -658,11 +658,11 @@ impl PciVirtioState {
                 state.queue_select = wo.read_u16();
             }
             CommonConfigReg::QueueSize => {
-                let state = self.state.lock().unwrap();
+                let mut state = self.state.lock().unwrap();
                 match VqSize::try_from(wo.read_u16()) {
                     Err(_) => {
                         // Bad queue size.
-                        self.set_needs_reset(dev);
+                        self.needs_reset_locked(dev, &mut state);
                     }
                     Ok(offered) => {
                         let qs = state.queue_select;
@@ -1051,19 +1051,51 @@ impl PciVirtioState {
     }
 
     fn set_status(&self, dev: &dyn VirtioDevice, value: u8) {
+        probes::virtio_set_status!(|| value);
         let mut state = self.state.lock().unwrap();
         let status = Status::from_bits_truncate(value);
         if status == Status::RESET && state.status != Status::RESET {
             self.virtio_reset(dev, state);
         } else {
-            // XXX: better device status FSM
-            state.status = status;
-            if status.contains(Status::FEATURES_OK) {
-                if dev.set_features(state.negotiated_features).is_err() {
-                    self.needs_reset_locked(dev, &mut state);
-                }
+            if self.apply_status(dev, &mut state, status).is_err() {
+                self.needs_reset_locked(dev, &mut state);
             }
         }
+    }
+
+    fn apply_status(
+        &self,
+        dev: &dyn VirtioDevice,
+        state: &mut MutexGuard<VirtioState>,
+        status: Status,
+    ) -> Result<(), ()> {
+        if status == state.status {
+            // No actual difference, bail out early.
+            return Ok(());
+        }
+
+        if !status.contains(state.status) {
+            // The driver has disregarded VirtIO 1.2 section 2.1.2:
+            //
+            // > The driver MUST NOT clear a device status bit.
+            //
+            // If we allowed such a thing then the guest might toggle
+            // FEATURES_OK and violate the expectation that `set_features`
+            // is called only once when setting up a device. Instead, the
+            // guest driver is in the wrong and we'll set NEEDS_RESET.
+            return Err(());
+        }
+
+        // Any bits here are being set at most once since the last device reset.
+        let new_bits = status.difference(state.status);
+
+        if new_bits.contains(Status::FEATURES_OK) {
+            dev.set_features(state.negotiated_features)?;
+        }
+
+        state.status = status;
+
+        Ok(())
     }
 
     /// Set the "Needs Reset" state on the VirtIO device
@@ -1130,6 +1162,7 @@ impl PciVirtioState {
         dev: &dyn VirtioDevice,
         mut state: MutexGuard<VirtioState>,
     ) {
+        probes::virtio_state_reset!(|| ());
         self.reset_queues_locked(dev, &mut state);
         state.reset();
         let _ = self.isr_state.read_clear();
@@ -1514,6 +1547,11 @@ const LEGACY_REG_QUEUE_NOTIFY_OFFSET: usize = 0x10;
 const COMMON_REG_OFFSET: usize = 0;
 const COMMON_REG_SIZE: usize =
     4 + 4 + 4 + 4 + 2 + 2 + 1 + 1 + 2 + 2 + 2 + 2 + 2 + 8 + 8 + 8 + 2 + 2;
+// Some tests want to poke at the common config registers, but before doing so use the total
+// common_cfg struct size to spot-check that the layout is correct. Ideally the register map we
+// build here could go both ways and either be public, or public for tests.
+#[cfg(test)]
+pub const COMMON_REG_SIZE_TEST: usize = COMMON_REG_SIZE;
 const DEVICE_REG_OFFSET: usize = PAGE_SIZE;
 const NOTIFY_REG_OFFSET: usize = 2 * PAGE_SIZE;
 pub const NOTIFY_REG_SIZE: usize = 4;

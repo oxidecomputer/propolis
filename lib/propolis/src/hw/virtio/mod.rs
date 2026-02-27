@@ -256,4 +256,6 @@ mod probes {
     fn virtio_viona_mq_set_use_pairs(cause: u8, npairs: u16) {}
 
     fn virtio_device_needs_reset() {}
+    fn virtio_set_status(value: u8) {}
+    fn virtio_state_reset() {}
 }
