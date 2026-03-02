@@ -351,9 +351,9 @@ impl VsockBackend for VsockProxy {
         self.queue_notify(queue_id)
             // Log the raw error in additon to returning the top level
             // `VsockError`
-            .inspect_err(|_e| {
+            .inspect_err(|e| {
                 error!(&self.log,
-                    "failed to send virtqueue notification";
+                    "failed to send virtqueue notification: {e}";
                     "queue" => %queue_id,
                 )
             })

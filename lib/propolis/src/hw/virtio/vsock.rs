@@ -63,7 +63,7 @@ impl RxPermit<'_> {
         let queue =
             self.vq.queues.get(VSOCK_RX_QUEUE as usize).expect("rx queue");
 
-        // SAFETY: `RxPermit` should only be created if the owning `VsockVq`
+        // NB: `RxPermit` should only be created if the owning `VsockVq`
         // actually has a `Some(Chain)`. Unfortuantely there doesn't seem to be
         // a way to enforce this at compile time.
         let mut chain = self.vq.rx_chain.take().expect("has chain");

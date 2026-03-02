@@ -14,8 +14,8 @@ bitflags! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     #[repr(transparent)]
     pub struct VsockPacketFlags: u32 {
-        const VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE = 1;
-        const VIRTIO_VSOCK_SHUTDOWN_F_SEND = 2;
+        const VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE = 1 << 0;
+        const VIRTIO_VSOCK_SHUTDOWN_F_SEND = 1 << 1;
     }
 }
 
@@ -33,10 +33,16 @@ pub enum VsockPacketError {
     #[error("failed to read packet header from descriptor chain")]
     ChainHeaderRead,
 
-    #[error("vsock packet header reported {hdr_len} bytes but the descriptor chain cont ains {chain_len}")]
+    #[error(
+        "vsock packet header reported {hdr_len} bytes but the descriptor \
+        chain contains {chain_len}"
+    )]
     InvalidPacketLen { hdr_len: usize, chain_len: usize },
 
-    #[error("descriptor chain only yielded {remaining} bytes out of {expected} bytes")]
+    #[error(
+        "descriptor chain only yielded {remaining} bytes out of {expected} \
+        bytes"
+    )]
     InsufficientBytes { expected: usize, remaining: usize },
 
     #[error("src_cid {src_cid} contains reserved bits")]
@@ -56,6 +62,16 @@ pub enum VsockPacketOp {
     ReadWrite = 5,
     CreditUpdate = 6,
     CreditRequest = 7,
+}
+
+/// Represents the required vsock fields required to send a packet to a guest.
+pub struct VsockGuestAddr {
+    /// Guest context ID
+    pub guest_cid: u32,
+    /// Host port
+    pub src_port: u32,
+    /// Guest port
+    pub dst_port: u32,
 }
 
 #[repr(C, packed)]
@@ -206,41 +222,34 @@ impl std::fmt::Debug for VsockPacket {
 }
 
 impl VsockPacket {
-    fn new(
-        guest_cid: u32,
-        src_port: u32,
-        dst_port: u32,
-        op: VsockPacketOp,
-    ) -> Self {
+    fn new(addr: VsockGuestAddr, op: VsockPacketOp) -> Self {
         let mut header = VsockPacketHeader::new();
         header
             .set_src_cid(VSOCK_HOST_CID as u32)
-            .set_dst_cid(guest_cid)
-            .set_src_port(src_port)
-            .set_dst_port(dst_port)
+            .set_dst_cid(addr.guest_cid)
+            .set_src_port(addr.src_port)
+            .set_dst_port(addr.dst_port)
             .set_op(op);
 
         Self { header, data: [].into() }
     }
 
-    pub fn new_reset(guest_cid: u32, src_port: u32, dst_port: u32) -> Self {
-        Self::new(guest_cid, src_port, dst_port, VsockPacketOp::Reset)
+    pub fn new_reset(addr: VsockGuestAddr) -> Self {
+        Self::new(addr, VsockPacketOp::Reset)
     }
 
-    pub fn new_response(guest_cid: u32, src_port: u32, dst_port: u32) -> Self {
-        let packet =
-            Self::new(guest_cid, src_port, dst_port, VsockPacketOp::Response);
+    pub fn new_response(addr: VsockGuestAddr) -> Self {
+        let packet = Self::new(addr, VsockPacketOp::Response);
         packet
     }
 
     /// Create a new RW packet that sets the len field to the size of the data.
     ///
-    /// Panics if the supplied data value is greater than u32::MAX as anything
-    /// larger would not fit within the peers buf_alloc which is defined as u32.
+    /// Panics if the supplied data value is greater than `u32::MAX`, as
+    /// anything larger would not fit within the peer's `buf_alloc`, which is
+    /// defined as `u32`.
     pub fn new_rw(
-        guest_cid: u32,
-        src_port: u32,
-        dst_port: u32,
+        addr: VsockGuestAddr,
         fwd_cnt: u32,
         data: impl Into<Box<[u8]>>,
     ) -> Self {
@@ -250,39 +259,25 @@ impl VsockPacket {
             len < u32::MAX as usize,
             "vsock packets should not exceed u32::MAX"
         );
-        let mut packet =
-            Self::new(guest_cid, src_port, dst_port, VsockPacketOp::ReadWrite);
+        let mut packet = Self::new(addr, VsockPacketOp::ReadWrite);
         packet.header.set_len(len as u32);
         packet.header.set_fwd_cnt(fwd_cnt);
         packet.data = data;
         packet
     }
 
-    pub fn new_credit_update(
-        guest_cid: u32,
-        src_port: u32,
-        dst_port: u32,
-        fwd_cnt: u32,
-    ) -> Self {
-        let mut packet = Self::new(
-            guest_cid,
-            src_port,
-            dst_port,
-            VsockPacketOp::CreditUpdate,
-        );
+    pub fn new_credit_update(addr: VsockGuestAddr, fwd_cnt: u32) -> Self {
+        let mut packet = Self::new(addr, VsockPacketOp::CreditUpdate);
         packet.header.set_fwd_cnt(fwd_cnt);
         packet
     }
 
     pub fn new_shutdown(
-        guest_cid: u32,
-        src_port: u32,
-        dst_port: u32,
+        addr: VsockGuestAddr,
         flags: VsockPacketFlags,
         fwd_cnt: u32,
     ) -> Self {
-        let mut packet =
-            Self::new(guest_cid, src_port, dst_port, VsockPacketOp::Shutdown);
+        let mut packet = Self::new(addr, VsockPacketOp::Shutdown);
         packet.header.set_fwd_cnt(fwd_cnt);
         packet.header.set_flags(flags);
         packet

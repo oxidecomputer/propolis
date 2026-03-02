@@ -14,7 +14,7 @@ use std::thread::JoinHandle;
 
 use iddqd::IdHashMap;
 use nix::poll::PollFlags;
-use slog::{debug, error, info, warn, Logger};
+use slog::{error, info, warn, Logger};
 
 use crate::hw::virtio::vsock::VsockVq;
 use crate::hw::virtio::vsock::VSOCK_RX_QUEUE;
@@ -27,6 +27,7 @@ use crate::vsock::proxy::VsockPortMapping;
 use crate::vsock::proxy::VsockProxyConn;
 use crate::vsock::VSOCK_HOST_CID;
 
+use super::packet::VsockGuestAddr;
 use super::packet::VsockPacketOp;
 
 #[repr(usize)]
@@ -191,7 +192,7 @@ impl VsockPoller {
         let Some(mapping) = self.port_mappings.get(&packet.header.dst_port())
         else {
             // Drop the unknown connection so that it times out in the guest.
-            debug!(
+            warn!(
                 &self.log,
                 "dropping connect request to unknown mapping";
                 "packet" => ?packet,
@@ -266,7 +267,7 @@ impl VsockPoller {
         if let Entry::Occupied(mut entry) = self.connections.entry(key) {
             let conn = entry.get_mut();
 
-            // If we have a valid connection attempt to consume the guest's
+            // If we have a valid connection, attempt to consume the guest's
             // packet.
             if let Err(e) = conn.recv_packet(packet) {
                 error!(
@@ -292,7 +293,7 @@ impl VsockPoller {
         loop {
             let packet = match self.queues.recv_packet().transpose() {
                 Ok(Some(packet)) => packet,
-                // No more packets on the guests tx queue
+                // No more packets on the guest's tx queue
                 Ok(None) => break,
                 Err(e) => {
                     warn!(&self.log, "dropping invalid vsock packet: {e}");
@@ -302,7 +303,7 @@ impl VsockPoller {
 
             // If the packet is not destined for the host drop it.
             if packet.header.dst_cid() != VSOCK_HOST_CID {
-                debug!(
+                warn!(
                     &self.log,
                     "droppping vsock packet not destined for the host";
                     "packet" => ?packet,
@@ -315,7 +316,7 @@ impl VsockPoller {
                 // Note that we could send a RST here but technically we should
                 // not know how to address this guest cid as it's not the one
                 // we assigned to our guest.
-                debug!(
+                warn!(
                     &self.log,
                     "droppping vsock packet not arriving from our guest cid";
                     "packet" => ?packet,
@@ -333,7 +334,7 @@ impl VsockPoller {
             else {
                 self.send_conn_rst(key);
                 warn!(&self.log,
-                    "received invalid vsock packet";
+                    "received invalid vsock packet type";
                     "packet" => ?packet,
                 );
                 continue;
@@ -349,8 +350,8 @@ impl VsockPoller {
             };
 
             if let Some(conn) = self.connections.get_mut(&key) {
-                // Regardless of the vsock operation we need to record the peers
-                // credit info
+                // Regardless of the vsock operation, we need to record the
+                // peers credit info
                 conn.update_peer_credit(&packet.header);
                 match packet_op {
                     VsockPacketOp::Reset => {
@@ -361,9 +362,7 @@ impl VsockPoller {
                     }
                     VsockPacketOp::CreditUpdate => continue,
                     VsockPacketOp::CreditRequest => {
-                        if self.connections.contains_key(&key) {
-                            self.rx.push_back(RxEvent::CreditUpdate(key));
-                        }
+                        self.rx.push_back(RxEvent::CreditUpdate(key));
                     }
                     VsockPacketOp::ReadWrite => {
                         self.handle_rw_packet(key, packet);
@@ -372,7 +371,13 @@ impl VsockPoller {
                     // these should not be received
                     //
                     // XXX: send a RST, but what about our orignal connection?
-                    VsockPacketOp::Request | VsockPacketOp::Response => (),
+                    op @ (VsockPacketOp::Request | VsockPacketOp::Response) => {
+                        warn!(
+                            &self.log,
+                            "received vsock packet with op code \
+                            {op:?} while operating on an exiting connection"
+                        );
+                    }
                 }
             } else {
                 match packet_op {
@@ -403,7 +408,13 @@ impl VsockPoller {
         // It would be nice if we had a hint of how many descriptors became
         // available but that's not the case today.
         for key in std::mem::take(&mut self.rx_blocked).drain(..) {
+            // It's possible that the guest has sent a RST for this connection
+            // while we were blocked and we removed our tracked `ConnKey`.
             if let Some(conn) = self.connections.get(&key) {
+                // It's possible that by the time we are ready to send the guest
+                // data again it has since sent us a SHUTDOWN with the
+                // `VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE` flag and the connection
+                // is in the process of shutting down.
                 if let Some(interests) = conn.poll_interests() {
                     let fd = conn.get_fd();
                     self.associate_fd(key, fd, interests);
@@ -422,17 +433,13 @@ impl VsockPoller {
             match rx_event {
                 RxEvent::Reset(key) => {
                     let packet = VsockPacket::new_reset(
-                        self.guest_cid,
-                        key.host_port,
-                        key.guest_port,
+                        VsockGuestAddr::from_conn_key(self.guest_cid, key),
                     );
                     permit.write(&packet.header, &packet.data);
                 }
                 RxEvent::NewConnection(key) => {
                     let packet = VsockPacket::new_response(
-                        self.guest_cid,
-                        key.host_port,
-                        key.guest_port,
+                        VsockGuestAddr::from_conn_key(self.guest_cid, key),
                     );
                     permit.write(&packet.header, &packet.data);
 
@@ -460,9 +467,7 @@ impl VsockPoller {
                 RxEvent::CreditUpdate(key) => {
                     if let Some(conn) = self.connections.get_mut(&key) {
                         let packet = VsockPacket::new_credit_update(
-                            self.guest_cid,
-                            key.host_port,
-                            key.guest_port,
+                            VsockGuestAddr::from_conn_key(self.guest_cid, key),
                             conn.fwd_cnt(),
                         );
                         permit.write(&packet.header, &packet.data);
@@ -521,7 +526,7 @@ impl VsockPoller {
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                 Err(e) => {
-                    eprintln!("error writing to socket: {e}");
+                    error!(&self.log, "error writing to socket: {e}");
                     break;
                 }
             }
@@ -571,10 +576,12 @@ impl VsockPoller {
                 break;
             }
 
-            let max_read = std::cmp::min(
-                permit.available_data_space(),
-                std::cmp::min(credit as usize, read_buf.len()),
-            );
+            let max_read = read_buf
+                .len()
+                // limited by how many bytes the desc chain has
+                .min(permit.available_data_space())
+                // limited by how many bytes the guest can handle
+                .min(credit as usize);
 
             match conn.socket.read(&mut read_buf[..max_read]) {
                 Ok(0) => {
@@ -583,9 +590,7 @@ impl VsockPoller {
                     // that we don't leave a half open connection laying around
                     // in our connection map.
                     let packet = VsockPacket::new_shutdown(
-                        *guest_cid,
-                        key.host_port,
-                        key.guest_port,
+                        VsockGuestAddr::from_conn_key(*guest_cid, key),
                         VsockPacketFlags::VIRTIO_VSOCK_SHUTDOWN_F_SEND
                             | VsockPacketFlags::VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE,
                         conn.fwd_cnt(),
@@ -599,9 +604,7 @@ impl VsockPoller {
                         .expect("max_read is <=u32::MAX by min() above");
                     conn.update_tx_cnt(read_u32);
                     let VsockPacket { header, data } = VsockPacket::new_rw(
-                        *guest_cid,
-                        key.host_port,
-                        key.guest_port,
+                        VsockGuestAddr::from_conn_key(*guest_cid, key),
                         conn.fwd_cnt(),
                         &read_buf[..nbytes],
                     );
@@ -611,16 +614,14 @@ impl VsockPoller {
                 Err(e) => {
                     error!(
                         &self.log,
-                        "vsock backend socket read faild: {e}";
+                        "vsock backend socket read failed: {e}";
                         "key" => ?key,
                         "conn" => ?conn,
                     );
 
                     connections.remove(&key);
                     let packet = VsockPacket::new_reset(
-                        *guest_cid,
-                        key.host_port,
-                        key.guest_port,
+                        VsockGuestAddr::from_conn_key(*guest_cid, key),
                     );
                     permit.write(&packet.header, &packet.data);
                     return;
@@ -693,9 +694,10 @@ impl VsockPoller {
 
             if ret < 0 {
                 let err = std::io::Error::last_os_error();
-                // SAFETY: The docs state that `raw_os_error` will always return
-                // a `Some` variant when obtained via `last_os_error`.
-                match err.raw_os_error().unwrap() {
+                match err.raw_os_error().expect(
+                    "`raw_os_error` is documented to always return `Some` \
++                     when obtained via `last_os_error`",
+                ) {
                     // A signal was caught so process the loop again
                     libc::EINTR => continue,
                     libc::EBADF | libc::EBADFD => {
@@ -790,6 +792,14 @@ impl PortEvent {
             object: event.portev_object,
             user: event.portev_user as usize,
         }
+    }
+}
+
+impl VsockGuestAddr {
+    /// Helper function to construct a `[VsockGuestAddr]` from a guest context
+    /// ID and a `[ConnKey]`.
+    fn from_conn_key(guest_cid: u32, key: ConnKey) -> Self {
+        Self { guest_cid, src_port: key.host_port, dst_port: key.guest_port }
     }
 }
 
