@@ -34,6 +34,7 @@ pub mod tasks;
 pub mod util;
 pub mod vcpu;
 pub mod vmm;
+pub mod vsock;
 
 pub use exits::{VmEntry, VmExit};
 pub use vmm::Machine;
