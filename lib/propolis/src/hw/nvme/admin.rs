@@ -403,6 +403,19 @@ impl NvmeCtrl {
                 )
             }
 
+            cmds::FeatureIdent::OxideDeviceFeatures => {
+                if cmd.cdw11 != 0 {
+                    // We don't currently accept any parameters for this feature
+                    cmds::Completion::generic_err(STS_INVAL_FIELD)
+                } else {
+                    cmds::Completion::success_val(
+                        cmds::OxideDeviceFeatures(0)
+                            .with_read_only(self.read_only)
+                            .0,
+                    )
+                }
+            }
+
             cmds::FeatureIdent::Reserved
             | cmds::FeatureIdent::LbaRangeType
             | cmds::FeatureIdent::SoftwareProgressMarker
@@ -457,6 +470,7 @@ impl NvmeCtrl {
             | cmds::FeatureIdent::WriteAtomicity
             | cmds::FeatureIdent::AsynchronousEventConfiguration
             | cmds::FeatureIdent::SoftwareProgressMarker
+            | cmds::FeatureIdent::OxideDeviceFeatures
             | cmds::FeatureIdent::Vendor(_) => {
                 cmds::Completion::generic_err(STS_INVAL_FIELD).dnr()
             }

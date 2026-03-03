@@ -2,7 +2,7 @@
 #:
 #: name = "phd-run-migrate-from-base"
 #: variety = "basic"
-#: target = "lab-2.0-opte"
+#: target = "lab-2.0-gimlet"
 #: output_rules = [
 #:	"/tmp/phd-runner.log",
 #:	"/tmp/phd-tmp-files.tar.gz",

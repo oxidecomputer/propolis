@@ -481,6 +481,7 @@ impl MachineInitializer<'_> {
         backend_spec: &StorageBackend,
         backend_id: &SpecKey,
         nexus_client: &Option<NexusClient>,
+        wanted_heap: &mut usize,
     ) -> Result<StorageBackendInstance, MachineInitError> {
         match backend_spec {
             StorageBackend::Crucible(spec) => {
@@ -503,6 +504,17 @@ impl MachineInitializer<'_> {
                         "Region".to_string()
                     }
                 };
+
+                // Wild guess: we might collect up to 1MB (assuming we're
+                // limited by NVMe MDTS) of data in each Crucible worker. That
+                // is accumulated into a BytesMut, which is backed by a
+                // Vec::with_capacity. With a power of two capacity it's
+                // *probably* not rounded up further.
+                const PER_WORKER_HEAP: usize = MB;
+                // And Crucible workers are not currently tunable, so this is
+                // how many there are
+                // (see propolis::block::crucible::Crucible::WORKER_COUNT)
+                *wanted_heap += 8 * PER_WORKER_HEAP;
 
                 let be = propolis::block::CrucibleBackend::create(
                     vcr,
@@ -560,6 +572,13 @@ impl MachineInitializer<'_> {
                     }
                     None => NonZeroUsize::new(DEFAULT_WORKER_COUNT).unwrap(),
                 };
+
+                // Similar to Crucible backends above: we might collect up to
+                // 1MB (assuming we're limited by NVMe MDTS) of data in each
+                // worker. This is a hack in its own right, see Propolis#985.
+                const PER_WORKER_HEAP: usize = MB;
+                *wanted_heap += nworkers.get() * PER_WORKER_HEAP;
+
                 let be = propolis::block::FileBackend::create(
                     &spec.path,
                     propolis::block::BackendOpts {
@@ -617,7 +636,9 @@ impl MachineInitializer<'_> {
         &mut self,
         chipset: &RegisteredChipset,
         nexus_client: Option<NexusClient>,
-    ) -> Result<(), MachineInitError> {
+    ) -> Result<usize, MachineInitError> {
+        let mut wanted_heap = 0usize;
+
         enum DeviceInterface {
             Virtio,
             Nvme,
@@ -642,6 +663,19 @@ impl MachineInitializer<'_> {
                 }
             };
 
+            // For all storage devices we'll have a QueueMinder connecting
+            // each emulated device queue to storage backends. The minder and
+            // structures in its supporting logic don't have much state, but may
+            // do some dynamic allocation. Assume they won't need more than 1KiB
+            // of state (`in_flight` has at most nworkers entries currently and
+            // will need to grow only once or twice to a small capacity. The
+            // number of outstanding boxed requests and responses is at most
+            // nworkers. Might be more, but not much).
+            //
+            // 64 * 1K is a wild over-estimate while we support 1-15 queues
+            // across virtio-block and nvme.
+            wanted_heap += 64 * 1024;
+
             let bdf: pci::Bdf = pci_path.into();
 
             let StorageBackendInstance { be: backend, crucible } = self
@@ -649,8 +683,14 @@ impl MachineInitializer<'_> {
                     &disk.backend_spec,
                     backend_id,
                     &nexus_client,
+                    &mut wanted_heap,
                 )
                 .await?;
+            info!(
+                self.log,
+                "raised balloon size";
+                "ballon_size" => wanted_heap
+            );
 
             self.block_backends.insert(backend_id.clone(), backend.clone());
             let block_dev: Arc<dyn block::Device> = match device_interface {
@@ -751,7 +791,7 @@ impl MachineInitializer<'_> {
                 };
             }
         }
-        Ok(())
+        Ok(wanted_heap)
     }
 
     /// Initialize network devices, add them to the device map, and attach them
@@ -771,32 +811,27 @@ impl MachineInitializer<'_> {
             info!(self.log, "Creating vNIC {}", device_name);
             let bdf: pci::Bdf = nic.device_spec.pci_path.into();
 
-            // Set viona device parameters if possible.
+            // Set viona device parameters. The parameters here (copy_data and
+            // header_pad) require `viona::ApiVersion::V3`, below Propolis'
+            // minimum of V6, so we can always set them.
             //
             // The values chosen here are tuned to maximize performance when
             // Propolis is used with OPTE in a full Oxide rack deployment,
             // although they should not negatively impact use outside those
             // conditions.  These parameters and their effects (save for
             // performance delta) are not guest-visible.
-            let params = if virtio::viona::api_version()
-                .expect("can query viona version")
-                >= virtio::viona::ApiVersion::V3
-            {
-                Some(virtio::viona::DeviceParams {
-                    // Loan guest packet data, rather than allocating fresh
-                    // buffers and copying it.
-                    copy_data: false,
-                    // Leave room for underlay encapsulation:
-                    // - ethernet: 14
-                    // - IPv6: 40
-                    // - UDP: 8
-                    // - Geneve: 8–16 (due to options)
-                    // - (and then round up to nearest 8)
-                    header_pad: 80,
-                })
-            } else {
-                None
-            };
+            let params = Some(virtio::viona::DeviceParams {
+                // Loan guest packet data, rather than allocating fresh
+                // buffers and copying it.
+                copy_data: false,
+                // Leave room for underlay encapsulation:
+                // - ethernet: 14
+                // - IPv6: 40
+                // - UDP: 8
+                // - Geneve: 8–16 (due to options)
+                // - (and then round up to nearest 8)
+                header_pad: 80,
+            });
 
             let viona = virtio::PciVirtioViona::new(
                 &nic.backend_spec.vnic_name,

@@ -20,7 +20,7 @@ use uuid::Uuid;
 use crate::{
     disk::{DeviceName, DiskConfig, DiskSource},
     test_vm::spec::VmSpec,
-    Framework,
+    TestCtx,
 };
 
 /// The disk interface to use for a given guest disk.
@@ -207,10 +207,7 @@ impl<'dr> VmConfig<'dr> {
         self
     }
 
-    pub async fn vm_spec(
-        &self,
-        framework: &Framework,
-    ) -> anyhow::Result<VmSpec> {
+    pub async fn vm_spec(&self, ctx: &TestCtx) -> anyhow::Result<VmSpec> {
         let VmConfig {
             vm_name,
             cpus,
@@ -222,7 +219,7 @@ impl<'dr> VmConfig<'dr> {
             migration_failure,
             guest_hv_interface,
         } = self;
-
+        let framework = &ctx.framework;
         let bootrom_path = framework
             .artifact_store
             .get_bootrom(bootrom_artifact)
@@ -272,7 +269,7 @@ impl<'dr> VmConfig<'dr> {
         let mut disk_handles = Vec::new();
         for disk in disks.iter() {
             disk_handles.push(
-                make_disk(disk.name.to_owned(), framework, disk)
+                make_disk(disk.name.to_owned(), ctx, disk)
                     .await
                     .context("creating disk")?,
             );
@@ -404,10 +401,11 @@ impl<'dr> VmConfig<'dr> {
 
 async fn make_disk(
     device_name: String,
-    framework: &Framework,
+    ctx: &TestCtx,
     req: &DiskRequest<'_>,
 ) -> anyhow::Result<Arc<dyn DiskConfig>> {
     let device_name = DeviceName::new(device_name);
+    let framework = &ctx.framework;
 
     Ok(match req.backend {
         DiskBackend::File => framework
@@ -424,6 +422,7 @@ async fn make_disk(
                 &req.source,
                 min_disk_size_gib,
                 block_size,
+                &ctx.output_dir,
             )
             .await
             .with_context(|| {

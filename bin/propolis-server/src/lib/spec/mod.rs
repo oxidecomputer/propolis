@@ -65,8 +65,8 @@ impl TryFrom<InstanceSpec> for Spec {
 
     fn try_from(value: InstanceSpec) -> Result<Self, Self::Error> {
         let InstanceSpec { board, components, smbios } = value;
-        let v0 = v1::instance_spec::InstanceSpec { board, components };
-        let mut spec: Spec = v0.try_into()?;
+        let v1 = v1::instance_spec::InstanceSpec { board, components };
+        let mut spec: Spec = v1.try_into()?;
         spec.smbios_type1_input = smbios;
         Ok(spec)
     }

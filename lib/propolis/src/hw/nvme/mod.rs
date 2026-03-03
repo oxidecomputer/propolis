@@ -207,6 +207,8 @@ struct NvmeCtrl {
 
     /// The Identify structure returned for Identify namespace commands
     ns_ident: IdentifyNamespace,
+
+    read_only: bool,
 }
 
 impl NvmeCtrl {
@@ -566,6 +568,8 @@ impl NvmeCtrl {
             .iter()
             .filter_map(Option::as_ref)
             .for_each(|sq| sq.update_params(params));
+
+        self.read_only = info.read_only;
     }
 
     /// Get Memory Page Size (MPS), expressed in bytes
@@ -899,6 +903,7 @@ impl PciNvme {
             sqs: Default::default(),
             ctrl_ident,
             ns_ident,
+            read_only: false,
         };
 
         let pci_state = builder

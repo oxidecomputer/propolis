@@ -49,7 +49,7 @@ use efi_utils::{
 // Unlike later tests, this test does not manipulate boot configuration from
 // inside the guest OS.
 #[phd_testcase]
-async fn configurable_boot_order(ctx: &Framework) {
+async fn configurable_boot_order(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("configurable_boot_order");
 
     // Create a second disk backed by the same artifact as the default
@@ -115,7 +115,7 @@ async fn configurable_boot_order(ctx: &Framework) {
 // system booting means that boot order is respected and a non-bootable disk
 // does not wedge startup.
 #[phd_testcase]
-async fn unbootable_disk_skipped(ctx: &Framework) {
+async fn unbootable_disk_skipped(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("unbootable_disk_skipped");
 
     cfg.data_disk(
@@ -234,7 +234,7 @@ async fn unbootable_disk_skipped(ctx: &Framework) {
 // so that next boot we'll boot from `unbootable` first. Then reboot and verify
 // that the boot order is still "boot-disk" first.
 #[phd_testcase]
-async fn guest_can_adjust_boot_order(ctx: &Framework) {
+async fn guest_can_adjust_boot_order(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("guest_can_adjust_boot_order");
 
     cfg.data_disk(
@@ -256,7 +256,8 @@ async fn guest_can_adjust_boot_order(ctx: &Framework) {
 
     // If the guest doesn't have an EFI partition then there's no way for boot
     // order preferences to be persisted.
-    let mountline = vm.run_shell_command("mount | grep efivarfs").await?;
+    let mountline =
+        vm.run_shell_command("mount | grep efivarfs").ignore_status().await?;
 
     if !mountline.starts_with("efivarfs on ") {
         warn!(
@@ -268,11 +269,16 @@ async fn guest_can_adjust_boot_order(ctx: &Framework) {
 
     // Try adding a few new boot options, then add them to the boot order,
     // reboot, and make sure they're all as we set them.
-    if !vm
-        .run_shell_command(&format!("ls {}", efipath(&bootvar(0xffff))))
-        .await?
-        .is_empty()
-    {
+    let bootffff_path = efipath(&bootvar(0xffff));
+    let bootffff_res = vm
+        .run_shell_command(&format!("ls {bootffff_path}"))
+        .ignore_status()
+        .await?;
+    // `ls` just prints the file path if it exists, but the error text varies a
+    // bit depending on Alpine, Ubuntu, Busybox, etc. Notionally we could
+    // `check_err()` above, but having a `BootFFFF` entry already is merely
+    // weird; we can still replace it and continue with the test.
+    if bootffff_res == bootffff_path {
         warn!(
             "guest environment already has a BootFFFF entry; \
             is this not a fresh image?"
@@ -395,7 +401,7 @@ async fn guest_can_adjust_boot_order(ctx: &Framework) {
 // store of NvVar variables is the source of boot order, and guests can control
 // their boot fates.
 #[phd_testcase]
-async fn boot_order_source_priority(ctx: &Framework) {
+async fn boot_order_source_priority(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("boot_order_source_priority");
 
     cfg.data_disk(
@@ -502,7 +508,7 @@ async fn boot_order_source_priority(ctx: &Framework) {
 }
 
 #[phd_testcase]
-async fn nvme_boot_option_description(ctx: &Framework) {
+async fn nvme_boot_option_description(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("nvme_boot_option_description");
 
     cfg.data_disk(

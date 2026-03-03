@@ -257,6 +257,7 @@ struct InstInner {
     eq: Arc<EventQueue>,
     cv: Condvar,
     config: config::Config,
+    com1_sock: Arc<UDSock>,
 }
 
 struct Instance(Arc<InstInner>);
@@ -266,6 +267,7 @@ impl Instance {
         config: config::Config,
         from_restore: bool,
         log: slog::Logger,
+        com1_sock: Arc<UDSock>,
     ) -> Self {
         let this = Self(Arc::new(InstInner {
             state: Mutex::new(InstState {
@@ -279,6 +281,7 @@ impl Instance {
             eq: EventQueue::new(),
             cv: Condvar::new(),
             config,
+            com1_sock,
         }));
 
         // Some gymnastics required for the split borrow through the MutexGuard
@@ -548,6 +551,9 @@ impl Instance {
                 State::Destroy => {
                     // Drop the machine
                     let _ = guard.machine.take().unwrap();
+
+                    // Abort any pending serial connection
+                    inner.com1_sock.shutdown();
 
                     // Clean up the inventory as well
                     guard.inventory.destroy();
@@ -1098,14 +1104,19 @@ fn setup_instance(
         cpus, lowmem, highmem;);
     let machine = build_machine(vm_name, cpus, lowmem, highmem, use_reservoir)
         .context("Failed to create VM Machine")?;
-    let inst =
-        Instance::new(machine, config.clone(), from_restore, log.clone());
+    let com1_sock =
+        UDSock::bind(Path::new("./ttya")).context("Cannot open UD socket")?;
+    let inst = Instance::new(
+        machine,
+        config.clone(),
+        from_restore,
+        log.clone(),
+        com1_sock.clone(),
+    );
     slog::info!(log, "VM created"; "name" => vm_name);
 
     let (romfp, rom_len) =
         open_bootrom(&config.main.bootrom).context("Cannot open bootrom")?;
-    let com1_sock =
-        UDSock::bind(Path::new("./ttya")).context("Cannot open UD socket")?;
 
     // Get necessary access to innards, now that it is nestled in `Instance`
     let mut inst_guard = inst.lock().unwrap();
@@ -1251,15 +1262,9 @@ fn setup_instance(
                         config::VionaDeviceParams::from_opts(&dev.options)
                             .expect("viona params are valid");
 
-                    if viona_params.is_some()
-                        && hw::virtio::viona::api_version()
-                            .expect("can query viona version")
-                            < hw::virtio::viona::ApiVersion::V3
-                    {
-                        // lazy cop-out for now
-                        panic!("can't set viona params on too-old version");
-                    }
-
+                    // The viona_params here (currently just copy_data and
+                    // header_pad) require `viona::ApiVersion::V3`, below
+                    // Propolis' minimum of V6, so we can always set them.
                     let viona = hw::virtio::PciVirtioViona::new(
                         vnic_name,
                         &hdl,
@@ -1452,18 +1457,12 @@ fn api_version_checks(log: &slog::Logger) -> std::io::Result<()> {
         }
         Err(VersionCheckError {
             component,
+            err: source @ Error::TooLow { .. },
             path: _,
-            err: Error::Mismatch(act, exp),
         }) => {
             // Make noise about version mismatch, but soldier on and let the
             // user decide if they want to quit
-            slog::error!(
-                log,
-                "{} API version mismatch {} != {}",
-                component,
-                act,
-                exp
-            );
+            slog::error!(log, "{component}: {source}");
             Ok(())
         }
         Ok(_) => Ok(()),
@@ -1559,14 +1558,14 @@ fn main() -> anyhow::Result<ExitCode> {
 
     // Wait until someone connects to ttya
     slog::info!(log, "Waiting for a connection to ttya");
-    com1_sock.wait_for_connect();
-
-    // Let the VM start and we're off to the races
-    slog::info!(log, "Starting instance...");
-    inst.eq().push(
-        InstEvent::ReqStart,
-        EventCtx::User("UDS connection".to_string()),
-    );
+    if com1_sock.wait_for_connect() {
+        // Let the VM start and we're off to the races
+        slog::info!(log, "Starting instance...");
+        inst.eq().push(
+            InstEvent::ReqStart,
+            EventCtx::User("UDS connection".to_string()),
+        );
+    }
 
     // wait for instance to be destroyed
     Ok(inst.wait_destroyed())
