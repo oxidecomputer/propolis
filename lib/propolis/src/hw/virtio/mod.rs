@@ -252,4 +252,8 @@ mod probes {
     fn virtio_vq_notify(virtio_dev_addr: u64, virtqueue_id: u16) {}
     fn virtio_vq_pop(vq_addr: u64, desc_idx: u16, avail_idx: u16) {}
     fn virtio_vq_push(vq_addr: u64, used_idx: u16, used_len: u32) {}
+
+    fn virtio_viona_mq_set_use_pairs(cause: u8, npairs: u16) {}
+
+    fn virtio_device_needs_reset() {}
 }

@@ -8,7 +8,7 @@ use phd_framework::guest_os::GuestOsKind;
 use phd_testcase::*;
 
 #[phd_testcase]
-async fn multiline_serial_test(ctx: &Framework) {
+async fn multiline_serial_test(ctx: &TestCtx) {
     let mut vm = ctx.spawn_default_vm("multiline_test").await?;
     vm.launch().await?;
     vm.wait_to_boot().await?;
@@ -18,7 +18,7 @@ async fn multiline_serial_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
-async fn long_line_serial_test(ctx: &Framework) {
+async fn long_line_serial_test(ctx: &TestCtx) {
     let os = ctx.default_guest_os_kind().await?;
     if matches!(
         os,

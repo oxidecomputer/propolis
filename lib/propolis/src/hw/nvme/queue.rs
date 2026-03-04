@@ -343,18 +343,36 @@ impl QueueGuard<'_, CompQueueState> {
     /// Write update to the EventIdx in Doorbell Buffer page, if possible
     fn db_buf_write(&mut self, devq_id: u64, mem: &MemCtx) {
         if let Some(db_buf) = self.state.db_buf {
-            probes::nvme_cq_dbbuf_write!(|| (devq_id, self.state.tail));
-            // Keep EventIdx populated with the position of the CQ tail.  We are
-            // not especially concerned with receiving timely (doorbell) updates
-            // from the guest about where the head pointer sits.  We keep our
-            // own tally of how many entries are in the CQ are available for
-            // completions to land.
+            // Update EventIdx as far as we're willing to forego doorbell
+            // updates about the CQ head.  We are not especially concerned with
+            // receiving timely doorbell updates from the guest about the head.
+            // We keep our own tally of how many entries in the CQ are available
+            // for completions to land.  In the typical case, we will read the
+            // shadow doorbell from db_buf JIT to update the available CQ space.
             //
-            // When checking for available space before issuing a Permit, we can
-            // perform our own JIT read from the db_buf to stay updated on the
-            // true space available.
+            // However, simply keeping EventIdx matching the queue tail means we
+            // opt out of *any* notification that a completion is posted.  Then,
+            // if an I/O was submitted, not processed immediately due to
+            // insufficient CQ space, but the guest submits no further I/Os on
+            // that queue, we would never notice that there is space in the CQ.
+            // The I/O would go unfulfilled forever.
+            //
+            // For now, leave EventIdx one before the actual CQ tail, so that
+            // making the CQ empty requires a doorbell notify.  This is
+            // excessive; there are many cases where we don't care if the CQ is
+            // to be emptied.
+            if self.avail_occupied() <= 1 {
+                // The queue was empty and just became non-empty.  So `tail` has
+                // not advanced far enough that we can actually advance
+                // EventIdx.
+                return;
+            }
+
+            let next_evtidx = self.idx_sub(self.state.tail, 1);
+
+            probes::nvme_cq_dbbuf_write!(|| (devq_id, next_evtidx));
             fence(Ordering::Release);
-            mem.write(db_buf.eventidx, &self.state.tail);
+            mem.write(db_buf.eventidx, &next_evtidx);
         }
     }
 

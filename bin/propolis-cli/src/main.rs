@@ -895,7 +895,9 @@ async fn monitor(addr: SocketAddr) -> anyhow::Result<()> {
         // known to Propolis.
         let response = client
             .instance_state_monitor()
-            .body(propolis_client::types::InstanceStateMonitorRequest { gen })
+            .body(propolis_client::types::InstanceStateMonitorRequest {
+                gen_: gen,
+            })
             .send()
             .await
             .with_context(|| anyhow!("failed to get new instance state"))?;
@@ -908,7 +910,7 @@ async fn monitor(addr: SocketAddr) -> anyhow::Result<()> {
 
         // Update the generation number we're asking for, to ensure the
         // Propolis will only return more recent values.
-        gen = response.gen + 1;
+        gen = response.gen_ + 1;
     }
 }
 

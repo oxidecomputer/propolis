@@ -8,6 +8,7 @@
 //! They can then pass these disks to the VM factory to connect them to a
 //! specific guest VM.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -278,6 +279,7 @@ impl DiskFactory {
         source: &DiskSource<'_>,
         mut min_disk_size_gib: u64,
         block_size: BlockSize,
+        output_dir: &impl AsRef<Path>,
     ) -> Result<Arc<CrucibleDisk>, DiskError> {
         const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
 
@@ -326,6 +328,7 @@ impl DiskFactory {
             artifact_path.as_ref(),
             guest_os,
             self.log_config,
+            output_dir,
         )
         .map(Arc::new)
         .map_err(Into::into)
