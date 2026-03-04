@@ -96,10 +96,11 @@ use std::{
 
 use anyhow::Context;
 use dropshot::HttpError;
-use propolis_api_types::{
-    instance_spec::{components::backends::CrucibleStorageBackend, SpecKey},
-    InstanceState, MigrationState,
+use propolis_api_types::instance::InstanceState;
+use propolis_api_types::instance_spec::{
+    components::backends::CrucibleStorageBackend, SpecKey,
 };
+use propolis_api_types::migration::MigrationState;
 use slog::{error, info};
 use tokio::sync::Notify;
 use uuid::Uuid;

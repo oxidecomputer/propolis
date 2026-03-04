@@ -2,7 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! VM mainboard components. Every VM has a board, even if it has no other
-//! peripherals.
+//! Version `PROGRAMMABLE_SMBIOS` of the Propolis Server API.
+//!
+//! This version adds support for programmable SMBIOS Type 1 tables.
 
-pub use propolis_api_types_versions::latest::components::board::*;
+pub mod api;
+pub mod instance_spec;
