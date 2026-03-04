@@ -47,13 +47,9 @@ pub(crate) enum SerialHistoryOffset {
     MostRecent(usize),
 }
 
-impl TryFrom<&InstanceSerialConsoleStreamRequest>
-    for SerialHistoryOffset
-{
+impl TryFrom<&InstanceSerialConsoleStreamRequest> for SerialHistoryOffset {
     type Error = ();
-    fn try_from(
-        req: &InstanceSerialConsoleStreamRequest,
-    ) -> Result<Self, ()> {
+    fn try_from(req: &InstanceSerialConsoleStreamRequest) -> Result<Self, ()> {
         match req {
             InstanceSerialConsoleStreamRequest {
                 from_start: Some(offset),
@@ -68,9 +64,7 @@ impl TryFrom<&InstanceSerialConsoleStreamRequest>
     }
 }
 
-impl TryFrom<&InstanceSerialConsoleHistoryRequest>
-    for SerialHistoryOffset
-{
+impl TryFrom<&InstanceSerialConsoleHistoryRequest> for SerialHistoryOffset {
     type Error = HttpError;
 
     fn try_from(
