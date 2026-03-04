@@ -781,10 +781,20 @@ unsafe impl Sync for SubMapping<'_> {}
 
 pub trait MappingExt {
     /// preadv from `file` into multiple mappings
-    fn preadv(&self, fd: RawFd, offset: i64) -> Result<usize>;
+    fn preadv(
+        &self,
+        fd: RawFd,
+        offset: i64,
+        scratch: Option<&mut Vec<u8>>,
+    ) -> Result<usize>;
 
     /// pwritev from multiple mappings to `file`
-    fn pwritev(&self, fd: RawFd, offset: i64) -> Result<usize>;
+    fn pwritev(
+        &self,
+        fd: RawFd,
+        offset: i64,
+        scratch: Option<&mut Vec<u8>>,
+    ) -> Result<usize>;
 }
 
 // Gross hack alert: since the mappings below are memory regions backed by
@@ -825,8 +835,45 @@ fn total_mapping_size(mappings: &[SubMapping<'_>]) -> Result<usize> {
         })
 }
 
+/// Ensure the maybe-provided buffer is ready for I/O of `desired_size`.
+///
+/// Returns `Some` with a slice with length at least as large as `desired_size`,
+/// if the desired size is in the range we're willing to use the I/O buffer
+/// proxying workaround.
+///
+/// If the scratch buffer is provided, was too small, but the desired size is
+/// acceptable, this function will grow the scratch buffer.
+fn prepare_scratch_buffer(
+    scratch: Option<&mut Vec<u8>>,
+    desired_size: usize,
+) -> Option<&mut [u8]> {
+    scratch.and_then(|scratch| {
+        if desired_size > MAPPING_IO_LIMIT_BYTES {
+            // Even though the caller provided a buffer, we're not willing to
+            // grow it to handle this I/O.
+            return None;
+        }
+
+        if scratch.len() < desired_size {
+            // The provided buffer is smaller than necessary, but the needed
+            // size is acceptable, so grow the buffer.
+            //
+            // Buffer growth is done lazily because experience shows that guests
+            // may submit I/Os much smaller than the largest permitted by MDTS.
+            scratch.resize(desired_size, 0);
+        }
+
+        Some(scratch.as_mut_slice())
+    })
+}
+
 impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
-    fn preadv(&self, fd: RawFd, offset: i64) -> Result<usize> {
+    fn preadv(
+        &self,
+        fd: RawFd,
+        offset: i64,
+        scratch: Option<&mut Vec<u8>>,
+    ) -> Result<usize> {
         if !self
             .as_ref()
             .iter()
@@ -841,16 +888,11 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
         let total_capacity = total_mapping_size(self.as_ref())?;
 
         // Gross hack: see the comment on `MAPPING_IO_LIMIT_BYTES`.
-        if total_capacity <= MAPPING_IO_LIMIT_BYTES {
-            // If we're motivated to avoid the zero-fill via
-            // `Layout::with_size_align` + `GlobalAlloc::alloc`, we should
-            // probably avoid this gross hack entirely (see comment on
-            // MAPPING_IO_LIMIT_BYTES).
-            let mut buf = vec![0; total_capacity];
-
+        let scratch = prepare_scratch_buffer(scratch, total_capacity);
+        if let Some(buf) = scratch {
             let iov = [iovec {
                 iov_base: buf.as_mut_ptr() as *mut libc::c_void,
-                iov_len: buf.len(),
+                iov_len: total_capacity,
             }];
 
             let res = unsafe {
@@ -904,7 +946,12 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
         }
     }
 
-    fn pwritev(&self, fd: RawFd, offset: i64) -> Result<usize> {
+    fn pwritev(
+        &self,
+        fd: RawFd,
+        offset: i64,
+        scratch: Option<&mut Vec<u8>>,
+    ) -> Result<usize> {
         if !self
             .as_ref()
             .iter()
@@ -919,14 +966,9 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
         let total_capacity = total_mapping_size(self.as_ref())?;
 
         // Gross hack: see the comment on `MAPPING_IO_LIMIT_BYTES`.
-        let written = if total_capacity <= MAPPING_IO_LIMIT_BYTES {
-            // If we're motivated to avoid the zero-fill via
-            // `Layout::with_size_align` + `GlobalAlloc::alloc`, we should
-            // probably avoid this gross hack entirely (see comment on
-            // MAPPING_IO_LIMIT_BYTES).
-            let mut buf = vec![0; total_capacity];
-
-            let mut remaining = buf.as_mut_slice();
+        let scratch = prepare_scratch_buffer(scratch, total_capacity);
+        let written = if let Some(buf) = scratch {
+            let mut remaining = &mut buf[..];
             for mapping in self.as_ref().iter() {
                 // The original `buf` is at least as large as all mappings
                 // combined, so `remaining` is at least as large as this and all
@@ -940,7 +982,7 @@ impl<'a, T: AsRef<[SubMapping<'a>]>> MappingExt for T {
 
             let iovs = [iovec {
                 iov_base: buf.as_mut_ptr() as *mut libc::c_void,
-                iov_len: buf.len(),
+                iov_len: total_capacity,
             }];
 
             unsafe {
