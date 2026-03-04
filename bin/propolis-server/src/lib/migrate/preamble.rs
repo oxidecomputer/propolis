@@ -4,10 +4,8 @@
 
 use std::collections::BTreeMap;
 
-use propolis_api_types::{
-    instance_spec::{v0::ComponentV0, SpecKey, VersionedInstanceSpec},
-    ReplacementComponent,
-};
+use propolis_api_types::instance::ReplacementComponent;
+use propolis_api_types_versions::v1;
 use serde::{Deserialize, Serialize};
 
 use crate::spec::{api_spec_v0::ApiSpecError, Spec};
@@ -16,12 +14,14 @@ use super::MigrateError;
 
 #[derive(Deserialize, Serialize, Debug)]
 pub(crate) struct Preamble {
-    pub instance_spec: VersionedInstanceSpec,
+    pub instance_spec: v1::instance_spec::VersionedInstanceSpec,
     pub blobs: Vec<Vec<u8>>,
 }
 
 impl Preamble {
-    pub fn new(instance_spec: VersionedInstanceSpec) -> Preamble {
+    pub fn new(
+        instance_spec: v1::instance_spec::VersionedInstanceSpec,
+    ) -> Preamble {
         Preamble { instance_spec, blobs: Vec::new() }
     }
 
@@ -35,15 +35,22 @@ impl Preamble {
     /// not present in the source spec, this routine fails.
     pub fn amend_spec(
         self,
-        replacements: &BTreeMap<SpecKey, ReplacementComponent>,
+        replacements: &BTreeMap<
+            v1::instance_spec::SpecKey,
+            ReplacementComponent,
+        >,
     ) -> Result<Spec, MigrateError> {
-        fn wrong_type_error(id: &SpecKey, kind: &str) -> MigrateError {
+        fn wrong_type_error(
+            id: &v1::instance_spec::SpecKey,
+            kind: &str,
+        ) -> MigrateError {
             let msg =
                 format!("component {id} is not a {kind} in the source spec");
             MigrateError::InstanceSpecsIncompatible(msg)
         }
 
-        let VersionedInstanceSpec::V0(mut source_spec) = self.instance_spec;
+        let v1::instance_spec::VersionedInstanceSpec::V0(mut source_spec) =
+            self.instance_spec;
         for (id, comp) in replacements {
             let Some(to_amend) = source_spec.components.get_mut(id) else {
                 return Err(MigrateError::InstanceSpecsIncompatible(format!(
@@ -64,7 +71,9 @@ impl Preamble {
 
                 #[cfg(feature = "failure-injection")]
                 ReplacementComponent::MigrationFailureInjector(comp) => {
-                    let ComponentV0::MigrationFailureInjector(src) = to_amend
+                    let v1::instance_spec::Component::MigrationFailureInjector(
+                        src,
+                    ) = to_amend
                     else {
                         return Err(wrong_type_error(
                             id,
@@ -75,7 +84,9 @@ impl Preamble {
                     *src = comp.clone();
                 }
                 ReplacementComponent::CrucibleStorageBackend(comp) => {
-                    let ComponentV0::CrucibleStorageBackend(src) = to_amend
+                    let v1::instance_spec::Component::CrucibleStorageBackend(
+                        src,
+                    ) = to_amend
                     else {
                         return Err(wrong_type_error(id, "crucible backend"));
                     };
@@ -83,7 +94,8 @@ impl Preamble {
                     *src = comp.clone();
                 }
                 ReplacementComponent::VirtioNetworkBackend(comp) => {
-                    let ComponentV0::VirtioNetworkBackend(src) = to_amend
+                    let v1::instance_spec::Component::VirtioNetworkBackend(src) =
+                        to_amend
                     else {
                         return Err(wrong_type_error(id, "viona backend"));
                     };

@@ -5,9 +5,11 @@
 //! Helper types for publishing instance states as made visible through the
 //! external API.
 
-use propolis_api_types::{
-    InstanceMigrateStatusResponse, InstanceMigrationStatus, InstanceState,
-    InstanceStateMonitorResponse,
+use propolis_api_types::instance::{
+    InstanceState, InstanceStateMonitorResponse,
+};
+use propolis_api_types::migration::{
+    InstanceMigrateStatusResponse, InstanceMigrationStatus,
 };
 use slog::info;
 use uuid::Uuid;
@@ -19,7 +21,7 @@ use super::{InstanceStateRx, InstanceStateTx};
 /// An update to an instance's migration's state.
 pub(crate) struct MigrationStateUpdate {
     /// The migration's new state.
-    pub state: propolis_api_types::MigrationState,
+    pub state: propolis_api_types::migration::MigrationState,
 
     /// The migration's ID.
     pub id: Uuid,
@@ -104,11 +106,10 @@ impl StatePublisher {
               "state" => ?state,
               "migration" => ?migration);
 
-        let _ =
-            self.tx.send(propolis_api_types::InstanceStateMonitorResponse {
-                gen,
-                state,
-                migration,
-            });
+        let _ = self.tx.send(InstanceStateMonitorResponse {
+            gen,
+            state,
+            migration,
+        });
     }
 }
