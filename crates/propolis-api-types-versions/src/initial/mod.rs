@@ -4,8 +4,7 @@
 
 //! Version `INITIAL` of the Propolis Server API.
 //!
-//! This is the first version of the API, supporting basic VM operations
-//! without programmable SMBIOS.
+//! This is the first version of the API.
 
 pub mod components;
 pub mod disk;

@@ -4,9 +4,7 @@
 
 //! Version `PROGRAMMABLE_SMBIOS` of the Propolis Server API.
 //!
-//! This version adds support for programmable SMBIOS Type 1 tables,
-//! allowing custom manufacturer, product name, serial number, and version
-//! fields to be set on VMs.
+//! This version adds support for programmable SMBIOS Type 1 tables.
 
 pub mod api;
 pub mod instance_spec;

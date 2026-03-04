@@ -6,6 +6,8 @@
 //!
 //! This module contains types for instance properties, state management,
 //! initialization, and monitoring.
+//!
+//! See also: [`super::instance_spec`].
 
 use std::{collections::BTreeMap, net::SocketAddr};
 
@@ -149,13 +151,13 @@ pub struct InstanceEnsureResponse {
     pub migrate: Option<InstanceMigrateInitiateResponse>,
 }
 
-/// Path parameters for instance-related endpoints using name.
+/// Path parameters for instance endpoints that identify instances by name.
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceNameParams {
     pub instance_id: String,
 }
 
-/// Path parameters for instance-related endpoints using UUID.
+/// Path parameters for instance endpoints that identify instances by UUID.
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 pub struct InstancePathParams {
     pub instance_id: Uuid,

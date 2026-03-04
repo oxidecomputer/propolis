@@ -6,7 +6,9 @@
 //! first mebibyte and the most recent mebibyte of console output.
 
 use dropshot::HttpError;
-use propolis_api_types::serial as api_serial;
+use propolis_api_types::serial::{
+    InstanceSerialConsoleHistoryRequest, InstanceSerialConsoleStreamRequest,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::convert::TryFrom;
@@ -45,19 +47,19 @@ pub(crate) enum SerialHistoryOffset {
     MostRecent(usize),
 }
 
-impl TryFrom<&api_serial::InstanceSerialConsoleStreamRequest>
+impl TryFrom<&InstanceSerialConsoleStreamRequest>
     for SerialHistoryOffset
 {
     type Error = ();
     fn try_from(
-        req: &api_serial::InstanceSerialConsoleStreamRequest,
+        req: &InstanceSerialConsoleStreamRequest,
     ) -> Result<Self, ()> {
         match req {
-            api_serial::InstanceSerialConsoleStreamRequest {
+            InstanceSerialConsoleStreamRequest {
                 from_start: Some(offset),
                 most_recent: None,
             } => Ok(SerialHistoryOffset::FromStart(*offset as usize)),
-            api_serial::InstanceSerialConsoleStreamRequest {
+            InstanceSerialConsoleStreamRequest {
                 from_start: None,
                 most_recent: Some(offset),
             } => Ok(SerialHistoryOffset::MostRecent(*offset as usize)),
@@ -66,21 +68,21 @@ impl TryFrom<&api_serial::InstanceSerialConsoleStreamRequest>
     }
 }
 
-impl TryFrom<&api_serial::InstanceSerialConsoleHistoryRequest>
+impl TryFrom<&InstanceSerialConsoleHistoryRequest>
     for SerialHistoryOffset
 {
     type Error = HttpError;
 
     fn try_from(
-        req: &api_serial::InstanceSerialConsoleHistoryRequest,
+        req: &InstanceSerialConsoleHistoryRequest,
     ) -> Result<SerialHistoryOffset, HttpError> {
         match req {
-            api_serial::InstanceSerialConsoleHistoryRequest {
+            InstanceSerialConsoleHistoryRequest {
                 from_start: Some(offset),
                 most_recent: None,
                 ..
             } => Ok(SerialHistoryOffset::FromStart(*offset as usize)),
-            api_serial::InstanceSerialConsoleHistoryRequest {
+            InstanceSerialConsoleHistoryRequest {
                 from_start: None,
                 most_recent: Some(offset),
                 ..
