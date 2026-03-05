@@ -8,6 +8,7 @@ edition = "2021"
 doctest = false
 
 [dependencies]
+byte-wrapper.workspace = true
 crucible-client-types.workspace = true
 propolis_types.workspace = true
 schemars.workspace = true

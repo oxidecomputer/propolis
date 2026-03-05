@@ -324,11 +324,16 @@ fn parse_storage_device_from_config(
             Interface::Virtio => {
                 ComponentV0::VirtioDisk(VirtioDisk { backend_id, pci_path })
             }
-            Interface::Nvme => ComponentV0::NvmeDisk(NvmeDisk {
-                backend_id,
-                pci_path,
-                serial_number: nvme_serial_from_str(name, b' '),
-            }),
+            Interface::Nvme => {
+                let nvme = NvmeDisk {
+                    backend_id,
+                    pci_path,
+                    serial_number: nvme_serial_from_str(name, b' '),
+                    // TODO: populate model_number from config
+                    model_number: [0u8; 40],
+                };
+                ComponentV0::NvmeDisk(nvme.into())
+            }
         },
         id_to_return,
     ))

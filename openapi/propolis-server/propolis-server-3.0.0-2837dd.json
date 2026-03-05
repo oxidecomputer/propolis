@@ -7,7 +7,7 @@
       "url": "https://oxide.computer",
       "email": "api@oxide.computer"
     },
-    "version": "2.0.0"
+    "version": "3.0.0"
   },
   "paths": {
     "/instance": {
@@ -579,7 +579,7 @@
           }
         ]
       },
-      "ComponentV0": {
+      "Component": {
         "oneOf": [
           {
             "type": "object",
@@ -1434,7 +1434,7 @@
           "components": {
             "type": "object",
             "additionalProperties": {
-              "$ref": "#/components/schemas/ComponentV0"
+              "$ref": "#/components/schemas/Component"
             }
           },
           "smbios": {
@@ -1625,6 +1625,18 @@
               }
             ]
           },
+          "model_number": {
+            "description": "The model number to return in response to an NVMe Identify Controller command.",
+            "x-rust-type": {
+              "crate": "byte-wrapper",
+              "path": "byte_wrapper::HexArray::<40>",
+              "version": "0.1.0"
+            },
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{80}$",
+            "minLength": 80,
+            "maxLength": 80
+          },
           "pci_path": {
             "description": "The PCI bus/device/function at which this disk should be attached.",
             "allOf": [
@@ -1635,18 +1647,20 @@
           },
           "serial_number": {
             "description": "The serial number to return in response to an NVMe Identify Controller command.",
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "format": "uint8",
-              "minimum": 0
+            "x-rust-type": {
+              "crate": "byte-wrapper",
+              "path": "byte_wrapper::HexArray::<20>",
+              "version": "0.1.0"
             },
-            "minItems": 20,
-            "maxItems": 20
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{40}$",
+            "minLength": 40,
+            "maxLength": 40
           }
         },
         "required": [
           "backend_id",
+          "model_number",
           "pci_path",
           "serial_number"
         ],
