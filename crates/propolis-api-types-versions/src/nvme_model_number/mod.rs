@@ -5,7 +5,7 @@
 //! Version `NVME_MODEL_NUMBER` of the Propolis Server API.
 //!
 //! This version adds a `model_number` field to `NvmeDisk` and updates
-//! `serial_number` to use the `serde_human_bytes` hex serialization.
+//! `serial_number` to use the `byte_wrapper` hex serialization.
 
 pub mod api;
 pub mod components;

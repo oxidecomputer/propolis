@@ -549,6 +549,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "79296716171880943b8470b5f8d03aa55eb2e645a4874bdbb28adb49162e012c"
 
 [[package]]
+name = "byte-wrapper"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86b041d2328ab2041b4e9d8f21e3b0b5b8bb61e9a23bb9171387771c314ea340"
+dependencies = [
+ "base64 0.22.1",
+ "hex",
+ "schemars",
+ "serde_core",
+ "serde_json",
+]
+
+[[package]]
 name = "bytecount"
 version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5539,11 +5552,11 @@ dependencies = [
 name = "propolis-api-types-versions"
 version = "0.0.0"
 dependencies = [
+ "byte-wrapper",
  "crucible-client-types",
  "propolis_types",
  "schemars",
  "serde",
- "serde_human_bytes",
  "serde_json",
  "thiserror 1.0.64",
  "uuid",
@@ -6796,7 +6809,6 @@ source = "git+https://github.com/oxidecomputer/serde_human_bytes?branch=main#8f6
 dependencies = [
  "base64 0.22.1",
  "hex",
- "schemars",
  "serde_core",
 ]
 

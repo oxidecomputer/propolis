@@ -22,12 +22,12 @@ pub struct NvmeDisk {
 
     /// The serial number to return in response to an NVMe Identify Controller
     /// command.
-    #[serde(with = "serde_human_bytes::HexArray::<20>")]
+    #[serde(with = "byte_wrapper::HexArray::<20>")]
     pub serial_number: [u8; 20],
 
     /// The model number to return in response to an NVMe Identify Controller
     /// command.
-    #[serde(with = "serde_human_bytes::HexArray::<40>")]
+    #[serde(with = "byte_wrapper::HexArray::<40>")]
     pub model_number: [u8; 40],
 }
 
