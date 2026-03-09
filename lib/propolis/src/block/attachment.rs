@@ -26,19 +26,19 @@ use std::task::{Context, Poll};
 
 use super::minder::{NoneInFlight, QueueMinder};
 use super::{
-    devq_id, probes, BackendId, DeviceId, DeviceInfo, DeviceQueue,
-    DeviceRequest, MetricConsumer, QueueId, WorkerId,
+    BackendId, DeviceId, DeviceInfo, DeviceQueue, DeviceRequest,
+    MetricConsumer, QueueId, WorkerId, devq_id, probes,
 };
 use crate::accessors::MemAccessor;
 use crate::block;
 
-use futures::stream::FuturesUnordered;
 use futures::Stream;
+use futures::stream::FuturesUnordered;
 use pin_project_lite::pin_project;
 use strum::IntoStaticStr;
 use thiserror::Error;
-use tokio::sync::futures::Notified;
 use tokio::sync::Notify;
+use tokio::sync::futures::Notified;
 
 pub const MAX_WORKERS: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 
@@ -127,10 +127,11 @@ impl QueueSlot {
     }
 }
 
-#[derive(Default, Copy, Clone)]
+#[derive(Default, Clone)]
 struct QueueColState {
     associated_qids: Versioned<Bitmap>,
     paused: bool,
+    metric_consumer: Option<Arc<dyn MetricConsumer>>,
 }
 impl QueueColState {
     fn queue_associate(&mut self, qid: QueueId) -> Versioned<Bitmap> {
@@ -177,8 +178,10 @@ impl QueueCollection {
         slot.flush_notifications();
     }
     fn set_metric_consumer(&self, consumer: Arc<dyn MetricConsumer>) {
+        let mut state = self.state.lock().unwrap();
+        state.metric_consumer = Some(consumer.clone());
         for queue in self.queues.iter() {
-            if let Some(minder) = queue.state.lock().unwrap().minder.as_mut() {
+            if let Some(minder) = queue.state.lock().unwrap().minder.as_ref() {
                 minder.set_metric_consumer(consumer.clone());
             }
         }
@@ -256,7 +259,7 @@ impl QueueCollection {
         cursor: &mut PollCursor,
         wid: WorkerId,
     ) -> Option<DeviceRequest> {
-        let idx = usize::from(cursor.0 .0);
+        let idx = usize::from(cursor.0.0);
         assert!(idx < self.queues.len());
         let (front, back) = self.queues.split_at(idx);
         let queues = back.iter().chain(front.iter());
@@ -516,6 +519,11 @@ impl DeviceAttachment {
             // Propagate any pause state of the device into any newly
             // associating queues while in such a pause.
             minder.pause();
+        }
+        if let Some(consumer) = state.metric_consumer.as_ref() {
+            // Propagate any metric consumer already registered with
+            // this device to the newly-associating queue.
+            minder.set_metric_consumer(consumer.clone());
         }
         slot_state.minder = Some(minder);
         drop(slot_state);
