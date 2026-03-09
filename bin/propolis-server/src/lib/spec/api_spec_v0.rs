@@ -271,9 +271,9 @@ pub(crate) fn v1_to_spec_builder(
             | v1::instance_spec::Component::BlobStorageBackend(_) => {
                 storage_backends.insert(
                     id,
-                    component.try_into().expect(
-                        "component is known to be a storage backend",
-                    ),
+                    component
+                        .try_into()
+                        .expect("component is known to be a storage backend"),
                 );
             }
             v1::instance_spec::Component::VirtioNetworkBackend(viona) => {
@@ -297,11 +297,9 @@ pub(crate) fn v1_to_spec_builder(
 
                 let (_, backend_spec) = storage_backends
                     .remove_entry(device_spec.backend_id())
-                    .ok_or_else(|| {
-                        ApiSpecError::StorageBackendNotFound {
-                            backend: device_spec.backend_id().to_owned(),
-                            device: device_id.clone(),
-                        }
+                    .ok_or_else(|| ApiSpecError::StorageBackendNotFound {
+                        backend: device_spec.backend_id().to_owned(),
+                        device: device_id.clone(),
                     })?;
 
                 builder.add_storage_device(
@@ -312,11 +310,9 @@ pub(crate) fn v1_to_spec_builder(
             v1::instance_spec::Component::VirtioNic(nic) => {
                 let (_, backend_spec) = viona_backends
                     .remove_entry(&nic.backend_id)
-                    .ok_or_else(|| {
-                        ApiSpecError::NetworkBackendNotFound {
-                            backend: nic.backend_id.clone(),
-                            device: device_id.clone(),
-                        }
+                    .ok_or_else(|| ApiSpecError::NetworkBackendNotFound {
+                        backend: nic.backend_id.clone(),
+                        device: device_id.clone(),
                     })?;
 
                 builder.add_network_device(
@@ -376,11 +372,9 @@ pub(crate) fn v1_to_spec_builder(
             v1::instance_spec::Component::SoftNpuPort(port) => {
                 let (_, backend_spec) = dlpi_backends
                     .remove_entry(&port.backend_id)
-                    .ok_or_else(|| {
-                        ApiSpecError::NetworkBackendNotFound {
-                            backend: port.backend_id.clone(),
-                            device: device_id.clone(),
-                        }
+                    .ok_or_else(|| ApiSpecError::NetworkBackendNotFound {
+                        backend: port.backend_id.clone(),
+                        device: device_id.clone(),
                     })?;
 
                 let port = SoftNpuPort {
