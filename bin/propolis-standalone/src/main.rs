@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result};
+use std::net::TcpListener;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -35,6 +36,7 @@ use propolis::vcpu::Vcpu;
 use propolis::vmm::{Builder, Machine};
 use propolis::*;
 
+mod attestation;
 mod cidata;
 mod config;
 mod snapshot;
@@ -1539,6 +1541,26 @@ fn main() -> anyhow::Result<ExitCode> {
         oxide_tokio_rt::build(&mut builder)?
     };
     let _rt_guard = rt.enter();
+
+    // If configured, setup an attestation server
+    if config.attestation.is_some() {
+        let attest_log = log.clone();
+        let attest_cfg = config.attestation.clone().unwrap();
+        std::thread::spawn(move || {
+            //let port = config.attestation.port;
+            // TODO: move validation out of the thread?
+        let rot_backend =
+            attestation::parse_cfg(attest_cfg).expect("invalid attestation server config");
+
+            // TODO: get from port mappings
+            let listener =
+                TcpListener::bind("127.0.0.1:3000").expect("could not bind to attesation port");
+
+            slog::info!(attest_log, "starting attestation server, listening on port 3000");
+
+            let _ = attestation::run_server(&attest_log, rot_backend, listener);
+        });
+    }
 
     // Create the VM afresh or restore it from a snapshot
     let (inst, com1_sock) = if restore {

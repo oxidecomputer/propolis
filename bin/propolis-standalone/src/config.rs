@@ -36,6 +36,7 @@ pub struct Config {
     pub cpuid_profiles: BTreeMap<String, CpuidProfile>,
 
     pub cloudinit: Option<CloudInit>,
+    pub attestation: Option<AttestationConfig>,
 }
 impl Config {
     pub fn cpuid_profile(&self) -> Option<&CpuidProfile> {
@@ -130,6 +131,29 @@ pub struct CloudInit {
     pub user_data_path: Option<String>,
     pub meta_data_path: Option<String>,
     pub network_config_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AttestationBackend {
+    #[default]
+    Mock,
+    Ipcc,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AttestationConfig {
+    pub backend: AttestationBackend,
+    pub port: u16,
+
+    // qualifying data: minimal for now
+    pub instance_uuid: String,
+    pub boot_digest: String,
+
+    // mock-only fields
+    pub pki_path: Option<String>,
+    pub log_path: Option<String>,
+    pub alias_key_path: Option<String>,
 }
 
 #[derive(Deserialize)]
