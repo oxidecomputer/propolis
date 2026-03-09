@@ -70,9 +70,13 @@ impl From<Spec> for v1::instance_spec::InstanceSpec {
             #[cfg(feature = "falcon")]
             softnpu,
 
-            // Not part of `v1::instance_spec::InstanceSpec`. Added in `InstanceSpec` in API
-            // Version 2.0.0.
+            // Not part of `v1::instance_spec::InstanceSpec`. Added in
+            // `InstanceSpec` in API Version 2.0.0.
             smbios_type1_input: _,
+
+            // Not part of `v1::instance_spec::InstanceSpec`. Added in
+            // `InstanceSpec` in API Version 3.0.0.
+            vsock: _,
         } = val;
 
         // Inserts a component entry into the supplied map, asserting first that
@@ -240,182 +244,191 @@ impl TryFrom<v1::instance_spec::InstanceSpec> for Spec {
     fn try_from(
         value: v1::instance_spec::InstanceSpec,
     ) -> Result<Self, Self::Error> {
-        let mut builder = SpecBuilder::with_instance_spec_board(value.board)?;
-        let mut devices: Vec<(SpecKey, v1::instance_spec::Component)> = vec![];
-        let mut boot_settings = None;
-        let mut storage_backends: BTreeMap<SpecKey, StorageBackend> =
-            BTreeMap::new();
-        let mut viona_backends: BTreeMap<SpecKey, VirtioNetworkBackend> =
-            BTreeMap::new();
-        let mut dlpi_backends: BTreeMap<SpecKey, DlpiNetworkBackend> =
-            BTreeMap::new();
-
-        for (id, component) in value.components.into_iter() {
-            match component {
-                v1::instance_spec::Component::CrucibleStorageBackend(_)
-                | v1::instance_spec::Component::FileStorageBackend(_)
-                | v1::instance_spec::Component::BlobStorageBackend(_) => {
-                    storage_backends.insert(
-                        id,
-                        component.try_into().expect(
-                            "component is known to be a storage backend",
-                        ),
-                    );
-                }
-                v1::instance_spec::Component::VirtioNetworkBackend(viona) => {
-                    viona_backends.insert(id, viona);
-                }
-                v1::instance_spec::Component::DlpiNetworkBackend(dlpi) => {
-                    dlpi_backends.insert(id, dlpi);
-                }
-                device => {
-                    devices.push((id, device));
-                }
-            }
-        }
-
-        for (device_id, device_spec) in devices {
-            match device_spec {
-                v1::instance_spec::Component::VirtioDisk(_)
-                | v1::instance_spec::Component::NvmeDisk(_) => {
-                    let device_spec = StorageDevice::try_from(device_spec)
-                        .expect("component is known to be a disk");
-
-                    let (_, backend_spec) = storage_backends
-                        .remove_entry(device_spec.backend_id())
-                        .ok_or_else(|| {
-                            ApiSpecError::StorageBackendNotFound {
-                                backend: device_spec.backend_id().to_owned(),
-                                device: device_id.clone(),
-                            }
-                        })?;
-
-                    builder.add_storage_device(
-                        device_id,
-                        Disk { device_spec, backend_spec },
-                    )?;
-                }
-                v1::instance_spec::Component::VirtioNic(nic) => {
-                    let (_, backend_spec) = viona_backends
-                        .remove_entry(&nic.backend_id)
-                        .ok_or_else(|| {
-                            ApiSpecError::NetworkBackendNotFound {
-                                backend: nic.backend_id.clone(),
-                                device: device_id.clone(),
-                            }
-                        })?;
-
-                    builder.add_network_device(
-                        device_id,
-                        Nic { device_spec: nic, backend_spec },
-                    )?;
-                }
-                v1::instance_spec::Component::SerialPort(port) => {
-                    builder.add_serial_port(device_id, port.num)?;
-                }
-                v1::instance_spec::Component::PciPciBridge(bridge) => {
-                    builder.add_pci_bridge(device_id, bridge)?;
-                }
-                v1::instance_spec::Component::QemuPvpanic(pvpanic) => {
-                    builder.add_pvpanic_device(QemuPvpanic {
-                        id: device_id,
-                        spec: pvpanic,
-                    })?;
-                }
-                v1::instance_spec::Component::BootSettings(settings) => {
-                    // The builder returns an error if its caller tries to add
-                    // a boot option that isn't in the set of attached disks.
-                    // Since there may be more disk devices left in the
-                    // component map, just capture the boot order for now and
-                    // apply it to the builder later.
-                    boot_settings = Some((device_id, settings));
-                }
-                #[cfg(not(feature = "failure-injection"))]
-                v1::instance_spec::Component::MigrationFailureInjector(_) => {
-                    return Err(ApiSpecError::FeatureCompiledOut {
-                        component: device_id,
-                        feature: "failure-injection",
-                    });
-                }
-                #[cfg(feature = "failure-injection")]
-                v1::instance_spec::Component::MigrationFailureInjector(mig) => {
-                    builder.add_migration_failure_device(MigrationFailure {
-                        id: device_id,
-                        spec: mig,
-                    })?;
-                }
-                #[cfg(not(feature = "falcon"))]
-                v1::instance_spec::Component::SoftNpuPciPort(_)
-                | v1::instance_spec::Component::SoftNpuPort(_)
-                | v1::instance_spec::Component::SoftNpuP9(_)
-                | v1::instance_spec::Component::P9fs(_) => {
-                    return Err(ApiSpecError::FeatureCompiledOut {
-                        component: device_id,
-                        feature: "falcon",
-                    });
-                }
-                #[cfg(feature = "falcon")]
-                v1::instance_spec::Component::SoftNpuPciPort(port) => {
-                    builder.set_softnpu_pci_port(port)?;
-                }
-                #[cfg(feature = "falcon")]
-                v1::instance_spec::Component::SoftNpuPort(port) => {
-                    let (_, backend_spec) = dlpi_backends
-                        .remove_entry(&port.backend_id)
-                        .ok_or_else(|| {
-                            ApiSpecError::NetworkBackendNotFound {
-                                backend: port.backend_id.clone(),
-                                device: device_id.clone(),
-                            }
-                        })?;
-
-                    let port = SoftNpuPort {
-                        link_name: port.link_name,
-                        backend_name: port.backend_id,
-                        backend_spec,
-                    };
-
-                    builder.add_softnpu_port(device_id, port)?;
-                }
-                #[cfg(feature = "falcon")]
-                v1::instance_spec::Component::SoftNpuP9(p9) => {
-                    builder.set_softnpu_p9(p9)?;
-                }
-                #[cfg(feature = "falcon")]
-                v1::instance_spec::Component::P9fs(p9fs) => {
-                    builder.set_p9fs(p9fs)?;
-                }
-                v1::instance_spec::Component::CrucibleStorageBackend(_)
-                | v1::instance_spec::Component::FileStorageBackend(_)
-                | v1::instance_spec::Component::BlobStorageBackend(_)
-                | v1::instance_spec::Component::VirtioNetworkBackend(_)
-                | v1::instance_spec::Component::DlpiNetworkBackend(_) => {
-                    unreachable!("already filtered out backends")
-                }
-            }
-        }
-
-        // Now that all disks have been attached, try to establish the boot
-        // order if one was supplied.
-        if let Some(settings) = boot_settings {
-            builder.add_boot_order(
-                settings.0,
-                settings.1.order.into_iter().map(Into::into),
-            )?;
-        }
-
-        if let Some(backend) = storage_backends.into_keys().next() {
-            return Err(ApiSpecError::BackendNotUsed(backend));
-        }
-
-        if let Some(backend) = viona_backends.into_keys().next() {
-            return Err(ApiSpecError::BackendNotUsed(backend));
-        }
-
-        if let Some(backend) = dlpi_backends.into_keys().next() {
-            return Err(ApiSpecError::BackendNotUsed(backend));
-        }
-
-        Ok(builder.finish())
+        Ok(v1_to_spec_builder(value)?.finish())
     }
+}
+
+/// Parses a v1 instance spec into a [`SpecBuilder`], validating component
+/// names, PCI paths, and backend references along the way. Callers can add
+/// additional (non-v1) components to the builder before calling `finish()`.
+pub(crate) fn v1_to_spec_builder(
+    value: v1::instance_spec::InstanceSpec,
+) -> Result<SpecBuilder, ApiSpecError> {
+    let mut builder = SpecBuilder::with_instance_spec_board(value.board)?;
+    let mut devices: Vec<(SpecKey, v1::instance_spec::Component)> = vec![];
+    let mut boot_settings = None;
+    let mut storage_backends: BTreeMap<SpecKey, StorageBackend> =
+        BTreeMap::new();
+    let mut viona_backends: BTreeMap<SpecKey, VirtioNetworkBackend> =
+        BTreeMap::new();
+    let mut dlpi_backends: BTreeMap<SpecKey, DlpiNetworkBackend> =
+        BTreeMap::new();
+
+    for (id, component) in value.components.into_iter() {
+        match component {
+            v1::instance_spec::Component::CrucibleStorageBackend(_)
+            | v1::instance_spec::Component::FileStorageBackend(_)
+            | v1::instance_spec::Component::BlobStorageBackend(_) => {
+                storage_backends.insert(
+                    id,
+                    component.try_into().expect(
+                        "component is known to be a storage backend",
+                    ),
+                );
+            }
+            v1::instance_spec::Component::VirtioNetworkBackend(viona) => {
+                viona_backends.insert(id, viona);
+            }
+            v1::instance_spec::Component::DlpiNetworkBackend(dlpi) => {
+                dlpi_backends.insert(id, dlpi);
+            }
+            device => {
+                devices.push((id, device));
+            }
+        }
+    }
+
+    for (device_id, device_spec) in devices {
+        match device_spec {
+            v1::instance_spec::Component::VirtioDisk(_)
+            | v1::instance_spec::Component::NvmeDisk(_) => {
+                let device_spec = StorageDevice::try_from(device_spec)
+                    .expect("component is known to be a disk");
+
+                let (_, backend_spec) = storage_backends
+                    .remove_entry(device_spec.backend_id())
+                    .ok_or_else(|| {
+                        ApiSpecError::StorageBackendNotFound {
+                            backend: device_spec.backend_id().to_owned(),
+                            device: device_id.clone(),
+                        }
+                    })?;
+
+                builder.add_storage_device(
+                    device_id,
+                    Disk { device_spec, backend_spec },
+                )?;
+            }
+            v1::instance_spec::Component::VirtioNic(nic) => {
+                let (_, backend_spec) = viona_backends
+                    .remove_entry(&nic.backend_id)
+                    .ok_or_else(|| {
+                        ApiSpecError::NetworkBackendNotFound {
+                            backend: nic.backend_id.clone(),
+                            device: device_id.clone(),
+                        }
+                    })?;
+
+                builder.add_network_device(
+                    device_id,
+                    Nic { device_spec: nic, backend_spec },
+                )?;
+            }
+            v1::instance_spec::Component::SerialPort(port) => {
+                builder.add_serial_port(device_id, port.num)?;
+            }
+            v1::instance_spec::Component::PciPciBridge(bridge) => {
+                builder.add_pci_bridge(device_id, bridge)?;
+            }
+            v1::instance_spec::Component::QemuPvpanic(pvpanic) => {
+                builder.add_pvpanic_device(QemuPvpanic {
+                    id: device_id,
+                    spec: pvpanic,
+                })?;
+            }
+            v1::instance_spec::Component::BootSettings(settings) => {
+                // The builder returns an error if its caller tries to add
+                // a boot option that isn't in the set of attached disks.
+                // Since there may be more disk devices left in the
+                // component map, just capture the boot order for now and
+                // apply it to the builder later.
+                boot_settings = Some((device_id, settings));
+            }
+            #[cfg(not(feature = "failure-injection"))]
+            v1::instance_spec::Component::MigrationFailureInjector(_) => {
+                return Err(ApiSpecError::FeatureCompiledOut {
+                    component: device_id,
+                    feature: "failure-injection",
+                });
+            }
+            #[cfg(feature = "failure-injection")]
+            v1::instance_spec::Component::MigrationFailureInjector(mig) => {
+                builder.add_migration_failure_device(MigrationFailure {
+                    id: device_id,
+                    spec: mig,
+                })?;
+            }
+            #[cfg(not(feature = "falcon"))]
+            v1::instance_spec::Component::SoftNpuPciPort(_)
+            | v1::instance_spec::Component::SoftNpuPort(_)
+            | v1::instance_spec::Component::SoftNpuP9(_)
+            | v1::instance_spec::Component::P9fs(_) => {
+                return Err(ApiSpecError::FeatureCompiledOut {
+                    component: device_id,
+                    feature: "falcon",
+                });
+            }
+            #[cfg(feature = "falcon")]
+            v1::instance_spec::Component::SoftNpuPciPort(port) => {
+                builder.set_softnpu_pci_port(port)?;
+            }
+            #[cfg(feature = "falcon")]
+            v1::instance_spec::Component::SoftNpuPort(port) => {
+                let (_, backend_spec) = dlpi_backends
+                    .remove_entry(&port.backend_id)
+                    .ok_or_else(|| {
+                        ApiSpecError::NetworkBackendNotFound {
+                            backend: port.backend_id.clone(),
+                            device: device_id.clone(),
+                        }
+                    })?;
+
+                let port = SoftNpuPort {
+                    link_name: port.link_name,
+                    backend_name: port.backend_id,
+                    backend_spec,
+                };
+
+                builder.add_softnpu_port(device_id, port)?;
+            }
+            #[cfg(feature = "falcon")]
+            v1::instance_spec::Component::SoftNpuP9(p9) => {
+                builder.set_softnpu_p9(p9)?;
+            }
+            #[cfg(feature = "falcon")]
+            v1::instance_spec::Component::P9fs(p9fs) => {
+                builder.set_p9fs(p9fs)?;
+            }
+            v1::instance_spec::Component::CrucibleStorageBackend(_)
+            | v1::instance_spec::Component::FileStorageBackend(_)
+            | v1::instance_spec::Component::BlobStorageBackend(_)
+            | v1::instance_spec::Component::VirtioNetworkBackend(_)
+            | v1::instance_spec::Component::DlpiNetworkBackend(_) => {
+                unreachable!("already filtered out backends")
+            }
+        }
+    }
+
+    // Now that all disks have been attached, try to establish the boot
+    // order if one was supplied.
+    if let Some(settings) = boot_settings {
+        builder.add_boot_order(
+            settings.0,
+            settings.1.order.into_iter().map(Into::into),
+        )?;
+    }
+
+    if let Some(backend) = storage_backends.into_keys().next() {
+        return Err(ApiSpecError::BackendNotUsed(backend));
+    }
+
+    if let Some(backend) = viona_backends.into_keys().next() {
+        return Err(ApiSpecError::BackendNotUsed(backend));
+    }
+
+    if let Some(backend) = dlpi_backends.into_keys().next() {
+        return Err(ApiSpecError::BackendNotUsed(backend));
+    }
+
+    Ok(builder)
 }

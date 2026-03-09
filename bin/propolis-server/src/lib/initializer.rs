@@ -4,6 +4,7 @@
 
 use std::convert::TryInto;
 use std::fs::File;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
@@ -471,6 +472,41 @@ impl MachineInitializer<'_> {
                     )?;
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    pub fn initialize_vsock(
+        &mut self,
+        chipset: &RegisteredChipset,
+    ) -> Result<(), MachineInitError> {
+        use propolis::vsock::proxy::VsockPortMapping;
+
+        // Port 8008 - VM Attestation RFD 605
+        const ATTESTATION_PORT: u16 = 8008;
+        const ATTESTATION: SocketAddr = SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            ATTESTATION_PORT,
+        );
+
+        if let Some(vsock) = &self.spec.vsock {
+            let bdf: pci::Bdf = vsock.spec.pci_path.into();
+
+            let mappings = vec![VsockPortMapping::new(
+                ATTESTATION_PORT.into(),
+                ATTESTATION,
+            )];
+
+            let device = virtio::PciVirtioSock::new(
+                256,
+                vsock.spec.guest_cid as u32,
+                self.log.new(slog::o!("dev" => "virtio-sock")),
+                mappings,
+            );
+
+            self.devices.insert(vsock.id.clone(), device.clone());
+            chipset.pci_attach(bdf, device);
         }
 
         Ok(())

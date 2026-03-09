@@ -563,6 +563,7 @@ async fn initialize_vm_objects(
         &properties,
     ))?;
     init.initialize_network_devices(&chipset).await?;
+    init.initialize_vsock(&chipset)?;
 
     #[cfg(feature = "failure-injection")]
     init.initialize_test_devices();
