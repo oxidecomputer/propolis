@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use cpuid_utils::CpuidSet;
+use propolis::vsock::proxy::VsockPortMapping;
 use propolis_types::CpuidIdent;
 use propolis_types::CpuidValues;
 use propolis_types::CpuidVendor;
@@ -167,6 +168,20 @@ impl VionaDeviceParams {
             None
         };
         Ok(out)
+    }
+}
+
+#[derive(Deserialize)]
+pub struct VsockDevice {
+    pub guest_cid: u32,
+    pub port_mappings: Vec<VsockPortMapping>,
+}
+
+impl VsockDevice {
+    pub fn from_opts(
+        opts: &BTreeMap<String, toml::Value>,
+    ) -> Result<VsockDevice, anyhow::Error> {
+        opt_deser(opts)
     }
 }
 
