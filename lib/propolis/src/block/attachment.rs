@@ -26,19 +26,19 @@ use std::task::{Context, Poll};
 
 use super::minder::{NoneInFlight, QueueMinder};
 use super::{
-    BackendId, DeviceId, DeviceInfo, DeviceQueue, DeviceRequest,
-    MetricConsumer, QueueId, WorkerId, devq_id, probes,
+    devq_id, probes, BackendId, DeviceId, DeviceInfo, DeviceQueue,
+    DeviceRequest, MetricConsumer, QueueId, WorkerId,
 };
 use crate::accessors::MemAccessor;
 use crate::block;
 
-use futures::Stream;
 use futures::stream::FuturesUnordered;
+use futures::Stream;
 use pin_project_lite::pin_project;
 use strum::IntoStaticStr;
 use thiserror::Error;
-use tokio::sync::Notify;
 use tokio::sync::futures::Notified;
+use tokio::sync::Notify;
 
 pub const MAX_WORKERS: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 
@@ -259,7 +259,7 @@ impl QueueCollection {
         cursor: &mut PollCursor,
         wid: WorkerId,
     ) -> Option<DeviceRequest> {
-        let idx = usize::from(cursor.0.0);
+        let idx = usize::from(cursor.0 .0);
         assert!(idx < self.queues.len());
         let (front, back) = self.queues.split_at(idx);
         let queues = back.iter().chain(front.iter());
