@@ -6193,7 +6193,7 @@ dependencies = [
  "tokio",
  "toml 0.7.8",
  "uuid",
- "vm-attest-trait",
+ "vm-attest",
 ]
 
 [[package]]
@@ -9295,9 +9295,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "vm-attest-trait"
+name = "vm-attest"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/vm-attest-proto#e298740462de6a7daa2a2b6fac0315c509600b5e"
+source = "git+https://github.com/oxidecomputer/vm-attest#4bbc48bc90cf13db10199e85ef4029cf59b1f752"
 dependencies = [
  "anyhow",
  "attest-data",

@@ -6,29 +6,22 @@ use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 
-use dice_verifier::AttestMock;
 use dice_verifier::ipcc::AttestIpcc;
-use vm_attest_proto::mock::VmInstanceRotMock;
-use vm_attest_proto::{Measurement, VmInstanceConf};
-use vm_attest_proto::{
-    QualifyingData, VmInstanceAttestResponse, VmInstanceRot,
-};
+use dice_verifier::AttestMock;
+use vm_attest::mock::VmInstanceRotMock;
+use vm_attest::{Measurement, VmInstanceConf};
+use vm_attest::{Request, Response, VmInstanceRot};
 
 use crate::config::{AttestationBackend, AttestationConfig};
 
 const MAX_LINE_LENGTH: usize = 1024;
 
 pub fn parse_cfg(cfg: AttestationConfig) -> Result<VmInstanceRotMock> {
-    let uuid =
-        uuid::Uuid::parse_str(&cfg.instance_uuid).expect("Invalid UUID");
-    let measurement: Measurement = serde_json::from_value(
-        serde_json::json!({"sha-256": cfg.boot_digest}),
-    )
-    .context("boot_digest must be a valid hex SHA-256 digest")?;
-    let vm_conf = VmInstanceConf {
-        uuid,
-        image_digest: Some(measurement),
-    };
+    let uuid = uuid::Uuid::parse_str(&cfg.instance_uuid).expect("Invalid UUID");
+    let measurement: Measurement =
+        serde_json::from_value(serde_json::json!({"sha-256": cfg.boot_digest}))
+            .context("boot_digest must be a valid hex SHA-256 digest")?;
+    let vm_conf = VmInstanceConf { uuid, image_digest: Some(measurement) };
 
     let ox_attest: Box<dyn dice_verifier::Attest> = match cfg.backend {
         AttestationBackend::Mock => {
@@ -45,17 +38,13 @@ pub fn parse_cfg(cfg: AttestationConfig) -> Result<VmInstanceRotMock> {
                 .as_ref()
                 .expect("alias_key_path required for mock backend");
             Box::new(
-                AttestMock::load(
-                    pki_path,
-                    log_path,
-                    alias_key_path,
-                )
-                .expect("Failed to load AttestMock"),
+                AttestMock::load(pki_path, log_path, alias_key_path)
+                    .expect("Failed to load AttestMock"),
             )
-        },
-        AttestationBackend::Ipcc => Box::new(
-            AttestIpcc::new().expect("Failed to create AttestIpcc"),
-        ),
+        }
+        AttestationBackend::Ipcc => {
+            Box::new(AttestIpcc::new().expect("Failed to create AttestIpcc"))
+        }
     };
 
     Ok(VmInstanceRotMock::new(ox_attest, vm_conf))
@@ -90,9 +79,7 @@ pub fn run_server(
                     "Error: Line length exceeded the limit of {} bytes.",
                     MAX_LINE_LENGTH
                 );
-                let response = VmInstanceAttestResponse::Error(
-                    "Request too long".to_string(),
-                );
+                let response = Response::Error("Request too long".to_string());
                 let mut response = serde_json::to_string(&response)?;
                 response.push('\n');
                 slog::info!(log, "sending error response: {response}");
@@ -105,13 +92,12 @@ pub fn run_server(
 
             slog::debug!(log, "JSON received: {msg}");
 
-            let result: Result<QualifyingData, serde_json::Error> =
+            let result: Result<Request, serde_json::Error> =
                 serde_json::from_str(&msg);
-            let qualifying_data = match result {
+            let request = match result {
                 Ok(q) => q,
                 Err(e) => {
-                    let response =
-                        VmInstanceAttestResponse::Error(e.to_string());
+                    let response = Response::Error(e.to_string());
                     let mut response = serde_json::to_string(&response)?;
                     response.push('\n');
                     slog::info!(log, "sending error response: {response}");
@@ -122,12 +108,17 @@ pub fn run_server(
                     break;
                 }
             };
-            slog::debug!(log, "qualifying data received: {qualifying_data:?}");
 
-            let response = match rot.attest(&qualifying_data) {
-                Ok(a) => VmInstanceAttestResponse::Attestation(a),
-                Err(e) => VmInstanceAttestResponse::Error(e.to_string()),
+            let response = match request {
+                Request::Attest(q) => {
+                    slog::debug!(log, "qualifying data received: {q:?}");
+                    match rot.attest(&q) {
+                        Ok(a) => Response::Attest(a),
+                        Err(e) => Response::Error(e.to_string()),
+                    }
+                }
             };
+
             let mut response = serde_json::to_string(&response)?;
             response.push('\n');
 
