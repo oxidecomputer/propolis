@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 
-use dice_verifier::{Attest, AttestMock};
+use dice_verifier::AttestMock;
 use dice_verifier::ipcc::AttestIpcc;
 use vm_attest_proto::mock::VmInstanceRotMock;
 use vm_attest_proto::{Measurement, VmInstanceConf};
@@ -18,7 +18,7 @@ use crate::config::{AttestationBackend, AttestationConfig};
 
 const MAX_LINE_LENGTH: usize = 1024;
 
-pub fn parse_cfg(cfg: AttestationConfig) -> Result<(VmInstanceRotMock)> {
+pub fn parse_cfg(cfg: AttestationConfig) -> Result<VmInstanceRotMock> {
     let uuid =
         uuid::Uuid::parse_str(&cfg.instance_uuid).expect("Invalid UUID");
     let measurement: Measurement = serde_json::from_value(
