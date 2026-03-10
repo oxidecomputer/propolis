@@ -1041,7 +1041,7 @@ checksum = "248e3bacc7dc6baa3b21e405ee045c3047101a49145e7e9eca583ab4c2ca5345"
 [[package]]
 name = "crucible"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=2b58dba896100b0bc9cad07e2d56b05f827ff6c8#2b58dba896100b0bc9cad07e2d56b05f827ff6c8"
+source = "git+https://github.com/oxidecomputer/crucible?rev=a945a32ba9e1f2098ce3a8963765f1894f37110b#a945a32ba9e1f2098ce3a8963765f1894f37110b"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -1087,7 +1087,7 @@ dependencies = [
  "tokio",
  "tokio-rustls 0.24.1",
  "tokio-util",
- "toml 0.9.12+spec-1.1.0",
+ "toml 1.0.6+spec-1.1.0",
  "tracing",
  "usdt 0.6.0",
  "uuid",
@@ -1097,7 +1097,7 @@ dependencies = [
 [[package]]
 name = "crucible-client-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=2b58dba896100b0bc9cad07e2d56b05f827ff6c8#2b58dba896100b0bc9cad07e2d56b05f827ff6c8"
+source = "git+https://github.com/oxidecomputer/crucible?rev=a945a32ba9e1f2098ce3a8963765f1894f37110b#a945a32ba9e1f2098ce3a8963765f1894f37110b"
 dependencies = [
  "base64 0.22.1",
  "crucible-workspace-hack",
@@ -1110,7 +1110,7 @@ dependencies = [
 [[package]]
 name = "crucible-common"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=2b58dba896100b0bc9cad07e2d56b05f827ff6c8#2b58dba896100b0bc9cad07e2d56b05f827ff6c8"
+source = "git+https://github.com/oxidecomputer/crucible?rev=a945a32ba9e1f2098ce3a8963765f1894f37110b#a945a32ba9e1f2098ce3a8963765f1894f37110b"
 dependencies = [
  "anyhow",
  "atty",
@@ -1130,7 +1130,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls 0.24.1",
- "toml 0.9.12+spec-1.1.0",
+ "toml 1.0.6+spec-1.1.0",
  "twox-hash",
  "uuid",
  "vergen",
@@ -1140,7 +1140,7 @@ dependencies = [
 [[package]]
 name = "crucible-protocol"
 version = "0.0.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=2b58dba896100b0bc9cad07e2d56b05f827ff6c8#2b58dba896100b0bc9cad07e2d56b05f827ff6c8"
+source = "git+https://github.com/oxidecomputer/crucible?rev=a945a32ba9e1f2098ce3a8963765f1894f37110b#a945a32ba9e1f2098ce3a8963765f1894f37110b"
 dependencies = [
  "anyhow",
  "bincode",
@@ -8012,6 +8012,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml"
+version = "1.0.6+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "399b1124a3c9e16766831c6bba21e50192572cdd98706ea114f9502509686ffc"
+dependencies = [
+ "indexmap",
+ "serde_core",
+ "serde_spanned 1.0.4",
+ "toml_datetime 1.0.0+spec-1.1.0",
+ "toml_parser",
+ "toml_writer",
+ "winnow 0.7.13",
+]
+
+[[package]]
 name = "toml_datetime"
 version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8025,6 +8040,15 @@ name = "toml_datetime"
 version = "0.7.5+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
+name = "toml_datetime"
+version = "1.0.0+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32c2555c699578a4f59f0cc68e5116c8d7cabbd45e1409b989d4be085b53f13e"
 dependencies = [
  "serde_core",
 ]
