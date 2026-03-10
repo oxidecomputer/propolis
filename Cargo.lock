@@ -5769,6 +5769,7 @@ dependencies = [
  "clap",
  "cpuid_profile_config",
  "cpuid_utils",
+ "crucible",
  "crucible-client-types",
  "ctrlc",
  "erased-serde 0.4.5",

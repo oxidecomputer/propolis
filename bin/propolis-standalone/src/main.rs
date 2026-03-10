@@ -493,7 +493,6 @@ impl Instance {
                         inner.config.main.calc_boot_digest.unwrap_or(false);
 
                     if calc_boot_digest {
-
                         let tlog = log.clone();
                         let ccfg = inner.config.clone();
 
@@ -503,11 +502,7 @@ impl Instance {
                             .spawn(move || {
                                 let digest =
                                     attestation::calc_boot_digest(&ccfg, &tlog);
-                                slog::info!(
-                                    tlog,
-                                    "hash={}",
-                                    digest
-                                );
+                                slog::info!(tlog, "hash={}", digest);
                             })
                             .unwrap();
                     } else {

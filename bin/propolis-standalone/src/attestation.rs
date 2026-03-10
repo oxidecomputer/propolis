@@ -3,7 +3,6 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 /// Facilities for using VM attestation with standalone
-
 use crate::config::Config;
 
 use std::io::Read;
@@ -12,7 +11,6 @@ use sha2::{Digest, Sha256};
 
 // 1 GiB
 const MAX_BUF_SIZE: usize = 1024 * 1024 * 1024;
-
 
 fn get_file_path(cfg: &Config) -> String {
     // TODO: add read only check

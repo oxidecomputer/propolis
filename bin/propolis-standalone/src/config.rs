@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use cpuid_utils::CpuidSet;
+use crucible::BlockIO;
 use propolis::vsock::proxy::VsockPortMapping;
 use propolis_types::CpuidIdent;
 use propolis_types::CpuidValues;
@@ -251,7 +252,21 @@ pub fn block_backend(
             };
             block::FileBackend::create(&parsed.path, opts, workers).unwrap()
         }
-        "crucible" => create_crucible_backend(be, opts, log),
+        "crucible" => {
+            let (req, be) = create_crucible_backend(be, opts, log);
+
+            let _ = tokio::runtime::Handle::current().block_on(async move {
+                let volume = crucible::Volume::construct(req, None, log.clone())
+                .await
+                .unwrap();
+
+                // TODO: handle if the disk is not RO
+                let mut buf = crucible::Buffer::new(1, 512);
+                let n = volume.read(crucible::BlockIndex(0), &mut buf);
+            });
+
+            be
+        }
         "crucible-mem" => create_crucible_mem_backend(be, opts, log),
         "mem-async" => {
             let parsed: MemAsyncConfig = opt_deser(&be.options).unwrap();
@@ -333,7 +348,8 @@ fn create_crucible_backend(
     be: &BlockDevice,
     opts: block::BackendOpts,
     log: &slog::Logger,
-) -> Arc<dyn block::Backend> {
+) -> (crucible_client_types::VolumeConstructionRequest, Arc<dyn block::Backend>)
+{
     use slog::info;
     use std::net::SocketAddr;
     use uuid::Uuid;
@@ -414,13 +430,16 @@ fn create_crucible_backend(
         },
         generation: parsed.generation,
     };
+    let req2 = req.clone();
     info!(log, "Creating Crucible disk from request {:?}", req);
     // QUESTION: is producer_registry: None correct here?
-    tokio::runtime::Handle::current().block_on(async move {
+    let be = tokio::runtime::Handle::current().block_on(async move {
         block::CrucibleBackend::create(req, opts, None, None, log.clone())
             .await
             .unwrap()
-    })
+    });
+
+    (req2, be)
 }
 
 #[cfg(feature = "crucible")]
