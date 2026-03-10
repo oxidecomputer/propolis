@@ -1549,14 +1549,17 @@ fn main() -> anyhow::Result<ExitCode> {
         std::thread::spawn(move || {
             //let port = config.attestation.port;
             // TODO: move validation out of the thread?
-        let rot_backend =
-            attestation::parse_cfg(attest_cfg).expect("invalid attestation server config");
+            let rot_backend = attestation::parse_cfg(attest_cfg)
+                .expect("invalid attestation server config");
 
             // TODO: get from port mappings
-            let listener =
-                TcpListener::bind("127.0.0.1:3000").expect("could not bind to attesation port");
+            let listener = TcpListener::bind("127.0.0.1:3000")
+                .expect("could not bind to attesation port");
 
-            slog::info!(attest_log, "starting attestation server, listening on port 3000");
+            slog::info!(
+                attest_log,
+                "starting attestation server, listening on port 3000"
+            );
 
             let _ = attestation::run_server(&attest_log, rot_backend, listener);
         });
