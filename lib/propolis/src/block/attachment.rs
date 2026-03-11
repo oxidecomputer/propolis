@@ -179,12 +179,12 @@ impl QueueCollection {
     }
     fn set_metric_consumer(&self, consumer: Arc<dyn MetricConsumer>) {
         let mut state = self.state.lock().unwrap();
-        state.metric_consumer = Some(consumer.clone());
         for queue in self.queues.iter() {
             if let Some(minder) = queue.state.lock().unwrap().minder.as_ref() {
                 minder.set_metric_consumer(consumer.clone());
             }
         }
+        state.metric_consumer = Some(consumer);
     }
     fn associated_qids(&self) -> Versioned<Bitmap> {
         self.state.lock().unwrap().associated_qids
