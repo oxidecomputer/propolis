@@ -9297,7 +9297,7 @@ dependencies = [
 [[package]]
 name = "vm-attest"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/vm-attest#4bbc48bc90cf13db10199e85ef4029cf59b1f752"
+source = "git+https://github.com/oxidecomputer/vm-attest#946a325849baa2778c1e10e72fe4957bf2f536a4"
 dependencies = [
  "anyhow",
  "attest-data",
