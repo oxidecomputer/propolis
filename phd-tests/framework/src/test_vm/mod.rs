@@ -887,7 +887,15 @@ impl TestVm {
         .instrument(info_span!("wait_to_boot"));
 
         match timeout(timeout_duration, boot).await {
-            Err(_) => anyhow::bail!("timed out while waiting to boot"),
+            Err(_) => {
+                error!(
+                    "Guest did not boot after {}ms! Collecting core..",
+                    timeout_duration.as_millis()
+                );
+                let proc = self.server.as_ref().unwrap();
+                proc.core();
+                anyhow::bail!("timed out while waiting to boot")
+            }
             Ok(inner) => {
                 inner.context("executing guest login sequence")?;
             }
