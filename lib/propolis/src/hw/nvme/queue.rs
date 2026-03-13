@@ -113,7 +113,13 @@ struct QueueState<QS> {
     /// a `SubQueueState` for a Submission Queue.
     inner: Mutex<QueueInner<QS>>,
 
-    pub acc_mem: MemAccessor,
+    /// This queue's memory accessor node.
+    ///
+    /// Be careful about lock ordering when using this accessor; access_borrow()
+    /// holds this node's lock. If a user of this queue state requires both
+    /// `access_borrow()` and `QueueInner`, the protocol is to lock queue
+    /// state first and this accessor second.
+    acc_mem: MemAccessor,
 }
 impl<QS> QueueState<QS> {
     fn new(size: u32, acc_mem: MemAccessor, inner: QS) -> Self {
@@ -649,9 +655,8 @@ impl SubQueue {
     pub fn pop(
         self: &Arc<SubQueue>,
     ) -> Option<(GuestData<SubmissionQueueEntry>, Permit, u16)> {
-        // Lock the SubQueueState early to order consistently with MemAccessor;
-        // in all cases we acquire the queue state lock before working with
-        // memory.
+        // Lock the SubQueueState early to conform to lock ordering requirement;
+        // see docs on QueueState::acc_mem.
         let mut state = self.state.lock();
 
         let Some(mem) = self.state.acc_mem.access_borrow() else { return None };
