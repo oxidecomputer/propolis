@@ -649,12 +649,16 @@ impl SubQueue {
     pub fn pop(
         self: &Arc<SubQueue>,
     ) -> Option<(GuestData<SubmissionQueueEntry>, Permit, u16)> {
+        // Lock the SubQueueState early to order consistently with MemAccessor;
+        // in all cases we acquire the queue state lock before working with
+        // memory.
+        let mut state = self.state.lock();
+
         let Some(mem) = self.state.acc_mem.access_borrow() else { return None };
         let mem = mem.view();
 
         // Attempt to reserve an entry on the Completion Queue
         let permit = self.cq.reserve_entry(&self, &mem)?;
-        let mut state = self.state.lock();
 
         // Check for last-minute updates to the tail via any configured doorbell
         // page, prior to attempting the pop itself.
