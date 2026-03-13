@@ -35,3 +35,5 @@ pub mod latest;
 pub mod v1;
 #[path = "programmable_smbios/mod.rs"]
 pub mod v2;
+#[path = "add_vsock/mod.rs"]
+pub mod v3;

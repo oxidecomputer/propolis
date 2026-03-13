@@ -8,7 +8,7 @@ use anyhow::Context;
 use cpuid_utils::CpuidIdent;
 use propolis_client::{
     instance_spec::{
-        Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
+        Board, BootOrderEntry, BootSettings, Chipset, Component, Cpuid,
         CpuidEntry, CpuidVendor, GuestHypervisorInterface, InstanceMetadata,
         InstanceSpec, MigrationFailureInjector, NvmeDisk, PciPath, SerialPort,
         SerialPortNumber, SpecKey, VirtioDisk,
@@ -315,13 +315,13 @@ impl<'dr> VmConfig<'dr> {
             let device_name = hdl.device_name().clone();
             let backend_name = device_name.clone().into_backend_name();
             let device_spec = match req.interface {
-                DiskInterface::Virtio => ComponentV0::VirtioDisk(VirtioDisk {
+                DiskInterface::Virtio => Component::VirtioDisk(VirtioDisk {
                     backend_id: SpecKey::Name(
                         backend_name.clone().into_string(),
                     ),
                     pci_path,
                 }),
-                DiskInterface::Nvme => ComponentV0::NvmeDisk(NvmeDisk {
+                DiskInterface::Nvme => Component::NvmeDisk(NvmeDisk {
                     backend_id: SpecKey::Name(
                         backend_name.clone().into_string(),
                     ),
@@ -350,14 +350,14 @@ impl<'dr> VmConfig<'dr> {
 
         let _old = spec.components.insert(
             "com1".into(),
-            ComponentV0::SerialPort(SerialPort { num: SerialPortNumber::Com1 }),
+            Component::SerialPort(SerialPort { num: SerialPortNumber::Com1 }),
         );
         assert!(_old.is_none());
 
         if let Some(boot_order) = boot_order.as_ref() {
             let _old = spec.components.insert(
                 "boot-settings".into(),
-                ComponentV0::BootSettings(BootSettings {
+                Component::BootSettings(BootSettings {
                     order: boot_order
                         .iter()
                         .map(|item| BootOrderEntry {
@@ -372,7 +372,7 @@ impl<'dr> VmConfig<'dr> {
         if let Some(mig) = migration_failure.as_ref() {
             let _old = spec.components.insert(
                 "migration-failure".into(),
-                ComponentV0::MigrationFailureInjector(mig.clone()),
+                Component::MigrationFailureInjector(mig.clone()),
             );
             assert!(_old.is_none());
         }

@@ -250,12 +250,14 @@ impl PciVirtio for PciVirtioSock {
 
 impl Lifecycle for PciVirtioSock {
     fn type_name(&self) -> &'static str {
-        "pci-virtio-vsock"
+        "pci-virtio-socket"
     }
     fn reset(&self) {
         self.virtio_state.reset(self);
     }
     fn migrate(&'_ self) -> Migrator<'_> {
+        // TODO (MTZ):
+        // We need to support migration propolis#1065
         Migrator::NonMigratable
     }
 }

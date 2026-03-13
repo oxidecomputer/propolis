@@ -11,10 +11,10 @@ use std::{
 
 use propolis_client::{
     instance_spec::{
-        ComponentV0, Cpuid, CpuidVendor, DlpiNetworkBackend,
-        FileStorageBackend, MigrationFailureInjector, NvmeDisk, P9fs, PciPath,
-        PciPciBridge, SoftNpuP9, SoftNpuPciPort, SoftNpuPort, SpecKey,
-        VirtioDisk, VirtioNetworkBackend, VirtioNic,
+        Component, Cpuid, CpuidVendor, DlpiNetworkBackend, FileStorageBackend,
+        MigrationFailureInjector, NvmeDisk, P9fs, PciPath, PciPciBridge,
+        SoftNpuP9, SoftNpuPciPort, SoftNpuPort, SpecKey, VirtioDisk,
+        VirtioNetworkBackend, VirtioNic,
     },
     support::nvme_serial_from_str,
 };
@@ -70,7 +70,7 @@ pub enum TomlToSpecError {
 #[derive(Clone, Debug, Default)]
 pub struct SpecConfig {
     pub enable_pcie: bool,
-    pub components: BTreeMap<SpecKey, ComponentV0>,
+    pub components: BTreeMap<SpecKey, Component>,
 }
 
 // Inspired by `api_spec_v0.rs`'s `insert_component` and
@@ -84,7 +84,7 @@ pub struct SpecConfig {
 fn spec_component_add(
     spec: &mut SpecConfig,
     key: SpecKey,
-    component: ComponentV0,
+    component: Component,
 ) -> Result<(), TomlToSpecError> {
     if spec.components.contains_key(&key) {
         return Err(TomlToSpecError::DuplicateSpecKey(key));
@@ -135,7 +135,7 @@ impl TryFrom<&super::Config> for SpecConfig {
                 spec_component_add(
                     &mut spec,
                     SpecKey::Name(MIGRATION_FAILURE_DEVICE_NAME.to_owned()),
-                    ComponentV0::MigrationFailureInjector(
+                    Component::MigrationFailureInjector(
                         MigrationFailureInjector { fail_exports, fail_imports },
                     ),
                 )?;
@@ -174,13 +174,13 @@ impl TryFrom<&super::Config> for SpecConfig {
                     spec_component_add(
                         &mut spec,
                         device_id,
-                        ComponentV0::VirtioNic(device_spec),
+                        Component::VirtioNic(device_spec),
                     )?;
 
                     spec_component_add(
                         &mut spec,
                         backend_id,
-                        ComponentV0::VirtioNetworkBackend(backend_spec),
+                        Component::VirtioNetworkBackend(backend_spec),
                     )?;
                 }
                 "softnpu-pci-port" => {
@@ -194,9 +194,7 @@ impl TryFrom<&super::Config> for SpecConfig {
                     spec_component_add(
                         &mut spec,
                         device_id,
-                        ComponentV0::SoftNpuPciPort(SoftNpuPciPort {
-                            pci_path,
-                        }),
+                        Component::SoftNpuPciPort(SoftNpuPciPort { pci_path }),
                     )?;
                 }
                 "softnpu-port" => {
@@ -211,7 +209,7 @@ impl TryFrom<&super::Config> for SpecConfig {
                     spec_component_add(
                         &mut spec,
                         device_id,
-                        ComponentV0::SoftNpuPort(SoftNpuPort {
+                        Component::SoftNpuPort(SoftNpuPort {
                             link_name: device_name.to_string(),
                             backend_id: backend_name.clone(),
                         }),
@@ -220,7 +218,7 @@ impl TryFrom<&super::Config> for SpecConfig {
                     spec_component_add(
                         &mut spec,
                         backend_name,
-                        ComponentV0::DlpiNetworkBackend(DlpiNetworkBackend {
+                        Component::DlpiNetworkBackend(DlpiNetworkBackend {
                             vnic_name: vnic_name.to_owned(),
                         }),
                     )?;
@@ -236,14 +234,14 @@ impl TryFrom<&super::Config> for SpecConfig {
                     spec_component_add(
                         &mut spec,
                         device_id,
-                        ComponentV0::SoftNpuP9(SoftNpuP9 { pci_path }),
+                        Component::SoftNpuP9(SoftNpuP9 { pci_path }),
                     )?;
                 }
                 "pci-virtio-9p" => {
                     spec_component_add(
                         &mut spec,
                         device_id,
-                        ComponentV0::P9fs(parse_p9fs_from_config(
+                        Component::P9fs(parse_p9fs_from_config(
                             device_name,
                             device,
                         )?),
@@ -269,7 +267,7 @@ impl TryFrom<&super::Config> for SpecConfig {
             spec_component_add(
                 &mut spec,
                 SpecKey::Name(format!("pci-bridge-{}", bridge.pci_path)),
-                ComponentV0::PciPciBridge(PciPciBridge {
+                Component::PciPciBridge(PciPciBridge {
                     downstream_bus: bridge.downstream_bus,
                     pci_path,
                 }),
@@ -283,7 +281,7 @@ impl TryFrom<&super::Config> for SpecConfig {
 fn parse_storage_device_from_config(
     name: &str,
     device: &super::Device,
-) -> Result<(ComponentV0, SpecKey), TomlToSpecError> {
+) -> Result<(Component, SpecKey), TomlToSpecError> {
     enum Interface {
         Virtio,
         Nvme,
@@ -322,9 +320,9 @@ fn parse_storage_device_from_config(
     Ok((
         match interface {
             Interface::Virtio => {
-                ComponentV0::VirtioDisk(VirtioDisk { backend_id, pci_path })
+                Component::VirtioDisk(VirtioDisk { backend_id, pci_path })
             }
-            Interface::Nvme => ComponentV0::NvmeDisk(NvmeDisk {
+            Interface::Nvme => Component::NvmeDisk(NvmeDisk {
                 backend_id,
                 pci_path,
                 serial_number: nvme_serial_from_str(name, b' '),
@@ -337,9 +335,9 @@ fn parse_storage_device_from_config(
 fn parse_storage_backend_from_config(
     name: &str,
     backend: &super::BlockDevice,
-) -> Result<ComponentV0, TomlToSpecError> {
+) -> Result<Component, TomlToSpecError> {
     let backend_spec = match backend.bdtype.as_str() {
-        "file" => ComponentV0::FileStorageBackend(FileStorageBackend {
+        "file" => Component::FileStorageBackend(FileStorageBackend {
             path: backend
                 .options
                 .get("path")
