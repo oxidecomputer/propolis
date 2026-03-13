@@ -253,17 +253,23 @@ pub fn block_backend(
             block::FileBackend::create(&parsed.path, opts, workers).unwrap()
         }
         "crucible" => {
+            //create_crucible_backend(be, opts, log);
+
             let (req, be) = create_crucible_backend(be, opts, log);
 
-            let _ = tokio::runtime::Handle::current().block_on(async move {
-                let volume = crucible::Volume::construct(req, None, log.clone())
-                .await
-                .unwrap();
+            let n = tokio::runtime::Handle::current().block_on(async move {
+                let volume =
+                    crucible::Volume::construct(req, None, log.clone())
+                        .await
+                        .unwrap();
+
+                //sleep 2min
 
                 // TODO: handle if the disk is not RO
                 let mut buf = crucible::Buffer::new(1, 512);
-                let n = volume.read(crucible::BlockIndex(0), &mut buf);
+                volume.read(crucible::BlockIndex(0), &mut buf).await
             });
+            slog::error!(log, "n_bytes read: {:?}", n);
 
             be
         }

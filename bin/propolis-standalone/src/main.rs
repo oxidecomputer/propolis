@@ -36,6 +36,7 @@ use propolis::vmm::{Builder, Machine};
 use propolis::*;
 
 mod attestation;
+mod boot_disk_hash;
 mod cidata;
 mod config;
 mod snapshot;
@@ -500,9 +501,19 @@ impl Instance {
                         let _ = std::thread::Builder::new()
                             .name("boot-disk-hash".to_string())
                             .spawn(move || {
-                                let digest =
-                                    attestation::calc_boot_digest(&ccfg, &tlog);
-                                slog::info!(tlog, "hash={}", digest);
+                                let vol = boot_disk_hash::get_crucible_volume(
+                                    &tlog, &ccfg,
+                                );
+
+                                let digest = tokio::runtime::Handle::current()
+                                    .block_on(async {
+                                        boot_disk_hash::hash_crucible_disk(
+                                            vol, &tlog,
+                                        )
+                                        .await
+                                    });
+
+                                slog::info!(tlog, "digest={:?}", digest);
                             })
                             .unwrap();
                     } else {
