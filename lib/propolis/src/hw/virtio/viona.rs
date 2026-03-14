@@ -1420,3 +1420,656 @@ pub(crate) fn check_api_version() -> Result<(), crate::api_version::Error> {
         Ok(())
     }
 }
+
+/// Test functionality of the virtio-nic device as much as seems reasonable
+/// without having a full guest and driver running the device. Unless stated
+/// otherwise, the test expectations here are not grounded in any kind of
+/// observed behavior, just "the VirtIO spec says ... so ..."
+///
+/// If guests require changes that cause these tests to fail, please note the
+/// cirumstances carefully, and consider if these test expectations were correct
+/// in the first place; in some sense these tests function as a bespoke
+/// "virtio-nic driver" that lives only in Propolis' tests.
+///
+/// Finally, we'll actually create and destroy some vnics so not only do we need
+/// `dladm`, we need a recent enough viona and everything..
+#[cfg(all(test, target_os = "illumos"))]
+mod test {
+    use crate::common::{GuestAddr, RWOp, ReadOp, WriteOp, MB, PAGE_SIZE};
+    use crate::hw::chipset::i440fx::{self, I440FxHostBridge};
+    use crate::hw::chipset::Chipset;
+    use crate::hw::pci;
+    use crate::hw::pci::device::Device;
+    use crate::hw::pci::Bdf;
+    use crate::hw::virtio::pci::Status;
+    use crate::hw::virtio::viona::{
+        VIRTIO_NET_F_CTRL_VQ, VIRTIO_NET_F_MAC, VIRTIO_NET_F_MQ,
+        VIRTIO_NET_F_STATUS,
+    };
+    use crate::hw::virtio::PciVirtioViona;
+    use crate::Machine;
+    use std::sync::Arc;
+
+    struct TestCtx {
+        machine: Machine,
+        dev: Arc<PciVirtioViona>,
+    }
+
+    impl Drop for TestCtx {
+        fn drop(&mut self) {
+            crate::lifecycle::Lifecycle::pause(self.dev.as_ref());
+            crate::lifecycle::Lifecycle::halt(self.dev.as_ref());
+        }
+    }
+
+    impl TestCtx {
+        fn create_driver(&self) -> VirtioNetDriver<'_, '_> {
+            VirtioNetDriver::for_hardware(&self.machine, &self.dev)
+        }
+    }
+
+    fn create_test_nic(test_name: &str, vnic_name: &str) -> TestCtx {
+        // Create the VM with `force: true`: if we're running tests concurrently
+        // this will trample an existing test (which should then fail!). We do
+        // this so that if a test misconfiguration left a stray old VM hanging
+        // around we'll get it out of the way for this test re-run.
+        //
+        // No reservoir because the test VM is tiny and we don't want to require
+        // even more specific host configuration for tests. There's no reason
+        // the reservoir should be affecting virtio-nic-related tests anyway.
+        let vm_opts = crate::vmm::CreateOpts {
+            force: true,
+            use_reservoir: false,
+            track_dirty: false,
+        };
+        let vm_name = format!("virtio-viona-test-{}", test_name);
+        let machine = crate::vmm::Builder::new(&vm_name, vm_opts)
+            .expect("can set up vmm builder")
+            .add_mem_region(0, 64 * MB, "test mem")
+            .expect("can add dummy mem region")
+            .max_cpus(1)
+            .expect("can add cpus")
+            .finalize()
+            .expect("can create test VMM");
+        let pci_topology = pci::topology::Builder::new()
+            .finish(&machine)
+            .expect("can build empty topology")
+            .topology;
+        let chipset_hb = I440FxHostBridge::create(
+            pci_topology,
+            i440fx::Opts {
+                power_pin: None,
+                reset_pin: None,
+                enable_pcie: false,
+            },
+        );
+        let viona_dev = PciVirtioViona::new(vnic_name, &machine.hdl, None)
+            .expect("can create test vnic");
+
+        chipset_hb.pci_attach(i440fx::DEFAULT_HB_BDF, chipset_hb.clone(), None);
+        chipset_hb.attach(&machine);
+        chipset_hb.pci_attach(
+            Bdf::new_unchecked(0, 8, 0),
+            viona_dev.clone(),
+            None,
+        );
+
+        TestCtx { machine, dev: viona_dev }
+    }
+
+    /// Glue for a nicer test interface to read/write a specific structure in a
+    /// PCI BAR.
+    struct BarAccessor<'dev> {
+        dev: &'dev PciVirtioViona,
+        bar: pci::BarN,
+        offset: usize,
+    }
+
+    impl<'dev> BarAccessor<'dev> {
+        fn at(
+            dev: &'dev PciVirtioViona,
+            bar: pci::BarN,
+            offset: usize,
+        ) -> Self {
+            Self { dev, bar, offset }
+        }
+
+        fn read(&self, addr: usize, buf: &mut [u8]) {
+            let mut op = ReadOp::from_buf(self.offset + addr, buf);
+            self.dev.bar_rw(self.bar, RWOp::Read(&mut op));
+        }
+
+        fn write(&self, addr: usize, buf: &[u8]) {
+            let mut op = WriteOp::from_buf(self.offset + addr, buf);
+            self.dev.bar_rw(self.bar, RWOp::Write(&mut op));
+        }
+
+        fn read_u8(&self, addr: usize) -> u8 {
+            let mut b = [0];
+            self.read(addr, &mut b);
+            b[0]
+        }
+
+        fn read_le16(&self, addr: usize) -> u16 {
+            let mut b = [0, 0];
+            self.read(addr, &mut b);
+            u16::from_le_bytes(b)
+        }
+
+        fn read_le32(&self, addr: usize) -> u32 {
+            let mut b = [0, 0, 0, 0];
+            self.read(addr, &mut b);
+            u32::from_le_bytes(b)
+        }
+
+        fn write_u8(&self, addr: usize, v: u8) {
+            self.write(addr, &[v]);
+        }
+
+        fn write_le16(&self, addr: usize, v: u16) {
+            self.write(addr, &v.to_le_bytes());
+        }
+
+        fn write_le32(&self, addr: usize, v: u32) {
+            self.write(addr, &v.to_le_bytes());
+        }
+
+        fn write_le64(&self, addr: usize, v: u64) {
+            self.write(addr, &v.to_le_bytes());
+        }
+    }
+
+    /// `COMMON_REGS` describes the common configuration structure for VirtIO
+    /// devices, but that machinery is oriented around translating access
+    /// offsets into a structured enum variant. In these tests though, we'll go
+    /// from desired field access to offsets in an RWOp.
+    ///
+    /// This namespace gives names for various field offsets, matching
+    /// `COMMON_REGS` and its source, `struct virtio_pci_common_cfg` from the
+    /// VirtIO spec.
+    // Items here are named to match struct fields from the VirtIO spec.
+    #[allow(non_upper_case_globals, dead_code)]
+    mod common_cfg {
+        // > /* About the whole device. */
+        pub const device_feature_select: usize = 0;
+        pub const device_feature: usize = 4;
+        pub const driver_feature_select: usize = 8;
+        pub const driver_feature: usize = 12;
+        pub const config_msix_vector: usize = 16;
+        pub const num_queues: usize = 18;
+        pub const device_status: usize = 20;
+        pub const config_generation: usize = 21;
+
+        // > /* About a specific virtqueue. */
+        pub const queue_select: usize = 22;
+        pub const queue_size: usize = 24;
+        pub const queue_msix_vector: usize = 26;
+        pub const queue_enable: usize = 28;
+        pub const queue_notify_off: usize = 30;
+        pub const queue_desc: usize = 32;
+        pub const queue_driver: usize = 40;
+        pub const queue_device: usize = 48;
+        pub const queue_notify_data: usize = 56;
+        pub const queue_reset: usize = 58;
+    }
+
+    #[allow(non_upper_case_globals, dead_code)]
+    mod net_config {
+        pub const mac: usize = 0;
+        pub const status: usize = 6;
+        // This field is only valid if VIRTIO_NET_F_MQ is negotiated.
+        pub const max_virtqueue_pairs: usize = 8;
+        // This field is only valid if VIRTIO_NET_F_MTU is negotiated.
+        pub const mtu: usize = 10;
+        // This and `duplex` are only valid if VIRTIO_NET_F_SPEED_DUPLEX is
+        // negotiated.
+        pub const speed: usize = 12;
+        pub const duplex: usize = 16;
+        // These fields all depend on VIRTIO_NET_F_RSS or related features,
+        // which we won't set for these tests..
+        pub const rss_max_key_size: usize = 17;
+        pub const rss_max_indirection_table_length: usize = 18;
+        pub const supported_hash_types: usize = 20;
+    }
+
+    #[test]
+    fn test_common_cfg_size_is_right() {
+        // TODO: in a more recent rust this could be a `const { assert_eq!() }`
+        assert_eq!(
+            common_cfg::queue_reset + 2,
+            crate::hw::virtio::pci::COMMON_REG_SIZE_TEST
+        )
+    }
+
+    /// A very simple "driver" to drive test operations on a VirtIO device based
+    /// on our understanding of the VirtIO spec.
+    ///
+    /// This serves as a stand-in for some kind of guest software initializing
+    /// (and potentially one day?) operating a virtio-nic device. Tests using
+    /// this "driver" will often instantiate it multiple times as an
+    /// approximation of various guest operating systems initializing their
+    /// distinct drivers.
+    struct VirtioNetDriver<'mach, 'nic> {
+        machine: &'mach Machine,
+        dev: &'nic PciVirtioViona,
+        common_config: BarAccessor<'nic>,
+        device_config: BarAccessor<'nic>,
+        next_queue_gpa: u64,
+    }
+
+    impl<'mach, 'nic> VirtioNetDriver<'mach, 'nic> {
+        fn for_hardware(
+            machine: &'mach Machine,
+            dev: &'nic PciVirtioViona,
+        ) -> Self {
+            // We place virtio_pci_common_cfg at BAR 2, offset 0, so hardcode this
+            // in the test for now.
+            //
+            // TODO: it would be more appropriate to walk through the device's PCI
+            // capabilities until we find VIRTIO_PCI_CAP_COMMON_CFG but that's a
+            // little annoying..
+            let common_config = BarAccessor::at(dev, pci::BarN::BAR2, 0);
+
+            // Device-specific configuration offsets above are declared on their
+            // own, so even though this is in the same BAR we'll set the base offset
+            // to match.
+            let device_config =
+                BarAccessor::at(dev, pci::BarN::BAR2, PAGE_SIZE);
+
+            Self {
+                machine,
+                dev,
+                common_config,
+                device_config,
+                next_queue_gpa: 2 * MB as u64,
+            }
+        }
+
+        fn read_status(&self) -> Status {
+            Status::from_bits(
+                self.common_config.read_u8(common_cfg::device_status),
+            )
+            .unwrap()
+        }
+
+        fn write_status(&self, bits: Status) {
+            self.common_config.write_u8(common_cfg::device_status, bits.bits());
+        }
+
+        fn set_status_bits(&self, bits: Status) {
+            self.write_status(self.read_status() | bits);
+        }
+
+        fn status_ok(&self) -> bool {
+            !self.read_status().intersects(Status::NEEDS_RESET | Status::FAILED)
+        }
+
+        // Modern and legacy queue layout requirements differ a bit, but this
+        // sets up queues in the legacy format to be usable in both contexts.
+        //
+        // This does not actually initialize the descriptor tables in any
+        // meaningful way! These queues are not actually usable!
+        fn init_queue(&mut self, queue: u16) {
+            self.common_config.write_le16(common_cfg::queue_select, queue);
+            let queue_size =
+                self.common_config.read_le16(common_cfg::queue_size);
+            assert_ne!(queue_size, 0);
+            // In "2.7 Split Virtqueues",
+            //
+            // > The maximum Queue Size value is 32768.
+            assert!(queue_size <= 32 * 1024);
+
+            let page_u16: u16 = PAGE_SIZE.try_into().unwrap();
+            let page_u64: u64 = PAGE_SIZE.try_into().unwrap();
+
+            // For simplicity, shrink `queue_size` small enough that it fits in
+            // one page. There are a few additional items for the various parts
+            // of virtquues in addition to just an array of 16-byte elements, so
+            // we use the next smaller power of two so we round up to one page
+            // in the end.
+            //
+            // TODO: with support for VIRTIO_F_RING_PACKED we will be freed from
+            // having to write power of 2 sizes
+            let chosen_size = (page_u16 / 16) >> 1;
+            if chosen_size < queue_size {
+                self.common_config
+                    .write_le16(common_cfg::queue_size, chosen_size);
+            }
+
+            let acc_mem =
+                self.machine.acc_mem.access().expect("can access memory");
+
+            let descriptor_table_gpa = self.next_queue_gpa;
+            self.common_config
+                .write_le64(common_cfg::queue_desc, descriptor_table_gpa);
+
+            let avail_gpa = descriptor_table_gpa.next_multiple_of(page_u64);
+            // First, flags.
+            // > If the VIRTIO_F_EVENT_IDX feature bit is not negotiated:
+            // > * The driver MUST set flags to 0 or 1.
+            // > * The driver MAY set flags to 1 to advise the device that
+            //     notifications are not needed.
+            acc_mem.write::<u32>(GuestAddr(avail_gpa), &0);
+            // Index. "This starts at 0, and increases."
+            acc_mem.write::<u32>(GuestAddr(avail_gpa + 4), &0);
+            // Leave all the `ring` entries uninitialized, and we've not
+            // negotiated VIRTIO_F_EVENT_IDX so no `used_event` for now.
+            self.common_config.write_le64(common_cfg::queue_driver, avail_gpa);
+
+            let used_gpa = avail_gpa.next_multiple_of(page_u64);
+
+            self.common_config.write_le64(common_cfg::queue_device, used_gpa);
+
+            self.common_config.write_le16(common_cfg::queue_enable, 1);
+
+            // Finally, round up so the next queue (if there is one) starts
+            // page-aligned like it should.
+            self.next_queue_gpa = used_gpa.next_multiple_of(page_u64);
+
+            let msi_vector = 0x100 + queue;
+            self.common_config
+                .write_le16(common_cfg::queue_msix_vector, msi_vector);
+            let configured_vector =
+                self.common_config.read_le16(common_cfg::queue_msix_vector);
+            assert_eq!(configured_vector, msi_vector);
+        }
+
+        /// Initialize a VirtIO device according to "Driver Requirements: Device
+        /// Initialization". This includes the initial RESET.
+        ///
+        /// This will panic if device initialization concludes with the device
+        /// in NEEDS_RESET.
+        fn modern_device_init(&mut self, features: u64) {
+            // > The driver MUST follow this sequence to initialize a device:
+            // > 1. Reset the device.
+            self.write_status(Status::RESET);
+
+            // > 2. Set the ACKNOWLEDGE status bit: the guest OS has noticed the
+            // > device.
+            self.set_status_bits(Status::ACK);
+
+            // > 3. Set the DRIVER status bit: the guest OS knows how to drive the
+            // > device.
+            self.set_status_bits(Status::DRIVER);
+
+            // > 4. Read device feature bits, and write the subset of feature bits
+            // > understood by the OS and driver to the device. During this step the
+            // > driver MAY read (but MUST NOT write) the device-specific
+            // > configuration fields to check that it can support the device before
+            // > accepting it.
+            let device_feats =
+                self.common_config.read_le32(common_cfg::device_feature);
+
+            // VirtIO defines features as up to 64 bits, but the register is an le32
+            // with a separate register to select which part of feature space is to
+            // be written. Ignore all this given that no features are defined in the
+            // upper space yet (and if they were, we're not using them .. yet..?)
+            let features_u32: u32 = features
+                .try_into()
+                .expect("we don't (yet?) care about features above u32");
+
+            let unsupported = features_u32 & !device_feats;
+            if unsupported != 0 {
+                panic!(
+                    "Test wants more features than the device offers? \
+                    Device offers: {:#08x}\
+                    Test wants:    {:#08x}\
+                    Device lacks:  {:#08x}",
+                    device_feats, features_u32, unsupported
+                );
+            }
+
+            // TODO:
+            // if `features` includes multi-queue, for example, a guest might check
+            // the number of supported queues to decide if it actually can operate
+            // the device in multi-queue mode...
+            //
+            // We know that `features` is a subset of `device_feats` by
+            // `unsupported` being zero, above.
+            eprintln!("writing features: {:#08x}", features_u32);
+            self.common_config
+                .write_le32(common_cfg::driver_feature, features_u32);
+
+            self.set_status_bits(Status::FEATURES_OK);
+
+            // > 6. Re-read device status to ensure the FEATURES_OK bit is still
+            // > set: otherwise, the device does not support our subset of features
+            // > and the device is unusable.
+            let device_status = self.read_status();
+            if !device_status.contains(Status::FEATURES_OK) {
+                // Now, this *really* shouldn't happen, because we've checked that
+                // the device just offered up all the features we've requested. But
+                // it's possible that some features are mutually-exclusive and we've
+                // made a bad choice, in theory..
+                panic!(
+                    "Device does not support requested features: {:#08x}",
+                    features
+                );
+            }
+
+            // Extra pedantically, the device should not be NEEDS_RESET or FAILED.
+            assert!(self.status_ok());
+
+            // > 7. Perform device-specific setup, including discovery of virtqueues
+            // > for the device, optional per-bus setup, reading and possibly
+            // > writing the device's virtio configuration space, and population of
+            // > virtqueues.
+
+            let n_qpairs = if features & VIRTIO_NET_F_MQ == 0 {
+                1
+            } else {
+                let max_pairs = self
+                    .device_config
+                    .read_le16(net_config::max_virtqueue_pairs);
+                // TODO: the *right* thing to do here would be to set up the control
+                // queue, send an MQ command with VQ_PAIRS_SET, then wait for a
+                // (should be immediate) response. Or .. just call into the device
+                // directly.
+                self.dev
+                    .set_use_pairs(max_pairs)
+                    .expect("can set_use_pairs(max_pairs)");
+                max_pairs
+            };
+            let n_queues = n_qpairs * 2;
+            eprintln!("n_qpairs: {}", n_qpairs);
+
+            for queue in 0..n_queues {
+                eprintln!("initializing queue {}", queue);
+                self.init_queue(queue);
+                assert!(self.status_ok());
+            }
+
+            if features & VIRTIO_NET_F_CTRL_VQ != 0 {
+                // configure the control queue too?
+                self.common_config
+                    .write_le16(common_cfg::queue_select, n_queues);
+            }
+
+            // From 5.1.4.2 "Driver Requirements: Device configuration layout",
+            // > If the driver negotiates VIRTIO_NET_F_MTU, it MUST supply enough
+            // > receive buffers to receive at least one receive packet of size mtu
+            // > (plus low level ethernet ehader length) with gso_type NONE or ECN.
+            //
+            // TODO: Does this mean that if we do not provide buffers, but set
+            // DRIVER_OK, that the device should fail initialization? huh!
+
+            // > 8. Set the DRIVER_OK status bit. At this point the device is
+            // > "live".
+            //
+            // Is the implication (given 7.) that at this point the the driver
+            // should not? must not? write to the device's virtio configuration
+            // space?
+            self.set_status_bits(Status::DRIVER_OK);
+
+            // Now that the device is initialized we can check once again that it
+            // thinks everything is OK...
+            assert!(self.status_ok());
+        }
+    }
+
+    fn test_device_status_writes() {
+        // The device and driver collaborate via `device_status` to get the
+        // device turned on. There's a subtlety here though, in VirtIO 1.2
+        // section 2.1.2:
+        //
+        // > The driver MUST NOT clear a device status bit.
+        //
+        // which means if the device has set NEEDS_RESET, and a driver writes
+        // back a status that would clear that bit, the driver is in violation.
+        // Clearing any of the status bits will earn a warning and setting the
+        // device status to NEEDS_RESET.
+
+        let test_ctx =
+            create_test_nic("test_device_status_writes", "vnic_prop0");
+
+        let driver = test_ctx.create_driver();
+
+        // First, if we just set up some bits and try to clear one, we won't
+        // tolerate that..
+        driver.write_status(Status::RESET);
+
+        driver.set_status_bits(Status::ACK | Status::DRIVER);
+        let mut status = driver.read_status();
+        assert_eq!(status, Status::ACK | Status::DRIVER);
+
+        status.remove(Status::DRIVER);
+        driver.write_status(status);
+        let status = driver.read_status();
+
+        // No, no! If the guest has said they see the device and can drive it,
+        // they can't decide to un-drive it anymore!
+        assert!(status.contains(Status::NEEDS_RESET));
+
+        // Okay, reset it and try again. This time we'll get it to NEEDS_RESET
+        // "naturally"..
+        driver.write_status(Status::RESET);
+
+        driver.set_status_bits(Status::ACK | Status::DRIVER);
+
+        let device_feats =
+            driver.common_config.read_le32(common_cfg::device_feature);
+
+        let features_u32: u32 = VIRTIO_NET_F_CTRL_VQ.try_into().unwrap();
+        if device_feats & features_u32 == 0 {
+            panic!("device does not support VIRTIO_NET_F_CTRL_VQ??");
+        }
+
+        driver
+            .common_config
+            .write_le32(common_cfg::driver_feature, features_u32);
+
+        driver.set_status_bits(Status::FEATURES_OK);
+        assert!(driver.read_status().contains(Status::FEATURES_OK));
+
+        // Now write a bogus queue size. We'll set NEEDS_RESET for this.
+        // VirtIO 1.2 says 32KiB is the max size. Further, we have not
+        // negotiated VIRTIO_F_RING_PACKED, so the size must be a power of two.
+        // Break both rules.
+        driver.common_config.write_le16(common_cfg::queue_size, 65533);
+
+        let mut status = driver.read_status();
+        assert!(status.contains(Status::NEEDS_RESET));
+        status.remove(Status::NEEDS_RESET);
+        driver.write_status(status);
+
+        // We should not be able to clear NEEDS_RESET without .. a reset.
+        let real_status = driver.read_status();
+        assert!(real_status.contains(Status::NEEDS_RESET));
+    }
+
+    fn basic_operation_modern() {
+        let test_ctx = create_test_nic("basic_operation_modern", "vnic_prop0");
+
+        let expected_feats =
+            VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_CTRL_VQ;
+
+        // Go through setting up the virtio NIC in a few scenarios, but don't
+        // try using it or setting any interesting features.
+
+        // First, we have a fresh device on a fresh VM. The test is playing the
+        // role of the first use of the device by OVMF, an intiial bootloader,
+        // or maybe the actual guest OS.
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(expected_feats);
+
+        // Say we've done nothing with the device, but we've booted into
+        // whatever next stage with its own driver that wants to operat the
+        // device. It will go through 3.1.1 again.
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(expected_feats);
+
+        // `Lifecycle::reset` is the kind of reset that occurs when a VM is
+        // restarted. Do that now, as if the guest rebooted, triple faulted,
+        // etc.
+        crate::lifecycle::Lifecycle::reset(test_ctx.dev.as_ref());
+
+        // After a reset, reinit the device as if through OVMF->bootloader->OS
+        // again..
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(expected_feats);
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(expected_feats);
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(expected_feats);
+    }
+
+    fn basic_operation_multiqueue() {
+        let test_ctx =
+            create_test_nic("basic_operation_multiqueue", "vnic_prop0");
+
+        // All the same operation as `basic_operation_modern`, but with
+        // `VIRTIO_NET_F_MQ`.
+        let expected_feats = VIRTIO_NET_F_MAC
+            | VIRTIO_NET_F_STATUS
+            | VIRTIO_NET_F_CTRL_VQ
+            | VIRTIO_NET_F_MQ;
+
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(expected_feats);
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(expected_feats);
+        crate::lifecycle::Lifecycle::reset(test_ctx.dev.as_ref());
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(expected_feats);
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(expected_feats);
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(expected_feats);
+    }
+
+    /// Roughly approximation of a MQ-capable OS restarting, booting through
+    /// with a simple single-queue driver, then booting back to a MQ-capable OS.
+    fn multiqueue_to_singlequeue_to_multiqueue() {
+        let test_ctx = create_test_nic(
+            "multiqueue_to_singlequeue_to_multiqueue",
+            "vnic_prop0",
+        );
+
+        // All the same operation as `basic_operation_modern`, but with
+        // `VIRTIO_NET_F_MQ`.
+        let expected_feats =
+            VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_CTRL_VQ;
+
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
+        crate::lifecycle::Lifecycle::reset(test_ctx.dev.as_ref());
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(expected_feats);
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
+    }
+
+    #[tokio::test]
+    async fn run_viona_tests() {
+        let tests = &[
+            test_device_status_writes,
+            basic_operation_modern,
+            basic_operation_multiqueue,
+            multiqueue_to_singlequeue_to_multiqueue,
+        ];
+
+        for test in tests {
+            test();
+        }
+    }
+}
