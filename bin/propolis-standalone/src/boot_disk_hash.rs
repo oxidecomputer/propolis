@@ -1,16 +1,27 @@
-use crate::config::Config;
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::sync::Arc;
+use std::time::Instant;
+
+use anyhow::Result;
 use crucible::BlockIO;
 use crucible::BlockIndex;
 use crucible::Buffer;
-
-use anyhow::Result;
 use sha2::{Digest, Sha256};
 use slog::Logger;
-use std::time::Instant;
 
-pub fn get_crucible_volume(log: &Logger, cfg: &Config) -> crucible::Volume {
-    todo!()
+use propolis::block;
+
+pub fn get_crucible_volume(
+    backend: &Arc<dyn block::Backend>,
+) -> crucible::Volume {
+    let crucible_be = backend
+        .as_any()
+        .downcast_ref::<block::CrucibleBackend>()
+        .expect("backend is not a CrucibleBackend");
+    crucible_be.clone_volume()
 }
 
 // TODO: start delay?
@@ -25,14 +36,15 @@ pub async fn hash_crucible_disk(
 
     slog::info!(
         log,
-        "starting hash of volume {:?} (total_size={}, block_size={})",
+        "starting hash of volume {:?} \
+         (total_size={}, block_size={})",
         vol_uuid,
         vol_size,
         block_size
     );
     let hash_start = Instant::now();
 
-    let end = vol_size;
+    let end = vol_size / block_size;
 
     // TODO: it's jank, apparently
     // copying this I/O sizing from the crucible scrub code

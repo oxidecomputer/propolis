@@ -363,12 +363,20 @@ impl CrucibleBackend {
     pub async fn volume_is_active(&self) -> Result<bool, CrucibleError> {
         self.state.volume.query_is_active().await
     }
+
+    /// Clone the underlying Crucible volume.
+    pub fn clone_volume(&self) -> Volume {
+        self.state.volume.clone()
+    }
 }
 
 #[async_trait::async_trait]
 impl block::Backend for CrucibleBackend {
     fn attachment(&self) -> &block::BackendAttachment {
         &self.block_attach
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
     async fn start(&self) -> anyhow::Result<()> {
         self.state.volume.activate().await?;

@@ -36,6 +36,7 @@ use propolis::vmm::{Builder, Machine};
 use propolis::*;
 
 mod attestation;
+#[cfg(feature = "crucible")]
 mod boot_disk_hash;
 mod cidata;
 mod config;
@@ -493,30 +494,44 @@ impl Instance {
                     let calc_boot_digest =
                         inner.config.main.calc_boot_digest.unwrap_or(false);
 
+                    #[cfg(feature = "crucible")]
                     if calc_boot_digest {
                         let tlog = log.clone();
-                        let ccfg = inner.config.clone();
+
+                        // Find the first crucible backend and clone
+                        // its volume for hashing.
+                        let boot_be = guard
+                            .inventory
+                            .block
+                            .values()
+                            .next()
+                            .expect("no block backends in inventory");
+                        let vol = boot_disk_hash::get_crucible_volume(boot_be);
 
                         // spawn a thread to read the digest
+                        let handle = tokio::runtime::Handle::current();
                         let _ = std::thread::Builder::new()
                             .name("boot-disk-hash".to_string())
                             .spawn(move || {
-                                let vol = boot_disk_hash::get_crucible_volume(
-                                    &tlog, &ccfg,
-                                );
-
-                                let digest = tokio::runtime::Handle::current()
-                                    .block_on(async {
-                                        boot_disk_hash::hash_crucible_disk(
-                                            vol, &tlog,
-                                        )
-                                        .await
-                                    });
+                                let digest = handle.block_on(async {
+                                    boot_disk_hash::hash_crucible_disk(
+                                        vol, &tlog,
+                                    )
+                                    .await
+                                });
 
                                 slog::info!(tlog, "digest={:?}", digest);
                             })
                             .unwrap();
-                    } else {
+                    }
+                    #[cfg(not(feature = "crucible"))]
+                    if calc_boot_digest {
+                        slog::warn!(
+                            &log,
+                            "calc_boot_digest requires crucible feature"
+                        );
+                    }
+                    if !calc_boot_digest {
                         slog::info!(&log, "NO calc boot digest");
                     }
                 }

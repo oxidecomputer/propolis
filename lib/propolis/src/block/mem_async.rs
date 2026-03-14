@@ -154,6 +154,9 @@ impl block::Backend for MemAsyncBackend {
     fn attachment(&self) -> &block::BackendAttachment {
         &self.block_attach
     }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
     async fn start(&self) -> anyhow::Result<()> {
         self.block_attach.start();
         self.spawn_workers();

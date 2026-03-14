@@ -296,6 +296,9 @@ pub trait Backend: Send + Sync + 'static {
     /// Access to the [BackendAttachment] representing this backend.
     fn attachment(&self) -> &BackendAttachment;
 
+    /// Downcast to a concrete backend type.
+    fn as_any(&self) -> &dyn std::any::Any;
+
     /// Start attempting to process [Request]s from [Device] (if attached)
     ///
     /// Spawning of any tasks required to do such request processing can be done
