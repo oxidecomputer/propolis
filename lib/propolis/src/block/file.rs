@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use crate::block::{self, SyncWorkerCtx, WorkerId};
 use crate::tasks::ThreadGroup;
 use crate::vmm::{MappingExt, MemCtx};
+use slog::warn;
 
 use anyhow::Context;
 
@@ -31,6 +32,7 @@ struct SharedState {
 
     info: block::DeviceInfo,
     skip_flush: bool,
+    log: slog::Logger,
 }
 struct WceState {
     initial: bool,
@@ -43,6 +45,7 @@ impl SharedState {
         skip_flush: bool,
         wce_state: Option<WceState>,
         discard_mech: Option<dkioc::DiscardMech>,
+        log: slog::Logger,
     ) -> Arc<Self> {
         let state = SharedState {
             fp,
@@ -50,6 +53,7 @@ impl SharedState {
             discard_mech,
             skip_flush,
             info,
+            log,
         };
 
         // Attempt to enable write caching if underlying resource supports it
@@ -113,12 +117,29 @@ impl SharedState {
                     self.fp.sync_data().map_err(|_| "io error")?;
                 }
             }
-            block::Operation::Discard(off, len) => {
+            block::Operation::Discard => {
                 if let Some(mech) = self.discard_mech {
-                    dkioc::do_discard(&self.fp, mech, off as u64, len as u64)
-                        .map_err(|_| {
-                        "io error while attempting to free block(s)"
-                    })?;
+                    for &(off, len) in &req.ranges {
+                        // There might be some performance benefits to combining the ranges into
+                        // one DKIOCFREE call, but ZFS will only issue one range to the
+                        // underlying disk at a time, so we expect the benefit to be minimal in
+                        // practice.
+                        if let Err(e) = dkioc::do_discard(
+                            &self.fp, mech, off as u64, len as u64,
+                        ) {
+                            if e.kind() == ErrorKind::Unsupported {
+                                // If the discard mechanism is unsupported, we should not have
+                                // advertised support for discard in the first place.  However, if
+                                // this happens, it likely means we're running on older ZFS bits that
+                                // don't support DKIOCFREE on raw zvols.  Since this is not a supported
+                                // configuration, but developer machines might be in this state, we
+                                // swallow errors from the ioctl rather than failing the command.
+                                warn!(self.log, "discard at offset {off} length {len} is unsupported; check ZFS version");
+                            } else {
+                                return Err("io error while attempting to free block(s)");
+                            }
+                        }
+                    }
                 } else {
                     unreachable!("handled above in processing_loop()");
                 }
@@ -159,6 +180,7 @@ impl FileBackend {
         path: impl AsRef<Path>,
         opts: block::BackendOpts,
         worker_count: NonZeroUsize,
+        log: slog::Logger,
     ) -> Result<Arc<Self>> {
         let p: &Path = path.as_ref();
 
@@ -202,6 +224,7 @@ impl FileBackend {
                 skip_flush,
                 wce_state,
                 disk_info.discard_mech,
+                log,
             ),
             block_attach,
             worker_count,
