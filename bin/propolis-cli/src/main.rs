@@ -212,7 +212,7 @@ fn add_component_to_spec(
     use std::collections::btree_map::Entry;
     match spec.components.entry(id) {
         Entry::Vacant(vacant_entry) => {
-            vacant_entry.insert(component);
+            vacant_entry.insert(component.into());
             Ok(())
         }
         Entry::Occupied(occupied_entry) => Err(anyhow::anyhow!(
@@ -259,11 +259,16 @@ impl DiskRequest {
                 backend_id: backend_id.clone(),
                 pci_path,
             }),
-            "nvme" => ComponentV0::NvmeDisk(NvmeDisk {
-                backend_id: backend_id.clone(),
-                pci_path,
-                serial_number: nvme_serial_from_str(&self.name, b' '),
-            }),
+            "nvme" => {
+                let nvme = NvmeDisk {
+                    backend_id: backend_id.clone(),
+                    pci_path,
+                    serial_number: nvme_serial_from_str(&self.name, b' '),
+                    // TODO: populate model_number
+                    model_number: [0u8; 40],
+                };
+                ComponentV0::NvmeDisk(nvme.into())
+            }
             _ => anyhow::bail!(
                 "invalid device type in disk request: {:?}",
                 self.device
@@ -420,10 +425,11 @@ impl VmConfig {
         }
 
         // If there are no SoftNPU devices, also enable COM4.
+        use propolis_client::instance_spec::Component;
         if !spec
             .components
             .iter()
-            .any(|(_, c)| matches!(c, ComponentV0::SoftNpuPort(_)))
+            .any(|(_, c)| matches!(c, Component::SoftNpuPort(_)))
         {
             add_component_to_spec(
                 &mut spec,

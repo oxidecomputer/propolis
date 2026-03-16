@@ -9,6 +9,7 @@ progenitor::generate_api!(
     spec = "../../openapi/propolis-server/propolis-server-latest.json",
     derives = [schemars::JsonSchema],
     replace = {
+        NvmeDisk = propolis_api_types_versions::latest::components::devices::NvmeDisk,
         SpecKey = propolis_api_types_versions::latest::instance_spec::SpecKey,
     },
     patch = {
