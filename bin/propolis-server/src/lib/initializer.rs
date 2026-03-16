@@ -111,11 +111,11 @@ pub enum MachineInitError {
 /// Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
 
-const PCIE_ECAM_BASE: usize = 0xe000_0000;
-const PCIE_ECAM_SIZE: usize = 0x1000_0000;
-const MEM_32BIT_DEVICES_START: usize = 0xc000_0000;
-const MEM_32BIT_DEVICES_END: usize = 0xfc00_0000;
-const HIGHMEM_START: usize = 0x1_0000_0000;
+/// End address of the 32-bit PCI MMIO window.
+// XXX(acpi): Value inherited from the original EDK2 static tables. It should
+//            match the actual memory regions registered in the instance.
+// https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/PlatformPei/Platform.c#L180-L192
+const PCI_MMIO32_END: usize = 0xfeef_ffff;
 
 fn get_spec_guest_ram_limits(spec: &Spec) -> (usize, usize) {
     let memsize = spec.board.memory_mb as usize * MB;
@@ -147,22 +147,19 @@ pub fn build_instance(
         .context("failed to add low memory region")?
         .add_rom_region(0x1_0000_0000 - MAX_ROM_SIZE, MAX_ROM_SIZE, "bootrom")
         .context("failed to add bootrom region")?
-        .add_mmio_region(lowmem, PCIE_ECAM_BASE - lowmem, "dev32")
+        .add_mmio_region(0xc000_0000_usize, 0x2000_0000_usize, "dev32")
         .context("failed to add low device MMIO region")?
-        .add_mmio_region(
-            PCIE_ECAM_BASE,
-            MEM_32BIT_DEVICES_END - PCIE_ECAM_BASE,
-            "pcicfg",
-        )
+        .add_mmio_region(0xe000_0000_usize, 0x1000_0000_usize, "pcicfg")
         .context("failed to add PCI config region")?;
 
+    let highmem_start = 0x1_0000_0000;
     if highmem > 0 {
         builder = builder
-            .add_mem_region(HIGHMEM_START, highmem, "highmem")
+            .add_mem_region(highmem_start, highmem, "highmem")
             .context("failed to add high memory region")?;
     }
 
-    let dev64_start = HIGHMEM_START + highmem;
+    let dev64_start = highmem_start + highmem;
     builder = builder
         .add_mmio_region(dev64_start, vmm::MAX_PHYSMEM - dev64_start, "dev64")
         .context("failed to add high device MMIO region")?;
@@ -418,9 +415,9 @@ impl MachineInitializer<'_> {
             };
 
             let dev =
-                LpcUart::new(chipset.irq_pin(irq).unwrap(), port, irq, uart_name);
+                LpcUart::new(uart_name, irq, chipset.irq_pin(irq).unwrap());
             dev.set_autodiscard(true);
-            dev.attach(&self.machine.bus_pio);
+            dev.attach(&self.machine.bus_pio, port);
             self.devices.insert(name.to_owned(), dev.clone());
             if desc.num == SerialPortNumber::Com1 {
                 assert!(com1.is_none());
@@ -1179,16 +1176,8 @@ impl MachineInitializer<'_> {
                 propolis::vmm::MapType::Dram => {
                     e820_table.add_mem(addr, len);
                 }
-                propolis::vmm::MapType::Rom => {
+                _ => {
                     e820_table.add_reserved(addr, len);
-                }
-                propolis::vmm::MapType::Mmio => {
-                    // With native ACPI tables, MMIO is described in the DSDT
-                    // _CRS and should not appear in E820. Without native
-                    // tables, preserve original E820 layout.
-                    if self.spec.board.native_acpi_tables != Some(true) {
-                        e820_table.add_reserved(addr, len);
-                    }
                 }
             }
         }
@@ -1255,8 +1244,38 @@ impl MachineInitializer<'_> {
         Ok(Some(order.finish()))
     }
 
+    fn generate_acpi_tables(
+        &self,
+        cpus: u8,
+    ) -> Result<fwcfg::formats::AcpiTables, MachineInitError> {
+        let (lowmem, _) = get_spec_guest_ram_limits(self.spec);
+        let generators: Vec<_> = self
+            .devices
+            .values()
+            .filter_map(|dev| dev.as_dsdt_generator())
+            .collect();
+
+        let config = &fwcfg::formats::AcpiConfig {
+            num_cpus: cpus,
+            pci_window_32: fwcfg::formats::PciWindow {
+                base: lowmem as u64,
+                end: PCI_MMIO32_END as u64,
+            },
+            // XXX(acpi): Value inherited from the original EDK2 static tables,
+            //            where the 64-bit PCI MMIO region was never set. It
+            //            should match the actual memory regions registered in
+            //            the instance.
+            // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/Qemu.c#L284-L286
+            pci_window_64: fwcfg::formats::PciWindow { base: 0, end: 0 },
+            dsdt_generators: &generators,
+        };
+        let acpi_tables = fwcfg::formats::AcpiTablesBuilder::new(config);
+
+        Ok(acpi_tables.finish())
+    }
+
     /// Initialize qemu `fw_cfg` device, and populate it with data including CPU
-    /// count, SMBIOS tables, and attached RAM-FB device.
+    /// count, SMBIOS and ACPI tables, and attached RAM-FB device.
     ///
     /// Should not be called before [`Self::initialize_rom()`].
     pub fn initialize_fwcfg(
@@ -1301,65 +1320,18 @@ impl MachineInitializer<'_> {
             .insert_named("etc/e820", e820_entry)
             .map_err(|e| MachineInitError::FwcfgInsertFailed("e820", e))?;
 
-        if self.spec.board.native_acpi_tables == Some(true) {
-            let (_, highmem) = get_spec_guest_ram_limits(self.spec);
-            let dev64_start = HIGHMEM_START + highmem;
-
-            // Collect DSDT generators from devices that implement the trait
-            let generators: Vec<_> = self
-                .devices
-                .values()
-                .filter_map(|dev| dev.as_dsdt_generator())
-                .collect();
-
-            // Get the physical address width from CPUID leaf 0x8000_0008.
-            // EAX[7:0] contains the physical address bits supported by the CPU.
-            // The 64-bit MMIO limit must not exceed what the CPU can address.
-            let phys_addr_bits = self
-                .spec
-                .cpuid
-                .get(CpuidIdent::leaf(0x8000_0008))
-                .map(|v| v.eax & 0xff)
-                .unwrap_or(48) as u64;
-            let max_phys_addr = (1u64 << phys_addr_bits) - 1;
-            let mmio64_limit =
-                max_phys_addr.min(vmm::MAX_PHYSMEM as u64 - 1);
-
-            let acpi_tables = fwcfg::formats::build_acpi_tables(
-                &fwcfg::formats::AcpiConfig {
-                    num_cpus: cpus,
-                    pcie_ecam_base: PCIE_ECAM_BASE as u64,
-                    pcie_ecam_size: PCIE_ECAM_SIZE as u64,
-                    pcie_mmio32_base: MEM_32BIT_DEVICES_START as u64,
-                    pcie_mmio32_limit: (MEM_32BIT_DEVICES_END - 1) as u64,
-                    pcie_mmio64_base: dev64_start as u64,
-                    pcie_mmio64_limit: mmio64_limit,
-                    ..Default::default()
-                },
-                &generators,
-            );
-            fwcfg
-                .insert_named(
-                    "etc/acpi/tables",
-                    Entry::Bytes(acpi_tables.tables),
-                )
-                .map_err(|e| {
-                    MachineInitError::FwcfgInsertFailed("acpi/tables", e)
-                })?;
-            fwcfg
-                .insert_named("etc/acpi/rsdp", Entry::Bytes(acpi_tables.rsdp))
-                .map_err(|e| {
-                    MachineInitError::FwcfgInsertFailed("acpi/rsdp", e)
-                })?;
-            fwcfg
-                .insert_named(
-                    "etc/table-loader",
-                    Entry::Bytes(acpi_tables.loader),
-                )
-                .map_err(|e| {
-                    MachineInitError::FwcfgInsertFailed("table-loader", e)
-                })?;
-        }
+        let acpi_entries = self.generate_acpi_tables(cpus)?;
+        fwcfg.insert_named("etc/acpi/tables", acpi_entries.tables).map_err(
+            |e| MachineInitError::FwcfgInsertFailed("acpi/tables", e),
+        )?;
+        fwcfg
+            .insert_named("etc/acpi/rsdp", acpi_entries.rsdp)
+            .map_err(|e| MachineInitError::FwcfgInsertFailed("acpi/rsdp", e))?;
+        fwcfg
+            .insert_named("etc/table-loader", acpi_entries.table_loader)
+            .map_err(|e| {
+                MachineInitError::FwcfgInsertFailed("table-loader", e)
+            })?;
 
         let ramfb = ramfb::RamFb::create(
             self.log.new(slog::o!("component" => "ramfb")),

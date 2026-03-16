@@ -8,11 +8,13 @@ use std::mem::replace;
 use std::sync::{Arc, Mutex};
 
 use crate::common::*;
+use crate::firmware::acpi;
 use crate::hw::ibmpc;
 use crate::intr_pins::IntrPin;
 use crate::migrate::*;
 use crate::pio::{PioBus, PioFn};
 
+use acpi_tables::{aml, Aml, AmlSink};
 use rfb::proto::KeyEvent;
 
 use super::keyboard::KeyEventRep;
@@ -605,9 +607,7 @@ impl Lifecycle for PS2Ctrl {
     fn migrate(&self) -> Migrator<'_> {
         Migrator::Single(self)
     }
-    fn as_dsdt_generator(
-        &self,
-    ) -> Option<&dyn crate::firmware::acpi::DsdtGenerator> {
+    fn as_dsdt_generator(&self) -> Option<&dyn acpi::DsdtGenerator> {
         Some(self)
     }
 }
@@ -1095,25 +1095,42 @@ impl Default for PS2Mouse {
     }
 }
 
-impl crate::firmware::acpi::DsdtGenerator for PS2Ctrl {
-    fn dsdt_scope(&self) -> crate::firmware::acpi::DsdtScope {
-        crate::firmware::acpi::DsdtScope::SystemBus
+impl acpi::DsdtGenerator for PS2Ctrl {
+    fn dsdt_scope(&self) -> acpi::DsdtScope {
+        acpi::DsdtScope::Lpc
     }
+}
 
-    fn generate_dsdt(&self, scope: &mut crate::firmware::acpi::ScopeGuard<'_>) {
-        use crate::firmware::acpi::{EisaId, ResourceTemplateBuilder};
-        use crate::hw::ibmpc;
+const PS2_KBD_IRQ: u8 = 1;
 
-        const PS2_KBD_IRQ: u8 = 1;
-
-        let mut kbd = scope.device("KBD_");
-        kbd.name("_HID", &EisaId::from_str("PNP0303"));
-
-        let mut crs = ResourceTemplateBuilder::new();
-        crs.io(ibmpc::PORT_PS2_DATA, ibmpc::PORT_PS2_DATA, 1, 1);
-        crs.io(ibmpc::PORT_PS2_CMD_STATUS, ibmpc::PORT_PS2_CMD_STATUS, 1, 1);
-        crs.irq(1u16 << PS2_KBD_IRQ);
-        kbd.name("_CRS", &crs);
+impl Aml for PS2Ctrl {
+    fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
+        aml::Device::new(
+            "PS2K".into(),
+            vec![
+                &aml::Name::new("_HID".into(), &aml::EISAName::new("PNP0303")),
+                &aml::Name::new("_CID".into(), &aml::EISAName::new("PNP030B")),
+                &aml::Name::new(
+                    "_CRS".into(),
+                    &aml::ResourceTemplate::new(vec![
+                        &aml::IO::new(
+                            ibmpc::PORT_PS2_DATA,
+                            ibmpc::PORT_PS2_DATA,
+                            0x00,
+                            0x01,
+                        ),
+                        &aml::IO::new(
+                            ibmpc::PORT_PS2_CMD_STATUS,
+                            ibmpc::PORT_PS2_CMD_STATUS,
+                            0x00,
+                            0x01,
+                        ),
+                        &aml::IrqNoFlags::new(PS2_KBD_IRQ),
+                    ]),
+                ),
+            ],
+        )
+        .to_aml_bytes(sink);
     }
 }
 

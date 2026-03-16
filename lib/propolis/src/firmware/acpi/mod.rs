@@ -4,15 +4,45 @@
 
 //! ACPI table and AML bytecode generation.
 
-pub mod aml;
 pub mod dsdt;
-pub mod names;
-pub mod opcodes;
-pub mod resources;
-pub mod tables;
+pub mod facs;
+pub mod fadt;
+pub mod madt;
+pub mod rsdp;
+pub mod xsdt;
 
-pub use aml::{AmlBuilder, AmlWriter, DeviceGuard, MethodGuard, ScopeGuard};
-pub use dsdt::{build_dsdt_aml, DsdtConfig, DsdtGenerator, DsdtScope, PcieConfig};
-pub use names::{encode_uuid, EisaId};
-pub use resources::ResourceTemplateBuilder;
-pub use tables::{Dsdt, Facs, Fadt, Hpet, Madt, Mcfg, Rsdt, Rsdp, Xsdt};
+pub use dsdt::{
+    Dsdt, DsdtConfig, DsdtGenerator, DsdtScope, Ssdt, SSDT_FWDT_ADDR_LEN,
+    SSDT_FWDT_ADDR_OFFSET,
+};
+pub use facs::Facs;
+pub use fadt::{
+    Fadt, FADT_DSDT_LEN, FADT_DSDT_OFFSET, FADT_FACS_LEN, FADT_FACS_OFFSET,
+    FADT_X_DSDT_LEN, FADT_X_DSDT_OFFSET,
+};
+pub use madt::{Madt, MadtConfig};
+pub use rsdp::{
+    Rsdp, RSDP_EXTENDED_CHECKSUM_OFFSET, RSDP_EXTENDED_TABLE_LEN,
+    RSDP_V1_CHECKSUM_OFFSET, RSDP_V1_TABLE_LEN, RSDP_XSDT_ADDR_LEN,
+    RSDP_XSDT_ADDR_OFFSET,
+};
+pub use xsdt::{Xsdt, XSDT_HEADER_LEN};
+
+// Values used to reference table checksums to recompute them after values are
+// changed during table generation.
+pub const TABLE_HEADER_CHECKSUM_OFFSET: usize = 9;
+pub const TABLE_HEADER_CHECKSUM_LEN: usize = 1;
+
+// Internal values shared across tables.
+
+// XXX(acpi): Values inherited from the original EDK2 static tables. They could
+//            be set to Propolis-specific values in the future.
+const OEM_ID: &[u8; 6] = b"OVMF  ";
+const OEM_TABLE_ID: &[u8; 8] = b"OVMFEDK2";
+const OEM_REVISION: u32 = 0x20130221;
+
+const SCI_IRQ: u8 = 0x09;
+const PCI_LINK_IRQS: [u8; 4] = [0x05, SCI_IRQ, 0x0a, 0x0b];
+
+const IO_APIC_ADDR: u32 = 0xfec0_0000;
+const LOCAL_APIC_ADDR: u32 = 0xfee0_0000;

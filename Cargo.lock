@@ -3,6 +3,14 @@
 version = 3
 
 [[package]]
+name = "acpi_tables"
+version = "0.2.1"
+source = "git+https://github.com/oxidecomputer/acpi_tables.git#a4e63474d63ec81dbaacebebf41aefac743dc045"
+dependencies = [
+ "zerocopy 0.8.27",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1827,7 +1835,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5349,6 +5357,7 @@ dependencies = [
 name = "propolis"
 version = "0.1.0"
 dependencies = [
+ "acpi_tables",
  "anyhow",
  "async-trait",
  "bhyve_api 0.0.0",
@@ -6152,7 +6161,7 @@ dependencies = [
  "errno 0.3.14",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7320,7 +7329,7 @@ dependencies = [
  "getrandom 0.3.2",
  "once_cell",
  "rustix 1.1.2",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7329,7 +7338,7 @@ version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2111ef44dae28680ae9752bb89409e7310ca33a8c621ebe7b106cf5c928b3ac0"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

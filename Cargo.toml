@@ -92,6 +92,7 @@ crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "7103cd3a3
 crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "7103cd3a3d7b0112d2949dd135db06fef0c156bb" }
 
 # External dependencies
+acpi_tables = "0.2.0"
 anyhow = "1.0"
 async-trait = "0.1.88"
 atty = "0.2.14"
@@ -180,6 +181,8 @@ usdt = { version = "0.5", default-features = false }
 uuid = "1.3.2"
 zerocopy = "0.8.25"
 
+[patch.crates-io]
+acpi_tables = { git = 'https://github.com/oxidecomputer/acpi_tables.git' }
 
 #
 # It's common during development to use a local copy of various complex

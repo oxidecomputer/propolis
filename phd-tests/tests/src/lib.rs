@@ -4,7 +4,6 @@
 
 pub use phd_testcase;
 
-mod acpi;
 mod boot_order;
 mod cpuid;
 mod crucible;

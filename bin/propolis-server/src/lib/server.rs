@@ -248,14 +248,7 @@ impl PropolisServerApi for PropolisServerImpl {
         let vm_init = match init {
             InstanceInitializationMethod::Spec { spec } => spec
                 .try_into()
-                .map(|mut s: crate::spec::Spec| {
-                    // Default to native ACPI tables for new VMs but respect
-                    // explicit client preference if provided.
-                    if s.board.native_acpi_tables.is_none() {
-                        s.board.native_acpi_tables = Some(true);
-                    }
-                    VmInitializationMethod::Spec(Box::new(s))
-                })
+                .map(|s| VmInitializationMethod::Spec(Box::new(s)))
                 .map_err(|e| {
                     if let Some(s) = e.source() {
                         format!("{e}: {s}")
@@ -344,14 +337,7 @@ impl PropolisServerApi for PropolisServerImpl {
         let vm_init = match init {
             InstanceInitializationMethodV0::Spec { spec } => spec
                 .try_into()
-                .map(|mut s: crate::spec::Spec| {
-                    // Default to native ACPI tables for new VMs, but respect
-                    // explicit client preference if provided.
-                    if s.board.native_acpi_tables.is_none() {
-                        s.board.native_acpi_tables = Some(true);
-                    }
-                    VmInitializationMethod::Spec(Box::new(s))
-                })
+                .map(|s| VmInitializationMethod::Spec(Box::new(s)))
                 .map_err(|e| {
                     if let Some(s) = e.source() {
                         format!("{e}: {s}")
