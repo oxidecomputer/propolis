@@ -14,7 +14,7 @@ use propolis_client::{
         Component, Cpuid, CpuidVendor, DlpiNetworkBackend, FileStorageBackend,
         MigrationFailureInjector, NvmeDisk, P9fs, PciPath, PciPciBridge,
         SoftNpuP9, SoftNpuPciPort, SoftNpuPort, SpecKey, VirtioDisk,
-        VirtioNetworkBackend, VirtioNic,
+        VirtioNetworkBackend, VirtioNic, VirtioSocket,
     },
     support::nvme_serial_from_str,
 };
@@ -65,6 +65,9 @@ pub enum TomlToSpecError {
 
     #[error("failed to get source for p9 device {0:?}")]
     NoP9Target(String),
+
+    #[error("failed to get guest_cid for vsock device {0:?}")]
+    NoVsockGuestCid(String),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -242,6 +245,16 @@ impl TryFrom<&super::Config> for SpecConfig {
                         &mut spec,
                         device_id,
                         Component::P9fs(parse_p9fs_from_config(
+                            device_name,
+                            device,
+                        )?),
+                    )?;
+                }
+                "pci-virtio-socket" => {
+                    spec_component_add(
+                        &mut spec,
+                        device_id,
+                        Component::VirtioSocket(parse_vsock_from_config(
                             device_name,
                             device,
                         )?),
@@ -427,6 +440,20 @@ fn parse_p9fs_from_config(
         chunk_size,
         pci_path,
     })
+}
+
+fn parse_vsock_from_config(
+    name: &str,
+    device: &super::Device,
+) -> Result<VirtioSocket, TomlToSpecError> {
+    let guest_cid = device
+        .get("guest_cid")
+        .ok_or_else(|| TomlToSpecError::NoVsockGuestCid(name.to_owned()))?;
+    let pci_path: PciPath = device
+        .get("pci-path")
+        .ok_or_else(|| TomlToSpecError::InvalidPciPath(name.to_owned()))?;
+
+    Ok(VirtioSocket { guest_cid, pci_path })
 }
 
 /// Translate a parsed TOML-provided `CpuidEntry` into a `propolis-server`

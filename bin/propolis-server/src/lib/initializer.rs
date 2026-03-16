@@ -47,6 +47,7 @@ use propolis::hw::uart::LpcUart;
 use propolis::hw::{nvme, virtio};
 use propolis::intr_pins;
 use propolis::vmm::{self, Builder, Machine};
+use propolis::vsock::GuestCid;
 use propolis_api_types::instance::InstanceProperties;
 use propolis_api_types::instance_spec::components::devices::SerialPortNumber;
 use propolis_api_types::instance_spec::{self, SpecKey};
@@ -483,9 +484,9 @@ impl MachineInitializer<'_> {
     ) -> Result<(), MachineInitError> {
         use propolis::vsock::proxy::VsockPortMapping;
 
-        // Port 8008 - VM Attestation RFD 605
-        const ATTESTATION_PORT: u16 = 8008;
-        const ATTESTATION: SocketAddr = SocketAddr::new(
+        // OANA Port 605 - VM Attestation RFD 605
+        const ATTESTATION_PORT: u16 = 605;
+        const ATTESTATION_ADDR: SocketAddr = SocketAddr::new(
             IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
             ATTESTATION_PORT,
         );
@@ -495,13 +496,16 @@ impl MachineInitializer<'_> {
 
             let mappings = vec![VsockPortMapping::new(
                 ATTESTATION_PORT.into(),
-                ATTESTATION,
+                ATTESTATION_ADDR,
             )];
+
+            let guest_cid = GuestCid::try_from(vsock.spec.guest_cid)
+                .context("guest cid")?;
 
             let device = virtio::PciVirtioSock::new(
                 256,
-                vsock.spec.guest_cid as u32,
-                self.log.new(slog::o!("dev" => "virtio-sock")),
+                guest_cid,
+                self.log.new(slog::o!("dev" => "virtio-socket")),
                 mappings,
             );
 

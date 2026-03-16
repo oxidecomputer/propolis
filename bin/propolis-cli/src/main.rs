@@ -21,7 +21,7 @@ use propolis_client::instance_spec::{
     GuestHypervisorInterface, HyperVFeatureFlag, I440Fx, InstanceMetadata,
     InstanceProperties, InstanceSpec, InstanceSpecGetResponse, NvmeDisk,
     PciPath, QemuPvpanic, ReplacementComponent, SerialPort, SerialPortNumber,
-    SpecKey, VirtioDisk, VirtioSocket,
+    SpecKey, VirtioDisk,
 };
 use propolis_client::support::nvme_serial_from_str;
 use propolis_client::types::{
@@ -438,17 +438,6 @@ impl VmConfig {
             &mut spec,
             SpecKey::Name("pvpanic".to_owned()),
             Component::QemuPvpanic(QemuPvpanic { enable_isa: true }),
-        )?;
-
-        add_component_to_spec(
-            &mut spec,
-            SpecKey::Name("vsock".to_owned()),
-            Component::VirtioSocket(VirtioSocket {
-                // TODO (PullRequest): Update these values to what omicron will
-                // use.
-                guest_cid: 16,
-                pci_path: PciPath::new(0, 0x19, 0).unwrap(),
-            }),
         )?;
 
         Ok(spec)
