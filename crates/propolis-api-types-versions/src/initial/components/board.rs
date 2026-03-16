@@ -173,12 +173,6 @@ pub struct Board {
         skip_serializing_if = "GuestHypervisorInterface::is_default"
     )]
     pub guest_hv_interface: GuestHypervisorInterface,
-    /// Use native ACPI tables instead of OVMF-provided tables.
-    ///
-    /// `None` indicates a VM created before native ACPI table support existed.
-    /// For migration compatibility, `None` is preserved through round-trips
-    /// and treated the same as `Some(false)` at runtime.
-    pub native_acpi_tables: Option<bool>,
 
     /// The CPUID values to expose to the guest. If `None`, bhyve will derive
     /// default values from the host's CPUID values.

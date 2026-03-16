@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures::future::{self, BoxFuture};
 
+use crate::firmware::acpi;
 use crate::migrate::Migrator;
 
 /// General trait for emulated devices in the system.
@@ -97,13 +98,14 @@ pub trait Lifecycle: Send + Sync + 'static {
         Migrator::Empty
     }
 
-    /// Returns this device as a [`DsdtGenerator`] if it contributes to DSDT.
+    /// Returns this device as a [`DsdtGenerator`] if it contributes to the
+    /// DSDT ACPI table.
     ///
     /// Devices that implement [`DsdtGenerator`] should override this method
     /// to return `Some(self)` so they can be automatically discovered.
     ///
     /// [`DsdtGenerator`]: crate::firmware::acpi::DsdtGenerator
-    fn as_dsdt_generator(&self) -> Option<&dyn crate::firmware::acpi::DsdtGenerator> {
+    fn as_dsdt_generator(&self) -> Option<&dyn acpi::DsdtGenerator> {
         None
     }
 }
