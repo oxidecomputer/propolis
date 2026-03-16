@@ -161,11 +161,6 @@ impl<'dr> VmConfig<'dr> {
         self
     }
 
-    pub fn native_acpi_tables(&mut self, enabled: Option<bool>) -> &mut Self {
-        self.native_acpi_tables = enabled;
-        self
-    }
-
     /// Add a new disk to the VM config, and add it to the front of the VM's
     /// boot order.
     ///
@@ -316,7 +311,6 @@ impl<'dr> VmConfig<'dr> {
                     .as_ref()
                     .cloned()
                     .unwrap_or_default(),
-                native_acpi_tables: *native_acpi_tables,
             },
             components: Default::default(),
             smbios: None,

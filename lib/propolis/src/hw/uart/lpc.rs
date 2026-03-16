@@ -7,9 +7,12 @@ use std::sync::{Arc, Mutex};
 use super::uart16550::{migrate, Uart};
 use crate::chardev::*;
 use crate::common::*;
+use crate::firmware::acpi;
 use crate::intr_pins::IntrPin;
 use crate::migrate::*;
 use crate::pio::{PioBus, PioFn};
+
+use acpi_tables::{aml, Aml, AmlSink};
 
 // Low Pin Count UART
 
@@ -36,41 +39,43 @@ impl UartState {
 }
 
 pub struct LpcUart {
+    name: &'static str,
+    irq: u8,
     state: Mutex<UartState>,
+    port: Mutex<Option<u16>>,
     notify_readable: NotifierCell<dyn Source>,
     notify_writable: NotifierCell<dyn Sink>,
-    io_base: u16,
-    irq: u8,
-    name: &'static str,
 }
 
 impl LpcUart {
     pub fn new(
-        irq_pin: Box<dyn IntrPin>,
-        io_base: u16,
-        irq: u8,
         name: &'static str,
+        irq: u8,
+        irq_pin: Box<dyn IntrPin>,
     ) -> Arc<Self> {
         Arc::new(Self {
+            name,
+            irq,
             state: Mutex::new(UartState {
                 uart: Uart::new(),
                 irq_pin,
                 auto_discard: true,
                 paused: false,
             }),
+            port: Mutex::new(None),
             notify_readable: NotifierCell::new(),
             notify_writable: NotifierCell::new(),
-            io_base,
-            irq,
-            name,
         })
     }
 
-    pub fn attach(self: &Arc<Self>, bus: &PioBus) {
+    pub fn attach(self: &Arc<Self>, bus: &PioBus, port: u16) {
         let this = self.clone();
         let piofn = Arc::new(move |_port: u16, rwo: RWOp| this.pio_rw(rwo))
             as Arc<PioFn>;
-        bus.register(self.io_base, REGISTER_LEN as u16, piofn).unwrap();
+        bus.register(port, REGISTER_LEN as u16, piofn).unwrap();
+
+        let mut current_port = self.port.lock().unwrap();
+        *current_port = Some(port);
     }
     fn pio_rw(&self, rwo: RWOp) {
         assert!(rwo.offset() < REGISTER_LEN);
@@ -185,9 +190,7 @@ impl Lifecycle for LpcUart {
         state.paused = false;
     }
 
-    fn as_dsdt_generator(
-        &self,
-    ) -> Option<&dyn crate::firmware::acpi::DsdtGenerator> {
+    fn as_dsdt_generator(&self) -> Option<&dyn acpi::DsdtGenerator> {
         Some(self)
     }
 }
@@ -213,29 +216,44 @@ impl MigrateSingle for LpcUart {
     }
 }
 
-impl crate::firmware::acpi::DsdtGenerator for LpcUart {
-    fn dsdt_scope(&self) -> crate::firmware::acpi::DsdtScope {
-        crate::firmware::acpi::DsdtScope::SystemBus
+impl acpi::DsdtGenerator for LpcUart {
+    fn dsdt_scope(&self) -> acpi::DsdtScope {
+        acpi::DsdtScope::Lpc
     }
+}
 
-    fn generate_dsdt(&self, scope: &mut crate::firmware::acpi::ScopeGuard<'_>) {
-        use crate::firmware::acpi::{EisaId, ResourceTemplateBuilder};
-
-        let uid: u32 = match self.name {
-            "COM1" => 0,
-            "COM2" => 1,
-            "COM3" => 2,
-            "COM4" => 3,
-            _ => 0,
+impl Aml for LpcUart {
+    fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
+        let port = match *self.port.lock().unwrap() {
+            Some(p) => p,
+            None => return, // Device is not attached to any port.
         };
 
-        let mut dev = scope.device(self.name);
-        dev.name("_HID", &EisaId::from_str("PNP0501"));
-        dev.name("_UID", &uid);
+        let uid: u32 = match self.name {
+            "COM1" => 1,
+            "COM2" => 2,
+            "COM3" | "COM4" | _ => {
+                // XXX(acpi): COM3 and COM4 are also attached to the instance
+                // but the original EDK2 static tables didn't include them.
+                return;
+            }
+        };
 
-        let mut crs = ResourceTemplateBuilder::new();
-        crs.io(self.io_base, self.io_base, 1, REGISTER_LEN as u8);
-        crs.irq(1u16 << self.irq);
-        dev.name("_CRS", &crs);
+        aml::Device::new(
+            aml::Path::new(&format!("UAR{}", uid)),
+            vec![
+                &aml::Name::new("_HID".into(), &aml::EISAName::new("PNP0501")),
+                &aml::Name::new("_DDN".into(), &self.name),
+                &aml::Name::new("_UID".into(), &uid),
+                &aml::Name::new(
+                    "_CRS".into(),
+                    &aml::ResourceTemplate::new(vec![
+                        &aml::IO::new(port, port, 1, REGISTER_LEN as u8),
+                        &aml::Irq::new(true, false, false, self.irq),
+                    ]),
+                ),
+            ],
+        )
+        .to_aml_bytes(sink);
     }
 }
