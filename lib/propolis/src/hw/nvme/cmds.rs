@@ -2,7 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use super::bits::{self, StatusCodeType, SubmissionQueueEntry};
+use super::bits::{
+    self, DatasetManagementRangeDefinition, StatusCodeType,
+    SubmissionQueueEntry,
+};
 use super::queue::{QueueCreateErr, QueueId};
 use crate::block;
 use crate::common::*;
@@ -678,6 +681,8 @@ pub enum NvmCmd {
     Write(WriteCmd),
     /// Read data and metadata
     Read(ReadCmd),
+    /// Dataset Management Command
+    DatasetManagement(DatasetManagementCmd),
     /// An unknown NVM command
     Unknown(GuestData<SubmissionQueueEntry>),
 }
@@ -709,6 +714,17 @@ impl NvmCmd {
                 prp1: raw.prp1,
                 prp2: raw.prp2,
             }),
+            bits::NVM_OPC_DATASET_MANAGEMENT => {
+                NvmCmd::DatasetManagement(DatasetManagementCmd {
+                    prp1: raw.prp1,
+                    prp2: raw.prp2,
+                    // Convert from 0's based value
+                    nr: (raw.cdw10 & 0xFF) as u16 + 1,
+                    ad: raw.cdw11 & (1 << 2) != 0,
+                    idw: raw.cdw11 & (1 << 1) != 0,
+                    idr: raw.cdw11 & (1 << 0) != 0,
+                })
+            }
             _ => NvmCmd::Unknown(raw),
         };
         Ok(cmd)
@@ -776,6 +792,95 @@ impl ReadCmd {
     /// Returns an Iterator that yields [`GuestRegion`]'s to write the data to transfer in.
     pub fn data<'a>(&self, sz: u64, mem: &'a MemCtx) -> PrpIter<'a> {
         PrpIter::new(sz, self.prp1, self.prp2, mem)
+    }
+}
+
+/// Dataset Management Command Parameters
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct DatasetManagementCmd {
+    /// PRP Entry 1 (PRP1)
+    ///
+    /// Indicates a data buffer that contains the LBA range information.
+    prp1: u64,
+
+    /// PRP Entry 2 (PRP2)
+    ///
+    /// This field contains the second PRP entry that specifies the location where data should be
+    /// transferred from (if there is a physical discontinuity).
+    prp2: u64,
+
+    /// Number of Ranges (NR)
+    ///
+    /// Indicates the number of 16 byte range sets that are specified in the command. This is a
+    /// 0’s based value.
+    pub nr: u16,
+
+    /// Attribute – Deallocate (AD)
+    ///
+    /// If set to ‘1’ then the NVM subsystem may deallocate all provided ranges. If a read occurs
+    /// to a deallocated range, the NVM Express subsystem shall return all zeros, all ones, or
+    /// the last data written to the associated LBA.
+    ///
+    /// Note: The operation of the Deallocate function is similar to the ATA DATA SET MANAGEMENT
+    /// with Trim feature described in ACS-2 and SCSI UNMAP command described in SBC-3.
+    ad: bool,
+
+    /// Attribute – Integral Dataset for Write (IDW)
+    ///
+    /// If set to ‘1’ then the dataset should be optimized for write access as an integral unit.
+    /// The host expects to perform operations on all ranges provided as an integral unit for
+    /// writes, indicating that if a portion of the dataset is written it is expected that all of
+    /// the ranges in the dataset are going to be written.
+    idw: bool,
+
+    /// Attribute – Integral Dataset for Read (IDR)
+    ///
+    /// If set to ‘1’ then the dataset should be optimized for read access as an integral unit.
+    /// The host expects to perform operations on all ranges provided as an integral unit for
+    /// reads, indicating that if a portion of the dataset is read it is expected that all of the
+    /// ranges in the dataset are going to be read.
+    idr: bool,
+}
+
+impl DatasetManagementCmd {
+    /// Returns an Iterator that yields [`GuestRegion`]'s which contain the array of LBA ranges.
+    pub fn data<'a>(&self, mem: &'a MemCtx) -> PrpIter<'a> {
+        PrpIter::new(
+            u64::from(self.nr)
+                * size_of::<DatasetManagementRangeDefinition>() as u64,
+            self.prp1,
+            self.prp2,
+            mem,
+        )
+    }
+
+    /// Returns an Iterator that yields the LBA ranges specified in this command.  Note that if
+    /// some of the ranges couldn't be read from guest memory, this will yield fewer than
+    /// `Self.nr` ranges.
+    pub fn ranges<'a>(
+        &self,
+        mem: &'a MemCtx,
+    ) -> impl Iterator<Item = DatasetManagementRangeDefinition> + 'a {
+        self.data(mem).flat_map(|region| {
+            let mut ranges = Vec::new();
+            if let Some(mapping) = mem.readable_region(&region) {
+                ranges.resize_with(
+                    mapping.len()
+                        / size_of::<DatasetManagementRangeDefinition>(),
+                    Default::default,
+                );
+                if mapping.read_many(&mut ranges).is_err() {
+                    ranges.clear();
+                }
+            };
+
+            ranges.into_iter()
+        })
+    }
+
+    pub fn is_deallocate(&self) -> bool {
+        self.ad
     }
 }
 

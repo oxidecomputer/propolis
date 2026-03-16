@@ -4,6 +4,7 @@
 
 #![allow(dead_code)]
 
+use crate::block::{ByteLen, ByteOffset};
 use bitstruct::bitstruct;
 use zerocopy::FromBytes;
 
@@ -173,6 +174,38 @@ impl CompletionQueueEntry {
             true => self.status_phase |= 0b1,
             false => self.status_phase &= !0b1,
         }
+    }
+}
+
+/// A Dataset Management Range Definition as represented in memory.
+///
+/// See NVMe 1.0e Section 6.6 Figure 114: Dataset Management – Range Definition
+#[derive(Debug, Default, Copy, Clone, FromBytes)]
+#[repr(C, packed(1))]
+pub struct DatasetManagementRangeDefinition {
+    /// The context attributes specified for each range provides information about how the range
+    /// is intended to be used by host software. The use of this information is optional and the
+    /// controller is not required to perform any specific action.
+    pub context_attributes: u32,
+
+    pub number_logical_blocks: u32,
+
+    pub starting_lba: u64,
+}
+impl DatasetManagementRangeDefinition {
+    pub fn new(
+        context_attributes: u32,
+        number_logical_blocks: u32,
+        starting_lba: u64,
+    ) -> Self {
+        Self { context_attributes, number_logical_blocks, starting_lba }
+    }
+
+    pub fn offset_len(&self, lba_data_size: u64) -> (ByteOffset, ByteLen) {
+        (
+            (self.starting_lba * lba_data_size) as ByteOffset,
+            (self.number_logical_blocks as u64 * lba_data_size) as ByteLen,
+        )
     }
 }
 
@@ -539,6 +572,8 @@ pub const NVM_OPC_FLUSH: u8 = 0x00;
 pub const NVM_OPC_WRITE: u8 = 0x01;
 /// Read Command Opcode
 pub const NVM_OPC_READ: u8 = 0x02;
+/// Dataset Mangement Command Opcode
+pub const NVM_OPC_DATASET_MANAGEMENT: u8 = 0x09;
 
 // Generic Command Status values
 // See NVMe 1.0e Section 4.5.1.2.1, Figure 17 Status Code - Generic Command Status Values

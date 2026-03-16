@@ -113,12 +113,16 @@ impl SharedState {
                     self.fp.sync_data().map_err(|_| "io error")?;
                 }
             }
-            block::Operation::Discard(off, len) => {
+            block::Operation::Discard => {
                 if let Some(mech) = self.discard_mech {
-                    dkioc::do_discard(&self.fp, mech, off as u64, len as u64)
+                    for &(off, len) in &req.ranges {
+                        dkioc::do_discard(
+                            &self.fp, mech, off as u64, len as u64,
+                        )
                         .map_err(|_| {
-                        "io error while attempting to free block(s)"
-                    })?;
+                            "io error while attempting to free block(s)"
+                        })?;
+                    }
                 } else {
                     unreachable!("handled above in processing_loop()");
                 }

@@ -38,6 +38,9 @@ mod probes {
     }
     fn nvme_write_complete(devsq_id: u64, cid: u16, res: u8) {}
 
+    fn nvme_discard_enqueue(devsq_id: u64, idx: u16, cid: u16, nr: u16) {}
+    fn nvme_discard_complete(devsq_id: u64, cid: u16, res: u8) {}
+
     fn nvme_flush_enqueue(devsq_id: u64, idx: u16, cid: u16) {}
     fn nvme_flush_complete(devsq_id: u64, cid: u16, res: u8) {}
 
@@ -142,6 +145,37 @@ impl block::DeviceQueue for NvmeBlockQueue {
                         Request::new_read(off as usize, size as usize, bufs);
                     return Some((req, permit, None));
                 }
+                Ok(NvmCmd::DatasetManagement(cmd)) => {
+                    // We only support the "deallocate" (discard/trim) operation of Dataset
+                    // Management.  XXX should we return success?
+                    if !cmd.is_deallocate() {
+                        permit.complete(
+                            Completion::generic_err(bits::STS_INVAL_FIELD)
+                                .dnr(),
+                        );
+                        continue;
+                    }
+                    probes::nvme_discard_enqueue!(|| (
+                        sq.devq_id(),
+                        idx,
+                        cid,
+                        cmd.nr,
+                    ));
+                    let ranges: Vec<_> = cmd
+                        .ranges(&mem)
+                        .map(|r| r.offset_len(params.lba_data_size))
+                        .collect();
+                    if ranges.len() != cmd.nr as usize {
+                        // If we couldn't read all the ranges, fail the command
+                        permit.complete(
+                            Completion::generic_err(bits::STS_DATA_XFER_ERR)
+                                .dnr(),
+                        );
+                        continue;
+                    }
+                    let req = Request::new_discard(ranges);
+                    return Some((req, permit, None));
+                }
                 Ok(NvmCmd::Flush) => {
                     probes::nvme_flush_enqueue!(|| (sq.devq_id(), idx, cid));
                     let req = Request::new_flush();
@@ -179,8 +213,8 @@ impl block::DeviceQueue for NvmeBlockQueue {
             Operation::Flush => {
                 probes::nvme_flush_complete!(|| (devsq_id, cid, resnum));
             }
-            Operation::Discard(..) => {
-                unreachable!("discard not supported in NVMe for now");
+            Operation::Discard => {
+                probes::nvme_discard_complete!(|| (devsq_id, cid, resnum));
             }
         }
 
