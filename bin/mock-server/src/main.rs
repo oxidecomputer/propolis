@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use clap::Parser;
-use dropshot::{ConfigDropshot, HandlerTaskMode, HttpServerStarter};
+use dropshot::{
+    CompressionConfig, ConfigDropshot, HandlerTaskMode, HttpServerStarter,
+};
 use slog::{info, Drain};
 
 #[derive(Debug, Parser)]
@@ -113,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
                 default_request_body_max_bytes: 1024 * 1024, // 1M for ISO bytes
                 default_handler_task_mode: HandlerTaskMode::Detached,
                 log_headers: vec![],
+                compression: CompressionConfig::None,
             };
 
             let log = build_logger();

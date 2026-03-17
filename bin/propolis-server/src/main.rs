@@ -18,8 +18,8 @@ use propolis_server::{
 use anyhow::{anyhow, Context};
 use clap::Parser;
 use dropshot::{
-    ClientSpecifiesVersionInHeader, ConfigDropshot, HandlerTaskMode,
-    VersionPolicy,
+    ClientSpecifiesVersionInHeader, CompressionConfig, ConfigDropshot,
+    HandlerTaskMode, VersionPolicy,
 };
 use slog::{info, Logger};
 
@@ -308,6 +308,7 @@ fn main() -> anyhow::Result<()> {
                 default_request_body_max_bytes: 1024 * 1024, // 1M for ISO bytes
                 default_handler_task_mode: HandlerTaskMode::Detached,
                 log_headers: vec![],
+                compression: CompressionConfig::None,
             };
 
             let log = build_logger(log_level);
