@@ -4,6 +4,7 @@
 
 use std::convert::TryInto;
 use std::fs::File;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
@@ -46,6 +47,7 @@ use propolis::hw::uart::LpcUart;
 use propolis::hw::{nvme, virtio};
 use propolis::intr_pins;
 use propolis::vmm::{self, Builder, Machine};
+use propolis::vsock::GuestCid;
 use propolis_api_types::instance::InstanceProperties;
 use propolis_api_types::instance_spec::components::devices::SerialPortNumber;
 use propolis_api_types::instance_spec::{self, SpecKey};
@@ -471,6 +473,49 @@ impl MachineInitializer<'_> {
                     )?;
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    pub fn initialize_vsock(
+        &mut self,
+        chipset: &RegisteredChipset,
+    ) -> Result<(), MachineInitError> {
+        use propolis::vsock::proxy::VsockPortMapping;
+
+        // OANA Port 605 - VM Attestation RFD 605
+        const ATTESTATION_PORT: u16 = 605;
+        const ATTESTATION_ADDR: SocketAddr = SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            ATTESTATION_PORT,
+        );
+
+        if let Some(vsock) = &self.spec.vsock {
+            let bdf: pci::Bdf = vsock.spec.pci_path.into();
+
+            let mappings = vec![VsockPortMapping::new(
+                ATTESTATION_PORT.into(),
+                ATTESTATION_ADDR,
+            )];
+
+            let guest_cid = GuestCid::try_from(vsock.spec.guest_cid)
+                .context("guest cid")?;
+            // While the spec does not recommend how large the virtio descriptor
+            // table should be we sized this appropriately in testing so
+            // that the guest is able to move vsock packets at a reasonable
+            // throughput without the need to be much larger.
+            let num_queues = 256;
+
+            let device = virtio::PciVirtioSock::new(
+                num_queues,
+                guest_cid,
+                self.log.new(slog::o!("dev" => "virtio-socket")),
+                mappings,
+            );
+
+            self.devices.insert(vsock.id.clone(), device.clone());
+            chipset.pci_attach(bdf, device);
         }
 
         Ok(())

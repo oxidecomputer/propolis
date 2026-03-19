@@ -14,7 +14,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
 use in_memory::InMemoryDisk;
-use propolis_client::instance_spec::ComponentV0;
+use propolis_client::instance_spec::Component;
 use thiserror::Error;
 
 use crate::{
@@ -119,7 +119,7 @@ pub trait DiskConfig: std::fmt::Debug + Send + Sync {
     fn device_name(&self) -> &DeviceName;
 
     /// Yields the backend spec for this disk's storage backend.
-    fn backend_spec(&self) -> ComponentV0;
+    fn backend_spec(&self) -> Component;
 
     /// Yields the guest OS kind of the guest image the disk was created from,
     /// or `None` if the disk was not created from a guest image.

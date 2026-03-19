@@ -16,6 +16,7 @@ use anyhow::Context;
 use clap::Parser;
 use futures::future::BoxFuture;
 use propolis::hw::qemu::pvpanic::QemuPvpanic;
+use propolis::vsock::GuestCid;
 use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor};
 use slog::{o, Drain};
 use strum::IntoEnumIterator;
@@ -1319,12 +1320,14 @@ fn setup_instance(
                         guard.inventory.register(&pvpanic);
                     }
                 }
-                "pci-virtio-vsock" => {
+                "pci-virtio-socket" => {
                     let config = config::VsockDevice::from_opts(&dev.options)?;
                     let bdf = bdf.unwrap();
+                    let guest_cid = GuestCid::try_from(config.guest_cid)
+                        .context("guest cid")?;
                     let vsock = hw::virtio::PciVirtioSock::new(
                         512,
-                        config.guest_cid,
+                        guest_cid,
                         log.new(slog::o!("dev" => "vsock")),
                         config.port_mappings,
                     );

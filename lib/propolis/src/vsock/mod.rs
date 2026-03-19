@@ -19,6 +19,34 @@ pub use proxy::VsockProxy;
 pub(crate) const VSOCK_HOST_CID: u64 = 2;
 
 #[derive(Debug, thiserror::Error)]
+#[error("guest cid {0} contains reserved bits")]
+pub struct InvalidGuestCid(u64);
+
+#[derive(Debug, Copy, Clone)]
+pub struct GuestCid(u64);
+
+impl GuestCid {
+    pub const fn get(&self) -> u64 {
+        self.0
+    }
+}
+
+impl TryFrom<u64> for GuestCid {
+    type Error = InvalidGuestCid;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        match value {
+            // Within the virtio spec cid 0,1, and 2 have special meaning.
+            cid @ 0..=2 => Err(InvalidGuestCid(cid)),
+            // The upper 32 bits of the cid are reserved
+            cid if cid >> 32 != 0 => Err(InvalidGuestCid(value)),
+            // This cid is valid
+            cid => Ok(GuestCid(cid)),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum VsockError {
     #[error("failed to send virt queue notification for queue {}", queue)]
     QueueNotify { queue: u16 },

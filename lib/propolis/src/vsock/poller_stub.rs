@@ -9,6 +9,7 @@ use slog::Logger;
 
 use crate::hw::virtio::vsock::VsockVq;
 use crate::vsock::proxy::VsockPortMapping;
+use crate::vsock::GuestCid;
 
 bitflags! {
     pub struct PollEvents: i32 {
@@ -31,7 +32,7 @@ pub struct VsockPoller;
 
 impl VsockPoller {
     pub fn new(
-        _cid: u32,
+        _cid: GuestCid,
         _queues: VsockVq,
         _log: Logger,
         _port_mappings: IdHashMap<VsockPortMapping>,

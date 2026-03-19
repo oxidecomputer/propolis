@@ -7,7 +7,7 @@ use zerocopy::byteorder::little_endian::{U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::vsock::proxy::CONN_TX_BUF_SIZE;
-use crate::vsock::VSOCK_HOST_CID;
+use crate::vsock::{GuestCid, VSOCK_HOST_CID};
 
 bitflags! {
     /// Shutdown flags for VIRTIO_VSOCK_OP_SHUTDOWN
@@ -67,7 +67,7 @@ pub enum VsockPacketOp {
 /// Represents the required vsock fields required to send a packet to a guest.
 pub struct VsockGuestAddr {
     /// Guest context ID
-    pub guest_cid: u32,
+    pub guest_cid: GuestCid,
     /// Host port
     pub src_port: u32,
     /// Guest port
@@ -146,19 +146,25 @@ impl VsockPacketHeader {
         }
     }
 
-    pub const fn set_src_cid(&mut self, cid: u32) -> &mut Self {
-        // The spec states:
-        //
-        // The upper 32 bits of src_cid and dst_cid are reserved and zeroed.
-        self.src_cid = U64::new(cid as u64);
+    pub const fn set_host_src_cid(&mut self) -> &mut Self {
+        self.src_cid = U64::new(VSOCK_HOST_CID);
         self
     }
 
-    pub const fn set_dst_cid(&mut self, cid: u32) -> &mut Self {
-        // The spec states:
-        //
-        // The upper 32 bits of src_cid and dst_cid are reserved and zeroed.
-        self.dst_cid = U64::new(cid as u64);
+    #[cfg(test)]
+    pub const fn set_src_cid(&mut self, cid: GuestCid) -> &mut Self {
+        self.src_cid = U64::new(cid.get());
+        self
+    }
+
+    #[cfg(test)]
+    pub const fn set_dst_cid_raw(&mut self, cid: u64) -> &mut Self {
+        self.dst_cid = U64::new(cid);
+        self
+    }
+
+    pub const fn set_dst_cid(&mut self, cid: GuestCid) -> &mut Self {
+        self.dst_cid = U64::new(cid.get());
         self
     }
 
@@ -225,7 +231,7 @@ impl VsockPacket {
     fn new(addr: VsockGuestAddr, op: VsockPacketOp) -> Self {
         let mut header = VsockPacketHeader::new();
         header
-            .set_src_cid(VSOCK_HOST_CID as u32)
+            .set_host_src_cid()
             .set_dst_cid(addr.guest_cid)
             .set_src_port(addr.src_port)
             .set_dst_port(addr.dst_port)
