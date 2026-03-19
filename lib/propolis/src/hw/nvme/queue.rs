@@ -115,9 +115,9 @@ struct QueueState<QS> {
 
     /// This queue's memory accessor node.
     ///
-    /// Be careful about lock ordering when using this accessor; access_borrow()
+    /// Be careful about lock ordering when using this accessor; access_locked()
     /// holds this node's lock. If a user of this queue state requires both
-    /// `access_borrow()` and `QueueInner`, the protocol is to lock queue
+    /// `access_locked()` and `QueueInner`, the protocol is to lock queue
     /// state first and this accessor second.
     acc_mem: MemAccessor,
 }
@@ -659,7 +659,7 @@ impl SubQueue {
         // see docs on QueueState::acc_mem.
         let mut state = self.state.lock();
 
-        let Some(mem) = self.state.acc_mem.access_borrow() else { return None };
+        let Some(mem) = self.state.acc_mem.access_locked() else { return None };
         let mem = mem.view();
 
         // Attempt to reserve an entry on the Completion Queue
@@ -897,7 +897,7 @@ impl CompQueue {
         // XXX: handle a guest addr that becomes unmapped later
         let addr = self.base.offset::<CompletionQueueEntry>(idx as usize);
         // TODO: access disallowed?
-        let Some(mem) = self.state.acc_mem.access_borrow() else {
+        let Some(mem) = self.state.acc_mem.access_locked() else {
             // TODO: mark the queue/controller in error state?
             return;
         };
