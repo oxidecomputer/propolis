@@ -173,7 +173,7 @@ impl VionaDeviceParams {
 
 #[derive(Deserialize)]
 pub struct VsockDevice {
-    pub guest_cid: u32,
+    pub guest_cid: u64,
     pub port_mappings: Vec<VsockPortMapping>,
 }
 

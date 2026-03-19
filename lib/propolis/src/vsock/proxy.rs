@@ -25,6 +25,7 @@ use crate::vsock::packet::VsockPacket;
 use crate::vsock::packet::VsockPacketHeader;
 use crate::vsock::poller::VsockPoller;
 use crate::vsock::poller::VsockPollerNotify;
+use crate::vsock::GuestCid;
 use crate::vsock::VsockBackend;
 use crate::vsock::VsockError;
 
@@ -326,7 +327,7 @@ pub struct VsockProxy {
 
 impl VsockProxy {
     pub fn new(
-        cid: u32,
+        cid: GuestCid,
         queues: VsockVq,
         log: Logger,
         port_mappings: IdHashMap<VsockPortMapping>,

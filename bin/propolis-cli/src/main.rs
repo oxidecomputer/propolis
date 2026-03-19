@@ -17,7 +17,7 @@ use clap::{Args, Parser, Subcommand};
 use futures::{future, SinkExt};
 use newtype_uuid::{GenericUuid, TypedUuid, TypedUuidKind, TypedUuidTag};
 use propolis_client::instance_spec::{
-    BlobStorageBackend, Board, Chipset, ComponentV0, CrucibleStorageBackend,
+    BlobStorageBackend, Board, Chipset, Component, CrucibleStorageBackend,
     GuestHypervisorInterface, HyperVFeatureFlag, I440Fx, InstanceMetadata,
     InstanceProperties, InstanceSpec, InstanceSpecGetResponse, NvmeDisk,
     PciPath, QemuPvpanic, ReplacementComponent, SerialPort, SerialPortNumber,
@@ -207,7 +207,7 @@ struct VmConfig {
 fn add_component_to_spec(
     spec: &mut InstanceSpec,
     id: SpecKey,
-    component: ComponentV0,
+    component: Component,
 ) -> anyhow::Result<()> {
     use std::collections::btree_map::Entry;
     match spec.components.entry(id) {
@@ -236,7 +236,7 @@ struct DiskRequest {
 #[derive(Clone, Debug)]
 struct ParsedDiskRequest {
     device_id: SpecKey,
-    device_spec: ComponentV0,
+    device_spec: Component,
     backend_id: SpecKey,
     backend_spec: CrucibleStorageBackend,
 }
@@ -255,11 +255,11 @@ impl DiskRequest {
             format!("processing disk request {:?}", self.name)
         })?;
         let device_spec = match self.device.as_ref() {
-            "virtio" => ComponentV0::VirtioDisk(VirtioDisk {
+            "virtio" => Component::VirtioDisk(VirtioDisk {
                 backend_id: backend_id.clone(),
                 pci_path,
             }),
-            "nvme" => ComponentV0::NvmeDisk(NvmeDisk {
+            "nvme" => Component::NvmeDisk(NvmeDisk {
                 backend_id: backend_id.clone(),
                 pci_path,
                 serial_number: nvme_serial_from_str(&self.name, b' '),
@@ -373,7 +373,7 @@ impl VmConfig {
             add_component_to_spec(
                 &mut spec,
                 backend_id,
-                ComponentV0::CrucibleStorageBackend(backend_spec),
+                Component::CrucibleStorageBackend(backend_spec),
             )?;
         }
 
@@ -389,7 +389,7 @@ impl VmConfig {
             add_component_to_spec(
                 &mut spec,
                 SpecKey::Name(CLOUD_INIT_NAME.to_owned()),
-                ComponentV0::VirtioDisk(VirtioDisk {
+                Component::VirtioDisk(VirtioDisk {
                     backend_id: SpecKey::Name(
                         CLOUD_INIT_BACKEND_NAME.to_owned(),
                     ),
@@ -400,7 +400,7 @@ impl VmConfig {
             add_component_to_spec(
                 &mut spec,
                 SpecKey::Name(CLOUD_INIT_BACKEND_NAME.to_owned()),
-                ComponentV0::BlobStorageBackend(BlobStorageBackend {
+                Component::BlobStorageBackend(BlobStorageBackend {
                     base64: bytes,
                     readonly: true,
                 }),
@@ -415,7 +415,7 @@ impl VmConfig {
             add_component_to_spec(
                 &mut spec,
                 SpecKey::Name(name.to_owned()),
-                ComponentV0::SerialPort(SerialPort { num: port }),
+                Component::SerialPort(SerialPort { num: port }),
             )?;
         }
 
@@ -423,12 +423,12 @@ impl VmConfig {
         if !spec
             .components
             .iter()
-            .any(|(_, c)| matches!(c, ComponentV0::SoftNpuPort(_)))
+            .any(|(_, c)| matches!(c, Component::SoftNpuPort(_)))
         {
             add_component_to_spec(
                 &mut spec,
                 SpecKey::Name("com4".to_owned()),
-                ComponentV0::SerialPort(SerialPort {
+                Component::SerialPort(SerialPort {
                     num: SerialPortNumber::Com4,
                 }),
             )?;
@@ -437,7 +437,7 @@ impl VmConfig {
         add_component_to_spec(
             &mut spec,
             SpecKey::Name("pvpanic".to_owned()),
-            ComponentV0::QemuPvpanic(QemuPvpanic { enable_isa: true }),
+            Component::QemuPvpanic(QemuPvpanic { enable_isa: true }),
         )?;
 
         Ok(spec)
