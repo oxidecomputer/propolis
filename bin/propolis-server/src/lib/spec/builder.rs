@@ -24,6 +24,7 @@ use crate::spec::SerialPortDevice;
 
 use super::{
     Board, BootOrderEntry, BootSettings, Disk, Nic, QemuPvpanic, SerialPort,
+    VirtioSocket,
 };
 
 #[cfg(feature = "failure-injection")]
@@ -49,6 +50,9 @@ pub(crate) enum SpecBuilderError {
 
     #[error("pvpanic device already specified")]
     PvpanicInUse,
+
+    #[error("vsock device already specified")]
+    VsockInUse,
 
     #[cfg(feature = "failure-injection")]
     #[error("migration failure injection already enabled")]
@@ -266,6 +270,27 @@ impl SpecBuilder {
 
         self.component_names.insert(pvpanic.id.clone());
         self.spec.pvpanic = Some(pvpanic);
+        Ok(self)
+    }
+
+    pub fn add_vsock_device(
+        &mut self,
+        vsock: VirtioSocket,
+    ) -> Result<&Self, SpecBuilderError> {
+        if self.component_names.contains(&vsock.id) {
+            return Err(SpecBuilderError::ComponentNameInUse(vsock.id));
+        }
+
+        if self.spec.vsock.is_some() {
+            return Err(SpecBuilderError::VsockInUse);
+        }
+
+        // TODO validate guest_cid does not have reserved bits set
+
+        self.register_pci_device(vsock.spec.pci_path)?;
+        self.component_names.insert(vsock.id.clone());
+        self.spec.vsock = Some(vsock);
+
         Ok(self)
     }
 

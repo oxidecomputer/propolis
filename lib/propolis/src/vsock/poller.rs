@@ -25,6 +25,7 @@ use crate::vsock::packet::VsockSocketType;
 use crate::vsock::proxy::ConnKey;
 use crate::vsock::proxy::VsockPortMapping;
 use crate::vsock::proxy::VsockProxyConn;
+use crate::vsock::GuestCid;
 use crate::vsock::VSOCK_HOST_CID;
 
 use super::packet::VsockGuestAddr;
@@ -105,7 +106,7 @@ enum RxEvent {
 pub struct VsockPoller {
     log: Logger,
     /// The guest context id
-    guest_cid: u32,
+    guest_cid: GuestCid,
     /// Port mappings we are proxying packets to and from
     port_mappings: IdHashMap<VsockPortMapping>,
     /// The event port fd.
@@ -126,7 +127,7 @@ impl VsockPoller {
     /// This poller is responsible for driving virtio-socket connections between
     /// the guest VM and host sockets.
     pub fn new(
-        cid: u32,
+        cid: GuestCid,
         queues: VsockVq,
         log: Logger,
         port_mappings: IdHashMap<VsockPortMapping>,
@@ -312,7 +313,7 @@ impl VsockPoller {
             }
 
             // If the packet is not coming from our guest drop it.
-            if packet.header.src_cid() != u64::from(self.guest_cid) {
+            if packet.header.src_cid() != self.guest_cid.get() {
                 // Note that we could send a RST here but technically we should
                 // not know how to address this guest cid as it's not the one
                 // we assigned to our guest.
@@ -798,7 +799,7 @@ impl PortEvent {
 impl VsockGuestAddr {
     /// Helper function to construct a `[VsockGuestAddr]` from a guest context
     /// ID and a `[ConnKey]`.
-    fn from_conn_key(guest_cid: u32, key: ConnKey) -> Self {
+    fn from_conn_key(guest_cid: GuestCid, key: ConnKey) -> Self {
         Self { guest_cid, src_port: key.host_port, dst_port: key.guest_port }
     }
 }
@@ -821,7 +822,7 @@ mod tests {
         VsockPacketFlags, VsockPacketHeader, VsockPacketOp, VsockSocketType,
     };
     use crate::vsock::proxy::{VsockPortMapping, CONN_TX_BUF_SIZE};
-    use crate::vsock::VSOCK_HOST_CID;
+    use crate::vsock::{GuestCid, VSOCK_HOST_CID};
 
     use super::VsockPoller;
 
@@ -967,7 +968,7 @@ mod tests {
     fn request_receives_response() {
         let vsock_port = 3000;
         let guest_port = 1234;
-        let guest_cid: u32 = 50;
+        let guest_cid = GuestCid::try_from(50).unwrap();
         let (_listener, backends) = bind_test_backend(vsock_port);
 
         let mut harness = VsockTestHarness::new();
@@ -982,7 +983,7 @@ mod tests {
 
         let mut hdr = VsockPacketHeader::new();
         hdr.set_src_cid(guest_cid)
-            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_dst_cid_raw(VSOCK_HOST_CID)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(0)
@@ -1000,7 +1001,7 @@ mod tests {
         let (resp_hdr, _) = harness.read_vsock_packet(0);
         assert_eq!(resp_hdr.op(), Some(VsockPacketOp::Response));
         assert_eq!(resp_hdr.src_cid(), VSOCK_HOST_CID);
-        assert_eq!(resp_hdr.dst_cid(), guest_cid as u64);
+        assert_eq!(resp_hdr.dst_cid(), guest_cid.get());
         assert_eq!(resp_hdr.src_port(), vsock_port);
         assert_eq!(resp_hdr.dst_port(), guest_port);
         assert_eq!(resp_hdr.socket_type(), Some(VsockSocketType::Stream));
@@ -1011,7 +1012,7 @@ mod tests {
 
     #[test]
     fn rw_with_invalid_socket_type_receives_rst() {
-        let guest_cid: u32 = 50;
+        let guest_cid = GuestCid::try_from(50).unwrap();
 
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
@@ -1026,7 +1027,7 @@ mod tests {
 
         let mut hdr = VsockPacketHeader::new();
         hdr.set_src_cid(guest_cid)
-            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_dst_cid_raw(VSOCK_HOST_CID)
             .set_src_port(5555)
             .set_dst_port(8080)
             .set_len(0)
@@ -1044,7 +1045,7 @@ mod tests {
         let (resp_hdr, _) = harness.read_vsock_packet(0);
         assert_eq!(resp_hdr.op(), Some(VsockPacketOp::Reset));
         assert_eq!(resp_hdr.src_cid(), VSOCK_HOST_CID);
-        assert_eq!(resp_hdr.dst_cid(), guest_cid as u64);
+        assert_eq!(resp_hdr.dst_cid(), guest_cid.get());
         assert_eq!(resp_hdr.src_port(), 8080);
         assert_eq!(resp_hdr.dst_port(), 5555);
 
@@ -1056,7 +1057,7 @@ mod tests {
     fn request_then_rw_delivers_data() {
         let vsock_port = 3000;
         let guest_port = 1234;
-        let guest_cid: u32 = 50;
+        let guest_cid = GuestCid::try_from(50).unwrap();
         let (listener, backends) = bind_test_backend(vsock_port);
         listener.set_nonblocking(false).unwrap();
 
@@ -1076,7 +1077,7 @@ mod tests {
         let mut req_hdr = VsockPacketHeader::new();
         req_hdr
             .set_src_cid(guest_cid)
-            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_dst_cid_raw(VSOCK_HOST_CID)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(0)
@@ -1100,7 +1101,7 @@ mod tests {
         let mut rw_hdr = VsockPacketHeader::new();
         rw_hdr
             .set_src_cid(guest_cid)
-            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_dst_cid_raw(VSOCK_HOST_CID)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(payload.len() as u32)
@@ -1128,7 +1129,7 @@ mod tests {
     fn credit_update_sent_after_flushing_half_buffer() {
         let vsock_port = 4000;
         let guest_port = 2000;
-        let guest_cid: u32 = 50;
+        let guest_cid = GuestCid::try_from(50).unwrap();
         let (listener, backends) = bind_test_backend(vsock_port);
         listener.set_nonblocking(false).unwrap();
 
@@ -1149,7 +1150,7 @@ mod tests {
         let mut req_hdr = VsockPacketHeader::new();
         req_hdr
             .set_src_cid(guest_cid)
-            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_dst_cid_raw(VSOCK_HOST_CID)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(0)
@@ -1181,7 +1182,7 @@ mod tests {
             let mut rw_hdr = VsockPacketHeader::new();
             rw_hdr
                 .set_src_cid(guest_cid)
-                .set_dst_cid(VSOCK_HOST_CID as u32)
+                .set_dst_cid_raw(VSOCK_HOST_CID)
                 .set_src_port(guest_port)
                 .set_dst_port(vsock_port)
                 .set_len(payload.len() as u32)
@@ -1214,7 +1215,7 @@ mod tests {
             let (hdr, _) = harness.read_vsock_packet(i);
             if hdr.op() == Some(VsockPacketOp::CreditUpdate) {
                 assert_eq!(hdr.src_cid(), VSOCK_HOST_CID);
-                assert_eq!(hdr.dst_cid(), guest_cid as u64);
+                assert_eq!(hdr.dst_cid(), guest_cid.get());
                 assert_eq!(hdr.src_port(), vsock_port);
                 assert_eq!(hdr.dst_port(), guest_port);
                 assert_eq!(hdr.buf_alloc(), CONN_TX_BUF_SIZE as u32);
@@ -1232,7 +1233,7 @@ mod tests {
     fn rst_removes_established_connection() {
         let vsock_port = 5000;
         let guest_port = 3000;
-        let guest_cid: u32 = 50;
+        let guest_cid = GuestCid::try_from(50).unwrap();
         let (listener, backends) = bind_test_backend(vsock_port);
         listener.set_nonblocking(false).unwrap();
 
@@ -1252,7 +1253,7 @@ mod tests {
         let mut req_hdr = VsockPacketHeader::new();
         req_hdr
             .set_src_cid(guest_cid)
-            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_dst_cid_raw(VSOCK_HOST_CID)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(0)
@@ -1274,7 +1275,7 @@ mod tests {
         let mut rst_hdr = VsockPacketHeader::new();
         rst_hdr
             .set_src_cid(guest_cid)
-            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_dst_cid_raw(VSOCK_HOST_CID)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(0)
@@ -1308,7 +1309,7 @@ mod tests {
     fn end_to_end_guest_to_host() {
         let vsock_port = 7000;
         let guest_port = 5000;
-        let guest_cid: u32 = 50;
+        let guest_cid = GuestCid::try_from(50).unwrap();
         let (listener, backends) = bind_test_backend(vsock_port);
         listener.set_nonblocking(false).unwrap();
 
@@ -1329,7 +1330,7 @@ mod tests {
         let mut req_hdr = VsockPacketHeader::new();
         req_hdr
             .set_src_cid(guest_cid)
-            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_dst_cid_raw(VSOCK_HOST_CID)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(0)
@@ -1355,7 +1356,7 @@ mod tests {
         let mut rw_hdr = VsockPacketHeader::new();
         rw_hdr
             .set_src_cid(guest_cid)
-            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_dst_cid_raw(VSOCK_HOST_CID)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(payload.len() as u32)
@@ -1399,7 +1400,7 @@ mod tests {
     fn rx_blocked_resumes_when_descriptors_available() {
         let vsock_port = 6000;
         let guest_port = 4000;
-        let guest_cid: u32 = 50;
+        let guest_cid = GuestCid::try_from(50).unwrap();
         let (listener, backends) = bind_test_backend(vsock_port);
         listener.set_nonblocking(false).unwrap();
 
@@ -1418,7 +1419,7 @@ mod tests {
         let mut req_hdr = VsockPacketHeader::new();
         req_hdr
             .set_src_cid(guest_cid)
-            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_dst_cid_raw(VSOCK_HOST_CID)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(0)
@@ -1474,7 +1475,7 @@ mod tests {
 
         let vsock_port = 8000;
         let guest_port = 6000;
-        let guest_cid: u32 = 50;
+        let guest_cid = GuestCid::try_from(50).unwrap();
         let (listener, backends) = bind_test_backend(vsock_port);
         listener.set_nonblocking(false).unwrap();
 
@@ -1499,7 +1500,7 @@ mod tests {
         let mut req_hdr = VsockPacketHeader::new();
         req_hdr
             .set_src_cid(guest_cid)
-            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_dst_cid_raw(VSOCK_HOST_CID)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(0)
@@ -1580,7 +1581,7 @@ mod tests {
                 let mut rw_hdr = VsockPacketHeader::new();
                 rw_hdr
                     .set_src_cid(guest_cid)
-                    .set_dst_cid(VSOCK_HOST_CID as u32)
+                    .set_dst_cid_raw(VSOCK_HOST_CID)
                     .set_src_port(guest_port)
                     .set_dst_port(vsock_port)
                     .set_len(payload.len() as u32)
@@ -1681,7 +1682,7 @@ mod tests {
     fn host_socket_eof_sends_shutdown() {
         let vsock_port = 9000;
         let guest_port = 7000;
-        let guest_cid: u32 = 50;
+        let guest_cid = GuestCid::try_from(50).unwrap();
         let (listener, backends) = bind_test_backend(vsock_port);
         listener.set_nonblocking(false).unwrap();
 
@@ -1702,7 +1703,7 @@ mod tests {
         let mut req_hdr = VsockPacketHeader::new();
         req_hdr
             .set_src_cid(guest_cid)
-            .set_dst_cid(VSOCK_HOST_CID as u32)
+            .set_dst_cid_raw(VSOCK_HOST_CID)
             .set_src_port(guest_port)
             .set_dst_port(vsock_port)
             .set_len(0)
@@ -1731,7 +1732,7 @@ mod tests {
 
         assert_eq!(hdr.op(), Some(VsockPacketOp::Shutdown));
         assert_eq!(hdr.src_cid(), VSOCK_HOST_CID);
-        assert_eq!(hdr.dst_cid(), guest_cid as u64);
+        assert_eq!(hdr.dst_cid(), guest_cid.get());
         assert_eq!(hdr.src_port(), vsock_port);
         assert_eq!(hdr.dst_port(), guest_port);
         assert_eq!(

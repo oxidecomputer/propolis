@@ -8,10 +8,10 @@ use anyhow::Context;
 use cpuid_utils::CpuidIdent;
 use propolis_client::{
     instance_spec::{
-        Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
+        Board, BootOrderEntry, BootSettings, Chipset, Component, Cpuid,
         CpuidEntry, CpuidVendor, GuestHypervisorInterface, InstanceMetadata,
         InstanceSpec, MigrationFailureInjector, NvmeDisk, PciPath, SerialPort,
-        SerialPortNumber, SpecKey, VirtioDisk,
+        SerialPortNumber, SpecKey, VirtioDisk, VirtioSocket,
     },
     support::nvme_serial_from_str,
 };
@@ -56,6 +56,7 @@ pub struct VmConfig<'dr> {
     disks: Vec<DiskRequest<'dr>>,
     migration_failure: Option<MigrationFailureInjector>,
     guest_hv_interface: Option<GuestHypervisorInterface>,
+    vsock: Option<VirtioSocket>,
 }
 
 impl<'dr> VmConfig<'dr> {
@@ -76,6 +77,7 @@ impl<'dr> VmConfig<'dr> {
             disks: Vec::new(),
             migration_failure: None,
             guest_hv_interface: None,
+            vsock: None,
         };
 
         config.boot_disk(
@@ -118,6 +120,12 @@ impl<'dr> VmConfig<'dr> {
         interface: GuestHypervisorInterface,
     ) -> &mut Self {
         self.guest_hv_interface = Some(interface);
+        self
+    }
+
+    pub fn vsock(&mut self, guest_cid: u64, pci_device_num: u8) -> &mut Self {
+        let pci_path = PciPath::new(0, pci_device_num, 0).unwrap();
+        self.vsock = Some(VirtioSocket { guest_cid, pci_path });
         self
     }
 
@@ -218,6 +226,7 @@ impl<'dr> VmConfig<'dr> {
             disks,
             migration_failure,
             guest_hv_interface,
+            vsock,
         } = self;
         let framework = &ctx.framework;
         let bootrom_path = framework
@@ -315,13 +324,13 @@ impl<'dr> VmConfig<'dr> {
             let device_name = hdl.device_name().clone();
             let backend_name = device_name.clone().into_backend_name();
             let device_spec = match req.interface {
-                DiskInterface::Virtio => ComponentV0::VirtioDisk(VirtioDisk {
+                DiskInterface::Virtio => Component::VirtioDisk(VirtioDisk {
                     backend_id: SpecKey::Name(
                         backend_name.clone().into_string(),
                     ),
                     pci_path,
                 }),
-                DiskInterface::Nvme => ComponentV0::NvmeDisk(NvmeDisk {
+                DiskInterface::Nvme => Component::NvmeDisk(NvmeDisk {
                     backend_id: SpecKey::Name(
                         backend_name.clone().into_string(),
                     ),
@@ -350,14 +359,14 @@ impl<'dr> VmConfig<'dr> {
 
         let _old = spec.components.insert(
             "com1".into(),
-            ComponentV0::SerialPort(SerialPort { num: SerialPortNumber::Com1 }),
+            Component::SerialPort(SerialPort { num: SerialPortNumber::Com1 }),
         );
         assert!(_old.is_none());
 
         if let Some(boot_order) = boot_order.as_ref() {
             let _old = spec.components.insert(
                 "boot-settings".into(),
-                ComponentV0::BootSettings(BootSettings {
+                Component::BootSettings(BootSettings {
                     order: boot_order
                         .iter()
                         .map(|item| BootOrderEntry {
@@ -369,10 +378,17 @@ impl<'dr> VmConfig<'dr> {
             assert!(_old.is_none());
         }
 
+        if let Some(vsock) = vsock {
+            let _old = spec
+                .components
+                .insert("vsock".into(), Component::VirtioSocket(*vsock));
+            assert!(_old.is_none());
+        }
+
         if let Some(mig) = migration_failure.as_ref() {
             let _old = spec.components.insert(
                 "migration-failure".into(),
-                ComponentV0::MigrationFailureInjector(mig.clone()),
+                Component::MigrationFailureInjector(mig.clone()),
             );
             assert!(_old.is_none());
         }

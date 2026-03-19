@@ -7,7 +7,7 @@
       "url": "https://oxide.computer",
       "email": "api@oxide.computer"
     },
-    "version": "2.0.0"
+    "version": "3.0.0"
   },
   "paths": {
     "/instance": {
@@ -579,7 +579,7 @@
           }
         ]
       },
-      "ComponentV0": {
+      "Component": {
         "oneOf": [
           {
             "type": "object",
@@ -705,6 +705,25 @@
                 "type": "string",
                 "enum": [
                   "boot_settings"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/VirtioSocket"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "virtio_socket"
                 ]
               }
             },
@@ -1434,7 +1453,7 @@
           "components": {
             "type": "object",
             "additionalProperties": {
-              "$ref": "#/components/schemas/ComponentV0"
+              "$ref": "#/components/schemas/Component"
             }
           },
           "smbios": {
@@ -2028,6 +2047,31 @@
         "required": [
           "backend_id",
           "interface_id",
+          "pci_path"
+        ],
+        "additionalProperties": false
+      },
+      "VirtioSocket": {
+        "description": "A socket device that presents a virtio-socket interface to the guest.",
+        "type": "object",
+        "properties": {
+          "guest_cid": {
+            "description": "The guest's Context ID.",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "pci_path": {
+            "description": "The PCI path at which to attach this device.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PciPath"
+              }
+            ]
+          }
+        },
+        "required": [
+          "guest_cid",
           "pci_path"
         ],
         "additionalProperties": false

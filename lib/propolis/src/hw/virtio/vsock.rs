@@ -20,6 +20,7 @@ use crate::vsock::packet::VsockPacket;
 use crate::vsock::packet::VsockPacketError;
 use crate::vsock::packet::VsockPacketHeader;
 use crate::vsock::proxy::VsockPortMapping;
+use crate::vsock::GuestCid;
 use crate::vsock::VsockBackend;
 use crate::vsock::VsockProxy;
 
@@ -151,7 +152,7 @@ impl VsockVq {
 }
 
 pub struct PciVirtioSock {
-    cid: u32,
+    cid: GuestCid,
     backend: VsockProxy,
     virtio_state: PciVirtioState,
     pci_state: pci::DeviceState,
@@ -160,7 +161,7 @@ pub struct PciVirtioSock {
 impl PciVirtioSock {
     pub fn new(
         queue_size: u16,
-        cid: u32,
+        cid: GuestCid,
         log: Logger,
         port_mappings: Vec<VsockPortMapping>,
     ) -> Arc<Self> {
@@ -200,9 +201,7 @@ impl VirtioDevice for PciVirtioSock {
         VSOCK_DEV_REGS.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => match id {
                 VsockReg::GuestCid => {
-                    ro.write_u32(self.cid);
-                    // The upper 32 bits are reserved and zeroed.
-                    ro.fill(0);
+                    ro.write_u64(self.cid.get());
                 }
             },
             RWOp::Write(_) => {}
@@ -250,12 +249,14 @@ impl PciVirtio for PciVirtioSock {
 
 impl Lifecycle for PciVirtioSock {
     fn type_name(&self) -> &'static str {
-        "pci-virtio-vsock"
+        "pci-virtio-socket"
     }
     fn reset(&self) {
         self.virtio_state.reset(self);
     }
     fn migrate(&'_ self) -> Migrator<'_> {
+        // TODO (MTZ):
+        // We need to support migration propolis#1065
         Migrator::NonMigratable
     }
 }
