@@ -285,8 +285,6 @@ impl SpecBuilder {
             return Err(SpecBuilderError::VsockInUse);
         }
 
-        // TODO validate guest_cid does not have reserved bits set
-
         self.register_pci_device(vsock.spec.pci_path)?;
         self.component_names.insert(vsock.id.clone());
         self.spec.vsock = Some(vsock);
