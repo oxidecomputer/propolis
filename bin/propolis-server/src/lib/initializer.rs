@@ -501,9 +501,14 @@ impl MachineInitializer<'_> {
 
             let guest_cid = GuestCid::try_from(vsock.spec.guest_cid)
                 .context("guest cid")?;
+            // While the spec does not recommend how large the virtio descriptor
+            // table should be we sized this appropriately in testing so
+            // that the guest is able to move vsock packets at a reasonable
+            // throughput without the need to be much larger.
+            let num_queues = 256;
 
             let device = virtio::PciVirtioSock::new(
-                256,
+                num_queues,
                 guest_cid,
                 self.log.new(slog::o!("dev" => "virtio-socket")),
                 mappings,
