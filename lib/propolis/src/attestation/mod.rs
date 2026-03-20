@@ -71,7 +71,7 @@ impl AttestationSock {
             .parse()
             .context("couldn't parse uuid")?;
         let img_digest: Measurement =
-            "be4df4e085175f3de0c8ac4837e1c2c9a34e8983209dac6b549e94154f7cdd9c"
+            "sha-256;be4df4e085175f3de0c8ac4837e1c2c9a34e8983209dac6b549e94154f7cdd9c"
                 .parse()
                 .context("couldn't parse boot digest")?;
 
