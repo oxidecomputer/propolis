@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use propolis::attestation;
 use propolis::usdt::register_probes;
 use propolis_server::{
     config,
@@ -168,6 +169,14 @@ fn run_server(
         None => None,
     };
 
+    // Start listener for attestation server
+    let tcp_attest = api_runtime.block_on(async {
+        attestation::AttestationSock::new(
+            log.new(slog::o!("component" => "attestation-server")),
+        )
+        .await
+    })?;
+
     info!(log, "Starting server...");
 
     let server = dropshot::ServerBuilder::new(
@@ -192,6 +201,9 @@ fn run_server(
     if let Some(vnc) = tcp_vnc {
         api_runtime.block_on(async { vnc.halt().await });
     }
+
+    // Clean up attestation socket
+    api_runtime.block_on(async { tcp_attest.halt().await });
 
     result.map_err(|e| anyhow!("Server exited with an error: {e}"))
 }

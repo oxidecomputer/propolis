@@ -25,6 +25,7 @@ use crucible_client_types::VolumeConstructionRequest;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use oximeter_instruments::kstat::KstatSampler;
+use propolis::attestation;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::{Lifecycle, GB, MB, PAGE_SIZE};
@@ -485,18 +486,18 @@ impl MachineInitializer<'_> {
         use propolis::vsock::proxy::VsockPortMapping;
 
         // OANA Port 605 - VM Attestation RFD 605
-        const ATTESTATION_PORT: u16 = 605;
-        const ATTESTATION_ADDR: SocketAddr = SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-            ATTESTATION_PORT,
-        );
+        //const ATTESTATION_PORT: u16 = 605;
+        //const ATTESTATION_ADDR: SocketAddr = SocketAddr::new(
+        //IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+        //ATTESTATION_PORT,
+        //);
 
         if let Some(vsock) = &self.spec.vsock {
             let bdf: pci::Bdf = vsock.spec.pci_path.into();
 
             let mappings = vec![VsockPortMapping::new(
-                ATTESTATION_PORT.into(),
-                ATTESTATION_ADDR,
+                attestation::ATTESTATION_PORT.into(),
+                attestation::ATTESTATION_ADDR,
             )];
 
             let guest_cid = GuestCid::try_from(vsock.spec.guest_cid)
