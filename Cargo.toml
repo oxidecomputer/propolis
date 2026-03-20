@@ -99,7 +99,7 @@ crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev
 # Attestation
 #dice-verifier = { git = "https://github.com/oxidecomputer/dice-util", branch = "jhendricks/update-sled-agent-types-versions", features = ["sled-agent"] }
 dice-verifier = { git = "https://github.com/oxidecomputer/dice-util", features = ["sled-agent"] }
-vm-attest = { git = "https://github.com/oxidecomputer/vm-attest", branch = "jhendricks/ipcc-no-more", default-features = false }
+vm-attest = { git = "https://github.com/oxidecomputer/vm-attest", rev = "4c98ee6b5e7c2e58820bfb57604d4f153975cee2", default-features = false }
 
 # External dependencies
 anyhow = "1.0"

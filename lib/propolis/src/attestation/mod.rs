@@ -5,6 +5,8 @@
 use anyhow::Context;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV6};
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use slog::{error, info, Logger};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -54,8 +56,8 @@ impl AttestationSock {
 
     async fn handle_conn(
         log: Logger,
+        rot: Arc<Mutex<VmInstanceRot>>,
         conn: TcpStream,
-        sa_addr: SocketAddrV6,
     ) -> anyhow::Result<()> {
         info!(log, "handling connection");
 
@@ -65,22 +67,6 @@ impl AttestationSock {
         let (reader, mut writer) = tokio::io::split(conn);
         let mut reader = BufReader::with_capacity(MAX_LINE_LENGTH, reader);
 
-        // XXX: these are hard-coded qualifying data values that match a test OS image
-        // https://github.com/oxidecomputer/vm-attest-demo/blob/main/test-data/vm-instance-cfg.json
-        let uuid: Uuid = "db5bf54c-48c5-4455-a1e1-6c7dfc26e351"
-            .parse()
-            .context("couldn't parse uuid")?;
-        let img_digest: Measurement =
-            "sha-256;be4df4e085175f3de0c8ac4837e1c2c9a34e8983209dac6b549e94154f7cdd9c"
-                .parse()
-                .context("couldn't parse boot digest")?;
-
-        let vm_conf =
-            VmInstanceConf { uuid, boot_digest: Some(img_digest) };
-        let ox_attest: Box<dyn Attest> =
-            Box::new(AttestSledAgent::new(sa_addr, &log));
-        let rot = VmInstanceRot::new(ox_attest, vm_conf);
-
         loop {
             let bytes_read = reader.read_line(&mut msg).await?;
             if bytes_read == 0 {
@@ -88,26 +74,17 @@ impl AttestationSock {
             }
 
             // Check if the limit was hit and a newline wasn't found
-            if bytes_read == MAX_LINE_LENGTH
-                && !msg.ends_with('\n')
-            {
+            if bytes_read == MAX_LINE_LENGTH && !msg.ends_with('\n') {
                 slog::warn!(
                     log,
                     "Line length exceeded the limit of {} bytes.",
                     MAX_LINE_LENGTH
                 );
-                let response =
-                    Response::Error("Request too long".to_string());
-                let mut response =
-                    serde_json::to_string(&response)?;
+                let response = Response::Error("Request too long".to_string());
+                let mut response = serde_json::to_string(&response)?;
                 response.push('\n');
-                slog::info!(
-                    log,
-                    "sending error response: {response}"
-                );
-                writer
-                    .write_all(response.as_bytes())
-                    .await?;
+                slog::info!(log, "sending error response: {response}");
+                writer.write_all(response.as_bytes()).await?;
                 break;
             }
 
@@ -118,45 +95,29 @@ impl AttestationSock {
             let request = match result {
                 Ok(q) => q,
                 Err(e) => {
-                    let response =
-                        Response::Error(e.to_string());
-                    let mut response =
-                        serde_json::to_string(&response)?;
+                    let response = Response::Error(e.to_string());
+                    let mut response = serde_json::to_string(&response)?;
                     response.push('\n');
-                    slog::info!(
-                        log,
-                        "sending error response: {response}"
-                    );
-                    writer
-                        .write_all(response.as_bytes())
-                        .await?;
+                    slog::info!(log, "sending error response: {response}");
+                    writer.write_all(response.as_bytes()).await?;
                     break;
                 }
             };
 
             let response = match request {
                 Request::Attest(q) => {
-                    slog::debug!(
-                        log,
-                        "qualifying data received: {q:?}"
-                    );
-                    match rot.attest(&q) {
+                    slog::debug!(log, "qualifying data received: {q:?}");
+                    match rot.lock().unwrap().attest(&q) {
                         Ok(a) => Response::Attest(a),
-                        Err(e) => {
-                            Response::Error(e.to_string())
-                        }
+                        Err(e) => Response::Error(e.to_string()),
                     }
                 }
             };
 
-            let mut response =
-                serde_json::to_string(&response)?;
+            let mut response = serde_json::to_string(&response)?;
             response.push('\n');
 
-            slog::debug!(
-                log,
-                "sending response: {response}"
-            );
+            slog::debug!(log, "sending response: {response}");
             writer.write_all(response.as_bytes()).await?;
             msg.clear();
         }
@@ -173,6 +134,22 @@ impl AttestationSock {
     ) {
         info!(log, "attestation server running");
 
+        // XXX: these are hard-coded qualifying data values that match a test OS image
+        // https://github.com/oxidecomputer/vm-attest-demo/blob/main/test-data/vm-instance-cfg.json
+        let uuid: Uuid = "db5bf54c-48c5-4455-a1e1-6c7dfc26e351"
+            .parse()
+            .context("couldn't parse uuid")
+            .unwrap();
+        let img_digest: Measurement =
+            "sha-256;be4df4e085175f3de0c8ac4837e1c2c9a34e8983209dac6b549e94154f7cdd9c"
+                .parse()
+                .context("couldn't parse boot digest").unwrap();
+
+        let vm_conf = VmInstanceConf { uuid, boot_digest: Some(img_digest) };
+        let ox_attest: Box<dyn Attest + Send> =
+            Box::new(AttestSledAgent::new(sa_addr, &log));
+        let rot = Arc::new(Mutex::new(VmInstanceRot::new(ox_attest, vm_conf)));
+
         loop {
             tokio::select! {
                 biased;
@@ -184,9 +161,10 @@ impl AttestationSock {
                     info!(log, "new client connected");
                     match sock_res {
                         Ok((sock, _addr)) => {
+                            let rot = rot.clone();
                             let log = log.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = Self::handle_conn(log.clone(), sock, sa_addr).await {
+                                if let Err(e) = Self::handle_conn(log.clone(), rot, sock).await {
                                     slog::error!(log, "handle_conn error: {e}");
                                 }
                             });
