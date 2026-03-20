@@ -1749,7 +1749,6 @@ dependencies = [
  "env_logger",
  "hex",
  "hubpack",
- "libipcc",
  "log",
  "p384",
  "rats-corim",
@@ -3923,16 +3922,6 @@ dependencies = [
  "libc",
  "libz-sys",
  "pkg-config",
-]
-
-[[package]]
-name = "libipcc"
-version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/ipcc-rs?rev=7cdf2ab9c8d9e9267a8b366aa780c6c26f9a5ecf#7cdf2ab9c8d9e9267a8b366aa780c6c26f9a5ecf"
-dependencies = [
- "cfg-if",
- "libc",
- "thiserror 1.0.64",
 ]
 
 [[package]]
@@ -9959,7 +9948,7 @@ dependencies = [
 [[package]]
 name = "vm-attest"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/vm-attest#1fba555e4a5a3acbf58b072f6263b5ceff7fd205"
+source = "git+https://github.com/oxidecomputer/vm-attest?branch=jhendricks/ipcc-no-more#c9feaf92b459d3da9539c13b72a65cdff857b820"
 dependencies = [
  "anyhow",
  "attest-data",
