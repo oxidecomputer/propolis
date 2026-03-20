@@ -11,6 +11,7 @@ bit_field.workspace = true
 bitflags.workspace = true
 bitstruct.workspace = true
 byteorder.workspace = true
+dice-verifier.workspace = true
 lazy_static.workspace = true
 thiserror.workspace = true
 bhyve_api.workspace = true

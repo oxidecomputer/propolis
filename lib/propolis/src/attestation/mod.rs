@@ -3,13 +3,17 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV6};
 use std::sync::Arc;
 
-use slog::{info, error, Logger};
+use slog::{error, info, Logger};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+
+use dice_verifier::sled_agent::AttestSledAgent;
+use dice_verifier::Attest;
 
 // See: https://github.com/oxidecomputer/oana
 pub const ATTESTATION_PORT: u16 = 605;
@@ -43,9 +47,24 @@ impl AttestationSock {
         let _ = join_hdl.await;
     }
 
-    async fn handle_conn(log: Logger, conn: TcpStream) {
+    async fn handle_conn(log: Logger, conn: TcpStream, sa_addr: SocketAddrV6) {
         info!(log, "handling connection");
-        // TODO
+
+        // Read in the request.
+        const MAX_LINE_LENGTH: u32 = 1024;
+        //let reader = BufReader::with_capacity(MAX_LINE_LENGTH, conn?);
+
+        // XXX: these are hard-coded qualifying data values that match a test OS image
+        // https://github.com/oxidecomputer/vm-attest-demo/blob/main/test-data/vm-instance-cfg.json
+        let uuid = "db5bf54c-48c5-4455-a1e1-6c7dfc26e351";
+        let img_digest =
+            "be4df4e085175f3de0c8ac4837e1c2c9a34e8983209dac6b549e94154f7cdd9c";
+
+        //let ox_attest: Box<dyn Attest> = Box::new(AttestSledAgent(sa_addr, log));
+
+        //let response = match ox_attest.attest(&qualifying_data) {
+        //Ok(a) =>
+        //}
     }
 
     pub async fn run(
@@ -66,7 +85,7 @@ impl AttestationSock {
                     info!(log, "new client connected");
                     match sock_res {
                         Ok((sock, addr)) => {
-                            tokio::spawn(Self::handle_conn(log.clone(), sock));
+                            //tokio::spawn(Self::handle_conn(log.clone(), sock));
                         }
                         Err(e) => {
                             error!(log, "Attestation TCP listener error: {:?}", e);

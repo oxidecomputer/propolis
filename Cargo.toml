@@ -95,6 +95,12 @@ sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", branch =
 crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "a945a32ba9e1f2098ce3a8963765f1894f37110b" }
 crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "a945a32ba9e1f2098ce3a8963765f1894f37110b" }
 
+# TODO: pin these to git SHAs
+# Attestation
+#dice-verifier = { git = "https://github.com/oxidecomputer/dice-util", features = ["sled-agent"] }
+dice-verifier = { path = "/home/jordan/src/dice-util/verifier", features = ["sled-agent"] }
+vm-attest = { git = "https://github.com/oxidecomputer/vm-attest", default-features = false }
+
 # External dependencies
 anyhow = "1.0"
 async-trait = "0.1.88"
