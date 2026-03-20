@@ -3,11 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::fmt;
-use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use omicron_common::address::Ipv6Subnet;
 use propolis::attestation;
 use propolis::usdt::register_probes;
 use propolis_server::{
@@ -115,6 +116,7 @@ fn run_server(
     config_dropshot: dropshot::ConfigDropshot,
     config_metrics: Option<MetricsEndpointConfig>,
     vnc_addr: Option<SocketAddr>,
+    sa_addr: SocketAddrV6,
     log: slog::Logger,
 ) -> anyhow::Result<()> {
     use propolis::api_version;
@@ -173,6 +175,7 @@ fn run_server(
     let tcp_attest = api_runtime.block_on(async {
         attestation::AttestationSock::new(
             log.new(slog::o!("component" => "attestation-server")),
+            sa_addr,
         )
         .await
     })?;
@@ -314,6 +317,16 @@ fn main() -> anyhow::Result<()> {
             vnc_addr,
             log_level,
         } => {
+            let sa_addr = match propolis_addr.ip() {
+                IpAddr::V4(_) => todo!("no good!"),
+                IpAddr::V6(ipv6_addr) => {
+                    let sled_subnet = Ipv6Subnet::<
+                        { omicron_common::address::SLED_PREFIX },
+                    >::new(ipv6_addr);
+                    omicron_common::address::get_sled_address(sled_subnet)
+                }
+            };
+
             // Dropshot configuration.
             let config_dropshot = ConfigDropshot {
                 bind_address: propolis_addr,
@@ -336,6 +349,7 @@ fn main() -> anyhow::Result<()> {
                 config_dropshot,
                 metric_config,
                 vnc_addr,
+                sa_addr,
                 log,
             )
         }
