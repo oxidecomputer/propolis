@@ -43,7 +43,7 @@ use propolis_client::{
 use propolis_client::{Client, ResponseValue};
 use thiserror::Error;
 use tokio::{
-    sync::{mpsc::UnboundedSender, oneshot},
+    sync::{mpsc::UnboundedSender, oneshot, watch},
     task::JoinHandle,
     time::timeout,
 };
@@ -272,6 +272,13 @@ pub struct TestVm {
 
     state: VmState,
 
+    /// If we should wait for operator intervention before terminating this
+    /// instance, a `Some((success_rx, _))` here will be sent a `Some(false)`.
+    /// While waiting, a `Some((_, sigint_rx))` will be sent a `true` if the
+    /// user sends a keyboard interrupt to indicate we should stop waiting.
+    success_sigint_rx:
+        Option<(watch::Receiver<Option<bool>>, watch::Receiver<bool>)>,
+
     /// Sending a task handle to this channel will ensure that the task runs to
     /// completion as part of the post-test cleanup fixture (i.e. before any
     /// other tests run).
@@ -328,6 +335,7 @@ impl TestVm {
                 environment.clone(),
                 params,
                 ctx.framework.cleanup_task_channel(),
+                ctx.success_sigint_rx.clone(),
             ),
         }
     }
@@ -338,6 +346,10 @@ impl TestVm {
         environment_spec: EnvironmentSpec,
         mut params: ServerProcessParameters,
         cleanup_task_tx: UnboundedSender<JoinHandle<()>>,
+        success_sigint_rx: Option<(
+            watch::Receiver<Option<bool>>,
+            watch::Receiver<bool>,
+        )>,
     ) -> Result<Self> {
         let metrics = environment_spec.metrics.as_ref().map(|m| match m {
             MetricsLocation::Local => {
@@ -372,6 +384,7 @@ impl TestVm {
             guest_os,
             state: VmState::New,
             cleanup_task_tx,
+            success_sigint_rx,
         })
     }
 
@@ -1134,6 +1147,9 @@ impl Drop for TestVm {
 
         let disks: Vec<_> = self.vm_spec().disk_handles.drain(..).collect();
 
+        let success_sigint_rx_opt = self.success_sigint_rx.take();
+        let name = self.vm_spec().vm_name.to_owned();
+
         // The order in which the task destroys objects is important: the server
         // can't be killed until the client has gotten a chance to shut down
         // the VM, and the disks can't be destroyed until the server process has
@@ -1143,6 +1159,49 @@ impl Drop for TestVm {
                 // The task doesn't use the disks directly, but they need to be
                 // kept alive until the server process is gone.
                 let _disks = disks;
+
+                // Check if we should let the user access the instance of a
+                // failed testcase before ensuring its demolition
+                if let Some((mut success_rx, sigint_rx)) = success_sigint_rx_opt {
+                    while success_rx.changed().await.is_ok() {
+                        match *success_rx.borrow() {
+                            None => continue,
+                            Some(true) => break,
+                            Some(false) => {}
+                        }
+                        let sock = server.server_addr();
+                        let ip = sock.ip();
+                        let port = sock.port();
+                        let mut uninformed = true;
+                        // States that might be worth inspecting out-of-band
+                        while let Ok(InstanceState::Running
+                            | InstanceState::Migrating
+                            | InstanceState::Rebooting
+                            | InstanceState::Repairing
+                        ) = client
+                            .instance_get()
+                            .send()
+                            .await
+                            .map(|inst| inst.instance.state)
+                        {
+                            if *sigint_rx.borrow() { break }
+                            if uninformed {
+                                // write to stderr irrespective of log level
+                                eprintln!(r#"
+propolis-server {name:?} left running at address {sock}
+phd-runner will resume when this instance is shut down; e.g. by one of:
+
+$ propolis-cli -s {ip} -p {port} serial
+localhost:~# poweroff
+
+$ propolis-cli -s {ip} -p {port} state stop
+"#);
+                                uninformed = false;
+                            }
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
+                    }
+                }
 
                 // Try to make sure the server's kernel VMM is cleaned up before
                 // killing the server process. This is best-effort; if it fails,

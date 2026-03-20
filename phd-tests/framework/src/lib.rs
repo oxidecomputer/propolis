@@ -43,7 +43,10 @@ use test_vm::{
     environment::EnvironmentSpec, spec::VmSpec, VmConfig, VmLocation,
 };
 use tokio::{
-    sync::mpsc::{UnboundedReceiver, UnboundedSender},
+    sync::{
+        mpsc::{UnboundedReceiver, UnboundedSender},
+        watch,
+    },
     task::JoinHandle,
 };
 
@@ -63,6 +66,8 @@ pub(crate) mod zfs;
 pub struct TestCtx {
     pub(crate) framework: Arc<Framework>,
     pub(crate) output_dir: Utf8PathBuf,
+    pub(crate) success_sigint_rx:
+        Option<(watch::Receiver<Option<bool>>, watch::Receiver<bool>)>,
 }
 
 /// An instance of the PHD test framework.
@@ -239,6 +244,17 @@ impl TestCtx {
         )
         .await
     }
+
+    /// When phd-runner is configured to leave instances running on failed
+    /// tests, the watch channel whose Receiver is passed to this function is
+    /// used to indicate to the instance cleanup task that a test *has* failed.
+    pub fn set_cleanup_task_outcome_receiver(
+        &mut self,
+        success_rx: watch::Receiver<Option<bool>>,
+        sigint_rx: watch::Receiver<bool>,
+    ) {
+        self.success_sigint_rx = Some((success_rx, sigint_rx));
+    }
 }
 
 // The framework implementation includes some "runner-only" functions
@@ -330,7 +346,7 @@ impl Framework {
     pub fn test_ctx(self: &Arc<Self>, fully_qualified_name: String) -> TestCtx {
         let output_dir =
             self.tmp_directory.as_path().join(&fully_qualified_name);
-        TestCtx { framework: self.clone(), output_dir }
+        TestCtx { framework: self.clone(), output_dir, success_sigint_rx: None }
     }
 
     /// Resets the state of any stateful objects in the framework to prepare it

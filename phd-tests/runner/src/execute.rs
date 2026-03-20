@@ -101,8 +101,18 @@ pub async fn run_tests_with_ctx(
         let framework = ctx.clone();
         let tc = execution.tc;
         let mut sigint_rx_task = sigint_rx.clone();
+        let mut test_ctx = framework.test_ctx(tc.fully_qualified_name());
+        let mut success_tx = None;
+        if run_opts.manual_stop_on_failure {
+            let sigint_rx_cleanup = sigint_rx.clone();
+            let (tx, success_rx) = watch::channel(None);
+            test_ctx.set_cleanup_task_outcome_receiver(
+                success_rx,
+                sigint_rx_cleanup,
+            );
+            success_tx = Some(tx);
+        }
         let test_outcome = tokio::spawn(async move {
-            let test_ctx = framework.test_ctx(tc.fully_qualified_name());
             tokio::select! {
                 // Ensure interrupt signals are always handled instead of
                 // continuing to run the test.
@@ -143,6 +153,13 @@ pub async fn run_tests_with_ctx(
                 _ => "",
             }
         );
+
+        if let Some(tx) = success_tx {
+            let succeeded = !matches!(&test_outcome, TestOutcome::Failed(_));
+            if let Err(e) = tx.send(Some(succeeded)) {
+                error!("Error sending outcome to instance cleanup tasks: {e}");
+            }
+        }
 
         match test_outcome {
             TestOutcome::Passed => stats.tests_passed += 1,
