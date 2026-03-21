@@ -4,7 +4,6 @@
 
 use std::convert::TryInto;
 use std::fs::File;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;

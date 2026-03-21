@@ -107,9 +107,32 @@ impl AttestationSock {
             let response = match request {
                 Request::Attest(q) => {
                     slog::debug!(log, "qualifying data received: {q:?}");
-                    match rot.lock().unwrap().attest(&q) {
+                    let rot_guard = rot.lock().unwrap();
+
+                    // very unfortunate: `attest` is a trait of synchronous
+                    // functions, in our case wrapping async calls into
+                    // sled-agent. to make this work, the sled-agent attestor
+                    // holds a runtime handle and will block on async calls
+                    // internally. This all happens in `attest()`. We're calling
+                    // that from an async task, so just directly calling
+                    // `attest()` is a sure-fire way to panic as the contained
+                    // runtime tries to start on this already-in-a-runtime
+                    // thread.
+                    //
+                    // okay. so, it'd be ideal to just give AttestSledAgent our
+                    // runtime and let it `block_on()`. for now, instead, just
+                    // call it in a context it's allowed to do its own
+                    // `block_on()`:
+                    let attest_result =
+                        tokio::task::block_in_place(move || {
+                            rot_guard.attest(&q)
+                        });
+                    match attest_result {
                         Ok(a) => Response::Attest(a),
-                        Err(e) => Response::Error(e.to_string()),
+                        Err(e) => {
+                            slog::warn!(log, "attestation error: {e:?}");
+                            Response::Error(e.to_string())
+                        }
                     }
                 }
             };
