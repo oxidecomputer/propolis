@@ -22,6 +22,12 @@ use vm_attest::{
     Measurement, Request, Response, VmInstanceConf, VmInstanceRot,
 };
 
+/// TODO: block comment
+///
+/// - explain vm conf structure: this defines additional data tying the guest challenge (qualifying
+/// data) to the instance. Currently it's definition is in the vm_attest crate.
+///
+
 // See: https://github.com/oxidecomputer/oana
 pub const ATTESTATION_PORT: u16 = 605;
 pub const ATTESTATION_ADDR: SocketAddr =
@@ -32,16 +38,14 @@ pub struct AttestationSock {
     hup_send: oneshot::Sender<()>,
 }
 
-// TODO:
-//
-
 impl AttestationSock {
     pub async fn new(log: Logger, sa_addr: SocketAddrV6) -> io::Result<Self> {
         info!(log, "attestation server created");
         let listener = TcpListener::bind(ATTESTATION_ADDR).await?;
+        let (vm_conf_send, vm_conf_recv) = oneshot::channel::<vm_attest::VmInstanceConf>();
         let (hup_send, hup_recv) = oneshot::channel::<()>();
         let join_hdl = tokio::spawn(async move {
-            Self::run(log, listener, hup_recv, sa_addr).await;
+            Self::run(log, listener, vm_conf_recv, hup_recv, sa_addr).await;
         });
         Ok(Self { join_hdl, hup_send })
     }
@@ -57,6 +61,7 @@ impl AttestationSock {
     async fn handle_conn(
         log: Logger,
         rot: Arc<Mutex<VmInstanceRot>>,
+        vm_conf: Arc<Mutex<Option<vm_attest::VmInstanceConf>>>,
         conn: TcpStream,
     ) -> anyhow::Result<()> {
         info!(log, "handling connection");
@@ -107,6 +112,15 @@ impl AttestationSock {
             let response = match request {
                 Request::Attest(q) => {
                     slog::debug!(log, "qualifying data received: {q:?}");
+
+                    let guard = vm_conf.lock().unwrap();
+                    let conf = guard.clone();
+                    drop(guard);
+
+                    match conf {
+                        Some(conf) => {
+                            info!(log, "vm conf is ready = {:?}", conf);
+
                     let rot_guard = rot.lock().unwrap();
 
                     // very unfortunate: `attest` is a trait of synchronous
@@ -125,14 +139,30 @@ impl AttestationSock {
                     // `block_on()`:
                     let attest_result =
                         tokio::task::block_in_place(move || {
-                            rot_guard.attest(&q)
+                            rot_guard.attest(&conf, &q)
                         });
-                    match attest_result {
-                        Ok(a) => Response::Attest(a),
-                        Err(e) => {
-                            slog::warn!(log, "attestation error: {e:?}");
-                            Response::Error(e.to_string())
-                        }
+
+
+                            match attest_result {
+                                Ok(a) => Response::Attest(a),
+                                Err(e) => {
+                                    slog::warn!(log, "attestation error: {e:?}");
+                                    Response::Error(e.to_string())
+                                },
+                            }
+                        },
+
+                        // The VM conf isn't ready yet.
+                        None => {
+                            info!(log, "vm conf is NOT ready");
+                            let response = Response::Error(
+                                "VmInstanceConf not ready".to_string(),
+                            );
+                            //let mut response =
+                                //serde_json::to_string(&response)?;
+                            //response.push('\n');
+                            response
+                        },
                     }
                 }
             };
@@ -145,49 +175,57 @@ impl AttestationSock {
             msg.clear();
         }
 
-        info!(log, "ALL DONE");
+        info!(log, "handle_conn: ALL DONE");
         Ok(())
     }
 
     pub async fn run(
         log: Logger,
         listener: TcpListener,
+        vm_conf_recv: oneshot::Receiver<vm_attest::VmInstanceConf>,
         mut hup_recv: oneshot::Receiver<()>,
         sa_addr: SocketAddrV6,
     ) {
         info!(log, "attestation server running");
 
-        // XXX: these are hard-coded qualifying data values that match a test OS image
-        // https://github.com/oxidecomputer/vm-attest-demo/blob/main/test-data/vm-instance-cfg.json
-        let uuid: Uuid = "db5bf54c-48c5-4455-a1e1-6c7dfc26e351"
-            .parse()
-            .context("couldn't parse uuid")
-            .unwrap();
-        let img_digest: Measurement =
-            "sha-256;be4df4e085175f3de0c8ac4837e1c2c9a34e8983209dac6b549e94154f7cdd9c"
-                .parse()
-                .context("couldn't parse boot digest").unwrap();
-
-        let vm_conf = VmInstanceConf { uuid, boot_digest: Some(img_digest) };
+        // Attestation requests get to the RoT via sled-agent API endpoints.
         let ox_attest: Box<dyn Attest + Send> =
             Box::new(AttestSledAgent::new(sa_addr, &log));
-        let rot = Arc::new(Mutex::new(VmInstanceRot::new(ox_attest, vm_conf)));
+        let rot = Arc::new(Mutex::new(VmInstanceRot::new(ox_attest)));
+
+        let vm_conf = Arc::new(Mutex::new(None));
+
+        let vm_conf_cloned = vm_conf.clone();
+        tokio::spawn(async move {
+            match vm_conf_recv.await {
+                Ok(conf) => {
+                    *vm_conf_cloned.lock().unwrap() = Some(conf);
+                },
+                Err(e) => {
+                    panic!("unexpected loss of boot digest thread: {:?}", e);
+                }
+            }
+        });
 
         loop {
             tokio::select! {
                 biased;
 
+                // TODO: do we need this
                 _ = &mut hup_recv => {
                     return;
                 },
+
                 sock_res = listener.accept() => {
                     info!(log, "new client connected");
                     match sock_res {
                         Ok((sock, _addr)) => {
                             let rot = rot.clone();
                             let log = log.clone();
+                            let vm_conf = vm_conf.clone();
+
                             tokio::spawn(async move {
-                                if let Err(e) = Self::handle_conn(log.clone(), rot, sock).await {
+                                if let Err(e) = Self::handle_conn(log.clone(), rot, vm_conf, sock).await {
                                     slog::error!(log, "handle_conn error: {e}");
                                 }
                             });

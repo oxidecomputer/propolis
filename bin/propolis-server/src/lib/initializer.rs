@@ -484,13 +484,6 @@ impl MachineInitializer<'_> {
     ) -> Result<(), MachineInitError> {
         use propolis::vsock::proxy::VsockPortMapping;
 
-        // OANA Port 605 - VM Attestation RFD 605
-        //const ATTESTATION_PORT: u16 = 605;
-        //const ATTESTATION_ADDR: SocketAddr = SocketAddr::new(
-        //IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-        //ATTESTATION_PORT,
-        //);
-
         if let Some(vsock) = &self.spec.vsock {
             let bdf: pci::Bdf = vsock.spec.pci_path.into();
 
@@ -516,6 +509,8 @@ impl MachineInitializer<'_> {
 
             self.devices.insert(vsock.id.clone(), device.clone());
             chipset.pci_attach(bdf, device);
+
+            // Spawn attestation server that will go over the vsock
         }
 
         Ok(())
