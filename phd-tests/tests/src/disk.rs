@@ -114,7 +114,7 @@ async fn mount_in_memory_disk(
 
 #[phd_testcase]
 async fn in_memory_backend_smoke_test(ctx: &TestCtx) {
-    if ctx.default_guest_os_kind().await?.is_windows() {
+    if ctx.default_guest_os_kind()?.is_windows() {
         phd_skip!(
             "in-memory disk tests use mount options not supported by Cygwin"
         );

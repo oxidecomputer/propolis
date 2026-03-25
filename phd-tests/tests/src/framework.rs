@@ -19,7 +19,7 @@ async fn multiline_serial_test(ctx: &TestCtx) {
 
 #[phd_testcase]
 async fn long_line_serial_test(ctx: &TestCtx) {
-    let os = ctx.default_guest_os_kind().await?;
+    let os = ctx.default_guest_os_kind()?;
     if matches!(
         os,
         GuestOsKind::WindowsServer2016 | GuestOsKind::WindowsServer2019

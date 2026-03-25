@@ -20,28 +20,30 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, MutexGuard};
 use tracing::{debug, info, warn};
 
 #[derive(Debug)]
 struct StoredArtifact {
     description: super::Artifact,
-    cached_path: Option<Utf8PathBuf>,
+    cached_path: Mutex<Option<Utf8PathBuf>>,
 }
 
 impl StoredArtifact {
     fn new(description: super::Artifact) -> Self {
-        Self { description, cached_path: None }
+        Self { description, cached_path: Mutex::new(None) }
     }
 
     async fn ensure(
-        &mut self,
+        &self,
         local_dir: &Utf8Path,
         downloader: &DownloadConfig,
     ) -> anyhow::Result<Utf8PathBuf> {
+        let mut path_guard = self.cached_path.lock().await;
+
         // If the artifact already exists and has been verified, return the path
         // to it straightaway.
-        if let Some(path) = &self.cached_path {
+        if let Some(path) = path_guard.as_ref() {
             debug!(%path, "Verified artifact already exists");
             return Ok(path.clone());
         }
@@ -67,7 +69,7 @@ impl StoredArtifact {
             // The file is in the right place and has the right hash (if that
             // was checked), so mark it as cached and return the cached path.
             debug!(%path, "Locally-sourced artifact is valid, caching its path");
-            self.cached_path = Some(path.clone());
+            *path_guard = Some(path.clone());
             return Ok(path.clone());
         }
 
@@ -91,7 +93,7 @@ impl StoredArtifact {
             if file_hash_equals(&maybe_path, expected_digest).is_ok() {
                 debug!(%maybe_path,
                       "Valid artifact already exists, caching its path");
-                return self.cache_path(maybe_path);
+                return self.cache_path(path_guard, maybe_path);
             } else {
                 warn!(%maybe_path, "Existing artifact is invalid, deleting it");
                 std::fs::remove_file(&maybe_path)?;
@@ -140,11 +142,12 @@ impl StoredArtifact {
         permissions.set_readonly(true);
         new_file.set_permissions(permissions)?;
 
-        self.cache_path(maybe_path)
+        self.cache_path(path_guard, maybe_path)
     }
 
     fn cache_path(
-        &mut self,
+        &self,
+        mut path_guard: MutexGuard<'_, Option<Utf8PathBuf>>,
         mut path: Utf8PathBuf,
     ) -> anyhow::Result<Utf8PathBuf> {
         if let Some(ref untar_path) = self.description.untar {
@@ -166,7 +169,7 @@ impl StoredArtifact {
             }
         };
 
-        self.cached_path = Some(path.clone());
+        *path_guard = Some(path.clone());
         Ok(path)
     }
 }
@@ -174,7 +177,7 @@ impl StoredArtifact {
 #[derive(Debug)]
 pub struct Store {
     local_dir: Utf8PathBuf,
-    artifacts: BTreeMap<String, Mutex<StoredArtifact>>,
+    artifacts: BTreeMap<String, StoredArtifact>,
     downloader: DownloadConfig,
 }
 
@@ -199,7 +202,7 @@ impl Store {
         let Manifest { artifacts, remote_server_uris } = manifest;
         let artifacts = artifacts
             .into_iter()
-            .map(|(k, v)| (k, Mutex::new(StoredArtifact::new(v))))
+            .map(|(k, v)| (k, StoredArtifact::new(v)))
             .collect();
 
         let buildomat_backoff = backoff::ExponentialBackoffBuilder::new()
@@ -281,7 +284,7 @@ impl Store {
 
         let _old = self.artifacts.insert(
             BASE_PROPOLIS_ARTIFACT.to_string(),
-            Mutex::new(StoredArtifact::new(artifact)),
+            StoredArtifact::new(artifact),
         );
         assert!(_old.is_none());
         Ok(())
@@ -335,11 +338,24 @@ impl Store {
 
                 let _old = self.artifacts.insert(
                     CRUCIBLE_DOWNSTAIRS_ARTIFACT.to_string(),
-                    Mutex::new(StoredArtifact::new(artifact)),
+                    StoredArtifact::new(artifact),
                 );
                 assert!(_old.is_none());
                 Ok(())
             }
+        }
+    }
+
+    pub fn get_guest_os_image_kind(
+        &self,
+        artifact_name: &str,
+    ) -> anyhow::Result<GuestOsKind> {
+        let entry = self.get_artifact(artifact_name)?;
+        match entry.description.kind {
+            super::ArtifactKind::GuestOs(kind) => Ok(kind),
+            _ => Err(anyhow::anyhow!(
+                "artifact {artifact_name} is not a guest OS image"
+            )),
         }
     }
 
@@ -348,11 +364,10 @@ impl Store {
         artifact_name: &str,
     ) -> anyhow::Result<(Utf8PathBuf, GuestOsKind)> {
         let entry = self.get_artifact(artifact_name)?;
-        let mut guard = entry.lock().await;
-        match guard.description.kind {
+        match entry.description.kind {
             super::ArtifactKind::GuestOs(kind) => {
                 let path =
-                    guard.ensure(&self.local_dir, &self.downloader).await?;
+                    entry.ensure(&self.local_dir, &self.downloader).await?;
                 Ok((path, kind))
             }
             _ => Err(anyhow::anyhow!(
@@ -366,10 +381,9 @@ impl Store {
         artifact_name: &str,
     ) -> anyhow::Result<Utf8PathBuf> {
         let entry = self.get_artifact(artifact_name)?;
-        let mut guard = entry.lock().await;
-        match guard.description.kind {
+        match entry.description.kind {
             super::ArtifactKind::Bootrom => {
-                guard.ensure(&self.local_dir, &self.downloader).await
+                entry.ensure(&self.local_dir, &self.downloader).await
             }
             _ => Err(anyhow::anyhow!(
                 "artifact {artifact_name} is not a bootrom"
@@ -382,10 +396,9 @@ impl Store {
         artifact_name: &str,
     ) -> anyhow::Result<Utf8PathBuf> {
         let entry = self.get_artifact(artifact_name)?;
-        let mut guard = entry.lock().await;
-        match guard.description.kind {
+        match entry.description.kind {
             super::ArtifactKind::PropolisServer => {
-                guard.ensure(&self.local_dir, &self.downloader).await
+                entry.ensure(&self.local_dir, &self.downloader).await
             }
             _ => Err(anyhow::anyhow!(
                 "artifact {artifact_name} is not a Propolis server"
@@ -395,10 +408,9 @@ impl Store {
 
     pub async fn get_crucible_downstairs(&self) -> anyhow::Result<Utf8PathBuf> {
         let entry = self.get_artifact(CRUCIBLE_DOWNSTAIRS_ARTIFACT)?;
-        let mut guard = entry.lock().await;
-        match guard.description.kind {
+        match entry.description.kind {
             super::ArtifactKind::CrucibleDownstairs => {
-                guard.ensure(&self.local_dir, &self.downloader).await
+                entry.ensure(&self.local_dir, &self.downloader).await
             }
             _ => Err(anyhow::anyhow!(
                 "artifact {CRUCIBLE_DOWNSTAIRS_ARTIFACT} is not a Crucible downstairs binary",
@@ -406,10 +418,7 @@ impl Store {
         }
     }
 
-    fn get_artifact(
-        &self,
-        name: &str,
-    ) -> anyhow::Result<&Mutex<StoredArtifact>> {
+    fn get_artifact(&self, name: &str) -> anyhow::Result<&StoredArtifact> {
         self.artifacts.get(name).ok_or_else(|| {
             anyhow::anyhow!("artifact {name} not found in store")
         })
@@ -449,10 +458,9 @@ impl Store {
             untar: None,
         };
 
-        let _old: Option<Mutex<StoredArtifact>> = self.artifacts.insert(
-            artifact_name.to_string(),
-            Mutex::new(StoredArtifact::new(artifact)),
-        );
+        let _old: Option<StoredArtifact> = self
+            .artifacts
+            .insert(artifact_name.to_string(), StoredArtifact::new(artifact));
         assert!(_old.is_none());
 
         Ok(())

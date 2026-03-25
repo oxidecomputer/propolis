@@ -150,10 +150,9 @@ impl TestCtx {
         self.framework.default_guest_os_artifact()
     }
 
-    /// Yields the guest OS adapter corresponding to the default guest OS
-    /// artifact.
-    pub async fn default_guest_os_kind(&self) -> anyhow::Result<GuestOsKind> {
-        self.framework.default_guest_os_kind().await
+    /// Returns the guest OS kind corresponding to the default guest OS artifact.
+    pub fn default_guest_os_kind(&self) -> anyhow::Result<GuestOsKind> {
+        self.framework.default_guest_os_kind()
     }
 
     /// Indicates whether the disk factory in this framework supports the
@@ -366,12 +365,9 @@ impl Framework {
 
     /// Yields the guest OS adapter corresponding to the default guest OS
     /// artifact.
-    pub async fn default_guest_os_kind(&self) -> anyhow::Result<GuestOsKind> {
-        Ok(self
-            .artifact_store
-            .get_guest_os_image(&self.default_guest_os_artifact)
-            .await?
-            .1)
+    pub fn default_guest_os_kind(&self) -> anyhow::Result<GuestOsKind> {
+        self.artifact_store
+            .get_guest_os_image_kind(&self.default_guest_os_artifact)
     }
 
     /// Indicates whether the disk factory in this framework supports the

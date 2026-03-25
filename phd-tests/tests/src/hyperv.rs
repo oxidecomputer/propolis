@@ -284,7 +284,7 @@ async fn hyperv_reference_tsc_elapsed_time_test(ctx: &TestCtx) {
         Ok(())
     }
 
-    if ctx.default_guest_os_kind().await?.is_windows() {
+    if ctx.default_guest_os_kind()?.is_windows() {
         phd_skip!("test requires a guest with /proc/timer_list in procfs");
     }
 
