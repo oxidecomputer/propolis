@@ -11,7 +11,6 @@ const PCI_DEV_NUM: u8 = 26;
 async fn vsock_smoke_test(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("vsock_smoke_test");
     cfg.vsock(GUEST_CID, PCI_DEV_NUM);
-    cfg.cpus(4);
 
     let mut vm = ctx.spawn_vm(&cfg, None).await?;
     vm.launch().await?;
@@ -29,7 +28,6 @@ async fn vsock_get_cid(ctx: &TestCtx) {
 
     let mut cfg = ctx.vm_config_builder("vsock_get_cid");
     cfg.vsock(GUEST_CID, PCI_DEV_NUM);
-    cfg.cpus(4);
 
     let mut vm = ctx.spawn_vm(&cfg, None).await?;
     vm.launch().await?;
