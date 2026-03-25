@@ -21,6 +21,8 @@ async fn vsock_smoke_test(ctx: &TestCtx) {
 
 #[phd_testcase]
 async fn vsock_get_cid(ctx: &TestCtx) {
+    const GET_CID: &str = "/usr/local/bin/getcid";
+
     let mut cfg = ctx.vm_config_builder("vsock_get_cid");
     cfg.vsock(GUEST_CID, PCI_DEV_NUM);
     cfg.cpus(4);
@@ -29,15 +31,11 @@ async fn vsock_get_cid(ctx: &TestCtx) {
     vm.launch().await?;
     vm.wait_to_boot().await?;
 
-    // TODO: Remove the dependency on python
-    if vm.run_shell_command("test -e /usr/bin/python3").await.is_err() {
-        phd_skip!("guest doesn't have python3 installed");
+    // If we are not using a modified alpine image with our additional tooling
+    // we should skip this test entirely.
+    if vm.run_shell_command(&format!("test -e {GET_CID}")).await.is_err() {
+        phd_skip!("guest doesn't have getcid installed");
     }
-
-    // We don't really want to have to deal with python in a test but this is
-    // an easy way to get the cid until we support custom VM test images or
-    // tool block devices.
-    const GET_CID: &str = r#"python3 -c "import struct,fcntl;f=open('/dev/vsock','rb');print(struct.unpack('I',fcntl.ioctl(f,0x7b9,bytes(4)))[0])""#;
 
     let cid = vm.run_shell_command(GET_CID).await?.parse::<u64>()?;
     assert_eq!(cid, GUEST_CID, "guest cid matches what was configured");
