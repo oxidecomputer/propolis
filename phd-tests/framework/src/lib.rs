@@ -35,7 +35,7 @@ use camino::Utf8PathBuf;
 
 use disk::DiskFactory;
 use futures::{stream::FuturesUnordered, StreamExt};
-use guest_os::GuestOsKind;
+use guest_os::{GuestOs, GuestOsKind};
 use log_config::LogConfig;
 use port_allocator::PortAllocator;
 pub use test_vm::TestVm;
@@ -153,6 +153,11 @@ impl TestCtx {
     /// Returns the guest OS kind corresponding to the default guest OS artifact.
     pub fn default_guest_os_kind(&self) -> anyhow::Result<GuestOsKind> {
         self.framework.default_guest_os_kind()
+    }
+
+    /// Returns the guest OS adapter corresponding to the default guest OS artifact.
+    pub fn default_guest_os_adapter(&self) -> anyhow::Result<Box<dyn GuestOs>> {
+        self.default_guest_os_kind().map(guest_os::get_guest_os_adapter)
     }
 
     /// Indicates whether the disk factory in this framework supports the

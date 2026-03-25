@@ -11,7 +11,7 @@ use phd_framework::{
 use phd_testcase::*;
 use propolis_client::types::InstanceState;
 
-#[phd_testcase]
+#[phd_testcase(check_skip = super::crucible_disabled)]
 async fn boot_test(ctx: &TestCtx) {
     let mut config = ctx.vm_config_builder("crucible_boot_test");
     super::add_default_boot_disk(ctx, &mut config)?;
@@ -20,7 +20,7 @@ async fn boot_test(ctx: &TestCtx) {
     vm.wait_to_boot().await?;
 }
 
-#[phd_testcase]
+#[phd_testcase(check_skip = super::crucible_disabled)]
 async fn api_reboot_test(ctx: &TestCtx) {
     let mut config = ctx.vm_config_builder("crucible_guest_reboot_test");
     super::add_default_boot_disk(ctx, &mut config)?;
@@ -32,7 +32,7 @@ async fn api_reboot_test(ctx: &TestCtx) {
     vm.wait_to_boot().await?;
 }
 
-#[phd_testcase]
+#[phd_testcase(check_skip = super::crucible_disabled)]
 async fn guest_reboot_test(ctx: &TestCtx) {
     let mut config = ctx.vm_config_builder("crucible_guest_reboot_test");
     super::add_default_boot_disk(ctx, &mut config)?;
@@ -44,7 +44,17 @@ async fn guest_reboot_test(ctx: &TestCtx) {
     vm.graceful_reboot().await?;
 }
 
-#[phd_testcase]
+fn no_persistence_test(ctx: &TestCtx) -> bool {
+    if super::crucible_disabled(ctx) {
+        return true;
+    }
+
+    ctx.default_guest_os_adapter()
+        .expect("can get default guest adapter")
+        .read_only_fs()
+}
+
+#[phd_testcase(check_skip = no_persistence_test)]
 async fn shutdown_persistence_test(ctx: &TestCtx) {
     let mut config =
         ctx.vm_config_builder("crucible_shutdown_persistence_test");
@@ -88,7 +98,7 @@ async fn shutdown_persistence_test(ctx: &TestCtx) {
     assert_eq!(lsout, "foo.bar");
 }
 
-#[phd_testcase]
+#[phd_testcase(check_skip = super::crucible_disabled)]
 async fn vcr_replace_during_start_test(ctx: &TestCtx) {
     if !ctx.crucible_enabled() {
         phd_skip!("Crucible backends not enabled (no downstairs path)");

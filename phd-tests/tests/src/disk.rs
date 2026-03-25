@@ -112,14 +112,12 @@ async fn mount_in_memory_disk(
     Ok(())
 }
 
-#[phd_testcase]
-async fn in_memory_backend_smoke_test(ctx: &TestCtx) {
-    if ctx.default_guest_os_kind()?.is_windows() {
-        phd_skip!(
-            "in-memory disk tests use mount options not supported by Cygwin"
-        );
-    }
+fn guest_is_windows(ctx: &TestCtx) -> bool {
+    ctx.default_guest_os_kind().unwrap().is_windows()
+}
 
+#[phd_testcase(check_skip = guest_is_windows)]
+async fn in_memory_backend_smoke_test(ctx: &TestCtx) {
     const HELLO_MSG: &str = "hello oxide!";
 
     let readonly = true;

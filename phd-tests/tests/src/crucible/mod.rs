@@ -13,6 +13,12 @@ use phd_testcase::{
 mod migrate;
 mod smoke;
 
+// This predicate is useful for tests depending on these functions
+// which need to report if they expected to be skipped or not.
+pub(crate) fn crucible_disabled(ctx: &TestCtx) -> bool {
+    !ctx.crucible_enabled()
+}
+
 fn add_crucible_boot_disk_or_skip<'a>(
     ctx: &TestCtx,
     config: &mut VmConfig<'a>,

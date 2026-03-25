@@ -110,7 +110,7 @@ async fn instance_reset_requires_running_test(ctx: &TestCtx) {
     vm.wait_for_state(InstanceState::Running, Duration::from_secs(60)).await?;
 }
 
-#[phd_testcase]
+#[phd_testcase(check_skip = crate::crucible::crucible_disabled)]
 async fn stop_while_blocked_on_start_test(ctx: &TestCtx) {
     // This test uses a Crucible disk backend to cause VM startup to block.
     if !ctx.crucible_enabled() {

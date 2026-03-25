@@ -59,7 +59,7 @@ impl<'a> CommandSequenceEntry<'a> {
     }
 }
 
-pub(super) struct CommandSequence<'a>(pub Vec<CommandSequenceEntry<'a>>);
+pub struct CommandSequence<'a>(pub(crate) Vec<CommandSequenceEntry<'a>>);
 
 impl<'a> CommandSequence<'a> {
     fn extend(mut self, other: CommandSequence<'a>) -> CommandSequence<'a> {
@@ -68,7 +68,7 @@ impl<'a> CommandSequence<'a> {
     }
 }
 
-pub(super) trait GuestOs: Send + Sync {
+pub trait GuestOs: Send + Sync {
     /// Retrieves the command sequence used to wait for the OS to boot and log
     /// into it.
     fn get_login_sequence(&self) -> CommandSequence<'_>;
@@ -76,7 +76,7 @@ pub(super) trait GuestOs: Send + Sync {
     /// Retrieves the default shell prompt for this OS.
     fn get_shell_prompt(&self) -> &'static str;
 
-    /// Indicates whether the guest has a read-only filesystem.
+    /// Indicates whether the guest is expected to have a read-only filesystem.
     fn read_only_fs(&self) -> bool;
 
     /// Returns the sequence of serial console operations a test VM should issue

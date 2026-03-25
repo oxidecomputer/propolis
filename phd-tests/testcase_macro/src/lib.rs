@@ -6,7 +6,61 @@ use heck::ToShoutySnakeCase;
 use proc_macro::TokenStream;
 use proc_macro_error::{abort, proc_macro_error};
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, spanned::Spanned, ItemFn};
+use syn::parse::{Parse, ParseStream};
+use syn::punctuated::Punctuated;
+use syn::spanned::Spanned;
+use syn::{parse_macro_input, ItemFn, Token};
+
+// More or less directly inspired by Omicron's
+// `nexus/test-utils-macros/src/lib.rs`
+struct PhdTestAttrs {
+    /// The top-level function determining if a `phd_skip!()` test conclusion is
+    /// acceptable or not. See the documentation of `fn phd_testcase` below for
+    /// more.
+    check_skip_fn: Option<syn::Path>,
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub(crate) enum PhdTestArg {
+    CheckSkipFn(syn::Path),
+}
+
+impl Parse for PhdTestArg {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let name: syn::Path = input.parse()?;
+        let _eq_token: syn::token::Eq = input.parse()?;
+
+        if name.is_ident("check_skip") {
+            let fn_ident: syn::Path = input.parse()?;
+            return Ok(Self::CheckSkipFn(fn_ident));
+        }
+
+        Err(syn::Error::new(name.span(), "unrecognized argument to phd_test"))
+    }
+}
+
+impl Parse for PhdTestAttrs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let vars =
+            Punctuated::<PhdTestArg, Token![,]>::parse_terminated(input)?;
+
+        let mut check_skip_fn = None;
+
+        for var in vars {
+            match var {
+                PhdTestArg::CheckSkipFn(path) => {
+                    assert!(
+                        check_skip_fn.is_none(),
+                        "check_skip function can be provided at most once"
+                    );
+                    check_skip_fn = Some(path);
+                }
+            }
+        }
+
+        Ok(PhdTestAttrs { check_skip_fn })
+    }
+}
 
 /// The macro for labeling PHD testcases.
 ///
@@ -15,10 +69,18 @@ use syn::{parse_macro_input, spanned::Spanned, ItemFn};
 /// wrapper function that returns a `phd_testcase::TestOutcome` and creates an
 /// entry in the test case inventory that allows the PHD runner to enumerate the
 /// test.
+///
+/// PHD checks if a test is allowed to skip for a given test configuration. A
+/// test that may skip must have a `check_skip(some::check::function)`; if the
+/// test skips then the provided function is called to determine if skipping is
+/// allowed. If such a test passes instead of skipping, the will also be failed
+/// if it was expected to skip in the test environment.
 #[proc_macro_error]
 #[proc_macro_attribute]
-pub fn phd_testcase(_attrib: TokenStream, input: TokenStream) -> TokenStream {
+pub fn phd_testcase(attrs: TokenStream, input: TokenStream) -> TokenStream {
     let item_fn = parse_macro_input!(input as ItemFn);
+
+    let test_attrs = parse_macro_input!(attrs as PhdTestAttrs);
 
     // Build the inventory record for this test. The `module_path!()` in the
     // generated code allows the test case to report the fully-qualified path to
@@ -26,12 +88,18 @@ pub fn phd_testcase(_attrib: TokenStream, input: TokenStream) -> TokenStream {
     let fn_ident = item_fn.sig.ident.clone();
     let fn_name = fn_ident.to_string();
     let static_ident = format_ident!("{}", fn_name.to_shouty_snake_case());
+    let check_skip_fn = if let Some(check_skip_fn) = test_attrs.check_skip_fn {
+        quote! { Some(#check_skip_fn) }
+    } else {
+        quote! { None }
+    };
     let submit: proc_macro2::TokenStream = quote! {
         #[linkme::distributed_slice(phd_testcase::TEST_CASES)]
         static #static_ident: phd_testcase::TestCase = phd_testcase::TestCase::new(
             module_path!(),
             #fn_name,
-            phd_testcase::TestFunction { f: |ctx| Box::pin(#fn_ident(ctx)) }
+            phd_testcase::TestFunction { f: |ctx| Box::pin(#fn_ident(ctx)) },
+            #check_skip_fn,
         );
     };
 
