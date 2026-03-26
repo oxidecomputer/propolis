@@ -1448,7 +1448,9 @@ mod test {
     };
     use crate::hw::virtio::PciVirtioViona;
     use crate::Machine;
+    use std::env::VarError;
     use std::sync::Arc;
+    use tokio::process::Command;
 
     struct TestCtx {
         machine: Machine,
@@ -1468,7 +1470,7 @@ mod test {
         }
     }
 
-    fn create_test_nic(test_name: &str, vnic_name: &str) -> TestCtx {
+    fn create_test_ctx(test_name: &str, vnic_name: &str) -> TestCtx {
         // Create the VM with `force: true`: if we're running tests concurrently
         // this will trample an existing test (which should then fail!). We do
         // this so that if a test misconfiguration left a stray old VM hanging
@@ -1907,7 +1909,7 @@ mod test {
         }
     }
 
-    fn test_device_status_writes() {
+    fn test_device_status_writes(test_ctx: &TestCtx) {
         // The device and driver collaborate via `device_status` to get the
         // device turned on. There's a subtlety here though, in VirtIO 1.2
         // section 2.1.2:
@@ -1918,9 +1920,6 @@ mod test {
         // back a status that would clear that bit, the driver is in violation.
         // Clearing any of the status bits will earn a warning and setting the
         // device status to NEEDS_RESET.
-
-        let test_ctx =
-            create_test_nic("test_device_status_writes", "vnic_prop0");
 
         let driver = test_ctx.create_driver();
 
@@ -1977,9 +1976,7 @@ mod test {
         assert!(real_status.contains(Status::NEEDS_RESET));
     }
 
-    fn basic_operation_modern() {
-        let test_ctx = create_test_nic("basic_operation_modern", "vnic_prop0");
-
+    fn basic_operation_modern(test_ctx: &TestCtx) {
         let expected_feats =
             VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_CTRL_VQ;
 
@@ -2013,10 +2010,7 @@ mod test {
         driver.modern_device_init(expected_feats);
     }
 
-    fn basic_operation_multiqueue() {
-        let test_ctx =
-            create_test_nic("basic_operation_multiqueue", "vnic_prop0");
-
+    fn basic_operation_multiqueue(test_ctx: &TestCtx) {
         // All the same operation as `basic_operation_modern`, but with
         // `VIRTIO_NET_F_MQ`.
         let expected_feats = VIRTIO_NET_F_MAC
@@ -2039,12 +2033,7 @@ mod test {
 
     /// Roughly approximation of a MQ-capable OS restarting, booting through
     /// with a simple single-queue driver, then booting back to a MQ-capable OS.
-    fn multiqueue_to_singlequeue_to_multiqueue() {
-        let test_ctx = create_test_nic(
-            "multiqueue_to_singlequeue_to_multiqueue",
-            "vnic_prop0",
-        );
-
+    fn multiqueue_to_singlequeue_to_multiqueue(test_ctx: &TestCtx) {
         // All the same operation as `basic_operation_modern`, but with
         // `VIRTIO_NET_F_MQ`.
         let expected_feats =
@@ -2059,17 +2048,77 @@ mod test {
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
     }
 
+    // Bears an uncanny resemblance to `phd-test`...
+    struct TestCase {
+        name: &'static str,
+        test_fn: fn(&TestCtx),
+    }
+
+    async fn create_vnic(phys_nic: &str, vnic_name: &str) {
+        let res = Command::new("pfexec")
+            .arg("dladm")
+            .arg("create-vnic")
+            .arg("-t")
+            .arg("-l")
+            .arg(phys_nic)
+            .arg("-m")
+            .arg("2:8:20:ac:70:0")
+            .arg(vnic_name)
+            .status()
+            .await
+            .expect("can create vnic");
+        assert!(res.success());
+    }
+
+    async fn delete_vnic(vnic_name: &str) {
+        let res = Command::new("pfexec")
+            .arg("dladm")
+            .arg("delete-vnic")
+            .arg(vnic_name)
+            .status()
+            .await
+            .expect("can delete vnic");
+        assert!(res.success());
+    }
+
     #[tokio::test]
     async fn run_viona_tests() {
+        macro_rules! testcase {
+            ($test_fn:ident) => {
+                TestCase { name: stringify!($test_fn), test_fn: $test_fn }
+            };
+        }
+
         let tests = &[
-            test_device_status_writes,
-            basic_operation_modern,
-            basic_operation_multiqueue,
-            multiqueue_to_singlequeue_to_multiqueue,
+            testcase!(test_device_status_writes),
+            testcase!(basic_operation_modern),
+            testcase!(basic_operation_multiqueue),
+            testcase!(multiqueue_to_singlequeue_to_multiqueue),
         ];
 
+        let underlying_nic = match std::env::var("VIONA_TEST_NIC") {
+            Ok(val) => val,
+            Err(VarError::NotPresent) => {
+                eprintln!(
+                    "Skipping viona tests as env does not have VIONA_TEST_NIC. \
+                    Set this environment variable to an existing link that \
+                    Propolis viona tests should create test vnics on.");
+                return;
+            }
+            Err(VarError::NotUnicode(e)) => {
+                panic!("non-unicode virtio host nic: {:?}", e.display());
+            }
+        };
+
+        const TEST_VNIC: &'static str = "vnic_prop_test0";
         for test in tests {
-            test();
+            create_vnic(&underlying_nic, TEST_VNIC).await;
+
+            let test_ctx = create_test_ctx(test.name, TEST_VNIC);
+            (test.test_fn)(&test_ctx);
+            drop(test_ctx);
+
+            delete_vnic(TEST_VNIC).await;
         }
     }
 }
