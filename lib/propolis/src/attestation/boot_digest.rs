@@ -6,6 +6,8 @@ use crucible::BlockIO;
 use crucible::BlockIndex;
 use crucible::Buffer;
 
+use vm_attest::Measurement;
+
 use anyhow::Result;
 use sha2::{Digest, Sha256};
 use slog::Logger;
@@ -14,7 +16,7 @@ use std::time::Instant;
 pub async fn boot_disk_digest(
     vol: crucible::Volume,
     log: &Logger,
-) -> Result<String> {
+) -> Result<Measurement> {
     let vol_uuid = vol.get_uuid().await.expect("could not get volume UUID");
     let vol_size = vol.total_size().await.expect("could not get volume size");
     let block_size =
@@ -60,7 +62,9 @@ pub async fn boot_disk_digest(
         let block = BlockIndex(offset);
         let mut buffer =
             Buffer::new(this_block_count as usize, block_size as usize);
-        vol.read(block, &mut buffer).await.expect("could not read volume");
+
+        // TODO: should retry on read failures?
+        vol.read(block, &mut buffer).await?;
 
         hasher.update(&*buffer);
 
@@ -77,6 +81,5 @@ pub async fn boot_disk_digest(
         elapsed.as_secs()
     );
 
-    let hash = hasher.finalize();
-    Ok(format!("{:x}", hash))
+    Ok(Measurement::Sha256(hasher.finalize().into()))
 }

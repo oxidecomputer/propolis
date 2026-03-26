@@ -28,6 +28,7 @@ use oximeter_instruments::kstat::KstatSampler;
 use propolis::attestation;
 use propolis::attestation::server::AttestationServerConfig;
 use propolis::attestation::server::AttestationSock;
+use propolis::attestation::server::AttestationSockInit;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::{Lifecycle, GB, MB, PAGE_SIZE};
@@ -488,9 +489,13 @@ impl MachineInitializer<'_> {
         &mut self,
         chipset: &RegisteredChipset,
         attest_cfg: Option<AttestationServerConfig>,
-    ) -> Result<Option<AttestationSock>, MachineInitError> {
+    ) -> Result<
+        (Option<AttestationSock>, Option<AttestationSockInit>),
+        MachineInitError,
+    > {
         use propolis::vsock::proxy::VsockPortMapping;
 
+        // TODO: early return if none?
         if let Some(vsock) = &self.spec.vsock {
             let bdf: pci::Bdf = vsock.spec.pci_path.into();
 
@@ -519,19 +524,17 @@ impl MachineInitializer<'_> {
 
             // Spawn attestation server that will go over the vsock
             if let Some(cfg) = attest_cfg {
-                let attest = AttestationSock::new(
+                let (attest, attest_init) = AttestationSock::new(
                     self.log.new(slog::o!("component" => "attestation-server")),
                     cfg.sled_agent_addr,
                 )
                 .await
                 .map_err(MachineInitError::AttestationServer)?;
-                return Ok(Some(attest));
-            } else {
-                return Ok(None);
+                return Ok((Some(attest), Some(attest_init)));
             }
         }
 
-        Ok(None)
+        Ok((None, None))
     }
 
     async fn create_storage_backend_from_spec(
@@ -685,13 +688,83 @@ impl MachineInitializer<'_> {
         }
     }
 
-    // TODO: if this is running and we want to tear down a vm, will this get handled properly? or
-    // will it block instance shutdown?
-    //
-    // I had a small moment about debugging this at scale T_T
-    pub async fn initialize_rot_data(&self) -> Result<(), MachineInitError> {
-        // TODO
-        Ok(())
+    /// Collect the necessary information out of the VM under construction into the provided
+    /// `AttestationSocketInit`. This is expected to populate `attest_init` with information so the
+    /// caller can spawn off `AttestationSockInit::run`.
+    pub fn prepare_rot_initializer(
+        &self,
+        attest_init: &mut AttestationSockInit,
+    ) {
+        let uuid = self.properties.id;
+
+        attest_init.instance_uuid = Some(uuid);
+
+        // The first boot entry is a key into `self.spec.disks`, which is how we'll get to a
+        // Crucible volume backing this boot option.
+        //
+        // TODO: remove this, but for reference:
+        // > if let Some(spec) = self.spec.disks.et(&boot_entry.device_id)
+        let boot_disk_entry = self.spec.boot_settings.as_ref()
+            .and_then(|settings| {
+                if settings.order.len() >= 2 {
+                    // In a rack we only configure propolis-server with zero or one boot disks.
+                    // It's possible to provide a fuller list, and in the future the product may
+                    // actually expose such a capability. At that time, we'll need to have a
+                    // reckoning for what "boot disk measurement" from the RoT actually means; it
+                    // probably "should" be "the measurement of the disk that EDK2 decided to boot
+                    // into", but that communication to and from the guest is a little more
+                    // complicated than we want or need to build out today.
+                    //
+                    // Since as the system exists we either have no specific boot disk (and don't
+                    // know where the guest is expected to end up), or one boot disk (and can
+                    // determine which disk to collect a measurement of before even running guest
+                    // firmware), we encode this expectation up front. If the product has changed
+                    // such that this assert is reached, "that's exciting!" and "sorry for crashing
+                    // your Propolis".
+                    panic!("Unsupported VM RoT configuration: more than one boot disk");
+                }
+
+                settings.order.get(0)
+            });
+
+        if let Some(boot_entry) = boot_disk_entry {
+            let disk_entry = self.spec.disks.get(&boot_entry.device_id)
+                .expect("TODO: crosscheck against boot config stuff: boot entry is valid");
+
+            let backend_id = match &disk_entry.device_spec {
+                spec::StorageDevice::Virtio(disk) => &disk.backend_id,
+                spec::StorageDevice::Nvme(disk) => &disk.backend_id,
+            };
+
+            let volume = match self.block_backends.get(&backend_id) {
+                Some(block_backend) => {
+                    let crucible_backend = match block_backend
+                        .as_any()
+                        .downcast_ref::<block::CrucibleBackend>(
+                    ) {
+                        Some(backend) => backend,
+                        None => {
+                            // Probably fine, just not handled right now.
+                            slog::error!(
+                                self.log,
+                                "boot disk is not a Crucible volume"
+                            );
+                            return;
+                        }
+                    };
+                    crucible_backend.clone_volume()
+                }
+                None => {
+                    slog::error!(
+                        self.log,
+                        "boot disk does not name a block backend?!"
+                    );
+                    return;
+                }
+            };
+
+            attest_init.volume_ref = Some(volume);
+        }
     }
 
     /// Initializes the storage devices and backends listed in this

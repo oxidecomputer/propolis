@@ -16,7 +16,7 @@ use tokio::task::JoinHandle;
 use dice_verifier::sled_agent::AttestSledAgent;
 use dice_verifier::Attest;
 
-use vm_attest::VmInstanceAttester;
+use vm_attest::{VmInstanceAttester, VmInstanceConf};
 
 use crate::attestation::ATTESTATION_ADDR;
 
@@ -37,17 +37,95 @@ pub struct AttestationSock {
     hup_send: oneshot::Sender<()>,
 }
 
+/// This struct manages providing the requisite data for a corresponding `AttestationSock` to
+/// become fully functional.
+pub struct AttestationSockInit {
+    log: slog::Logger,
+    vm_conf_send: oneshot::Sender<VmInstanceConf>,
+    // kind of terrible: parts of the VM RoT initializer that must be filled in before `run()`.
+    // this *could* and probably should be more builder-y and typestateful.
+    pub instance_uuid: Option<uuid::Uuid>,
+    pub volume_ref: Option<crucible::Volume>,
+}
+
+impl AttestationSockInit {
+    /// Construct a future that does any remaining work of collecting VM RoT measurements in
+    /// support of this VM's attestation server.
+    ///
+    /// TODO: it is expected this future is simply spawned onto a Tokio runtime. If the VM is torn
+    /// down while this future is running, nothing will stop this future from operating? We
+    /// probably need to tie in a shutdown signal from the corresponding `AttestationSockInit` to
+    /// discover if we should (for example) stop calculating a boot digest midway.
+    pub async fn run(mut self) {
+        let uuid = self
+            .instance_uuid
+            .take()
+            .expect("AttestationSockInit was provided instance uuid");
+        let mut vm_conf = vm_attest::VmInstanceConf { uuid, boot_digest: None };
+
+        if let Some(volume) = self.volume_ref.take() {
+            let boot_digest =
+                match crate::attestation::boot_digest::boot_disk_digest(
+                    volume, &self.log,
+                )
+                .await
+                {
+                    Ok(digest) => digest,
+                    Err(e) => {
+                        slog::error!(
+                            self.log,
+                            "failed to compute boot disk digest: {e:?}"
+                        );
+                        return;
+                    }
+                };
+
+            vm_conf.boot_digest = Some(boot_digest);
+        } else {
+            slog::warn!(self.log, "not computing boot disk digest");
+        }
+
+        // keep a log reference around to report potential errors after this is taken and dropped
+        // in `provide()`.
+        let log = self.log.clone();
+        let send_res = self.provide(vm_conf);
+        if let Err(_) = send_res {
+            slog::error!(
+                log,
+                "attestation server is not listening for its config?"
+            );
+        }
+    }
+
+    pub fn provide(self, conf: VmInstanceConf) -> Result<(), VmInstanceConf> {
+        self.vm_conf_send.send(conf)
+    }
+}
+
 impl AttestationSock {
-    pub async fn new(log: Logger, sa_addr: SocketAddrV6) -> io::Result<Self> {
+    pub async fn new(
+        log: Logger,
+        sa_addr: SocketAddrV6,
+    ) -> io::Result<(Self, AttestationSockInit)> {
         info!(log, "attestation server created");
         let listener = TcpListener::bind(ATTESTATION_ADDR).await?;
         let (vm_conf_send, vm_conf_recv) =
             oneshot::channel::<vm_attest::VmInstanceConf>();
         let (hup_send, hup_recv) = oneshot::channel::<()>();
+        // TODO: would love to describe this sub-log as specifically VM RoT init, but dunno how to
+        // drive slog like that.
+        let attest_init_log = log.clone();
         let join_hdl = tokio::spawn(async move {
             Self::run(log, listener, vm_conf_recv, hup_recv, sa_addr).await;
         });
-        Ok(Self { join_hdl, hup_send })
+        let attestation_sock = Self { join_hdl, hup_send };
+        let attestation_init = AttestationSockInit {
+            log: attest_init_log,
+            vm_conf_send,
+            instance_uuid: None,
+            volume_ref: None,
+        };
+        Ok((attestation_sock, attestation_init))
     }
 
     pub async fn halt(self) {
