@@ -64,6 +64,15 @@ impl AttestationSockInit {
         let mut vm_conf = vm_attest::VmInstanceConf { uuid, boot_digest: None };
 
         if let Some(volume) = self.volume_ref.take() {
+            // TODO: load-bearing sleep: we have a Crucible volume, but we can be here and chomping
+            // at the bit to get a digest calculation started well before the volume has been
+            // activated; in `propolis-server` we need to wait for at least a subsequent instance
+            // start. Similar to the scrub task for Crucible disks, delay some number of seconds in
+            // the hopes that activation is done promptly.
+            //
+            // This should be replaced by awaiting for some kind of actual "activated" signal.
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
             let boot_digest =
                 match crate::attestation::boot_digest::boot_disk_digest(
                     volume, &self.log,
@@ -72,11 +81,12 @@ impl AttestationSockInit {
                 {
                     Ok(digest) => digest,
                     Err(e) => {
-                        slog::error!(
-                            self.log,
-                            "failed to compute boot disk digest: {e:?}"
-                        );
-                        return;
+                        // a panic here is unfortunate, but helps us debug for now; if the digest
+                        // calculation fails it may be some retryable issue that a guest OS would
+                        // survive. but panicking here means we've stopped Propolis at the actual
+                        // error, rather than noticing the `vm_conf_sender` having dropped
+                        // elsewhere.
+                        panic!("failed to compute boot disk digest: {e:?}");
                     }
                 };
 
