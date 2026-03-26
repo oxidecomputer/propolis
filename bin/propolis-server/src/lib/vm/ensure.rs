@@ -563,7 +563,8 @@ async fn initialize_vm_objects(
         &properties,
     ))?;
     init.initialize_network_devices(&chipset).await?;
-    init.initialize_vsock(&chipset)?;
+    let tcp_attest =
+        init.initialize_vsock(&chipset, options.attest_config).await?;
 
     #[cfg(feature = "failure-injection")]
     init.initialize_test_devices();
@@ -642,6 +643,7 @@ async fn initialize_vm_objects(
         com1,
         framebuffer: Some(ramfb),
         ps2ctrl,
+        tcp_attest,
     };
 
     // Another really terrible hack. As we've found in Propolis#1008, brk()

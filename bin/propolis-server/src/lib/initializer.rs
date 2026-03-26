@@ -4,6 +4,7 @@
 
 use std::convert::TryInto;
 use std::fs::File;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
@@ -25,6 +26,8 @@ pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use oximeter_instruments::kstat::KstatSampler;
 use propolis::attestation;
+use propolis::attestation::server::AttestationServerConfig;
+use propolis::attestation::server::AttestationSock;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::{Lifecycle, GB, MB, PAGE_SIZE};
@@ -104,6 +107,9 @@ pub enum MachineInitError {
 
     #[error("failed to specialize CPUID for vcpu {0}")]
     CpuidSpecializationFailed(i32, #[source] propolis::cpuid::SpecializeError),
+
+    #[error("failed to start attestation server")]
+    AttestationServer(#[source] std::io::Error),
 
     #[cfg(feature = "falcon")]
     #[error("softnpu p9 device missing")]
@@ -478,10 +484,11 @@ impl MachineInitializer<'_> {
         Ok(())
     }
 
-    pub fn initialize_vsock(
+    pub async fn initialize_vsock(
         &mut self,
         chipset: &RegisteredChipset,
-    ) -> Result<(), MachineInitError> {
+        attest_cfg: Option<AttestationServerConfig>,
+    ) -> Result<Option<AttestationSock>, MachineInitError> {
         use propolis::vsock::proxy::VsockPortMapping;
 
         if let Some(vsock) = &self.spec.vsock {
@@ -511,9 +518,20 @@ impl MachineInitializer<'_> {
             chipset.pci_attach(bdf, device);
 
             // Spawn attestation server that will go over the vsock
+            if let cfg = attest_cfg.unwrap() {
+                let attest = AttestationSock::new(
+                    self.log.new(slog::o!("component" => "attestation-server")),
+                    cfg.sled_agent_addr,
+                )
+                .await
+                .map_err(MachineInitError::AttestationServer)?;
+                return Ok(Some(attest));
+            } else {
+                return Ok(None);
+            }
         }
 
-        Ok(())
+        Ok(None)
     }
 
     async fn create_storage_backend_from_spec(

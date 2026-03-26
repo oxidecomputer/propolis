@@ -9,7 +9,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use omicron_common::address::Ipv6Subnet;
-use propolis::attestation;
+use propolis::attestation::server::AttestationServerConfig;
 use propolis::usdt::register_probes;
 use propolis_server::{
     config,
@@ -116,7 +116,7 @@ fn run_server(
     config_dropshot: dropshot::ConfigDropshot,
     config_metrics: Option<MetricsEndpointConfig>,
     vnc_addr: Option<SocketAddr>,
-    sa_addr: SocketAddrV6,
+    attest_config: Option<AttestationServerConfig>,
     log: slog::Logger,
 ) -> anyhow::Result<()> {
     use propolis::api_version;
@@ -150,6 +150,7 @@ fn run_server(
         use_reservoir,
         log.new(slog::o!()),
         config_metrics,
+        attest_config,
     );
 
     // Spawn the runtime for handling API processing
@@ -170,15 +171,6 @@ fn run_server(
         })?),
         None => None,
     };
-
-    // Start listener for attestation server
-    let tcp_attest = api_runtime.block_on(async {
-        attestation::AttestationSock::new(
-            log.new(slog::o!("component" => "attestation-server")),
-            sa_addr,
-        )
-        .await
-    })?;
 
     info!(log, "Starting server...");
 
@@ -205,8 +197,7 @@ fn run_server(
         api_runtime.block_on(async { vnc.halt().await });
     }
 
-    // Clean up attestation socket
-    api_runtime.block_on(async { tcp_attest.halt().await });
+    // TODO: clean up attestation server.
 
     result.map_err(|e| anyhow!("Server exited with an error: {e}"))
 }
@@ -317,16 +308,6 @@ fn main() -> anyhow::Result<()> {
             vnc_addr,
             log_level,
         } => {
-            let sa_addr = match propolis_addr.ip() {
-                IpAddr::V4(_) => todo!("no good!"),
-                IpAddr::V6(ipv6_addr) => {
-                    let sled_subnet = Ipv6Subnet::<
-                        { omicron_common::address::SLED_PREFIX },
-                    >::new(ipv6_addr);
-                    omicron_common::address::get_sled_address(sled_subnet)
-                }
-            };
-
             // Dropshot configuration.
             let config_dropshot = ConfigDropshot {
                 bind_address: propolis_addr,
@@ -343,13 +324,26 @@ fn main() -> anyhow::Result<()> {
                 propolis_addr.ip(),
             )?;
 
+            // TODO: how will this behave running server in isolation? is it still usable for devs?
+            let sa_addr = match propolis_addr.ip() {
+                IpAddr::V4(_) => todo!("no good!"),
+                IpAddr::V6(ipv6_addr) => {
+                    let sled_subnet = Ipv6Subnet::<
+                        { omicron_common::address::SLED_PREFIX },
+                    >::new(ipv6_addr);
+                    omicron_common::address::get_sled_address(sled_subnet)
+                }
+            };
+            let attest_config = AttestationServerConfig::new(sa_addr);
+
             run_server(
                 bootrom_path,
                 bootrom_version,
                 config_dropshot,
                 metric_config,
                 vnc_addr,
-                sa_addr,
+                // TODO
+                Some(attest_config),
                 log,
             )
         }

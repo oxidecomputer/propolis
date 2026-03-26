@@ -100,6 +100,7 @@ use state_publisher::StatePublisher;
 use tokio::sync::{oneshot, watch, RwLock, RwLockReadGuard};
 
 use crate::{server::MetricsEndpointConfig, spec::Spec, vnc::VncServer};
+use propolis::attestation::server::AttestationServerConfig;
 
 mod active;
 pub(crate) mod ensure;
@@ -309,6 +310,8 @@ pub(super) struct EnsureOptions {
     /// The address of this Propolis process, used by the live migration
     /// protocol to transfer serial console connections.
     pub(super) local_server_addr: SocketAddr,
+
+    pub(super) attest_config: Option<AttestationServerConfig>,
 }
 
 impl Vm {

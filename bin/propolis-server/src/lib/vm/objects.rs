@@ -13,6 +13,7 @@ use std::{
 
 use futures::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
 use propolis::{
+    attestation,
     hw::{ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart},
     vmm::VmmHdl,
     Machine,
@@ -51,6 +52,7 @@ pub(super) struct InputVmObjects {
     pub com1: Arc<Serial<LpcUart>>,
     pub framebuffer: Option<Arc<RamFb>>,
     pub ps2ctrl: Arc<PS2Ctrl>,
+    pub tcp_attest: Option<attestation::server::AttestationSock>,
 }
 
 /// The collection of objects and state that make up a Propolis instance.
@@ -86,6 +88,9 @@ pub(crate) struct VmObjectsLocked {
 
     /// A handle to the VM's PS/2 controller.
     ps2ctrl: Arc<PS2Ctrl>,
+
+    /// Attestation server
+    tcp_attest: Option<attestation::server::AttestationSock>,
 }
 
 impl VmObjects {
@@ -126,6 +131,7 @@ impl VmObjectsLocked {
             com1: input.com1,
             framebuffer: input.framebuffer,
             ps2ctrl: input.ps2ctrl,
+            tcp_attest: input.tcp_attest,
         }
     }
 
