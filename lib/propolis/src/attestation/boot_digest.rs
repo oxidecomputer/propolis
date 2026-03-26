@@ -22,27 +22,30 @@ pub async fn boot_disk_digest(
     let block_size =
         vol.get_block_size().await.expect("could not get volume block size");
 
-    slog::info!(
-        log,
-        "starting hash of volume {:?} (total_size={}, block_size={})",
-        vol_uuid,
-        vol_size,
-        block_size
-    );
     let hash_start = Instant::now();
 
-    let end = vol_size;
+    let end_block = vol_size / block_size;
 
     // TODO: it's jank, apparently
     // copying this I/O sizing from the crucible scrub code
     let block_count = 131072 / block_size;
 
+    slog::info!(
+        log,
+        "starting hash of volume {:?} (total_size={}, block_size={} end_block={}, block_count={})",
+        vol_uuid,
+        vol_size,
+        block_size,
+        end_block,
+        block_count,
+    );
+
     let mut hasher = Sha256::new();
 
     let mut offset = 0;
-    while offset < end {
-        let remaining = end - offset;
-        let this_block_count = block_count.min(remaining);
+    while offset < end_block {
+        let remaining_blocks = end_block - offset;
+        let this_block_count = block_count.min(remaining_blocks);
         if this_block_count != block_count {
             slog::info!(
                 log,
@@ -52,11 +55,11 @@ pub async fn boot_disk_digest(
             );
         }
         assert!(
-            offset + this_block_count <= end,
+            offset + this_block_count <= end_block,
             "offset={}, block_count={}, end={}",
             offset,
             this_block_count,
-            end
+            end_block
         );
 
         let block = BlockIndex(offset);
@@ -64,7 +67,15 @@ pub async fn boot_disk_digest(
             Buffer::new(this_block_count as usize, block_size as usize);
 
         // TODO: should retry on read failures?
-        vol.read(block, &mut buffer).await?;
+        let res = vol.read(block, &mut buffer).await;
+
+        if let Err(e) = res {
+            panic!("read failed: {e:?}.
+                offset={offset},
+                this_block_cout={this_block_count},
+                block_size={block_size},
+                end_block={end_block}");
+        }
 
         hasher.update(&*buffer);
 
