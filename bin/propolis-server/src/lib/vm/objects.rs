@@ -89,7 +89,11 @@ pub(crate) struct VmObjectsLocked {
     /// A handle to the VM's PS/2 controller.
     ps2ctrl: Arc<PS2Ctrl>,
 
-    /// Attestation server
+    /// Attestation server.
+    //
+    // This is held here only to keep the attestation server *somewhere*, but
+    // it's never used after being spawned.
+    #[allow(dead_code)]
     tcp_attest: Option<attestation::server::AttestationSock>,
 }
 

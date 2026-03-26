@@ -4,7 +4,6 @@
 
 use std::convert::TryInto;
 use std::fs::File;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
@@ -724,7 +723,7 @@ impl MachineInitializer<'_> {
                     panic!("Unsupported VM RoT configuration: more than one boot disk");
                 }
 
-                settings.order.get(0)
+                settings.order.first()
             });
 
         if let Some(boot_entry) = boot_disk_entry {
@@ -736,7 +735,7 @@ impl MachineInitializer<'_> {
                 spec::StorageDevice::Nvme(disk) => &disk.backend_id,
             };
 
-            let volume = match self.block_backends.get(&backend_id) {
+            let volume = match self.block_backends.get(backend_id) {
                 Some(block_backend) => {
                     let crucible_backend = match block_backend
                         .as_any()
