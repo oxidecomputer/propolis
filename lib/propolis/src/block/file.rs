@@ -251,6 +251,10 @@ impl block::Backend for FileBackend {
         self.block_attach.stop();
         self.workers.block_until_joined();
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 mod dkioc {

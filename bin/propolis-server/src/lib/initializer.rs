@@ -685,6 +685,15 @@ impl MachineInitializer<'_> {
         }
     }
 
+    // TODO: if this is running and we want to tear down a vm, will this get handled properly? or
+    // will it block instance shutdown?
+    //
+    // I had a small moment about debugging this at scale T_T
+    pub async fn initialize_rot_data(&self) -> Result<(), MachineInitError> {
+        // TODO
+        Ok(())
+    }
+
     /// Initializes the storage devices and backends listed in this
     /// initializer's instance spec.
     ///

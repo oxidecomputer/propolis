@@ -579,6 +579,8 @@ async fn initialize_vm_objects(
         .initialize_storage_devices(&chipset, options.nexus_client.clone())
         .await?;
 
+    //tokio::spawn(self.initialize_rot_data());
+
     let ramfb =
         init.initialize_fwcfg(spec.board.cpus, &options.bootrom_version)?;
 

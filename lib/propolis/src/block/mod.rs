@@ -327,6 +327,9 @@ pub trait Backend: Send + Sync + 'static {
     /// requests when they are told to pause (and will only report they are
     /// fully paused when all their in-flight requests have completed).
     async fn stop(&self);
+
+    /// TODO: good comment here explaining the downcasting
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// Consumer of per-[Request] metrics
