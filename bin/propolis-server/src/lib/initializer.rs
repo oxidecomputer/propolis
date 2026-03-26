@@ -518,7 +518,7 @@ impl MachineInitializer<'_> {
             chipset.pci_attach(bdf, device);
 
             // Spawn attestation server that will go over the vsock
-            if let cfg = attest_cfg.unwrap() {
+            if let Some(cfg) = attest_cfg {
                 let attest = AttestationSock::new(
                     self.log.new(slog::o!("component" => "attestation-server")),
                     cfg.sled_agent_addr,
