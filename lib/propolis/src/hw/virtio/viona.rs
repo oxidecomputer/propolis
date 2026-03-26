@@ -1813,10 +1813,10 @@ mod test {
             let unsupported = features_u32 & !device_feats;
             if unsupported != 0 {
                 panic!(
-                    "Test wants more features than the device offers? \
-                    Device offers: {:#08x}\
-                    Test wants:    {:#08x}\
-                    Device lacks:  {:#08x}",
+                    "Test wants more features than the device offers? \n\
+                    Device offers: {:#08x}\n\
+                    Test wants:    {:#08x}\n\
+                    Device lacks:  {:#08x}\n",
                     device_feats, features_u32, unsupported
                 );
             }
