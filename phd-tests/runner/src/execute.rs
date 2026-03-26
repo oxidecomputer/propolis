@@ -5,6 +5,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use phd_framework::test_vm::TestVmManualStop;
 use phd_tests::phd_testcase::{Framework, TestCase, TestOutcome};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::watch;
@@ -104,12 +105,12 @@ pub async fn run_tests_with_ctx(
         let mut test_ctx = framework.test_ctx(tc.fully_qualified_name());
         let mut success_tx = None;
         if run_opts.manual_stop_on_failure {
-            let sigint_rx_cleanup = sigint_rx.clone();
             let (tx, success_rx) = watch::channel(None);
-            test_ctx.set_cleanup_task_outcome_receiver(
+            test_ctx.set_cleanup_task_outcome_receiver(TestVmManualStop::new(
+                tc.fully_qualified_name(),
                 success_rx,
-                sigint_rx_cleanup,
-            );
+                sigint_rx.clone(),
+            ));
             success_tx = Some(tx);
         }
         let test_outcome = tokio::spawn(async move {
@@ -156,9 +157,7 @@ pub async fn run_tests_with_ctx(
 
         if let Some(tx) = success_tx {
             let succeeded = !matches!(&test_outcome, TestOutcome::Failed(_));
-            if let Err(e) = tx.send(Some(succeeded)) {
-                error!("Error sending outcome to instance cleanup tasks: {e}");
-            }
+            let _: Result<_, _> = tx.send(Some(succeeded));
         }
 
         match test_outcome {

@@ -40,13 +40,11 @@ use log_config::LogConfig;
 use port_allocator::PortAllocator;
 pub use test_vm::TestVm;
 use test_vm::{
-    environment::EnvironmentSpec, spec::VmSpec, VmConfig, VmLocation,
+    environment::EnvironmentSpec, spec::VmSpec, TestVmManualStop, VmConfig,
+    VmLocation,
 };
 use tokio::{
-    sync::{
-        mpsc::{UnboundedReceiver, UnboundedSender},
-        watch,
-    },
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
     task::JoinHandle,
 };
 
@@ -66,8 +64,7 @@ pub(crate) mod zfs;
 pub struct TestCtx {
     pub(crate) framework: Arc<Framework>,
     pub(crate) output_dir: Utf8PathBuf,
-    pub(crate) success_sigint_rx:
-        Option<(watch::Receiver<Option<bool>>, watch::Receiver<bool>)>,
+    pub(crate) manual_stop: Option<TestVmManualStop>,
 }
 
 /// An instance of the PHD test framework.
@@ -250,10 +247,9 @@ impl TestCtx {
     /// used to indicate to the instance cleanup task that a test *has* failed.
     pub fn set_cleanup_task_outcome_receiver(
         &mut self,
-        success_rx: watch::Receiver<Option<bool>>,
-        sigint_rx: watch::Receiver<bool>,
+        manual_stop: TestVmManualStop,
     ) {
-        self.success_sigint_rx = Some((success_rx, sigint_rx));
+        self.manual_stop = Some(manual_stop);
     }
 }
 
@@ -346,7 +342,7 @@ impl Framework {
     pub fn test_ctx(self: &Arc<Self>, fully_qualified_name: String) -> TestCtx {
         let output_dir =
             self.tmp_directory.as_path().join(&fully_qualified_name);
-        TestCtx { framework: self.clone(), output_dir, success_sigint_rx: None }
+        TestCtx { framework: self.clone(), output_dir, manual_stop: None }
     }
 
     /// Resets the state of any stateful objects in the framework to prepare it

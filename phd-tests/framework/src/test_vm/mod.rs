@@ -273,11 +273,8 @@ pub struct TestVm {
     state: VmState,
 
     /// If we should wait for operator intervention before terminating this
-    /// instance, a `Some((success_rx, _))` here will be sent a `Some(false)`.
-    /// While waiting, a `Some((_, sigint_rx))` will be sent a `true` if the
-    /// user sends a keyboard interrupt to indicate we should stop waiting.
-    success_sigint_rx:
-        Option<(watch::Receiver<Option<bool>>, watch::Receiver<bool>)>,
+    /// instance, this will be populated.
+    manual_stop: Option<TestVmManualStop>,
 
     /// Sending a task handle to this channel will ensure that the task runs to
     /// completion as part of the post-test cleanup fixture (i.e. before any
@@ -335,7 +332,7 @@ impl TestVm {
                 environment.clone(),
                 params,
                 ctx.framework.cleanup_task_channel(),
-                ctx.success_sigint_rx.clone(),
+                ctx.manual_stop.clone(),
             ),
         }
     }
@@ -346,10 +343,7 @@ impl TestVm {
         environment_spec: EnvironmentSpec,
         mut params: ServerProcessParameters,
         cleanup_task_tx: UnboundedSender<JoinHandle<()>>,
-        success_sigint_rx: Option<(
-            watch::Receiver<Option<bool>>,
-            watch::Receiver<bool>,
-        )>,
+        manual_stop: Option<TestVmManualStop>,
     ) -> Result<Self> {
         let metrics = environment_spec.metrics.as_ref().map(|m| match m {
             MetricsLocation::Local => {
@@ -384,7 +378,7 @@ impl TestVm {
             guest_os,
             state: VmState::New,
             cleanup_task_tx,
-            success_sigint_rx,
+            manual_stop,
         })
     }
 
@@ -1147,8 +1141,8 @@ impl Drop for TestVm {
 
         let disks: Vec<_> = self.vm_spec().disk_handles.drain(..).collect();
 
-        let success_sigint_rx_opt = self.success_sigint_rx.take();
-        let name = self.vm_spec().vm_name.to_owned();
+        let manual_stop_opt = self.manual_stop.take();
+        let vm_name = self.vm_spec().vm_name.to_owned();
 
         // The order in which the task destroys objects is important: the server
         // can't be killed until the client has gotten a chance to shut down
@@ -1162,45 +1156,8 @@ impl Drop for TestVm {
 
                 // Check if we should let the user access the instance of a
                 // failed testcase before ensuring its demolition
-                if let Some((mut success_rx, sigint_rx)) = success_sigint_rx_opt {
-                    while success_rx.changed().await.is_ok() {
-                        match *success_rx.borrow() {
-                            None => continue,
-                            Some(true) => break,
-                            Some(false) => {}
-                        }
-                        let sock = server.server_addr();
-                        let ip = sock.ip();
-                        let port = sock.port();
-                        let mut uninformed = true;
-                        // States that might be worth inspecting out-of-band
-                        while let Ok(InstanceState::Running
-                            | InstanceState::Migrating
-                            | InstanceState::Rebooting
-                            | InstanceState::Repairing
-                        ) = client
-                            .instance_get()
-                            .send()
-                            .await
-                            .map(|inst| inst.instance.state)
-                        {
-                            if *sigint_rx.borrow() { break }
-                            if uninformed {
-                                // write to stderr irrespective of log level
-                                eprintln!(r#"
-propolis-server {name:?} left running at address {sock}
-phd-runner will resume when this instance is shut down; e.g. by one of:
-
-$ propolis-cli -s {ip} -p {port} serial
-localhost:~# poweroff
-
-$ propolis-cli -s {ip} -p {port} state stop
-"#);
-                                uninformed = false;
-                            }
-                            tokio::time::sleep(Duration::from_secs(1)).await;
-                        }
-                    }
+                if let Some(manual_stop) = manual_stop_opt {
+                    manual_stop.wait_for_stop(vm_name, &client, &server).await;
                 }
 
                 // Try to make sure the server's kernel VMM is cleaned up before
@@ -1290,5 +1247,76 @@ async fn try_ensure_vm_destroyed(client: &Client) {
 
     if let Err(error) = destroyed {
         error!(%error, "VM not destroyed after 5 seconds");
+    }
+}
+
+/// For waiting for instances of failed testcases to be manually shut down,
+/// when phd-runner is invoked with --manual-stop-on-failure
+#[derive(Clone)]
+pub struct TestVmManualStop {
+    test_name: String,
+    /// If we should wait for operator intervention before terminating this
+    /// instance, this will be sent a `Some(false)`.
+    success_rx: watch::Receiver<Option<bool>>,
+    /// While waiting for instance shutdown, this may be sent a `true` if the
+    /// user sends a keyboard interrupt to indicate we should stop waiting.
+    sigint_rx: watch::Receiver<bool>,
+}
+impl TestVmManualStop {
+    pub fn new(
+        test_name: String,
+        success_rx: watch::Receiver<Option<bool>>,
+        sigint_rx: watch::Receiver<bool>,
+    ) -> Self {
+        Self { test_name, success_rx, sigint_rx }
+    }
+    async fn wait_for_stop(
+        mut self,
+        vm_name: String,
+        client: &Client,
+        server: &server::PropolisServer,
+    ) {
+        if self.success_rx.changed().await.is_ok() {
+            let success_opt = *self.success_rx.borrow();
+            if let Some(false) = success_opt {
+                let sock = server.server_addr();
+                let ip = sock.ip();
+                let port = sock.port();
+                let test_name = self.test_name;
+                let mut uninformed = true;
+                // States that might be worth inspecting out-of-band
+                while let Ok(
+                    InstanceState::Running
+                    | InstanceState::Migrating
+                    | InstanceState::Rebooting
+                    | InstanceState::Repairing,
+                ) = client
+                    .instance_get()
+                    .send()
+                    .await
+                    .map(|inst| inst.instance.state)
+                {
+                    if *self.sigint_rx.borrow() {
+                        break;
+                    }
+                    if uninformed {
+                        error!(
+                            r#"
+test {test_name:?} failed. propolis-server {vm_name:?} was left running,
+with API accessible at http://{sock}
+phd-runner will resume when this instance is shut down; e.g. by one of:
+
+$ propolis-cli -s {ip} -p {port} serial
+localhost:~# poweroff
+
+$ propolis-cli -s {ip} -p {port} state stop
+"#
+                        );
+                        uninformed = false;
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
     }
 }
