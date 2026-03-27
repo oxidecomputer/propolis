@@ -1057,9 +1057,7 @@ impl PciVirtioState {
         if status == Status::RESET && state.status != Status::RESET {
             self.virtio_reset(dev, state);
         } else {
-            if self.apply_status(dev, &mut state, status).is_err() {
-                self.needs_reset_locked(dev, &mut state);
-            }
+            self.apply_status(dev, &mut state, status);
         }
     }
 
@@ -1068,10 +1066,10 @@ impl PciVirtioState {
         dev: &dyn VirtioDevice,
         state: &mut MutexGuard<VirtioState>,
         status: Status,
-    ) -> Result<(), ()> {
+    ) {
         if status == state.status {
             // No actual difference, bail out early.
-            return Ok(());
+            return;
         }
 
         if !status.contains(state.status) {
@@ -1083,19 +1081,35 @@ impl PciVirtioState {
             // FEATURES_OK and violate the expectation that `set_features`
             // is called only once when setting up a device. Instead, the
             // guest driver is in the wrong and we'll set NEEDS_RESET.
-            return Err(());
+            self.needs_reset_locked(dev, state);
+            return;
         }
 
         // Any bits here are being set at most once since the last device reset.
         let new_bits = status.difference(state.status);
 
         if new_bits.contains(Status::FEATURES_OK) {
-            dev.set_features(state.negotiated_features)?;
+            // From VirtIO 1.2 section 2.1:
+            //
+            // > FEATURES_OK (8) Indicates that the driver has acknowledged
+            // > all the features it understands, and feature negotiation
+            // > is complete.
+            //
+            // So, at this point if the guest sets additional features, we don't
+            // have to care about them; renegotiation requires a device reset
+            // ("The only way to renegotiate is to reset the device."). The
+            // features provided are the ones we should enable.
+            if dev.set_features(state.negotiated_features) == Err(()) {
+                // Those requested features were not tolerable. We *must not*
+                // reflect FEATURES_OK in status. Additionally, set NEEDS_RESET
+                // in the hopes that the guset might see the issue and attempt
+                // operating in a less-featureful mode.
+                self.needs_reset_locked(dev, state);
+                return;
+            }
         }
 
         state.status = status;
-
-        Ok(())
     }
 
     /// Set the "Needs Reset" state on the VirtIO device

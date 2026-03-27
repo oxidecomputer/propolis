@@ -1430,10 +1430,7 @@ pub(crate) fn check_api_version() -> Result<(), crate::api_version::Error> {
 /// cirumstances carefully, and consider if these test expectations were correct
 /// in the first place; in some sense these tests function as a bespoke
 /// "virtio-nic driver" that lives only in Propolis' tests.
-///
-/// Finally, we'll actually create and destroy some vnics so not only do we need
-/// `dladm`, we need a recent enough viona and everything..
-#[cfg(all(test, target_os = "illumos"))]
+#[cfg(test)]
 mod test {
     use crate::common::{GuestAddr, RWOp, ReadOp, WriteOp, MB, PAGE_SIZE};
     use crate::hw::chipset::i440fx::{self, I440FxHostBridge};
@@ -2081,8 +2078,17 @@ mod test {
         assert!(res.success());
     }
 
-    #[tokio::test]
-    async fn run_viona_tests() {
+    // We'll actually create and destroy some vnics so not only do we need
+    // `dladm`, we need a recent enough viona and everything.. this test is only
+    // meaningful on an illumos host:;
+    #[test]
+    #[cfg_attr(not(target_os = "illumos"), ignore)]
+    fn run_viona_tests() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
         macro_rules! testcase {
             ($test_fn:ident) => {
                 TestCase { name: stringify!($test_fn), test_fn: $test_fn }
@@ -2112,13 +2118,16 @@ mod test {
 
         const TEST_VNIC: &'static str = "vnic_prop_test0";
         for test in tests {
-            create_vnic(&underlying_nic, TEST_VNIC).await;
+            let underlying_nic = underlying_nic.clone();
+            rt.block_on(async move {
+                create_vnic(&underlying_nic, TEST_VNIC).await;
 
-            let test_ctx = create_test_ctx(test.name, TEST_VNIC);
-            (test.test_fn)(&test_ctx);
-            drop(test_ctx);
+                let test_ctx = create_test_ctx(test.name, TEST_VNIC);
+                (test.test_fn)(&test_ctx);
+                drop(test_ctx);
 
-            delete_vnic(TEST_VNIC).await;
+                delete_vnic(TEST_VNIC).await;
+            });
         }
     }
 }
