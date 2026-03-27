@@ -47,6 +47,14 @@ BEGIN {
 	printf("Tracing...\n");
 }
 
+propolis*:::virtio_state_reset {
+	printf("--- DEVICE RESET ---\n");
+}
+
+propolis*:::virtio_set_status {
+	printf("--- DEVICE STATUS SET: %02x ---\n", arg0);
+}
+
 viona_ioctl:entry {
 	self->dptr = arg2;
 	self->rvp = args[5];
