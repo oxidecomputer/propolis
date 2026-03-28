@@ -40,7 +40,8 @@ use log_config::LogConfig;
 use port_allocator::PortAllocator;
 pub use test_vm::TestVm;
 use test_vm::{
-    environment::EnvironmentSpec, spec::VmSpec, VmConfig, VmLocation,
+    environment::EnvironmentSpec, spec::VmSpec, TestVmManualStop, VmConfig,
+    VmLocation,
 };
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
@@ -63,6 +64,7 @@ pub(crate) mod zfs;
 pub struct TestCtx {
     pub(crate) framework: Arc<Framework>,
     pub(crate) output_dir: Utf8PathBuf,
+    pub(crate) manual_stop: Option<TestVmManualStop>,
 }
 
 /// An instance of the PHD test framework.
@@ -239,6 +241,16 @@ impl TestCtx {
         )
         .await
     }
+
+    /// When phd-runner is configured to leave instances running on failed
+    /// tests, the watch channel whose Receiver is passed to this function is
+    /// used to indicate to the instance cleanup task that a test *has* failed.
+    pub fn set_cleanup_task_outcome_receiver(
+        &mut self,
+        manual_stop: TestVmManualStop,
+    ) {
+        self.manual_stop = Some(manual_stop);
+    }
 }
 
 // The framework implementation includes some "runner-only" functions
@@ -330,7 +342,7 @@ impl Framework {
     pub fn test_ctx(self: &Arc<Self>, fully_qualified_name: String) -> TestCtx {
         let output_dir =
             self.tmp_directory.as_path().join(&fully_qualified_name);
-        TestCtx { framework: self.clone(), output_dir }
+        TestCtx { framework: self.clone(), output_dir, manual_stop: None }
     }
 
     /// Resets the state of any stateful objects in the framework to prepare it
