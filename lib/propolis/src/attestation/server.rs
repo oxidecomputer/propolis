@@ -14,7 +14,7 @@ use tokio::sync::{oneshot, Mutex as TokioMutex};
 use tokio::task::JoinHandle;
 
 use dice_verifier::sled_agent::AttestSledAgent;
-use dice_verifier::AttestAsync;
+use dice_verifier::Attest;
 
 use vm_attest::VmInstanceConf;
 
@@ -259,7 +259,7 @@ impl AttestationSock {
         info!(log, "attestation server running");
 
         // Attestation requests get to the RoT via sled-agent API endpoints.
-        let ox_attest: Box<dyn AttestAsync + Send + Sync> =
+        let ox_attest: Box<dyn Attest + Send + Sync> =
             Box::new(AttestSledAgent::new(sa_addr, &log));
         let rot =
             Arc::new(TokioMutex::new(vm_attest::VmInstanceRot::new(ox_attest)));
