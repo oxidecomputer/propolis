@@ -70,11 +70,13 @@ pub async fn boot_disk_digest(
         let res = vol.read(block, &mut buffer).await;
 
         if let Err(e) = res {
-            panic!("read failed: {e:?}.
+            panic!(
+                "read failed: {e:?}.
                 offset={offset},
                 this_block_cout={this_block_count},
                 block_size={block_size},
-                end_block={end_block}");
+                end_block={end_block}"
+            );
         }
 
         hasher.update(&*buffer);

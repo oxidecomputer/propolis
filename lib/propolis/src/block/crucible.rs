@@ -367,6 +367,10 @@ impl CrucibleBackend {
     pub fn clone_volume(&self) -> Volume {
         self.state.volume.clone()
     }
+
+    pub fn is_read_only(&self) -> bool {
+        self.state.info.read_only
+    }
 }
 
 #[async_trait::async_trait]

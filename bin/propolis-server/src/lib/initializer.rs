@@ -751,6 +751,13 @@ impl MachineInitializer<'_> {
                             return;
                         }
                     };
+
+                    if !crucible_backend.is_read_only() {
+                        // Disk must be read-only to be used for attestation.
+                        slog::info!(self.log, "boot disk is not read-only");
+                        return;
+                    }
+
                     crucible_backend.clone_volume()
                 }
                 None => {
