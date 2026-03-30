@@ -251,7 +251,10 @@ impl Lifecycle for PciVirtioSock {
     fn type_name(&self) -> &'static str {
         "pci-virtio-socket"
     }
+    // XXX we actually need to mimic viona here which also helps with migration
     fn reset(&self) {
+        // XXX temporary "fix"
+        self.backend.reset().expect("XXX failed to reset vsock connections");
         self.virtio_state.reset(self);
     }
     fn migrate(&'_ self) -> Migrator<'_> {

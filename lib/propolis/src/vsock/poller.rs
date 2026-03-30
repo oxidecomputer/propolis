@@ -11,6 +11,8 @@ use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::Duration;
+use std::time::Instant;
 
 use iddqd::IdHashMap;
 use nix::poll::PollFlags;
@@ -35,6 +37,7 @@ use super::packet::VsockPacketOp;
 enum VsockEvent {
     TxQueue = 0,
     RxQueue,
+    Reset,
     Shutdown,
 }
 
@@ -65,6 +68,10 @@ impl VsockPollerNotify {
             VSOCK_TX_QUEUE => self.port_send(VsockEvent::TxQueue),
             _ => Ok(()),
         }
+    }
+
+    pub fn reset(&self) -> std::io::Result<()> {
+        self.port_send(VsockEvent::Reset)
     }
 
     pub fn shutdown(&self) -> std::io::Result<()> {
@@ -103,6 +110,11 @@ enum RxEvent {
     CreditUpdate(ConnKey),
 }
 
+struct ClosingConn {
+    key: ConnKey,
+    started: Instant,
+}
+
 pub struct VsockPoller {
     log: Logger,
     /// The guest context id
@@ -119,6 +131,8 @@ pub struct VsockPoller {
     rx: VecDeque<RxEvent>,
     /// Connections blocked waiting for rx queue descriptors
     rx_blocked: Vec<ConnKey>,
+    /// Connections waiting to be reaped
+    quiesce: VecDeque<ClosingConn>,
 }
 
 impl VsockPoller {
@@ -166,6 +180,7 @@ impl VsockPoller {
             connections: Default::default(),
             rx: Default::default(),
             rx_blocked: Default::default(),
+            quiesce: Default::default(),
         })
     }
 
@@ -258,6 +273,11 @@ impl VsockPoller {
                     // more data will be sent and received, followed by a
                     // VIRTIO_VSOCK_OP_RST response from the peer.
                     self.send_conn_rst(key);
+                } else {
+                    self.quiesce.push_back(ClosingConn {
+                        key,
+                        started: Instant::now(),
+                    });
                 }
             }
         }
@@ -488,6 +508,9 @@ impl VsockPoller {
             val if val == VsockEvent::RxQueue as usize => {
                 self.handle_rx_queue_event()
             }
+            val if val == VsockEvent::Reset as usize => {
+                self.reset();
+            }
             val if val == VsockEvent::Shutdown as usize => return true,
             _ => (),
         }
@@ -586,10 +609,6 @@ impl VsockPoller {
 
             match conn.socket.read(&mut read_buf[..max_read]) {
                 Ok(0) => {
-                    // TODO the guest is supposed to send us a RST to finalize
-                    // the shutdown. We need to put this on a quiesce queue so
-                    // that we don't leave a half open connection laying around
-                    // in our connection map.
                     let packet = VsockPacket::new_shutdown(
                         VsockGuestAddr::from_conn_key(*guest_cid, key),
                         VsockPacketFlags::VIRTIO_VSOCK_SHUTDOWN_F_SEND
@@ -597,6 +616,10 @@ impl VsockPoller {
                         conn.fwd_cnt(),
                     );
                     permit.write(&packet.header, &packet.data);
+                    self.quiesce.push_back(ClosingConn {
+                        key,
+                        started: Instant::now(),
+                    });
                     return;
                 }
                 Ok(nbytes) => {
@@ -667,6 +690,20 @@ impl VsockPoller {
         self.rx.push_back(RxEvent::Reset(key));
     }
 
+    fn quiesce_connections(&mut self) {
+        while let Some(conn) = self.quiesce.pop_front_if(|conn| {
+            conn.started.elapsed() > Duration::from_secs(2)
+        }) {
+            // It's possible that the guest sent us a RST for the connection
+            // since we put it on the quiesce queue.
+            if let Some(_) = self.connections.remove(&conn.key) {
+                // If we have a connection make sure we send a RST so the guest
+                // knows we are done with it.
+                self.send_conn_rst(conn.key);
+            }
+        }
+    }
+
     /// This is the vsock event-loop. It's responsible for handling vsock
     /// packets to and from the guest.
     fn handle_events(&mut self) {
@@ -677,6 +714,10 @@ impl VsockPoller {
         let mut read_buf: Box<[u8]> = vec![0u8; 1024 * 64].into();
 
         loop {
+            let mut ts = libc::timespec {
+                tv_sec: Duration::from_secs(2).as_secs() as i64,
+                tv_nsec: 0,
+            };
             let mut nget = 1;
 
             let ret = unsafe {
@@ -689,7 +730,7 @@ impl VsockPoller {
                     // there is no other work to do unless we are woken up. In
                     // the near future we will likely periodically wake up to
                     // service the shutdown quiesce queue.
-                    std::ptr::null_mut(),
+                    &mut ts,
                 )
             };
 
@@ -697,7 +738,7 @@ impl VsockPoller {
                 let err = std::io::Error::last_os_error();
                 match err.raw_os_error().expect(
                     "`raw_os_error` is documented to always return `Some` \
-+                     when obtained via `last_os_error`",
+                    when obtained via `last_os_error`",
                 ) {
                     // A signal was caught so process the loop again
                     libc::EINTR => continue,
@@ -709,6 +750,11 @@ impl VsockPoller {
                             "vsock port fd is no longer valid: {err}"
                         );
                         return;
+                    }
+                    // We hit our timeout, so check if we have any cleanup we
+                    // need to do.
+                    libc::ETIME => {
+                        self.quiesce_connections();
                     }
                     _ => {
                         error!(&self.log, "vsock port_getn returned: {err}");
@@ -743,7 +789,18 @@ impl VsockPoller {
 
             // Process any pending rx events
             self.process_pending_rx();
+
+            // Cleanup any connection waiting to be be reaped
+            self.quiesce_connections();
         }
+    }
+
+    // XXX do we have a race here with the virtio device being reset since
+    // we get notified asynchronously?
+    fn reset(&mut self) {
+        std::mem::take(&mut self.rx);
+        std::mem::take(&mut self.rx_blocked);
+        std::mem::take(&mut self.connections);
     }
 }
 

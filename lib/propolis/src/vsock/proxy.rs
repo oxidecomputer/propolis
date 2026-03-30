@@ -345,6 +345,11 @@ impl VsockProxy {
     fn queue_notify(&self, vq_id: u16) -> std::io::Result<()> {
         self.poller.queue_notify(vq_id)
     }
+
+    // XXX maybe reset things?
+    pub fn reset(&self) -> std::io::Result<()> {
+        self.poller.reset()
+    }
 }
 
 impl VsockBackend for VsockProxy {
