@@ -10,13 +10,13 @@ use std::sync::Mutex;
 use slog::{error, info, Logger};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Mutex as TokioMutex};
 use tokio::task::JoinHandle;
 
 use dice_verifier::sled_agent::AttestSledAgent;
-use dice_verifier::Attest;
+use dice_verifier::AttestAsync;
 
-use vm_attest::{VmInstanceAttester, VmInstanceConf};
+use vm_attest::VmInstanceConf;
 
 use crate::attestation::ATTESTATION_ADDR;
 
@@ -149,7 +149,7 @@ impl AttestationSock {
     // Handle an incoming connection to the attestation port.
     async fn handle_conn(
         log: Logger,
-        rot: Arc<Mutex<vm_attest::VmInstanceRot>>,
+        rot: Arc<TokioMutex<vm_attest::VmInstanceRot>>,
         vm_conf: Arc<Mutex<Option<vm_attest::VmInstanceConf>>>,
         conn: TcpStream,
     ) -> anyhow::Result<()> {
@@ -203,35 +203,18 @@ impl AttestationSock {
                 vm_attest::Request::Attest(q) => {
                     slog::debug!(log, "qualifying data received: {q:?}");
 
-                    let guard = vm_conf.lock().unwrap();
-                    let conf = guard.clone();
-                    drop(guard);
+                    let conf = {
+                        let guard = vm_conf.lock().unwrap();
+                        guard.to_owned()
+                    };
 
                     match conf {
                         Some(conf) => {
                             info!(log, "vm conf is ready = {:?}", conf);
 
-                            let rot_guard = rot.lock().unwrap();
+                            let rot_guard = rot.lock().await;
 
-                            // very unfortunate: `attest` is a trait of synchronous
-                            // functions, in our case wrapping async calls into
-                            // sled-agent. to make this work, the sled-agent attestor
-                            // holds a runtime handle and will block on async calls
-                            // internally. This all happens in `attest()`. We're calling
-                            // that from an async task, so just directly calling
-                            // `attest()` is a sure-fire way to panic as the contained
-                            // runtime tries to start on this already-in-a-runtime
-                            // thread.
-                            //
-                            // okay. so, it'd be ideal to just give AttestSledAgent our
-                            // runtime and let it `block_on()`. for now, instead, just
-                            // call it in a context it's allowed to do its own
-                            // `block_on()`:
-                            let attest_result =
-                                tokio::task::block_in_place(move || {
-                                    rot_guard.attest(&conf, &q)
-                                });
-                            match attest_result {
+                            match rot_guard.attest(&conf, &q).await {
                                 Ok(a) => vm_attest::Response::Attest(a),
                                 Err(e) => {
                                     vm_attest::Response::Error(e.to_string())
@@ -276,10 +259,10 @@ impl AttestationSock {
         info!(log, "attestation server running");
 
         // Attestation requests get to the RoT via sled-agent API endpoints.
-        let ox_attest: Box<dyn Attest + Send> =
+        let ox_attest: Box<dyn AttestAsync + Send + Sync> =
             Box::new(AttestSledAgent::new(sa_addr, &log));
         let rot =
-            Arc::new(Mutex::new(vm_attest::VmInstanceRot::new(ox_attest)));
+            Arc::new(TokioMutex::new(vm_attest::VmInstanceRot::new(ox_attest)));
 
         let vm_conf = Arc::new(Mutex::new(None));
 
