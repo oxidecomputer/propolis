@@ -127,10 +127,11 @@ impl QueueSlot {
     }
 }
 
-#[derive(Default, Copy, Clone)]
+#[derive(Default, Clone)]
 struct QueueColState {
     associated_qids: Versioned<Bitmap>,
     paused: bool,
+    metric_consumer: Option<Arc<dyn MetricConsumer>>,
 }
 impl QueueColState {
     fn queue_associate(&mut self, qid: QueueId) -> Versioned<Bitmap> {
@@ -177,11 +178,13 @@ impl QueueCollection {
         slot.flush_notifications();
     }
     fn set_metric_consumer(&self, consumer: Arc<dyn MetricConsumer>) {
+        let mut state = self.state.lock().unwrap();
         for queue in self.queues.iter() {
-            if let Some(minder) = queue.state.lock().unwrap().minder.as_mut() {
+            if let Some(minder) = queue.state.lock().unwrap().minder.as_ref() {
                 minder.set_metric_consumer(consumer.clone());
             }
         }
+        state.metric_consumer = Some(consumer);
     }
     fn associated_qids(&self) -> Versioned<Bitmap> {
         self.state.lock().unwrap().associated_qids
@@ -516,6 +519,11 @@ impl DeviceAttachment {
             // Propagate any pause state of the device into any newly
             // associating queues while in such a pause.
             minder.pause();
+        }
+        if let Some(consumer) = state.metric_consumer.as_ref() {
+            // Propagate any metric consumer already registered with
+            // this device to the newly-associating queue.
+            minder.set_metric_consumer(consumer.clone());
         }
         slot_state.minder = Some(minder);
         drop(slot_state);
