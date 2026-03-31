@@ -24,6 +24,7 @@ use crate::hw::virtio::vsock::VSOCK_TX_QUEUE;
 use crate::vsock::packet::VsockPacket;
 use crate::vsock::packet::VsockPacketFlags;
 use crate::vsock::packet::VsockSocketType;
+use crate::vsock::probes;
 use crate::vsock::proxy::ConnKey;
 use crate::vsock::proxy::VsockPortMapping;
 use crate::vsock::proxy::VsockProxyConn;
@@ -321,6 +322,8 @@ impl VsockPoller {
                     continue;
                 }
             };
+
+            probes::vsock_pkt_tx!(|| &packet.header);
 
             // If the packet is not destined for the host drop it.
             if packet.header.dst_cid() != VSOCK_HOST_CID {

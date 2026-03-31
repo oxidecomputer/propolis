@@ -19,6 +19,7 @@ use crate::vmm::MemCtx;
 use crate::vsock::packet::VsockPacket;
 use crate::vsock::packet::VsockPacketError;
 use crate::vsock::packet::VsockPacketHeader;
+use crate::vsock::probes;
 use crate::vsock::proxy::VsockPortMapping;
 use crate::vsock::GuestCid;
 use crate::vsock::VsockBackend;
@@ -84,6 +85,7 @@ impl RxPermit<'_> {
             });
         }
 
+        probes::vsock_pkt_rx!(|| header);
         queue.push_used(&mut chain, &mem);
     }
 }
