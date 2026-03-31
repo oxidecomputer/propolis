@@ -1071,7 +1071,7 @@ checksum = "248e3bacc7dc6baa3b21e405ee045c3047101a49145e7e9eca583ab4c2ca5345"
 [[package]]
 name = "crucible"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=a945a32ba9e1f2098ce3a8963765f1894f37110b#a945a32ba9e1f2098ce3a8963765f1894f37110b"
+source = "git+https://github.com/oxidecomputer/crucible?rev=3df8a24e046bcfdb0d69f93075e8e1d2d0e9889d#3df8a24e046bcfdb0d69f93075e8e1d2d0e9889d"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -1086,7 +1086,7 @@ dependencies = [
  "crucible-common",
  "crucible-protocol",
  "crucible-workspace-hack",
- "dropshot 0.16.7",
+ "dropshot 0.17.0",
  "fakedata_generator",
  "futures",
  "futures-core",
@@ -1127,7 +1127,7 @@ dependencies = [
 [[package]]
 name = "crucible-client-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=a945a32ba9e1f2098ce3a8963765f1894f37110b#a945a32ba9e1f2098ce3a8963765f1894f37110b"
+source = "git+https://github.com/oxidecomputer/crucible?rev=3df8a24e046bcfdb0d69f93075e8e1d2d0e9889d#3df8a24e046bcfdb0d69f93075e8e1d2d0e9889d"
 dependencies = [
  "base64 0.22.1",
  "crucible-workspace-hack",
@@ -1140,13 +1140,13 @@ dependencies = [
 [[package]]
 name = "crucible-common"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=a945a32ba9e1f2098ce3a8963765f1894f37110b#a945a32ba9e1f2098ce3a8963765f1894f37110b"
+source = "git+https://github.com/oxidecomputer/crucible?rev=3df8a24e046bcfdb0d69f93075e8e1d2d0e9889d#3df8a24e046bcfdb0d69f93075e8e1d2d0e9889d"
 dependencies = [
  "anyhow",
  "atty",
  "crucible-workspace-hack",
- "dropshot 0.16.7",
- "nix 0.30.1",
+ "dropshot 0.17.0",
+ "nix 0.31.1",
  "rustls-pemfile 1.0.4",
  "schemars",
  "serde",
@@ -1170,7 +1170,7 @@ dependencies = [
 [[package]]
 name = "crucible-protocol"
 version = "0.0.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=a945a32ba9e1f2098ce3a8963765f1894f37110b#a945a32ba9e1f2098ce3a8963765f1894f37110b"
+source = "git+https://github.com/oxidecomputer/crucible?rev=3df8a24e046bcfdb0d69f93075e8e1d2d0e9889d#3df8a24e046bcfdb0d69f93075e8e1d2d0e9889d"
 dependencies = [
  "anyhow",
  "bincode",
@@ -1181,7 +1181,7 @@ dependencies = [
  "schemars",
  "serde",
  "strum 0.27.2",
- "strum_macros 0.27.2",
+ "strum_macros 0.28.0",
  "tokio",
  "tokio-util",
  "uuid",
@@ -4060,18 +4060,6 @@ dependencies = [
  "bitflags 2.9.4",
  "cfg-if",
  "cfg_aliases 0.1.1",
- "libc",
-]
-
-[[package]]
-name = "nix"
-version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
-dependencies = [
- "bitflags 2.9.4",
- "cfg-if",
- "cfg_aliases 0.2.1",
  "libc",
 ]
 
@@ -7547,6 +7535,18 @@ name = "strum_macros"
 version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "strum_macros"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab85eea0270ee17587ed4156089e10b9e6880ee688791d45a905f5b1ca36f664"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
