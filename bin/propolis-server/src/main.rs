@@ -324,17 +324,17 @@ fn main() -> anyhow::Result<()> {
                 propolis_addr.ip(),
             )?;
 
-            // TODO: how will this behave running server in isolation? is it still usable for devs?
-            let sa_addr = match propolis_addr.ip() {
-                IpAddr::V4(_) => todo!("no good!"),
+            let attest_cfg = match propolis_addr.ip() {
+                IpAddr::V4(_) => None,
                 IpAddr::V6(ipv6_addr) => {
                     let sled_subnet = Ipv6Subnet::<
                         { omicron_common::address::SLED_PREFIX },
                     >::new(ipv6_addr);
-                    omicron_common::address::get_sled_address(sled_subnet)
+                    omicron_common::address::get_sled_address(sled_subnet);
+
+                    Some(AttestationServerConfig::new(sa_addr))
                 }
             };
-            let attest_config = AttestationServerConfig::new(sa_addr);
 
             run_server(
                 bootrom_path,
@@ -342,8 +342,7 @@ fn main() -> anyhow::Result<()> {
                 config_dropshot,
                 metric_config,
                 vnc_addr,
-                // TODO
-                Some(attest_config),
+                attest_config,
                 log,
             )
         }
