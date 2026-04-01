@@ -324,13 +324,13 @@ fn main() -> anyhow::Result<()> {
                 propolis_addr.ip(),
             )?;
 
-            let attest_cfg = match propolis_addr.ip() {
+            let attest_config = match propolis_addr.ip() {
                 IpAddr::V4(_) => None,
                 IpAddr::V6(ipv6_addr) => {
                     let sled_subnet = Ipv6Subnet::<
                         { omicron_common::address::SLED_PREFIX },
                     >::new(ipv6_addr);
-                    omicron_common::address::get_sled_address(sled_subnet);
+                    let sa_addr = omicron_common::address::get_sled_address(sled_subnet);
 
                     Some(AttestationServerConfig::new(sa_addr))
                 }
