@@ -95,11 +95,9 @@ sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", branch =
 crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "a945a32ba9e1f2098ce3a8963765f1894f37110b" }
 crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "a945a32ba9e1f2098ce3a8963765f1894f37110b" }
 
-# TODO: pin these to git SHAs
 # Attestation
-#dice-verifier = { git = "https://github.com/oxidecomputer/dice-util", branch = "jhendricks/update-sled-agent-types-versions", features = ["sled-agent"] }
-dice-verifier = { git = "https://github.com/oxidecomputer/dice-util", rev = "c008287fb6c62654094d9d145ba9d08d90dcf811", features = ["sled-agent"] }
-vm-attest = { git = "https://github.com/oxidecomputer/vm-attest", rev = "732c34fa9bc2749312fcc36b1e9ccff880995a83", default-features = false }
+dice-verifier = { git = "https://github.com/oxidecomputer/dice-util", rev = "1d3084b514389847e8e0f5d966d2be4f18d02d32", features = ["sled-agent"] }
+vm-attest = { git = "https://github.com/oxidecomputer/vm-attest", rev = "2cdd17580a4fc6c871d24797016af8dbaac9421d", default-features = false }
 
 # External dependencies
 anyhow = "1.0"
@@ -208,6 +206,3 @@ zerocopy = "0.8.25"
 # [patch."https://github.com/oxidecomputer/crucible"]
 # crucible = { path = "../crucible/upstairs" }
 # crucible-client-types = { path = "../crucible/crucible-client-types" }
-
-#[patch."https://github.com/oxidecomputer/dice-util"]
-#dice-verifier = { path = "/home/jordan/src/dice-util/verifier", features = ["sled-agent"] }
