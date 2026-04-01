@@ -563,7 +563,7 @@ async fn initialize_vm_objects(
         &properties,
     ))?;
     init.initialize_network_devices(&chipset).await?;
-    let (tcp_attest, attest_init) =
+    let mut tcp_attest =
         init.initialize_vsock(&chipset, options.attest_config).await?;
 
     #[cfg(feature = "failure-injection")]
@@ -579,18 +579,16 @@ async fn initialize_vm_objects(
         .initialize_storage_devices(&chipset, options.nexus_client.clone())
         .await?;
 
-    // If we have a VM RoT, that RoT needs to be able to collect some
-    // information about the guest before it can be actually usable. That
-    // information collection can - at the moment - happen entirely
-    // asynchronously. So, prepare the RoT initialization if necessary, then
-    // spawn it off to run independently.
-    if let Some(mut attest_init) = attest_init {
-        init.prepare_rot_initializer(&mut attest_init);
-        tokio::spawn(attest_init.run());
-    }
-
     let ramfb =
         init.initialize_fwcfg(spec.board.cpus, &options.bootrom_version)?;
+
+    // If we have a VM RoT, that RoT needs to be able to collect some
+    // information about the guest before it can be actually usable. It will do
+    // that asynchronously, but have to provide references for initial necessary
+    // VM state.
+    if let Some(tcp_attest) = tcp_attest.as_mut() {
+        init.prepare_rot_initializer(tcp_attest)?;
+    }
 
     init.register_guest_hv_interface(guest_hv_lifecycle);
     init.initialize_cpus().await?;

@@ -33,19 +33,33 @@ impl AttestationServerConfig {
 
 /// TODO: comment
 pub struct AttestationSock {
+    log: slog::Logger,
     join_hdl: JoinHandle<()>,
     hup_send: oneshot::Sender<()>,
+    init_state: AttestationInitState,
 }
 
-/// This struct manages providing the requisite data for a corresponding `AttestationSock` to
-/// become fully functional.
+#[derive(Debug)]
+enum AttestationInitState {
+    Preparing {
+        vm_conf_send: oneshot::Sender<VmInstanceConf>,
+    },
+    /// A transient state while we're getting the initializer ready, having
+    /// taken `Preparing` and its `vm_conf_send`, but before we've got a
+    /// `JoinHandle` to track as running.
+    Initializing,
+    Running {
+        init_task: JoinHandle<()>,
+    },
+}
+
+/// This struct manages providing the requisite data for a corresponding
+/// `AttestationSock` to become fully functional.
 pub struct AttestationSockInit {
     log: slog::Logger,
     vm_conf_send: oneshot::Sender<VmInstanceConf>,
-    // kind of terrible: parts of the VM RoT initializer that must be filled in before `run()`.
-    // this *could* and probably should be more builder-y and typestateful.
-    pub instance_uuid: Option<uuid::Uuid>,
-    pub volume_ref: Option<crucible::Volume>,
+    uuid: uuid::Uuid,
+    volume_ref: Option<crucible::Volume>,
 }
 
 impl AttestationSockInit {
@@ -56,14 +70,12 @@ impl AttestationSockInit {
     /// down while this future is running, nothing will stop this future from operating? We
     /// probably need to tie in a shutdown signal from the corresponding `AttestationSockInit` to
     /// discover if we should (for example) stop calculating a boot digest midway.
-    pub async fn run(mut self) {
-        let uuid = self
-            .instance_uuid
-            .take()
-            .expect("AttestationSockInit was provided instance uuid");
+    pub async fn run(self) {
+        let AttestationSockInit { log, vm_conf_send, uuid, volume_ref } = self;
+
         let mut vm_conf = vm_attest::VmInstanceConf { uuid, boot_digest: None };
 
-        if let Some(volume) = self.volume_ref.take() {
+        if let Some(volume) = volume_ref {
             // TODO: load-bearing sleep: we have a Crucible volume, but we can be here and chomping
             // at the bit to get a digest calculation started well before the volume has been
             // activated; in `propolis-server` we need to wait for at least a subsequent instance
@@ -75,7 +87,7 @@ impl AttestationSockInit {
 
             let boot_digest =
                 match crate::attestation::boot_digest::boot_disk_digest(
-                    volume, &self.log,
+                    volume, &log,
                 )
                 .await
                 {
@@ -92,13 +104,13 @@ impl AttestationSockInit {
 
             vm_conf.boot_digest = Some(boot_digest);
         } else {
-            slog::warn!(self.log, "not computing boot disk digest");
+            slog::warn!(log, "not computing boot disk digest");
         }
 
         // keep a log reference around to report potential errors after this is taken and dropped
         // in `provide()`.
-        let log = self.log.clone();
-        let send_res = self.provide(vm_conf);
+        let log = log.clone();
+        let send_res = vm_conf_send.send(vm_conf);
         if let Err(_) = send_res {
             slog::error!(
                 log,
@@ -106,17 +118,10 @@ impl AttestationSockInit {
             );
         }
     }
-
-    pub fn provide(self, conf: VmInstanceConf) -> Result<(), VmInstanceConf> {
-        self.vm_conf_send.send(conf)
-    }
 }
 
 impl AttestationSock {
-    pub async fn new(
-        log: Logger,
-        sa_addr: SocketAddrV6,
-    ) -> io::Result<(Self, AttestationSockInit)> {
+    pub async fn new(log: Logger, sa_addr: SocketAddrV6) -> io::Result<Self> {
         info!(log, "attestation server created");
         let listener = TcpListener::bind(ATTESTATION_ADDR).await?;
         let (vm_conf_send, vm_conf_recv) =
@@ -128,22 +133,25 @@ impl AttestationSock {
         let join_hdl = tokio::spawn(async move {
             Self::run(log, listener, vm_conf_recv, hup_recv, sa_addr).await;
         });
-        let attestation_sock = Self { join_hdl, hup_send };
-        let attestation_init = AttestationSockInit {
+        let attestation_sock = Self {
             log: attest_init_log,
-            vm_conf_send,
-            instance_uuid: None,
-            volume_ref: None,
+            join_hdl,
+            hup_send,
+            init_state: AttestationInitState::Preparing { vm_conf_send },
         };
-        Ok((attestation_sock, attestation_init))
+        Ok(attestation_sock)
     }
 
     pub async fn halt(self) {
-        let Self { join_hdl, hup_send } = self;
+        let Self { join_hdl, hup_send, init_state, log: _ } = self;
 
         // Signal the socket listener to hang up, then wait for it to bail
         let _ = hup_send.send(());
         let _ = join_hdl.await;
+
+        if let AttestationInitState::Running { init_task } = init_state {
+            init_task.abort();
+        }
     }
 
     // Handle an incoming connection to the attestation port.
@@ -249,6 +257,34 @@ impl AttestationSock {
         Ok(())
     }
 
+    pub fn prepare_instance_conf(
+        &mut self,
+        uuid: uuid::Uuid,
+        volume_ref: Option<crucible::Volume>,
+    ) {
+        let init_state = std::mem::replace(
+            &mut self.init_state,
+            AttestationInitState::Initializing,
+        );
+        let vm_conf_send = match init_state {
+            AttestationInitState::Preparing { vm_conf_send } => vm_conf_send,
+            other => {
+                panic!(
+                    "VM RoT used incorrectly: prepare_instance_conf called \
+                        more than once. current state {other:?}"
+                );
+            }
+        };
+        let init = AttestationSockInit {
+            log: self.log.clone(),
+            uuid,
+            volume_ref,
+            vm_conf_send,
+        };
+        let init_task = tokio::spawn(init.run());
+        self.init_state = AttestationInitState::Running { init_task };
+    }
+
     pub async fn run(
         log: Logger,
         listener: TcpListener,
@@ -266,14 +302,19 @@ impl AttestationSock {
 
         let vm_conf = Arc::new(Mutex::new(None));
 
+        let log_ref = log.clone();
         let vm_conf_cloned = vm_conf.clone();
         tokio::spawn(async move {
             match vm_conf_recv.await {
                 Ok(conf) => {
                     *vm_conf_cloned.lock().unwrap() = Some(conf);
                 }
-                Err(e) => {
-                    panic!("unexpected loss of boot digest thread: {:?}", e);
+                Err(_e) => {
+                    slog::info!(
+                        log_ref,
+                        "lost of boot digest sender, \
+                        hopefully Propolis is stopping"
+                    );
                 }
             }
         });
