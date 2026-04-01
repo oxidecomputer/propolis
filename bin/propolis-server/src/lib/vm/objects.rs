@@ -52,7 +52,7 @@ pub(super) struct InputVmObjects {
     pub com1: Arc<Serial<LpcUart>>,
     pub framebuffer: Option<Arc<RamFb>>,
     pub ps2ctrl: Arc<PS2Ctrl>,
-    pub tcp_attest: Option<attestation::server::AttestationSock>,
+    pub attest_handle: Option<attestation::server::AttestationSock>,
 }
 
 /// The collection of objects and state that make up a Propolis instance.
@@ -89,12 +89,8 @@ pub(crate) struct VmObjectsLocked {
     /// A handle to the VM's PS/2 controller.
     ps2ctrl: Arc<PS2Ctrl>,
 
-    /// Attestation server.
-    //
-    // This is held here only to keep the attestation server *somewhere*, but
-    // it's never used after being spawned.
-    #[allow(dead_code)]
-    tcp_attest: Option<attestation::server::AttestationSock>,
+    /// A handle to the VM's attestation server.
+    attest_handle: Option<attestation::server::AttestationSock>,
 }
 
 impl VmObjects {
@@ -135,7 +131,7 @@ impl VmObjectsLocked {
             com1: input.com1,
             framebuffer: input.framebuffer,
             ps2ctrl: input.ps2ctrl,
-            tcp_attest: input.tcp_attest,
+            attest_handle: input.attest_handle,
         }
     }
 
@@ -395,6 +391,10 @@ impl VmObjectsLocked {
             info!(self.log, "stopping and detaching block backend {}", id);
             backend.stop().await;
             backend.attachment().detach();
+        }
+
+        if let Some(attest_handle) = self.attest_handle.take() {
+            attest_handle.halt().await;
         }
     }
 

@@ -689,9 +689,10 @@ impl MachineInitializer<'_> {
         }
     }
 
-    /// Collect the necessary information out of the VM under construction into the provided
-    /// `AttestationSocketInit`. This is expected to populate `attest_init` with information so the
-    /// caller can spawn off `AttestationSockInit::run`.
+    /// Collect the necessary information out of the VM under construction into
+    /// the provided `AttestationSocketInit`. This is expected to populate
+    /// `attest_init` with information so the caller can spawn off
+    /// `AttestationSockInit::run`.
     pub fn prepare_rot_initializer(
         &self,
         vm_rot: &mut AttestationSock,

@@ -63,26 +63,24 @@ pub struct AttestationSockInit {
 }
 
 impl AttestationSockInit {
-    /// Construct a future that does any remaining work of collecting VM RoT measurements in
-    /// support of this VM's attestation server.
-    ///
-    /// TODO: it is expected this future is simply spawned onto a Tokio runtime. If the VM is torn
-    /// down while this future is running, nothing will stop this future from operating? We
-    /// probably need to tie in a shutdown signal from the corresponding `AttestationSockInit` to
-    /// discover if we should (for example) stop calculating a boot digest midway.
+    /// Do any any remaining work of collecting VM RoT measurements in support
+    /// of this VM's attestation server.
     pub async fn run(self) {
         let AttestationSockInit { log, vm_conf_send, uuid, volume_ref } = self;
 
         let mut vm_conf = vm_attest::VmInstanceConf { uuid, boot_digest: None };
 
         if let Some(volume) = volume_ref {
-            // TODO: load-bearing sleep: we have a Crucible volume, but we can be here and chomping
-            // at the bit to get a digest calculation started well before the volume has been
-            // activated; in `propolis-server` we need to wait for at least a subsequent instance
-            // start. Similar to the scrub task for Crucible disks, delay some number of seconds in
-            // the hopes that activation is done promptly.
+            // TODO: load-bearing sleep: we have a Crucible volume, but we can
+            // be here and chomping at the bit to get a digest calculation
+            // started well before the volume has been activated; in
+            // `propolis-server` we need to wait for at least a subsequent
+            // instance start. Similar to the scrub task for Crucible disks,
+            // delay some number of seconds in the hopes that activation is done
+            // promptly.
             //
-            // This should be replaced by awaiting for some kind of actual "activated" signal.
+            // This should be replaced by awaiting for some kind of actual
+            // "activated" signal.
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 
             let boot_digest =
@@ -93,11 +91,12 @@ impl AttestationSockInit {
                 {
                     Ok(digest) => digest,
                     Err(e) => {
-                        // a panic here is unfortunate, but helps us debug for now; if the digest
-                        // calculation fails it may be some retryable issue that a guest OS would
-                        // survive. but panicking here means we've stopped Propolis at the actual
-                        // error, rather than noticing the `vm_conf_sender` having dropped
-                        // elsewhere.
+                        // a panic here is unfortunate, but helps us debug for
+                        // now; if the digest calculation fails it may be some
+                        // retryable issue that a guest OS would survive. but
+                        // panicking here means we've stopped Propolis at the
+                        // actual error, rather than noticing the
+                        // `vm_conf_sender` having dropped elsewhere.
                         panic!("failed to compute boot disk digest: {e:?}");
                     }
                 };
@@ -107,9 +106,6 @@ impl AttestationSockInit {
             slog::warn!(log, "not computing boot disk digest");
         }
 
-        // keep a log reference around to report potential errors after this is taken and dropped
-        // in `provide()`.
-        let log = log.clone();
         let send_res = vm_conf_send.send(vm_conf);
         if let Err(_) = send_res {
             slog::error!(
@@ -127,8 +123,8 @@ impl AttestationSock {
         let (vm_conf_send, vm_conf_recv) =
             oneshot::channel::<vm_attest::VmInstanceConf>();
         let (hup_send, hup_recv) = oneshot::channel::<()>();
-        // TODO: would love to describe this sub-log as specifically VM RoT init, but dunno how to
-        // drive slog like that.
+        // TODO: would love to describe this sub-log as specifically VM RoT
+        // init, but dunno how to drive slog like that.
         let attest_init_log = log.clone();
         let join_hdl = tokio::spawn(async move {
             Self::run(log, listener, vm_conf_recv, hup_recv, sa_addr).await;
@@ -142,6 +138,13 @@ impl AttestationSock {
         Ok(attestation_sock)
     }
 
+    /// Stop the attestation server and abort in-flight initialization, if any
+    /// is in progress.
+    ///
+    /// We don't worry about stopping any related `handle_conn` because they
+    /// will discover that one or both ends of the connection are gone soon; we
+    /// are closing our end, and the guest's side will close when the
+    /// corresponding virtio-socket device is stopped.
     pub async fn halt(self) {
         let Self { join_hdl, hup_send, init_state, log: _ } = self;
 
@@ -154,9 +157,24 @@ impl AttestationSock {
         }
     }
 
-    // Handle an incoming connection to the attestation port.
+    /// Handle an incoming connection to the attestation port.
     async fn handle_conn(
         log: Logger,
+        rot: Arc<TokioMutex<vm_attest::VmInstanceRot>>,
+        vm_conf: Arc<Mutex<Option<vm_attest::VmInstanceConf>>>,
+        conn: TcpStream,
+    ) {
+        let res = Self::handle_conn_inner(&log, rot, vm_conf, conn).await;
+        if let Err(e) = res {
+            slog::error!(log, "handle_conn error: {e}");
+        }
+    }
+
+    /// The actual work of handling an incoming connection. This should only be
+    /// called from `handle_conn`, and is distinct only for `?`/`Result`
+    /// ergonomics.
+    async fn handle_conn_inner(
+        log: &Logger,
         rot: Arc<TokioMutex<vm_attest::VmInstanceRot>>,
         vm_conf: Arc<Mutex<Option<vm_attest::VmInstanceConf>>>,
         conn: TcpStream,
@@ -336,11 +354,9 @@ impl AttestationSock {
                             let log = log.clone();
                             let vm_conf = vm_conf.clone();
 
-                            tokio::spawn(async move {
-                                if let Err(e) = Self::handle_conn(log.clone(), rot, vm_conf, sock).await {
-                                    slog::error!(log, "handle_conn error: {e}");
-                                }
-                            });
+                            let handler = Self::handle_conn(log, rot, vm_conf, sock);
+                            tokio::spawn(handler);
+
                         }
                         Err(e) => {
                             error!(log, "Attestation TCP listener error: {:?}", e);
