@@ -563,7 +563,7 @@ async fn initialize_vm_objects(
         &properties,
     ))?;
     init.initialize_network_devices(&chipset).await?;
-    let mut tcp_attest =
+    let mut attest_handle =
         init.initialize_vsock(&chipset, options.attest_config).await?;
 
     #[cfg(feature = "failure-injection")]
@@ -586,8 +586,8 @@ async fn initialize_vm_objects(
     // information about the guest before it can be actually usable. It will do
     // that asynchronously, but have to provide references for initial necessary
     // VM state.
-    if let Some(tcp_attest) = tcp_attest.as_mut() {
-        init.prepare_rot_initializer(tcp_attest)?;
+    if let Some(attest_handle) = attest_handle.as_mut() {
+        init.prepare_rot_initializer(attest_handle)?;
     }
 
     init.register_guest_hv_interface(guest_hv_lifecycle);
@@ -651,7 +651,7 @@ async fn initialize_vm_objects(
         com1,
         framebuffer: Some(ramfb),
         ps2ctrl,
-        tcp_attest,
+        attest_handle,
     };
 
     // Another really terrible hack. As we've found in Propolis#1008, brk()

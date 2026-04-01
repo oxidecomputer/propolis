@@ -377,7 +377,7 @@ impl VmObjectsLocked {
 
     /// Stops all of a VM's devices and detaches its block backends from their
     /// devices.
-    async fn halt_devices(&self) {
+    async fn halt_devices(&mut self) {
         // Take care not to wedge the runtime with any device halt
         // implementations which might block.
         tokio::task::block_in_place(|| {
