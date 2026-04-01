@@ -26,8 +26,9 @@ pub async fn boot_disk_digest(
 
     let end_block = vol_size / block_size;
 
-    // TODO: it's jank, apparently
-    // copying this I/O sizing from the crucible scrub code
+    // XXX: copying this from the crucible scrub code
+    // This is so that we can read 128KiB of data on each read, regardless of
+    // block size.
     let block_count = 131072 / block_size;
 
     slog::info!(
@@ -66,7 +67,19 @@ pub async fn boot_disk_digest(
         let mut buffer =
             Buffer::new(this_block_count as usize, block_size as usize);
 
-        // TODO: should retry on read failures?
+        // TODO(jph): We don't want to panic in the case of a failed read. How
+        // should we handle an unresponsive disk?
+        //
+        // Options:
+        //
+        // * retry indefinitely or some N times
+        // * you never get an attestation (no boot disk digest) if the hashing
+        //   fails
+        // * you can still get attestations but without a boot disk digest measurement
+        //
+        // Crucible scrub code also inserts a delay between reads. We probably
+        // don't want to do that but release testing will reveal that,
+        // hopefully..
         let res = vol.read(block, &mut buffer).await;
 
         if let Err(e) = res {
@@ -82,8 +95,6 @@ pub async fn boot_disk_digest(
         hasher.update(&*buffer);
 
         offset += this_block_count;
-
-        // TODO: delay?
     }
 
     let elapsed = hash_start.elapsed();

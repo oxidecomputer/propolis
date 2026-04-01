@@ -71,6 +71,7 @@ impl AttestationSockInit {
         let mut vm_conf = vm_attest::VmInstanceConf { uuid, boot_digest: None };
 
         if let Some(volume) = volume_ref {
+            // TODO(jph): make propolis issue, link to #1078 and add a log line
             // TODO: load-bearing sleep: we have a Crucible volume, but we can
             // be here and chomping at the bit to get a digest calculation
             // started well before the volume has been activated; in
@@ -328,9 +329,9 @@ impl AttestationSock {
                     *vm_conf_cloned.lock().unwrap() = Some(conf);
                 }
                 Err(_e) => {
-                    slog::info!(
+                    slog::warn!(
                         log_ref,
-                        "lost of boot digest sender, \
+                        "lost boot digest sender, \
                         hopefully Propolis is stopping"
                     );
                 }
@@ -341,7 +342,6 @@ impl AttestationSock {
             tokio::select! {
                 biased;
 
-                // TODO: do we need this
                 _ = &mut hup_recv => {
                     return;
                 },
