@@ -806,11 +806,11 @@ impl VsockPoller {
                 };
             }
 
-            // Process any pending rx events
-            self.process_pending_rx();
-
             // Cleanup any connection waiting to be be reaped
             self.quiesce_connections();
+
+            // Process any pending rx events
+            self.process_pending_rx();
         }
     }
 }
