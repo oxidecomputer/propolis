@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use serde::{Serialize, Serializer};
 use strum::FromRepr;
 use zerocopy::byteorder::little_endian::{U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes};
@@ -11,7 +12,7 @@ use crate::vsock::{GuestCid, VSOCK_HOST_CID};
 
 bitflags! {
     /// Shutdown flags for VIRTIO_VSOCK_OP_SHUTDOWN
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
     #[repr(transparent)]
     pub struct VsockPacketFlags: u32 {
         const VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE = 1 << 0;
@@ -19,7 +20,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone, Copy, FromRepr, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, FromRepr, PartialEq, Eq, Serialize)]
 #[repr(u16)]
 pub enum VsockSocketType {
     Stream = 1,
@@ -52,7 +53,7 @@ pub enum VsockPacketError {
     InvalidDstCid { dst_cid: u64 },
 }
 
-#[derive(Clone, Copy, Debug, FromRepr, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, FromRepr, Eq, PartialEq, Serialize)]
 #[repr(u16)]
 pub enum VsockPacketOp {
     Request = 1,
@@ -88,6 +89,28 @@ pub struct VsockPacketHeader {
     flags: U32,
     buf_alloc: U32,
     fwd_cnt: U32,
+}
+
+// NB: This implementation is here to support dtrace usdt probes.
+impl Serialize for VsockPacketHeader {
+    fn serialize<S: Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("VsockPacketHeader", 10)?;
+        s.serialize_field("src_cid", &self.src_cid.get())?;
+        s.serialize_field("dst_cid", &self.dst_cid.get())?;
+        s.serialize_field("src_port", &self.src_port.get())?;
+        s.serialize_field("dst_port", &self.dst_port.get())?;
+        s.serialize_field("len", &self.len.get())?;
+        s.serialize_field("socket_type", &self.socket_type())?;
+        s.serialize_field("op", &self.op())?;
+        s.serialize_field("flags", &self.flags())?;
+        s.serialize_field("buf_alloc", &self.buf_alloc.get())?;
+        s.serialize_field("fwd_cnt", &self.fwd_cnt.get())?;
+        s.end()
+    }
 }
 
 impl VsockPacketHeader {

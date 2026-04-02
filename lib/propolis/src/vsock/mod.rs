@@ -55,3 +55,13 @@ pub enum VsockError {
 pub trait VsockBackend: Send + Sync + 'static {
     fn queue_notify(&self, queue_id: u16) -> Result<(), VsockError>;
 }
+
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    use crate::vsock::packet::VsockPacketHeader;
+
+    /// Host->Guest
+    fn vsock_pkt_rx(hdr: &VsockPacketHeader) {}
+    /// Guest->Host
+    fn vsock_pkt_tx(hdr: &VsockPacketHeader) {}
+}
