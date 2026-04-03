@@ -690,24 +690,10 @@ impl VsockPoller {
     }
 
     fn quiesce_connections(&mut self) {
-        // TODO this can become `[VecDeque::pop_front_if]` when we update to
-        // Rust 1.93, until then the impl is shamelessly borrowed.
-        let pop_front_if =
-            |queue: &mut VecDeque<ClosingConn>,
-             predicate: &dyn Fn(&mut ClosingConn) -> bool| {
-                let first = queue.front_mut()?;
-                if predicate(first) {
-                    queue.pop_front()
-                } else {
-                    None
-                }
-            };
-
-        while let Some(conn) =
-            pop_front_if(&mut self.quiescing, &|conn: &mut ClosingConn| {
-                conn.started.elapsed() > DEFAULT_QUIESCE_TIMEOUT
-            })
-        {
+        #[allow(unstable_name_collisions)]
+        while let Some(conn) = self.quiescing.pop_front_if(|conn| {
+            conn.started.elapsed() > DEFAULT_QUIESCE_TIMEOUT
+        }) {
             // It's possible that the guest sent us a RST for the connection
             // since we put it on the quiesce queue.
             if let Some(_) = self.connections.remove(&conn.key) {
@@ -869,6 +855,29 @@ impl VsockGuestAddr {
     /// ID and a `[ConnKey]`.
     fn from_conn_key(guest_cid: GuestCid, key: ConnKey) -> Self {
         Self { guest_cid, src_port: key.host_port, dst_port: key.guest_port }
+    }
+}
+
+// TODO this can become `[VecDeque::pop_front_if]` when we update to Rust 1.93,
+// until then the impl is shamelessly borrowed.
+trait VecDequeExt<T> {
+    fn pop_front_if(
+        &mut self,
+        predicate: impl FnOnce(&mut T) -> bool,
+    ) -> Option<T>;
+}
+
+impl<T> VecDequeExt<T> for VecDeque<T> {
+    fn pop_front_if(
+        &mut self,
+        predicate: impl FnOnce(&mut T) -> bool,
+    ) -> Option<T> {
+        let first = self.front_mut()?;
+        if predicate(first) {
+            self.pop_front()
+        } else {
+            None
+        }
     }
 }
 
