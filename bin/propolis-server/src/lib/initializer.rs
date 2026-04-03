@@ -496,7 +496,6 @@ impl MachineInitializer<'_> {
     ) -> Result<Option<AttestationSock>, MachineInitError> {
         use propolis::vsock::proxy::VsockPortMapping;
 
-        // TODO: early return if none?
         if let Some(vsock) = &self.spec.vsock {
             let bdf: pci::Bdf = vsock.spec.pci_path.into();
 
@@ -506,9 +505,9 @@ impl MachineInitializer<'_> {
             )];
 
             let guest_cid = GuestCid::try_from(vsock.spec.guest_cid)
-                .context("guest cid")?;
+                .context("could not parse guest cid")?;
             // While the spec does not recommend how large the virtio descriptor
-            // table should be we sized this appropriately in testing so
+            // table should be, we sized this appropriately in testing, so
             // that the guest is able to move vsock packets at a reasonable
             // throughput without the need to be much larger.
             let num_queues = 256;
@@ -523,7 +522,7 @@ impl MachineInitializer<'_> {
             self.devices.insert(vsock.id.clone(), device.clone());
             chipset.pci_attach(bdf, device);
 
-            // Spawn attestation server that will go over the vsock
+            // Spawn attestation server that will go over the vsock device
             if let Some(cfg) = attest_cfg {
                 let attest = AttestationSock::new(
                     self.log.new(slog::o!("component" => "attestation-server")),
@@ -533,9 +532,10 @@ impl MachineInitializer<'_> {
                 .map_err(MachineInitError::AttestationServer)?;
                 return Ok(Some(attest));
             }
+        } else {
+            info!(self.log, "no vsock device in instance spec");
+            Ok(None)
         }
-
-        Ok(None)
     }
 
     async fn create_storage_backend_from_spec(
@@ -759,7 +759,7 @@ impl MachineInitializer<'_> {
                     Some(backend.clone_volume())
                 } else {
                     // Disk must be read-only to be used for attestation.
-                    slog::info!(self.log, "boot disk is not read-only");
+                    slog::info!(self.log, "boot disk is not read-only (and will not be used for attestations)");
                     None
                 }
             } else {

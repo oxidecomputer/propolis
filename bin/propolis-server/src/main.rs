@@ -197,8 +197,6 @@ fn run_server(
         api_runtime.block_on(async { vnc.halt().await });
     }
 
-    // TODO: clean up attestation server.
-
     result.map_err(|e| anyhow!("Server exited with an error: {e}"))
 }
 

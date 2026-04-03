@@ -26,7 +26,7 @@ pub async fn boot_disk_digest(
 
     let end_block = vol_size / block_size;
 
-    // XXX: copying this from the crucible scrub code
+    // XXX(jph): Copied from the crucible scrub code.
     // This is so that we can read 128KiB of data on each read, regardless of
     // block size.
     let block_count = 131072 / block_size;

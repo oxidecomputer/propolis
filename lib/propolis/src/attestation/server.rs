@@ -255,9 +255,6 @@ impl AttestationSock {
                             let response = vm_attest::Response::Error(
                                 "VmInstanceConf not ready".to_string(),
                             );
-                            //let mut response =
-                            //serde_json::to_string(&response)?;
-                            //response.push('\n');
                             response
                         }
                     }
