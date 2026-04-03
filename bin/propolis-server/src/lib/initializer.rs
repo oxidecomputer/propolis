@@ -534,8 +534,10 @@ impl MachineInitializer<'_> {
             }
         } else {
             info!(self.log, "no vsock device in instance spec");
-            Ok(None)
+            return Ok(None);
         }
+
+        Ok(None)
     }
 
     async fn create_storage_backend_from_spec(
