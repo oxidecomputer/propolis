@@ -606,6 +606,11 @@ impl VsockPoller {
 
             match conn.socket.read(&mut read_buf[..max_read]) {
                 Ok(0) => {
+                    // TODO (propolis#1102):
+                    // This is an overly aggressive shutdown. Typically EOF
+                    // signals that the conenction has been closed, however one
+                    // can intentionally shutdown read|write halves
+                    // independently.
                     let packet = VsockPacket::new_shutdown(
                         VsockGuestAddr::from_conn_key(*guest_cid, key),
                         VsockPacketFlags::VIRTIO_VSOCK_SHUTDOWN_F_SEND
@@ -688,15 +693,21 @@ impl VsockPoller {
     }
 
     fn quiesce_connections(&mut self) {
+        // NOTE: this intentionally collides with the method name in Rust 1.93,
+        // we plan to remove the extension trait below once propolis gets a Rust
+        // version bump.
         #[allow(unstable_name_collisions)]
+        // NB: We are a single threaded event-loop, therefore any connection
+        // that gets put on the quiesce queue should not expire before previous
+        // entries have.
         while let Some(conn) = self.quiescing.pop_front_if(|conn| {
             conn.started.elapsed() > DEFAULT_QUIESCE_TIMEOUT
         }) {
-            // It's possible that the guest sent us a RST for the connection
+            // It's possible that the guest sent us a RST for the connection,
             // since we put it on the quiesce queue.
-            if let Some(_) = self.connections.remove(&conn.key) {
-                // If we have a connection make sure we send a RST so the guest
-                // knows we are done with it.
+            if self.connections.remove(&conn.key).is_some() {
+                // If we have a connection, make sure we send a RST, so the
+                // guest knows we are done with it.
                 self.send_conn_rst(conn.key);
             }
         }
