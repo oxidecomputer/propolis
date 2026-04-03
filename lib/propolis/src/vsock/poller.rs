@@ -262,8 +262,7 @@ impl VsockPoller {
                     return;
                 };
             }
-            // XXX how do we register this for future cleanup if there is data
-            // we have not synced locally yet? We need a cleanup loop...
+
             if conn.should_close() {
                 if !conn.has_buffered_data() {
                     self.connections.remove(&key);
@@ -582,7 +581,6 @@ impl VsockPoller {
         if !conn.guest_can_read() {
             return;
         }
-
         loop {
             let Some(permit) = queues.try_rx_permit() else {
                 rx_blocked.push(key);
