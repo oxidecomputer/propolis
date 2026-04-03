@@ -31,7 +31,6 @@ impl AttestationServerConfig {
     }
 }
 
-/// TODO: comment
 pub struct AttestationSock {
     log: slog::Logger,
     join_hdl: JoinHandle<()>,
@@ -71,7 +70,6 @@ impl AttestationSockInit {
         let mut vm_conf = vm_attest::VmInstanceConf { uuid, boot_digest: None };
 
         if let Some(volume) = volume_ref {
-            // TODO(jph): make propolis issue, link to #1078 and add a log line
             // TODO: load-bearing sleep: we have a Crucible volume, but we can
             // be here and chomping at the bit to get a digest calculation
             // started well before the volume has been activated; in
@@ -82,6 +80,8 @@ impl AttestationSockInit {
             //
             // This should be replaced by awaiting for some kind of actual
             // "activated" signal.
+            //
+            // see #1078
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 
             let boot_digest =
@@ -167,7 +167,7 @@ impl AttestationSock {
     ) {
         let res = Self::handle_conn_inner(&log, rot, vm_conf, conn).await;
         if let Err(e) = res {
-            slog::error!(log, "handle_conn error: {e}");
+            slog::error!(log, "error handling attestation server connection: {e}");
         }
     }
 
@@ -180,7 +180,7 @@ impl AttestationSock {
         vm_conf: Arc<Mutex<Option<vm_attest::VmInstanceConf>>>,
         conn: TcpStream,
     ) -> anyhow::Result<()> {
-        info!(log, "handling connection");
+        info!(log, "handling attestation connection");
 
         let mut msg = String::new();
 
@@ -356,7 +356,7 @@ impl AttestationSock {
 
                         }
                         Err(e) => {
-                            error!(log, "Attestation TCP listener error: {:?}", e);
+                            error!(log, "attestation TCP listener error: {:?}", e);
                         }
                     }
                 },

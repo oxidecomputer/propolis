@@ -328,7 +328,8 @@ fn main() -> anyhow::Result<()> {
                     let sled_subnet = Ipv6Subnet::<
                         { omicron_common::address::SLED_PREFIX },
                     >::new(ipv6_addr);
-                    let sa_addr = omicron_common::address::get_sled_address(sled_subnet);
+                    let sa_addr =
+                        omicron_common::address::get_sled_address(sled_subnet);
 
                     Some(AttestationServerConfig::new(sa_addr))
                 }

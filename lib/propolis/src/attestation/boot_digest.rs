@@ -8,7 +8,7 @@ use crucible::Buffer;
 
 use vm_attest::Measurement;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use sha2::{Digest, Sha256};
 use slog::Logger;
 use std::time::Instant;
@@ -67,29 +67,38 @@ pub async fn boot_disk_digest(
         let mut buffer =
             Buffer::new(this_block_count as usize, block_size as usize);
 
-        // TODO(jph): We don't want to panic in the case of a failed read. How
-        // should we handle an unresponsive disk?
+        // Read the whole disk. If a read fails, we'll retry a given number of times, but if those
+        // fail, we return an error to the attestation machinery. It's unlikely that instance is
+        // doing well in this case, anyway, if it's boot disk is erroring on reads.
         //
-        // Options:
-        //
-        // * retry indefinitely or some N times
-        // * you never get an attestation (no boot disk digest) if the hashing
-        //   fails
-        // * you can still get attestations but without a boot disk digest measurement
-        //
-        // Crucible scrub code also inserts a delay between reads. We probably
-        // don't want to do that but release testing will reveal that,
-        // hopefully..
-        let res = vol.read(block, &mut buffer).await;
+        // XXX(JPH): Crucible scrub code also inserts a delay between reads. We probably
+        // don't want to do that but we'll see how this goes in production.
+        let retry_count = 5;
+        let mut n_retries = 0;
+        loop {
+            if n_retries >= retry_count {
+                slog::error!(log, "failed to read from boot disk {n_retries} tries; aborting boot
+                    digest hash");
 
-        if let Err(e) = res {
-            panic!(
-                "read failed: {e:?}.
+                return Err(anyhow!("could not hash boot disk digest"));
+            }
+
+            let res = vol.read(block, &mut buffer).await;
+
+            if let Err(e) = res {
+                slog::error!(
+                    log,
+                    "read failed: {e:?}.
                 offset={offset},
                 this_block_cout={this_block_count},
                 block_size={block_size},
                 end_block={end_block}"
-            );
+                );
+
+                n_retries += 1;
+            } else {
+                break;
+            }
         }
 
         hasher.update(&*buffer);
@@ -100,9 +109,9 @@ pub async fn boot_disk_digest(
     let elapsed = hash_start.elapsed();
     slog::info!(
         log,
-        "hash of vol {:?} took {:?} secs",
+        "hash of volume {:?} took {:?} ms",
         vol_uuid,
-        elapsed.as_secs()
+        elapsed.as_millis()
     );
 
     Ok(Measurement::Sha256(hasher.finalize().into()))
