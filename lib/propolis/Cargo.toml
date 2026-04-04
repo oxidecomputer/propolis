@@ -8,7 +8,7 @@ rust-version = "1.90"
 [dependencies]
 libc.workspace = true
 bit_field.workspace = true
-bitflags.workspace = true
+bitflags = { workspace = true, features = ["serde"] }
 bitstruct.workspace = true
 byteorder.workspace = true
 lazy_static.workspace = true

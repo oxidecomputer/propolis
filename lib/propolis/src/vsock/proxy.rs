@@ -40,7 +40,8 @@ pub enum ConnState {
     /// We have sent VIRTIO_VSOCK_OP_RESPONSE - connection can send/recv data
     Established,
     /// The connection is in the process of closing - read and write halves are
-    /// tracked seperately
+    /// tracked seperately.
+    /// NB: This is tracking what the Guest has told us about itself.
     Closing {
         read: bool,
         write: bool,
