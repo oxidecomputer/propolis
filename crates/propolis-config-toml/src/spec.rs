@@ -446,7 +446,6 @@ fn parse_vsock_from_config(
     name: &str,
     device: &super::Device,
 ) -> Result<VirtioSocket, TomlToSpecError> {
-    eprintln!("{:?}", device);
     let guest_cid = device
         .get("guest_cid")
         .ok_or_else(|| TomlToSpecError::NoVsockGuestCid(name.to_owned()))?;

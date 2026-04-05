@@ -761,7 +761,10 @@ impl MachineInitializer<'_> {
                     Some(backend.clone_volume())
                 } else {
                     // Disk must be read-only to be used for attestation.
-                    slog::info!(self.log, "boot disk is not read-only (and will not be used for attestations)");
+                    slog::info!(
+                        self.log,
+                        "boot disk is not read-only (and will not be used for attestations)",
+                    );
                     None
                 }
             } else {

@@ -33,12 +33,12 @@ pub async fn boot_disk_digest(
 
     slog::info!(
         log,
-        "starting hash of volume {:?} (total_size={}, block_size={} end_block={}, block_count={})",
-        vol_uuid,
-        vol_size,
-        block_size,
-        end_block,
-        block_count,
+        "starting hash of volume";
+        "volume_id" => %vol_uuid,,
+        "volume_size" => vol_size,
+        "block_size" => block_size,
+        "end_block" => end_block,
+        "block_count" => block_count,
     );
 
     let mut hasher = Sha256::new();
