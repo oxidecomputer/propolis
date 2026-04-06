@@ -126,11 +126,10 @@ impl AttestationSock {
             oneshot::channel::<vm_attest::VmInstanceConf>();
         let (hup_send, hup_recv) = oneshot::channel::<()>();
 
-        // TODO: would love to describe this sub-log as specifically VM RoT
-        // init, but dunno how to drive slog like that.
         let attest_init_log = log.new(o!("component" => "attestation-server"));
+        let attest_log_clone = attest_init_log.clone();
         let join_hdl = tokio::spawn(async move {
-            Self::run(log, listener, vm_conf_recv, hup_recv, sa_addr).await;
+            Self::run(attest_log_clone, listener, vm_conf_recv, hup_recv, sa_addr).await;
         });
         let attestation_sock = Self {
             log: attest_init_log,
@@ -274,7 +273,7 @@ impl AttestationSock {
             msg.clear();
         }
 
-        info!(log, "handle_conn: ALL DONE");
+        info!(log, "attestation request completed");
         Ok(())
     }
 
