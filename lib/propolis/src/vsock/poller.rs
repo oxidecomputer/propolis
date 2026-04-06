@@ -838,8 +838,6 @@ impl VsockPoller {
                             &self.log,
                             "vsock port fd is no longer valid: {err}"
                         );
-
-                        self.state.set_stopped();
                         return;
                     }
                     libc::ETIME => {
@@ -955,7 +953,7 @@ impl VsockPoller {
             // Handle events until we are told to pause.
             self.handle_events();
 
-            // Transition to stopped and await next steps.
+            // Transition to stopped and await for next steps.
             self.state.set_stopped();
 
             loop {
@@ -2188,8 +2186,11 @@ mod test {
         notify.wait_stopped();
         notify.reset();
 
+        // NOTE: We don't have a way to actually validate that the reset call
+        // above has not left behind a `GuestAddr` as apart of the `VsockVq`.
+
         // The host-side TCP socket should now be closed because the
-        // poller dropped all connections during cleanup_for_reset.
+        // poller dropped all connections during reset.
         let mut buf = [0u8; 1];
         match accepted.read(&mut buf) {
             Ok(0) => {}
