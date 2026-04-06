@@ -46,6 +46,18 @@ impl VsockPoller {
         VsockPollerNotify {}
     }
 
+    pub fn pause(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    pub fn resume(&self) {}
+
+    pub fn reset(&self) {}
+
+    pub fn halt(&self) {}
+
+    pub fn wait_stopped(&self) {}
+
     pub fn run(self) -> JoinHandle<()> {
         std::thread::Builder::new()
             .name("vsock-event-loop".to_string())

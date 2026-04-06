@@ -346,6 +346,23 @@ impl VsockProxy {
     fn queue_notify(&self, vq_id: u16) -> std::io::Result<()> {
         self.poller.queue_notify(vq_id)
     }
+
+    pub fn pause(&self) -> std::io::Result<()> {
+        self.poller.pause()
+    }
+
+    pub fn resume(&self) {
+        self.poller.resume();
+    }
+
+    pub fn reset(&self) {
+        self.poller.reset();
+    }
+
+    pub fn halt(&self) {
+        self.poller.halt();
+        self.poller.wait_stopped();
+    }
 }
 
 impl VsockBackend for VsockProxy {

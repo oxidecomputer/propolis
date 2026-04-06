@@ -9,7 +9,10 @@ use std::ffi::c_void;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::Condvar;
+use std::sync::Mutex;
 use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::Instant;
@@ -42,12 +45,62 @@ const DEFAULT_QUIESCE_TIMEOUT: Duration = Duration::from_secs(2);
 #[repr(usize)]
 enum VsockEvent {
     TxQueue = 0,
-    RxQueue,
-    Shutdown,
+    RxQueue = 1,
+    Pause = 2,
+}
+
+impl TryFrom<usize> for VsockEvent {
+    type Error = usize;
+
+    fn try_from(value: usize) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::TxQueue),
+            1 => Ok(Self::RxQueue),
+            2 => Ok(Self::Pause),
+            unknown => Err(unknown),
+        }
+    }
+}
+
+struct PollerState {
+    cv: Condvar,
+    running: Mutex<bool>,
+}
+impl PollerState {
+    fn new() -> Self {
+        Self { cv: Condvar::new(), running: Mutex::new(false) }
+    }
+
+    fn wait_stopped(&self) {
+        let guard = self.running.lock().unwrap();
+        let _res = self.cv.wait_while(guard, |g| *g).unwrap();
+    }
+
+    fn set_stopped(&self) {
+        let mut guard = self.running.lock().unwrap();
+        if *guard {
+            *guard = false;
+            self.cv.notify_all();
+        }
+    }
+
+    fn set_running(&self) {
+        let mut guard = self.running.lock().unwrap();
+        *guard = true;
+    }
+}
+
+// XXX document
+enum PausedCmd {
+    Resume,
+    Reset,
+    Halt,
 }
 
 pub struct VsockPollerNotify {
     port_fd: Arc<OwnedFd>,
+    state: Arc<PollerState>,
+    pause_tx: mpsc::SyncSender<PausedCmd>,
 }
 
 impl VsockPollerNotify {
@@ -75,8 +128,24 @@ impl VsockPollerNotify {
         }
     }
 
-    pub fn shutdown(&self) -> std::io::Result<()> {
-        self.port_send(VsockEvent::Shutdown)
+    pub fn pause(&self) -> std::io::Result<()> {
+        self.port_send(VsockEvent::Pause)
+    }
+
+    pub fn resume(&self) {
+        self.pause_tx.send(PausedCmd::Resume).unwrap();
+    }
+
+    pub fn reset(&self) {
+        self.pause_tx.send(PausedCmd::Reset).unwrap();
+    }
+
+    pub fn halt(&self) {
+        self.pause_tx.send(PausedCmd::Halt).unwrap();
+    }
+
+    pub fn wait_stopped(&self) {
+        self.state.wait_stopped();
     }
 }
 
@@ -126,6 +195,10 @@ pub struct VsockPoller {
     port_fd: Arc<OwnedFd>,
     /// The virtqueues associated with the vsock device
     queues: VsockVq,
+    /// Handle used to manage the [`Lifecycle`] of the event-loop
+    state: Arc<PollerState>,
+    pause_rx: mpsc::Receiver<PausedCmd>,
+    pause_tx: mpsc::SyncSender<PausedCmd>,
     /// The connection map of guest connected streams
     connections: HashMap<ConnKey, VsockProxyConn>,
     /// Queue of vsock packets that need to be sent to the guest
@@ -166,6 +239,8 @@ impl VsockPoller {
             fd
         };
 
+        let (pause_tx, pause_rx) = mpsc::sync_channel(1);
+
         info!(
             &log,
             "vsock poller configured with";
@@ -178,6 +253,9 @@ impl VsockPoller {
             port_mappings,
             port_fd: Arc::new(unsafe { OwnedFd::from_raw_fd(port_fd) }),
             queues,
+            state: Arc::new(PollerState::new()),
+            pause_rx,
+            pause_tx,
             connections: Default::default(),
             rx: Default::default(),
             rx_blocked: Default::default(),
@@ -187,7 +265,11 @@ impl VsockPoller {
 
     /// Get a handle to a `VsockPollerNotify`.
     pub fn notify_handle(&self) -> VsockPollerNotify {
-        VsockPollerNotify { port_fd: Arc::clone(&self.port_fd) }
+        VsockPollerNotify {
+            port_fd: Arc::clone(&self.port_fd),
+            state: Arc::clone(&self.state),
+            pause_tx: self.pause_tx.clone(),
+        }
     }
 
     /// Start the event loop.
@@ -500,19 +582,15 @@ impl VsockPoller {
         }
     }
 
-    /// Handle a user event. Returns `true` if the event loop should shut down.
-    fn handle_user_event(&mut self, event: PortEvent) -> bool {
-        match event.user {
-            val if val == VsockEvent::TxQueue as usize => {
-                self.handle_tx_queue_event()
-            }
-            val if val == VsockEvent::RxQueue as usize => {
-                self.handle_rx_queue_event()
-            }
-            val if val == VsockEvent::Shutdown as usize => return true,
-            _ => (),
+    /// Handle a user event. Returns `true` if the event loop should pause.
+    fn handle_user_event(&mut self, event: VsockEvent) -> bool {
+        let mut should_pause = false;
+        match event {
+            VsockEvent::TxQueue => self.handle_tx_queue_event(),
+            VsockEvent::RxQueue => self.handle_rx_queue_event(),
+            VsockEvent::Pause => should_pause = true,
         }
-        false
+        should_pause
     }
 
     /// Handle an fd event by flushing data to the underlying socket from the
@@ -722,6 +800,8 @@ impl VsockPoller {
             MAX_EVENTS as usize];
         let mut read_buf: Box<[u8]> = vec![0u8; 1024 * 64].into();
 
+        self.state.set_running();
+
         loop {
             let mut ts = libc::timespec {
                 // We use the quiesce timeout so that we don't wait
@@ -760,6 +840,8 @@ impl VsockPoller {
                             &self.log,
                             "vsock port fd is no longer valid: {err}"
                         );
+
+                        self.state.set_stopped();
                         return;
                     }
                     libc::ETIME => {
@@ -784,15 +866,23 @@ impl VsockPoller {
             let events = unsafe {
                 std::slice::from_raw_parts(events.as_ptr(), nget as usize)
             };
+
+            let mut should_pause = false;
             for event in events {
                 let event = PortEvent::from_raw(*event);
 
                 match event.source {
                     EventSource::User => {
-                        let should_shutdown = self.handle_user_event(event);
-                        if should_shutdown {
-                            return;
-                        }
+                        should_pause = match VsockEvent::try_from(event.user) {
+                            Ok(event) => self.handle_user_event(event),
+                            Err(unknown_event) => {
+                                error!(
+                                &self.log,
+                                "unknown event port user event {unknown_event}"
+                            );
+                                false
+                            }
+                        };
                     }
                     EventSource::Fd => {
                         self.handle_fd_event(event, &mut read_buf);
@@ -806,6 +896,49 @@ impl VsockPoller {
 
             // Process any pending rx events
             self.process_pending_rx();
+
+            // `[Lifecycle::pause]` has been requested so we hang out waiting
+            // for further instruction on our pause channel.
+            if should_pause {
+                if self.wait_for_resume() {
+                    return;
+                }
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.connections.clear();
+        self.rx.clear();
+        self.rx_blocked.clear();
+        self.quiescing.clear();
+        self.queues.clear_rx_chain();
+    }
+
+    fn wait_for_resume(&mut self) -> bool {
+        self.state.set_stopped();
+
+        loop {
+            match self.pause_rx.recv() {
+                Ok(PausedCmd::Resume) => {
+                    self.state.set_running();
+                    return false;
+                }
+                Ok(PausedCmd::Reset) => {
+                    self.reset();
+                }
+                Ok(PausedCmd::Halt) => {
+                    self.reset();
+                    return true;
+                }
+                Err(_) => {
+                    error!(
+                        &self.log,
+                        "all VsockPoller pause_tx senders have been dropped"
+                    );
+                    return true;
+                }
+            }
         }
     }
 }
@@ -1092,7 +1225,8 @@ mod test {
         assert_eq!(resp_hdr.dst_port(), guest_port);
         assert_eq!(resp_hdr.socket_type(), Some(VsockSocketType::Stream));
 
-        notify.shutdown().unwrap();
+        notify.pause().unwrap();
+        notify.halt();
         handle.join().unwrap();
     }
 
@@ -1135,7 +1269,8 @@ mod test {
         assert_eq!(resp_hdr.src_port(), 8080);
         assert_eq!(resp_hdr.dst_port(), 5555);
 
-        notify.shutdown().unwrap();
+        notify.pause().unwrap();
+        notify.halt();
         handle.join().unwrap();
     }
 
@@ -1207,7 +1342,8 @@ mod test {
         accepted.read_exact(&mut buf).unwrap();
         assert_eq!(&buf, payload);
 
-        notify.shutdown().unwrap();
+        notify.pause().unwrap();
+        notify.halt();
         handle.join().unwrap();
     }
 
@@ -1311,7 +1447,8 @@ mod test {
         }
         assert!(found_credit_update, "expected a CREDIT_UPDATE on RX queue");
 
-        notify.shutdown().unwrap();
+        notify.pause().unwrap();
+        notify.halt();
         handle.join().unwrap();
     }
 
@@ -1387,7 +1524,8 @@ mod test {
             Ok(n) => panic!("expected EOF or error, got {n} bytes"),
         }
 
-        notify.shutdown().unwrap();
+        notify.pause().unwrap();
+        notify.halt();
         handle.join().unwrap();
     }
 
@@ -1478,7 +1616,8 @@ mod test {
         assert_eq!(resp_hdr.dst_port(), guest_port);
         assert_eq!(&host_buf, host_payload, "host->guest data mismatch");
 
-        notify.shutdown().unwrap();
+        notify.pause().unwrap();
+        notify.halt();
         handle.join().unwrap();
     }
 
@@ -1548,7 +1687,8 @@ mod test {
         assert_eq!(rw_hdr.dst_port(), guest_port);
         assert_eq!(&payload, host_data);
 
-        notify.shutdown().unwrap();
+        notify.pause().unwrap();
+        notify.halt();
         handle.join().unwrap();
     }
 
@@ -1757,7 +1897,8 @@ mod test {
         assert_eq!(host_to_guest.len(), total_bytes);
         assert!(host_to_guest == host_data, "host->guest data mismatch");
 
-        notify.shutdown().unwrap();
+        notify.pause().unwrap();
+        notify.halt();
         handle.join().unwrap();
     }
 
@@ -1840,7 +1981,8 @@ mod test {
         assert_eq!(hdr.src_port(), vsock_port);
         assert_eq!(hdr.dst_port(), guest_port);
 
-        notify.shutdown().unwrap();
+        notify.pause().unwrap();
+        notify.halt();
         handle.join().unwrap();
     }
 
@@ -1944,7 +2086,160 @@ mod test {
         assert_eq!(rst_hdr.src_port(), vsock_port);
         assert_eq!(rst_hdr.dst_port(), guest_port);
 
-        notify.shutdown().unwrap();
+        notify.pause().unwrap();
+        notify.halt();
+        handle.join().unwrap();
+    }
+
+    /// Sending a [`PausedCmd::Reset`] event while the event-loop is paused
+    /// should drop all active connections and clear cached state so that no
+    /// stale [`GuestAddr`]s or TCP sockets survive into the next guest session.
+    #[test]
+    fn reset_clears_connections() {
+        let vsock_port = 9400;
+        let guest_port = 7400;
+        let guest_cid = GuestCid::try_from(50).unwrap();
+        let (listener, backends) = bind_test_backend(vsock_port);
+        listener.set_nonblocking(false).unwrap();
+
+        let mut harness = VsockTestHarness::new();
+        let vq = harness.make_vsock_vq();
+        let log = test_logger();
+        let poller = VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+
+        for _ in 0..4 {
+            harness.add_rx_writable(4096);
+        }
+
+        let notify = poller.notify_handle();
+        let handle = poller.run();
+
+        // Establish a connection
+        let mut req_hdr = VsockPacketHeader::new();
+        req_hdr
+            .set_src_cid(guest_cid)
+            .set_dst_cid_raw(VSOCK_HOST_CID)
+            .set_src_port(guest_port)
+            .set_dst_port(vsock_port)
+            .set_len(0)
+            .set_socket_type(VsockSocketType::Stream)
+            .set_op(VsockPacketOp::Request)
+            .set_buf_alloc(65536)
+            .set_fwd_cnt(0);
+
+        let d_tx = harness.add_tx_readable(hdr_as_bytes(&req_hdr));
+        harness.publish_tx(d_tx);
+        notify.queue_notify(VSOCK_TX_QUEUE).unwrap();
+
+        let mut accepted = listener.accept().unwrap().0;
+        accepted.set_nonblocking(false).unwrap();
+        accepted.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        wait_for_condition(|| harness.rx_used_idx() >= 1, 5000);
+
+        // Pause then reset.
+        notify.pause().unwrap();
+        notify.wait_stopped();
+        notify.reset();
+
+        // XXX can we do better?
+        // Give the poller time to process the reset event.
+        std::thread::sleep(Duration::from_millis(100));
+
+        // The host-side TCP socket should now be closed because the
+        // poller dropped all connections during cleanup_for_reset.
+        let mut buf = [0u8; 1];
+        match accepted.read(&mut buf) {
+            Ok(0) => {}
+            Err(_) => {}
+            Ok(n) => panic!("expected EOF or error, got {n} bytes"),
+        }
+
+        notify.pause().unwrap();
+        notify.halt();
+        handle.join().unwrap();
+    }
+
+    /// Pausing freezes the event loop but preserves all connection
+    /// state.  After resume, host to guest connections continue.
+    #[test]
+    fn pause_resume_preserves_connections() {
+        let vsock_port = 9500;
+        let guest_port = 7500;
+        let guest_cid = GuestCid::try_from(50).unwrap();
+        let (listener, backends) = bind_test_backend(vsock_port);
+        listener.set_nonblocking(false).unwrap();
+
+        let mut harness = VsockTestHarness::new();
+        let vq = harness.make_vsock_vq();
+        let log = test_logger();
+        let poller = VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+
+        for _ in 0..8 {
+            harness.add_rx_writable(4096);
+        }
+
+        let notify = poller.notify_handle();
+        let handle = poller.run();
+
+        // Establish a connection
+        let mut req_hdr = VsockPacketHeader::new();
+        req_hdr
+            .set_src_cid(guest_cid)
+            .set_dst_cid_raw(VSOCK_HOST_CID)
+            .set_src_port(guest_port)
+            .set_dst_port(vsock_port)
+            .set_len(0)
+            .set_socket_type(VsockSocketType::Stream)
+            .set_op(VsockPacketOp::Request)
+            .set_buf_alloc(65536)
+            .set_fwd_cnt(0);
+
+        let d_tx = harness.add_tx_readable(hdr_as_bytes(&req_hdr));
+        harness.publish_tx(d_tx);
+        notify.queue_notify(VSOCK_TX_QUEUE).unwrap();
+
+        let mut accepted = listener.accept().unwrap().0;
+        accepted.set_nonblocking(false).unwrap();
+        accepted.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        wait_for_condition(|| harness.rx_used_idx() >= 1, 5000);
+
+        // Pause and resume — connection state should survive.
+        notify.pause().unwrap();
+        notify.wait_stopped();
+        notify.resume();
+
+        // Write data from the host side through the still-open TCP
+        // socket. The poller should deliver it to the guest.
+        let host_payload = b"data after resume";
+        accepted.write_all(host_payload).unwrap();
+        accepted.flush().unwrap();
+
+        wait_for_condition(|| harness.rx_used_idx() >= 2, 5000);
+
+        let (rw_hdr, data) = harness.read_vsock_packet(1);
+        assert_eq!(rw_hdr.op(), Some(VsockPacketOp::ReadWrite));
+        assert_eq!(&data, host_payload);
+
+        notify.pause().unwrap();
+        notify.halt();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn halt_from_paused() {
+        let guest_cid = GuestCid::try_from(50).unwrap();
+
+        let harness = VsockTestHarness::new();
+        let vq = harness.make_vsock_vq();
+        let log = test_logger();
+        let poller =
+            VsockPoller::new(guest_cid, vq, log, IdHashMap::new()).unwrap();
+
+        let notify = poller.notify_handle();
+        let handle = poller.run();
+
+        notify.pause().unwrap();
+        notify.halt();
         handle.join().unwrap();
     }
 }
