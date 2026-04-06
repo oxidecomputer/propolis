@@ -36,6 +36,7 @@ use internal_dns_resolver::{ResolveError, Resolver};
 use internal_dns_types::names::ServiceName;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
+use propolis::attestation::server::AttestationServerConfig;
 use propolis_api_types::disk::{
     InstanceVCRReplace, SnapshotRequestPathParams, VCRRequestPathParams,
     VolumeStatus, VolumeStatusPathParams,
@@ -95,6 +96,9 @@ pub struct StaticConfig {
     /// The configuration to use when setting up this server's Oximeter
     /// endpoint.
     metrics: Option<MetricsEndpointConfig>,
+
+    /// TODO: comment
+    attest_config: Option<AttestationServerConfig>,
 }
 
 /// Context accessible from HTTP callbacks.
@@ -113,6 +117,7 @@ impl DropshotEndpointContext {
         use_reservoir: bool,
         log: slog::Logger,
         metric_config: Option<MetricsEndpointConfig>,
+        attest_config: Option<AttestationServerConfig>,
     ) -> Self {
         let vnc_server = VncServer::new(log.clone());
         Self {
@@ -121,6 +126,7 @@ impl DropshotEndpointContext {
                 bootrom_version,
                 use_reservoir,
                 metrics: metric_config,
+                attest_config,
             },
             vnc_server,
             vm: crate::vm::Vm::new(&log),
@@ -245,6 +251,7 @@ impl PropolisServerApi for PropolisServerImpl {
             nexus_client,
             vnc_server: server_context.vnc_server.clone(),
             local_server_addr: rqctx.server.local_addr,
+            attest_config: server_context.static_config.attest_config,
         };
 
         let vm_init = match init {

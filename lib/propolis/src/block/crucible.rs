@@ -363,6 +363,14 @@ impl CrucibleBackend {
     pub async fn volume_is_active(&self) -> Result<bool, CrucibleError> {
         self.state.volume.query_is_active().await
     }
+
+    pub fn clone_volume(&self) -> Volume {
+        self.state.volume.clone()
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.state.info.read_only
+    }
 }
 
 #[async_trait::async_trait]
@@ -379,6 +387,9 @@ impl block::Backend for CrucibleBackend {
     async fn stop(&self) -> () {
         self.block_attach.stop();
         self.workers.join_all().await;
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

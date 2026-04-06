@@ -95,6 +95,10 @@ sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", branch =
 crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "ae1da83e66c648574827298f4bc444632bf4d047" }
 crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "ae1da83e66c648574827298f4bc444632bf4d047" }
 
+# Attestation
+dice-verifier = { git = "https://github.com/oxidecomputer/dice-util", rev = "1d3084b514389847e8e0f5d966d2be4f18d02d32", features = ["sled-agent"] }
+vm-attest = { git = "https://github.com/oxidecomputer/vm-attest", rev = "2cdd17580a4fc6c871d24797016af8dbaac9421d", default-features = false }
+
 # External dependencies
 anyhow = "1.0"
 async-trait = "0.1.88"
@@ -163,6 +167,7 @@ serde_arrays = "0.1"
 serde_derive = "1.0"
 serde_json = "1.0"
 serde_test = "1.0.138"
+sha2 = "0.10.9"
 slog = "2.7"
 slog-async = "2.8"
 slog-bunyan = "2.4.0"

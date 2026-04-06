@@ -163,6 +163,9 @@ impl block::Backend for MemAsyncBackend {
         self.block_attach.stop();
         self.workers.join_all().await;
     }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 struct MmapSeg(NonNull<u8>, usize);
