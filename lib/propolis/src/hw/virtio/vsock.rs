@@ -151,6 +151,15 @@ impl VsockVq {
 
         Some(packet)
     }
+
+    /// Drop any cached descriptor chain.
+    ///
+    /// This MUST be called when reseting the virtio-socket device so
+    /// that we don't use stale `GuestAddr`s across device resets.
+    #[cfg(target_os = "illumos")]
+    pub(crate) fn clear_rx_chain(&mut self) {
+        self.rx_chain = None;
+    }
 }
 
 pub struct PciVirtioSock {
@@ -253,8 +262,19 @@ impl Lifecycle for PciVirtioSock {
     fn type_name(&self) -> &'static str {
         "pci-virtio-socket"
     }
+    fn pause(&self) {
+        let _ = self.backend.pause();
+        self.backend.wait_stopped();
+    }
     fn reset(&self) {
         self.virtio_state.reset(self);
+        self.backend.reset();
+    }
+    fn resume(&self) {
+        self.backend.resume();
+    }
+    fn halt(&self) {
+        self.backend.halt();
     }
     fn migrate(&'_ self) -> Migrator<'_> {
         // TODO (MTZ):
