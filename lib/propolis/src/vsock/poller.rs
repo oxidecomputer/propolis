@@ -90,10 +90,13 @@ impl PollerState {
     }
 }
 
-// XXX document
+/// Commands that can be sent to a paused `poller_loop`.
 enum PausedCmd {
+    /// Continue execution
     Resume,
+    /// Cleanup all connection state and queued packets
     Reset { oneshot: mpsc::SyncSender<()> },
+    /// Shutdown the event-loop
     Halt,
 }
 
