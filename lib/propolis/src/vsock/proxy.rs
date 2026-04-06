@@ -351,6 +351,10 @@ impl VsockProxy {
         self.poller.pause()
     }
 
+    pub fn wait_stopped(&self) {
+        self.poller.wait_stopped();
+    }
+
     pub fn resume(&self) {
         self.poller.resume();
     }

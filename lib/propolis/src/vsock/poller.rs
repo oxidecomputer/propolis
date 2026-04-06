@@ -93,7 +93,7 @@ impl PollerState {
 // XXX document
 enum PausedCmd {
     Resume,
-    Reset,
+    Reset { oneshot: mpsc::SyncSender<()> },
     Halt,
 }
 
@@ -137,7 +137,9 @@ impl VsockPollerNotify {
     }
 
     pub fn reset(&self) {
-        self.pause_tx.send(PausedCmd::Reset).unwrap();
+        let (tx, rx) = mpsc::sync_channel(0);
+        self.pause_tx.send(PausedCmd::Reset { oneshot: tx }).unwrap();
+        rx.recv().unwrap();
     }
 
     pub fn halt(&self) {
@@ -924,8 +926,9 @@ impl VsockPoller {
                     self.state.set_running();
                     return false;
                 }
-                Ok(PausedCmd::Reset) => {
+                Ok(PausedCmd::Reset { oneshot }) => {
                     self.reset();
+                    oneshot.send(()).unwrap();
                 }
                 Ok(PausedCmd::Halt) => {
                     self.reset();
@@ -2140,10 +2143,6 @@ mod test {
         notify.pause().unwrap();
         notify.wait_stopped();
         notify.reset();
-
-        // XXX can we do better?
-        // Give the poller time to process the reset event.
-        std::thread::sleep(Duration::from_millis(100));
 
         // The host-side TCP socket should now be closed because the
         // poller dropped all connections during cleanup_for_reset.

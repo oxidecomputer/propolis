@@ -263,8 +263,8 @@ impl Lifecycle for PciVirtioSock {
     }
     fn pause(&self) {
         let _ = self.backend.pause();
+        self.backend.wait_stopped();
     }
-    // XXX this probably shouldn't be asynchronous?
     fn reset(&self) {
         self.virtio_state.reset(self);
         self.backend.reset();
