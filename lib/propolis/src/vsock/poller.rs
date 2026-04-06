@@ -278,7 +278,7 @@ impl VsockPoller {
     pub fn run(mut self) -> JoinHandle<()> {
         std::thread::Builder::new()
             .name("vsock-event-loop".to_string())
-            .spawn(move || self.handle_events())
+            .spawn(move || self.poller_loop())
             .expect("failed to spawn vsock event loop")
     }
 
@@ -793,73 +793,12 @@ impl VsockPoller {
         }
     }
 
-    // This is the gerneral flow of the single-threaded processing event-loop:
-    //                ┌───────────┐
-    //                │vq rx event│ [outside events driven by virtio device]
-    //                │vq tx event│
-    //                │pause event│
-    //                └─────┬─────┘
-    //                      │
-    // ┌────────────────────┼─────────────────────────────────────────────────┐
-    // │                    │                                                 │
-    // │         ┌──────────▼──────────┐           [VsockPoller event-loop]   │
-    // │         │ start (set_running) │                                      │
-    // │         └──────────┬──────────┘                                      │
-    // │                    │                                                 │
-    // │         ┌──────────▼──────────┐                                      │
-    // │         │   wait for events   │                                      │
-    // │  ┌──────► port_getn w/timeout ◄────────────────────┐                 │
-    // │  │      └──────────┬──────────┘                    │                 │
-    // │  │                 │                               │                 │
-    // │  │      ┌──────────▼───────────┐                   │                 │
-    // │  │      │    Dispatch Event    │                   │                 │
-    // │  │      │                      │                   │                 │
-    // │  │      │(user event)(fd event)│                   │                 │
-    // │  │      └──────────┬───────────┘                   │                 │
-    // │  │                 │                               │                 │
-    // │  No     ┌──────────▼───────────┐                   │                 │
-    // │  │      │  cleanup connections │                   │                 │
-    // │  │      │  tx pending packets  │                   │                 │
-    // │  │      └──────────┬───────────┘                   │                 │
-    // │  │                 │                               │                 │
-    // │  │       ┌─────────▼──────────┐                    │                 │
-    // │  │       │    should pause?   │                    │                 │
-    // │  │       └──────────┬┬────────┘                    │                 │
-    // │  │                  ││        ┌──────────────┐     │                 │
-    // │  │                  ││        │    Paused    │     │                 │
-    // │  └──────────────────┘└──yes───► (set_stopped)│     │                 │
-    // │                               │  resume──────│─────┘                 │
-    // │                               │  reset───────┼────────►Cleanup state │
-    // │                               │  halt────────┼───┐                   │
-    // │                               │              │   │                   │
-    // │                               └──────────────┘   │                   │
-    // │                                                  │                   │
-    // │                                                  │                   │
-    // └──────────────────────────────────────────────────┼───────────────────┘
-    //                                                    ▼
-    //                                                  Exit
-    //
-    //
-    // The event-loop is executing in a dedicated thread and therefore must
-    // be able to handle triggers from propolis as it manages the device
-    // lifecycle as documented in the `Lifecycle` trait. Propolis guarantees
-    // that the device will transition to the `Lifecycle::paused` state
-    // before it attempts to resume, reset, or halt the device. We rely on a
-    // `port_send(3C)` to inject a `VsockEvent::Pause` user event so that we may
-    // break out of the processing loop and await further instruction. When we
-    // are in this paused state we rely on the internal pause mpsc channel to
-    // deliver resume, reset, and exit events. We went with this design because
-    // it removes the extra complexity of calling `port_dissociate(3C)` on
-    // every tracked fd and later re-associating them, this allows us to yield
-    // execution until one of the desired next state events is delivered.
     fn handle_events(&mut self) {
         const MAX_EVENTS: u32 = 32;
 
         let mut events = [const { unsafe { std::mem::zeroed::<libc::port_event>() } };
             MAX_EVENTS as usize];
         let mut read_buf: Box<[u8]> = vec![0u8; 1024 * 64].into();
-
-        self.state.set_running();
 
         loop {
             let mut ts = libc::timespec {
@@ -959,8 +898,84 @@ impl VsockPoller {
             // `[Lifecycle::pause]` has been requested so we hang out waiting
             // for further instruction on our pause channel.
             if should_pause {
-                if self.wait_for_resume() {
-                    return;
+                return;
+            }
+        }
+    }
+
+    // This is the gerneral flow of the single-threaded processing event-loop:
+    //
+    //                 ┌─────────virtio-socket─event-loop───────┐
+    //                 │                                        │
+    //                 │         ┌─────────────────────┐        │
+    //                 │         │ start (set_running) ◄────┐   │
+    //                 │         └──────────┬──────────┘    │   │
+    // ┌───────────┐   │                    │               │   │
+    // │vq rx event│   │                    │               │   │
+    // │vq tx event│   │         ┌──────────▼──────────┐    │   │
+    // │fd pollset ├───┼─────────►   handle_events()   │    │   │
+    // │pause event│   │         └──────────┬──────────┘    │   │
+    // └───────────┘   │                    │               │   │
+    //                 │                    │               │   │
+    //                 │         ┌──────────▼──────────┐    │   │
+    //                 │         │ paused (set_stopped)│    │   │
+    //                 │         └──────────┬──────────┘    │   │
+    //                 │                    │               │   │
+    //                 │                    │               │   │
+    //                 │             ┌──────▼───────┐       │   │
+    //                 │             │   pause_rx   │       │   │
+    //                 │             │              │       │   │
+    //                 │             │  - resume────┼───────┘   │
+    //                 │             │  - reset─────┼─►cleanup  │
+    //                 │             │  - exit───┐  │   state   │
+    //                 │             │           │  │           │
+    //                 │             └───────────┼──┘           │
+    //                 │                         │              │
+    //                 └─────────────────────────┼──────────────┘
+    //                                           ▼
+    //                                          Exit
+    //
+    // The event-loop is executing in a dedicated thread and therefore must
+    // be able to handle triggers from propolis as it manages the device
+    // lifecycle as documented in the `Lifecycle` trait. Propolis guarantees
+    // that the device will transition to the `Lifecycle::paused` state
+    // before it attempts to resume, reset, or halt the device. We rely on a
+    // `port_send(3C)` to inject a `VsockEvent::Pause` user event so that we may
+    // break out of the processing loop and await further instruction. When we
+    // are in this paused state we rely on the internal pause mpsc channel to
+    // deliver resume, reset, and exit events. We went with this design because
+    // it removes the extra complexity of calling `port_dissociate(3C)` on
+    // every tracked fd and later re-associating them, this allows us to yield
+    // execution until one of the desired next state events is delivered.
+    fn poller_loop(&mut self) {
+        loop {
+            // We are running!
+            self.state.set_running();
+
+            // Handle events until we are told to pause.
+            self.handle_events();
+
+            // Transition to stopped and await next steps.
+            self.state.set_stopped();
+
+            loop {
+                match self.pause_rx.recv() {
+                    Ok(PausedCmd::Resume) => break,
+                    Ok(PausedCmd::Reset { oneshot }) => {
+                        self.reset();
+                        oneshot.send(()).unwrap();
+                    }
+                    Ok(PausedCmd::Halt) => {
+                        self.reset();
+                        return;
+                    }
+                    Err(_) => {
+                        error!(
+                        &self.log,
+                        "all VsockPoller pause_tx senders have been dropped"
+                    );
+                        return;
+                    }
                 }
             }
         }
@@ -972,34 +987,6 @@ impl VsockPoller {
         self.rx_blocked.clear();
         self.quiescing.clear();
         self.queues.clear_rx_chain();
-    }
-
-    fn wait_for_resume(&mut self) -> bool {
-        self.state.set_stopped();
-
-        loop {
-            match self.pause_rx.recv() {
-                Ok(PausedCmd::Resume) => {
-                    self.state.set_running();
-                    return false;
-                }
-                Ok(PausedCmd::Reset { oneshot }) => {
-                    self.reset();
-                    oneshot.send(()).unwrap();
-                }
-                Ok(PausedCmd::Halt) => {
-                    self.reset();
-                    return true;
-                }
-                Err(_) => {
-                    error!(
-                        &self.log,
-                        "all VsockPoller pause_tx senders have been dropped"
-                    );
-                    return true;
-                }
-            }
-        }
     }
 }
 
