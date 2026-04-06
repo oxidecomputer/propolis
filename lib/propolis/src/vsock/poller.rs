@@ -928,7 +928,7 @@ impl VsockPoller {
     //                 │             │              │       │   │
     //                 │             │  - resume────┼───────┘   │
     //                 │             │  - reset─────┼─►cleanup  │
-    //                 │             │  - exit───┐  │   state   │
+    //                 │             │  - halt───┐  │   state   │
     //                 │             │           │  │           │
     //                 │             └───────────┼──┘           │
     //                 │                         │              │
