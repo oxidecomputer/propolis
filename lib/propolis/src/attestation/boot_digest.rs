@@ -78,7 +78,7 @@ pub async fn boot_disk_digest(
                 error!(
                     log,
                     "failed to read boot disk in {n_retries} tries \
-		    aborting hash of boot digest"
+                        aborting hash of boot digest"
                 );
 
                 return Err(anyhow!("could not hash boot disk digest"));
