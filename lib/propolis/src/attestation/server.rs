@@ -7,7 +7,7 @@ use std::net::SocketAddrV6;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use slog::{error, info, Logger};
+use slog::{error, info, o, Logger};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot, Mutex as TokioMutex};
@@ -119,14 +119,16 @@ impl AttestationSockInit {
 
 impl AttestationSock {
     pub async fn new(log: Logger, sa_addr: SocketAddrV6) -> io::Result<Self> {
-        info!(log, "attestation server created");
+        info!(log, "attestation server created (sled-agent addr {:?}", sa_addr);
+
         let listener = TcpListener::bind(ATTESTATION_ADDR).await?;
         let (vm_conf_send, vm_conf_recv) =
             oneshot::channel::<vm_attest::VmInstanceConf>();
         let (hup_send, hup_recv) = oneshot::channel::<()>();
+
         // TODO: would love to describe this sub-log as specifically VM RoT
         // init, but dunno how to drive slog like that.
-        let attest_init_log = log.clone();
+        let attest_init_log = log.new(o!("component" => "attestation-server"));
         let join_hdl = tokio::spawn(async move {
             Self::run(log, listener, vm_conf_recv, hup_recv, sa_addr).await;
         });
@@ -167,7 +169,10 @@ impl AttestationSock {
     ) {
         let res = Self::handle_conn_inner(&log, rot, vm_conf, conn).await;
         if let Err(e) = res {
-            slog::error!(log, "error handling attestation server connection: {e}");
+            slog::error!(
+                log,
+                "error handling attestation server connection: {e}"
+            );
         }
     }
 
@@ -180,7 +185,7 @@ impl AttestationSock {
         vm_conf: Arc<Mutex<Option<vm_attest::VmInstanceConf>>>,
         conn: TcpStream,
     ) -> anyhow::Result<()> {
-        info!(log, "handling attestation connection");
+        info!(log, "handling attestation request");
 
         let mut msg = String::new();
 
@@ -344,14 +349,15 @@ impl AttestationSock {
                 },
 
                 sock_res = listener.accept() => {
-                    info!(log, "new client connected");
+                    info!(log, "new attestation client connected");
                     match sock_res {
                         Ok((sock, _addr)) => {
                             let rot = rot.clone();
                             let log = log.clone();
                             let vm_conf = vm_conf.clone();
 
-                            let handler = Self::handle_conn(log, rot, vm_conf, sock);
+                            let handler = Self::handle_conn(log, rot, vm_conf,
+                                sock);
                             tokio::spawn(handler);
 
                         }
