@@ -129,7 +129,14 @@ impl AttestationSock {
         let attest_init_log = log.new(o!("component" => "attestation-server"));
         let attest_log_clone = attest_init_log.clone();
         let join_hdl = tokio::spawn(async move {
-            Self::run(attest_log_clone, listener, vm_conf_recv, hup_recv, sa_addr).await;
+            Self::run(
+                attest_log_clone,
+                listener,
+                vm_conf_recv,
+                hup_recv,
+                sa_addr,
+            )
+            .await;
         });
         let attestation_sock = Self {
             log: attest_init_log,

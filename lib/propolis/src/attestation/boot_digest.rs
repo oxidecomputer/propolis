@@ -10,7 +10,7 @@ use vm_attest::Measurement;
 
 use anyhow::{anyhow, Result};
 use sha2::{Digest, Sha256};
-use slog::{error, info, Logger};
+use slog::{error, info, o, Logger};
 use std::time::{Duration, Instant};
 
 /// Find the SHA256 sum of a crucible volume. This should be from a read-only
@@ -26,6 +26,8 @@ pub async fn boot_disk_digest(
     let end_block = vol_size / block_size;
     let hash_start = Instant::now();
 
+    let log = log.new(o!("volume_id" => vol_uuid.to_string()));
+
     // XXX(jph): This was copied from the crucible scrub code, so that we can
     // read 128KiB of data on each read, regardless of block size.
     let block_count = 131072 / block_size;
@@ -33,7 +35,6 @@ pub async fn boot_disk_digest(
     info!(
         log,
         "starting hash of volume";
-        "volume_id" => %vol_uuid,
         "volume_size" => vol_size,
         "block_size" => block_size,
         "end_block" => end_block,
@@ -110,12 +111,7 @@ pub async fn boot_disk_digest(
     }
 
     let elapsed = hash_start.elapsed();
-    info!(
-        log,
-        "hash of volume {:?} took {:?} ms",
-        vol_uuid,
-        elapsed.as_millis()
-    );
+    info!(log, "hash of volume took {:?} ms", elapsed.as_millis());
 
     Ok(Measurement::Sha256(hasher.finalize().into()))
 }
