@@ -156,6 +156,7 @@ impl VsockVq {
     ///
     /// This MUST be called when reseting the virtio-socket device so
     /// that we don't use stale `GuestAddr`s across device resets.
+    #[cfg(target_os = "illumos")]
     pub(crate) fn clear_rx_chain(&mut self) {
         self.rx_chain = None;
     }
