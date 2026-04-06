@@ -1015,10 +1015,11 @@ impl VirtQueues {
     pub fn get(&self, qid: u16) -> Option<&Arc<VirtQueue>> {
         let len = self.len();
         let qid = usize::from(qid);
-        // XXX: This special case is for viona, which always puts the
-        // control queue at the end of queue vector.  None of the other
-        // devices currently handle queues specially in this way, but we
-        // should come up with some better mechanism here.
+        // XXX: This special case is for the virtio network device, which always
+        // puts the control queue at the end of queue vector (see VirtIO 1.2
+        // section 5.1.2).  None of the other devices currently handle queues
+        // specially in this way, but we should come up with some better
+        // mechanism here.
         if qid + 1 == len {
             Some(self.get_control())
         } else {

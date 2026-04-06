@@ -11,7 +11,7 @@ use propolis_client::{
         Board, BootOrderEntry, BootSettings, Chipset, Component, Cpuid,
         CpuidEntry, CpuidVendor, GuestHypervisorInterface, InstanceMetadata,
         InstanceSpec, MigrationFailureInjector, NvmeDisk, PciPath, SerialPort,
-        SerialPortNumber, SpecKey, VirtioDisk,
+        SerialPortNumber, SpecKey, VirtioDisk, VirtioSocket,
     },
     support::nvme_serial_from_str,
 };
@@ -56,6 +56,7 @@ pub struct VmConfig<'dr> {
     disks: Vec<DiskRequest<'dr>>,
     migration_failure: Option<MigrationFailureInjector>,
     guest_hv_interface: Option<GuestHypervisorInterface>,
+    vsock: Option<VirtioSocket>,
 }
 
 impl<'dr> VmConfig<'dr> {
@@ -76,6 +77,7 @@ impl<'dr> VmConfig<'dr> {
             disks: Vec::new(),
             migration_failure: None,
             guest_hv_interface: None,
+            vsock: None,
         };
 
         config.boot_disk(
@@ -118,6 +120,12 @@ impl<'dr> VmConfig<'dr> {
         interface: GuestHypervisorInterface,
     ) -> &mut Self {
         self.guest_hv_interface = Some(interface);
+        self
+    }
+
+    pub fn vsock(&mut self, guest_cid: u64, pci_device_num: u8) -> &mut Self {
+        let pci_path = PciPath::new(0, pci_device_num, 0).unwrap();
+        self.vsock = Some(VirtioSocket { guest_cid, pci_path });
         self
     }
 
@@ -218,6 +226,7 @@ impl<'dr> VmConfig<'dr> {
             disks,
             migration_failure,
             guest_hv_interface,
+            vsock,
         } = self;
         let framework = &ctx.framework;
         let bootrom_path = framework
@@ -366,6 +375,13 @@ impl<'dr> VmConfig<'dr> {
                         .collect(),
                 }),
             );
+            assert!(_old.is_none());
+        }
+
+        if let Some(vsock) = vsock {
+            let _old = spec
+                .components
+                .insert("vsock".into(), Component::VirtioSocket(*vsock));
             assert!(_old.is_none());
         }
 

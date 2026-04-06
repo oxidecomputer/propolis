@@ -11,6 +11,8 @@ use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::Arc;
 use std::thread::JoinHandle;
+use std::time::Duration;
+use std::time::Instant;
 
 use iddqd::IdHashMap;
 use nix::poll::PollFlags;
@@ -22,6 +24,7 @@ use crate::hw::virtio::vsock::VSOCK_TX_QUEUE;
 use crate::vsock::packet::VsockPacket;
 use crate::vsock::packet::VsockPacketFlags;
 use crate::vsock::packet::VsockSocketType;
+use crate::vsock::probes;
 use crate::vsock::proxy::ConnKey;
 use crate::vsock::proxy::VsockPortMapping;
 use crate::vsock::proxy::VsockProxyConn;
@@ -30,6 +33,11 @@ use crate::vsock::VSOCK_HOST_CID;
 
 use super::packet::VsockGuestAddr;
 use super::packet::VsockPacketOp;
+
+/// How long we will wait to receive a RST from a guest when closing a
+/// connection, and how long we will wait when a guest closes its connection
+/// for the host to drain its vbuf to the underlying socket.
+const DEFAULT_QUIESCE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[repr(usize)]
 enum VsockEvent {
@@ -103,6 +111,11 @@ enum RxEvent {
     CreditUpdate(ConnKey),
 }
 
+struct ClosingConn {
+    key: ConnKey,
+    started: Instant,
+}
+
 pub struct VsockPoller {
     log: Logger,
     /// The guest context id
@@ -119,6 +132,8 @@ pub struct VsockPoller {
     rx: VecDeque<RxEvent>,
     /// Connections blocked waiting for rx queue descriptors
     rx_blocked: Vec<ConnKey>,
+    /// Connections waiting to be reaped
+    quiescing: VecDeque<ClosingConn>,
 }
 
 impl VsockPoller {
@@ -166,6 +181,7 @@ impl VsockPoller {
             connections: Default::default(),
             rx: Default::default(),
             rx_blocked: Default::default(),
+            quiescing: Default::default(),
         })
     }
 
@@ -246,8 +262,7 @@ impl VsockPoller {
                     return;
                 };
             }
-            // XXX how do we register this for future cleanup if there is data
-            // we have not synced locally yet? We need a cleanup loop...
+
             if conn.should_close() {
                 if !conn.has_buffered_data() {
                     self.connections.remove(&key);
@@ -258,6 +273,11 @@ impl VsockPoller {
                     // more data will be sent and received, followed by a
                     // VIRTIO_VSOCK_OP_RST response from the peer.
                     self.send_conn_rst(key);
+                } else {
+                    self.quiescing.push_back(ClosingConn {
+                        key,
+                        started: Instant::now(),
+                    });
                 }
             }
         }
@@ -302,6 +322,7 @@ impl VsockPoller {
                 }
             };
 
+            probes::vsock_pkt_tx!(|| &packet.header);
             // If the packet is not destined for the host drop it.
             if packet.header.dst_cid() != VSOCK_HOST_CID {
                 warn!(
@@ -560,7 +581,6 @@ impl VsockPoller {
         if !conn.guest_can_read() {
             return;
         }
-
         loop {
             let Some(permit) = queues.try_rx_permit() else {
                 rx_blocked.push(key);
@@ -586,10 +606,11 @@ impl VsockPoller {
 
             match conn.socket.read(&mut read_buf[..max_read]) {
                 Ok(0) => {
-                    // TODO the guest is supposed to send us a RST to finalize
-                    // the shutdown. We need to put this on a quiesce queue so
-                    // that we don't leave a half open connection laying around
-                    // in our connection map.
+                    // TODO (propolis#1102):
+                    // This is an overly aggressive shutdown. Typically EOF
+                    // signals that the conenction has been closed, however one
+                    // can intentionally shutdown read|write halves
+                    // independently.
                     let packet = VsockPacket::new_shutdown(
                         VsockGuestAddr::from_conn_key(*guest_cid, key),
                         VsockPacketFlags::VIRTIO_VSOCK_SHUTDOWN_F_SEND
@@ -597,6 +618,10 @@ impl VsockPoller {
                         conn.fwd_cnt(),
                     );
                     permit.write(&packet.header, &packet.data);
+                    self.quiescing.push_back(ClosingConn {
+                        key,
+                        started: Instant::now(),
+                    });
                     return;
                 }
                 Ok(nbytes) => {
@@ -667,6 +692,27 @@ impl VsockPoller {
         self.rx.push_back(RxEvent::Reset(key));
     }
 
+    fn quiesce_connections(&mut self) {
+        // NOTE: this intentionally collides with the method name in Rust 1.93,
+        // we plan to remove the extension trait below once propolis gets a Rust
+        // version bump.
+        #[allow(unstable_name_collisions)]
+        // NB: We are a single threaded event-loop, therefore any connection
+        // that gets put on the quiesce queue should not expire before previous
+        // entries have.
+        while let Some(conn) = self.quiescing.pop_front_if(|conn| {
+            conn.started.elapsed() > DEFAULT_QUIESCE_TIMEOUT
+        }) {
+            // It's possible that the guest sent us a RST for the connection,
+            // since we put it on the quiesce queue.
+            if self.connections.remove(&conn.key).is_some() {
+                // If we have a connection, make sure we send a RST, so the
+                // guest knows we are done with it.
+                self.send_conn_rst(conn.key);
+            }
+        }
+    }
+
     /// This is the vsock event-loop. It's responsible for handling vsock
     /// packets to and from the guest.
     fn handle_events(&mut self) {
@@ -677,6 +723,12 @@ impl VsockPoller {
         let mut read_buf: Box<[u8]> = vec![0u8; 1024 * 64].into();
 
         loop {
+            let mut ts = libc::timespec {
+                // We use the quiesce timeout so that we don't wait
+                // unnecessarily long to cleanup connections.
+                tv_sec: DEFAULT_QUIESCE_TIMEOUT.as_secs() as i64,
+                tv_nsec: 0,
+            };
             let mut nget = 1;
 
             let ret = unsafe {
@@ -689,7 +741,7 @@ impl VsockPoller {
                     // there is no other work to do unless we are woken up. In
                     // the near future we will likely periodically wake up to
                     // service the shutdown quiesce queue.
-                    std::ptr::null_mut(),
+                    &mut ts,
                 )
             };
 
@@ -697,7 +749,7 @@ impl VsockPoller {
                 let err = std::io::Error::last_os_error();
                 match err.raw_os_error().expect(
                     "`raw_os_error` is documented to always return `Some` \
-+                     when obtained via `last_os_error`",
+                    when obtained via `last_os_error`",
                 ) {
                     // A signal was caught so process the loop again
                     libc::EINTR => continue,
@@ -709,6 +761,14 @@ impl VsockPoller {
                             "vsock port fd is no longer valid: {err}"
                         );
                         return;
+                    }
+                    libc::ETIME => {
+                        // Fall through
+                        //
+                        // We hit our timeout:
+                        // - nget should be zero
+                        // - we may have pending_rx
+                        // - we may have conenctions to quiesce
                     }
                     _ => {
                         error!(&self.log, "vsock port_getn returned: {err}");
@@ -740,6 +800,9 @@ impl VsockPoller {
                     _ => {}
                 };
             }
+
+            // Cleanup any connection waiting to be be reaped
+            self.quiesce_connections();
 
             // Process any pending rx events
             self.process_pending_rx();
@@ -804,8 +867,31 @@ impl VsockGuestAddr {
     }
 }
 
+// TODO this can become `[VecDeque::pop_front_if]` when we update to Rust 1.93,
+// until then the impl is shamelessly borrowed.
+trait VecDequeExt<T> {
+    fn pop_front_if(
+        &mut self,
+        predicate: impl FnOnce(&mut T) -> bool,
+    ) -> Option<T>;
+}
+
+impl<T> VecDequeExt<T> for VecDeque<T> {
+    fn pop_front_if(
+        &mut self,
+        predicate: impl FnOnce(&mut T) -> bool,
+    ) -> Option<T> {
+        let first = self.front_mut()?;
+        if predicate(first) {
+            self.pop_front()
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
-mod tests {
+mod test {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1740,6 +1826,123 @@ mod tests {
             VsockPacketFlags::VIRTIO_VSOCK_SHUTDOWN_F_SEND
                 | VsockPacketFlags::VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE
         );
+
+        // Since we don't send a RST from the guest-side, the host-side should
+        // send us one after `DEFAULT_QUIESCE_TIMEOUT`.
+        wait_for_condition(|| harness.rx_used_idx() >= 3, 5000);
+
+        // Read back the packet from RX used ring entry 2
+        let (hdr, _data) = harness.read_vsock_packet(2);
+
+        assert_eq!(hdr.op(), Some(VsockPacketOp::Reset));
+        assert_eq!(hdr.src_cid(), VSOCK_HOST_CID);
+        assert_eq!(hdr.dst_cid(), guest_cid.get());
+        assert_eq!(hdr.src_port(), vsock_port);
+        assert_eq!(hdr.dst_port(), guest_port);
+
+        notify.shutdown().unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn end_to_end_guest_to_host_closes_half_open() {
+        let vsock_port = 9300;
+        let guest_port = 7300;
+        let guest_cid = GuestCid::try_from(50).unwrap();
+        let (listener, backends) = bind_test_backend(vsock_port);
+        listener.set_nonblocking(false).unwrap();
+
+        let mut harness = VsockTestHarness::new();
+        let vq = harness.make_vsock_vq();
+        let log = test_logger();
+        let poller = VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+
+        // Pre-populate RX queue with writable descriptors for RESPONSE + data
+        for _ in 0..8 {
+            harness.add_rx_writable(4096);
+        }
+
+        let notify = poller.notify_handle();
+        let handle = poller.run();
+
+        // Write REQUEST packet into TX queue
+        let mut req_hdr = VsockPacketHeader::new();
+        req_hdr
+            .set_src_cid(guest_cid)
+            .set_dst_cid_raw(VSOCK_HOST_CID)
+            .set_src_port(guest_port)
+            .set_dst_port(vsock_port)
+            .set_len(0)
+            .set_socket_type(VsockSocketType::Stream)
+            .set_op(VsockPacketOp::Request)
+            .set_buf_alloc(65536)
+            .set_fwd_cnt(0);
+
+        let d_tx = harness.add_tx_readable(hdr_as_bytes(&req_hdr));
+        harness.publish_tx(d_tx);
+        notify.queue_notify(VSOCK_TX_QUEUE).unwrap();
+
+        // Accept the TCP connection (blocks until poller connects)
+        let _accepted = listener.accept().unwrap().0;
+
+        // Wait for RESPONSE on RX queue
+        wait_for_condition(|| harness.rx_used_idx() >= 1, 5000);
+
+        // Guest->Host: send RW packet with payload
+        let payload = b"hello from guest via vsock end-to-end!";
+        let mut rw_hdr = VsockPacketHeader::new();
+        rw_hdr
+            .set_src_cid(guest_cid)
+            .set_dst_cid_raw(VSOCK_HOST_CID)
+            .set_src_port(guest_port)
+            .set_dst_port(vsock_port)
+            .set_len(payload.len() as u32)
+            .set_socket_type(VsockSocketType::Stream)
+            .set_op(VsockPacketOp::ReadWrite)
+            .set_buf_alloc(65536)
+            .set_fwd_cnt(0);
+
+        let d_hdr = harness.add_tx_readable(hdr_as_bytes(&rw_hdr));
+        let d_body = harness.add_tx_readable(payload);
+        harness.chain_tx(d_hdr, d_body);
+        harness.publish_tx(d_hdr);
+        notify.queue_notify(VSOCK_TX_QUEUE).unwrap();
+
+        // Send a Guest->Host SHUTDOWN packet with both flags set,
+        // indicating the guest will no longer send or receive data.
+        let mut shutdown_hdr = VsockPacketHeader::new();
+        shutdown_hdr
+            .set_src_cid(guest_cid)
+            .set_dst_cid_raw(VSOCK_HOST_CID)
+            .set_src_port(guest_port)
+            .set_dst_port(vsock_port)
+            .set_len(0)
+            .set_socket_type(VsockSocketType::Stream)
+            .set_op(VsockPacketOp::Shutdown)
+            .set_flags(
+                VsockPacketFlags::VIRTIO_VSOCK_SHUTDOWN_F_SEND
+                    | VsockPacketFlags::VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE,
+            )
+            .set_buf_alloc(0)
+            .set_fwd_cnt(0);
+
+        let d_sd = harness.add_tx_readable(hdr_as_bytes(&shutdown_hdr));
+        harness.publish_tx(d_sd);
+        notify.queue_notify(VSOCK_TX_QUEUE).unwrap();
+
+        // Don't read any data from the underlying host socket.
+
+        // The connection should be moved into the quiesce state and since
+        // we didn't drain the internal vbuf in a timely manor we should
+        // receive a RST closing the connection.
+        wait_for_condition(|| harness.rx_used_idx() >= 2, 5000);
+
+        let (rst_hdr, _) = harness.read_vsock_packet(1);
+        assert_eq!(rst_hdr.op(), Some(VsockPacketOp::Reset));
+        assert_eq!(rst_hdr.src_cid(), VSOCK_HOST_CID);
+        assert_eq!(rst_hdr.dst_cid(), guest_cid.get());
+        assert_eq!(rst_hdr.src_port(), vsock_port);
+        assert_eq!(rst_hdr.dst_port(), guest_port);
 
         notify.shutdown().unwrap();
         handle.join().unwrap();
