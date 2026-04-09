@@ -141,6 +141,19 @@ async fn in_memory_backend_smoke_test(ctx: &TestCtx) {
 
     let cat = vm.run_shell_command("cat /phd/hello_oxide.txt").await?;
     assert_eq!(cat, HELLO_MSG);
+
+    // Writes to a read-only mount must be rejected by the guest. We don't
+    // assert on the specific errno text because it varies across guest libcs
+    // (Alpine/musl vs glibc), but the command must exit non-zero. See
+    // RFD 669 Phase 1: read-only disk coverage.
+    vm.run_shell_command("echo nope > /phd/should_fail.txt")
+        .check_err()
+        .await?;
+
+    // The directory listing should be unchanged: the failed write must not
+    // have created the file.
+    let ls_after = vm.run_shell_command("ls /phd").await?;
+    assert_eq!(ls_after, "hello_oxide.txt");
 }
 
 #[phd_testcase]
@@ -213,4 +226,62 @@ async fn in_memory_backend_migration_test(ctx: &TestCtx) {
         .await?;
 
     assert_eq!(out, "Files /tmp/before and /tmp/after are identical");
+}
+
+/// Attaches several virtio-blk data disks to a VM and verifies that all of
+/// them enumerate inside the guest. This exercises the `data_disk()` builder's
+/// ability to handle non-trivial disk counts and confirms that propolis wires
+/// each disk through to the guest. See RFD 669 Phase 1: multiple disks.
+#[phd_testcase]
+async fn multi_disk_smoke_test(ctx: &TestCtx) {
+    if ctx.default_guest_os_kind().await?.is_windows() {
+        phd_skip!(
+            "multi-disk enumeration uses /sys/block, which Windows lacks"
+        );
+    }
+
+    // Four disks at adjacent PCI slots that are known not to collide with the
+    // default boot disk (slot 4) or with slots used elsewhere in the suite
+    // (8, 16, 20, 24). Slots 17, 18, 19, 21 are clear.
+    const DISK_PCI_SLOTS: [u8; 4] = [17, 18, 19, 21];
+    const DISK_COUNT: usize = DISK_PCI_SLOTS.len();
+
+    let mut cfg = ctx.vm_config_builder("multi_disk_smoke_test");
+    for (i, slot) in DISK_PCI_SLOTS.iter().enumerate() {
+        // Each disk gets its own blank in-memory backing so we don't pull in
+        // any extra artifacts. The size is intentionally small.
+        let name: &'static str = match i {
+            0 => "data-disk-0",
+            1 => "data-disk-1",
+            2 => "data-disk-2",
+            3 => "data-disk-3",
+            _ => unreachable!("DISK_PCI_SLOTS has length 4"),
+        };
+        cfg.data_disk(
+            name,
+            DiskSource::Blank(1024 * 1024),
+            DiskInterface::Virtio,
+            DiskBackend::InMemory { readonly: false },
+            *slot,
+        );
+    }
+
+    let mut vm = ctx.spawn_vm(&cfg, None).await?;
+    vm.launch().await?;
+    vm.wait_to_boot().await?;
+
+    // Count virtio block devices in the guest. The default boot disk is NVMe,
+    // so it shows up as `nvme*` and is naturally excluded from this count.
+    let count_str = vm
+        .run_shell_command("ls -1 /sys/block | grep -c '^vd' || true")
+        .await?;
+    let count: usize = count_str
+        .trim()
+        .parse()
+        .with_context(|| format!("parsing vd device count {count_str:?}"))?;
+
+    assert_eq!(
+        count, DISK_COUNT,
+        "expected {DISK_COUNT} virtio block devices, guest reported {count}"
+    );
 }

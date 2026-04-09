@@ -6,8 +6,11 @@
 //! guest OSes.
 
 use std::{
-    collections::HashMap, fmt::Debug, net::SocketAddr, sync::Arc,
-    time::Duration,
+    collections::HashMap,
+    fmt::Debug,
+    net::SocketAddr,
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -280,6 +283,12 @@ pub struct TestVm {
     /// completion as part of the post-test cleanup fixture (i.e. before any
     /// other tests run).
     cleanup_task_tx: UnboundedSender<JoinHandle<()>>,
+
+    /// Wall-clock duration of the first successful `wait_to_boot` call on this
+    /// VM, i.e. the cold-boot-to-login time. Set once per `TestVm`; subsequent
+    /// boots (e.g. after `graceful_reboot`) are logged but do not overwrite
+    /// this value. See RFD 669 Phase 1 boot timing baseline.
+    cold_boot_duration: OnceLock<Duration>,
 }
 
 impl TestVm {
@@ -379,6 +388,7 @@ impl TestVm {
             state: VmState::New,
             cleanup_task_tx,
             manual_stop,
+            cold_boot_duration: OnceLock::new(),
         })
     }
 
@@ -839,6 +849,7 @@ impl TestVm {
     pub async fn wait_to_boot(&self) -> Result<()> {
         let timeout_duration = Duration::from_secs(300);
         let boot_sequence = self.guest_os.get_login_sequence();
+        let started_at = Instant::now();
         let boot = async move {
             info!(
                 vm = self.spec.vm_name,
@@ -908,7 +919,26 @@ impl TestVm {
             }
         };
 
+        let elapsed = started_at.elapsed();
+        let is_cold_boot = self.cold_boot_duration.set(elapsed).is_ok();
+        info!(
+            vm = self.spec.vm_name,
+            vm_id = %self.id,
+            elapsed_ms = elapsed.as_millis() as u64,
+            cold_boot = is_cold_boot,
+            "wait_to_boot completed"
+        );
+
         Ok(())
+    }
+
+    /// Returns the wall-clock duration of this VM's first successful
+    /// `wait_to_boot` call (i.e. cold-boot-to-login), if it has reached the
+    /// login prompt at least once. Subsequent boots on the same `TestVm` (e.g.
+    /// after `graceful_reboot`) do not affect the returned value; their
+    /// durations are emitted via tracing instead. See RFD 669 Phase 1.
+    pub fn cold_boot_duration(&self) -> Option<Duration> {
+        self.cold_boot_duration.get().copied()
     }
 
     /// Waits for up to `timeout_duration` for `line` to appear on the guest
