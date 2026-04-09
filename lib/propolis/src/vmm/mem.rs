@@ -1173,6 +1173,8 @@ impl MemCtx {
             return None;
         };
         if let Ok((addr, rlen, ent)) = self.map.region_at(start) {
+            // Unlike start+len before, we know `addr + rlen` cannot overflow:
+            // if it would, ASpace::register would have rejected this region.
             if addr + rlen < end {
                 return None;
             }
