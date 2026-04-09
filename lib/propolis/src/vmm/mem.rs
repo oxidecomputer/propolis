@@ -1167,7 +1167,11 @@ impl MemCtx {
         len: usize,
     ) -> Option<(SubMapping<'_>, SubMapping<'_>)> {
         let start = addr.0 as usize;
-        let end = start + len;
+        let Some(end) = start.checked_add(len) else {
+            // The mappings in `self.map` do not wrap, so no mapping can match
+            // with a region wrapping at the end of the address space.
+            return None;
+        };
         if let Ok((addr, rlen, ent)) = self.map.region_at(start) {
             if addr + rlen < end {
                 return None;
@@ -1436,5 +1440,37 @@ pub mod test {
             .constrain_access(Prot::WRITE);
         assert!(sub_write.write_bytes(&buf).is_ok());
         assert!(sub_write.read_bytes(&mut buf).is_err());
+    }
+
+    // Tests above cover lookups inside one mapping, but Propolis uses memory
+    // through a `MemCtx` including an `ASpace<MapEnt>` covering all mappings
+    // for the VM.
+    #[test]
+    fn region_lookup() {
+        let hdl = VmmHdl::new_test(TEST_LEN)
+            .expect("create tempfile backed test hdl");
+        let hdl = Arc::new(hdl);
+
+        let mut phys = PhysMap::new(TEST_LEN, hdl);
+        phys.add_mem("test dram".to_string(), 0, PAGE_SIZE)
+            .expect("can add test DRAM");
+        let mem = phys.finalize();
+
+        let acc_mem = mem.access().expect("can access memory");
+
+        // We can get a readable region covering all added memory.
+        let region =
+            acc_mem.readable_region(&GuestRegion(GuestAddr(0), PAGE_SIZE));
+        assert!(region.is_some());
+
+        // But not a region extending past memory in the VM.
+        let region =
+            acc_mem.readable_region(&GuestRegion(GuestAddr(0), 2 * PAGE_SIZE));
+        assert!(region.is_none());
+
+        // And not a region that would wrap into VM memory.
+        let region = acc_mem
+            .readable_region(&GuestRegion(GuestAddr(u64::MAX), PAGE_SIZE));
+        assert!(region.is_none());
     }
 }
