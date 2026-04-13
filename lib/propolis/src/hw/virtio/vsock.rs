@@ -110,11 +110,20 @@ impl VsockVq {
     /// Returns `Some(RxPermit)` if a descriptor chain is available,
     /// `None` if the rx queue is full.
     pub fn try_rx_permit(&mut self) -> Option<RxPermit<'_>> {
+        let vq = self.queues.get(VSOCK_RX_QUEUE as usize)?;
+        // See propolis#1110 & propolis#1115
+        // If propolis-server has started the vsock device but a different
+        // device has encountered an error at startup there's a good chance
+        // we attempt to access guest memory and panic. A way of preventing
+        // us from doing that is to first check if the virtqueue is alive.
+        if !vq.is_alive() {
+            return None;
+        }
+
         // Reuse cached chain or pop a new one
         if self.rx_chain.is_none() {
             // TODO: cannot access memory?
             let mem = self.acc_mem.access().expect("mem access for write");
-            let vq = self.queues.get(VSOCK_RX_QUEUE as usize)?;
             let mut chain = Chain::with_capacity(10);
             if let Some(_) = vq.pop_avail(&mut chain, &mem) {
                 self.rx_chain = Some(chain);
