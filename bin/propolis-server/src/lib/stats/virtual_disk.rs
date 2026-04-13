@@ -78,9 +78,8 @@ impl VirtualDiskStats {
             }
             Operation::Flush => self.on_flush_completion(result, duration),
             Operation::Discard => {
-                // Discard is not wired up in backends we care about for now, so
-                // it can safely be ignored.
-                // XXX no longer true
+                // Discard is only partially wired up in backends we care about, and it's not
+                // clear what stats (if any) to report yet.
             }
         }
     }

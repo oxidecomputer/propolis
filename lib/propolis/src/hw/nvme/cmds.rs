@@ -31,6 +31,10 @@ pub enum ParseErr {
     /// An invalid value was specified in the FUSE bits of `CDW0`.
     #[error("reserved FUSE value specified")]
     ReservedFuse,
+
+    /// A reserved field was set to a non-zero value.
+    #[error("reserved field value specified")]
+    Reserved,
 }
 
 /// A parsed Admin Command
@@ -715,14 +719,19 @@ impl NvmCmd {
                 prp2: raw.prp2,
             }),
             bits::NVM_OPC_DATASET_MANAGEMENT => {
+                if (raw.cdw11 & !0b111) != 0 {
+                    // Only the lowest 3 bits of CDW11 are used for Dataset
+                    // Management, so reject if any other bits are set.
+                    return Err(ParseErr::Reserved);
+                }
                 NvmCmd::DatasetManagement(DatasetManagementCmd {
                     prp1: raw.prp1,
                     prp2: raw.prp2,
                     // Convert from 0's based value
                     nr: (raw.cdw10 & 0xFF) as u16 + 1,
                     ad: raw.cdw11 & (1 << 2) != 0,
-                    idw: raw.cdw11 & (1 << 1) != 0,
-                    idr: raw.cdw11 & (1 << 0) != 0,
+                    _idw: raw.cdw11 & (1 << 1) != 0,
+                    _idr: raw.cdw11 & (1 << 0) != 0,
                 })
             }
             _ => NvmCmd::Unknown(raw),
@@ -797,7 +806,6 @@ impl ReadCmd {
 
 /// Dataset Management Command Parameters
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct DatasetManagementCmd {
     /// PRP Entry 1 (PRP1)
     ///
@@ -806,14 +814,13 @@ pub struct DatasetManagementCmd {
 
     /// PRP Entry 2 (PRP2)
     ///
-    /// This field contains the second PRP entry that specifies the location where data should be
-    /// transferred from (if there is a physical discontinuity).
+    /// Indicates a second data buffer that contains LBA range information.  It may not be a PRP
+    /// List.
     prp2: u64,
 
     /// Number of Ranges (NR)
     ///
-    /// Indicates the number of 16 byte range sets that are specified in the command. This is a
-    /// 0’s based value.
+    /// Indicates the number of 16 byte range sets that are specified in the command.
     pub nr: u16,
 
     /// Attribute – Deallocate (AD)
@@ -832,7 +839,9 @@ pub struct DatasetManagementCmd {
     /// The host expects to perform operations on all ranges provided as an integral unit for
     /// writes, indicating that if a portion of the dataset is written it is expected that all of
     /// the ranges in the dataset are going to be written.
-    idw: bool,
+    ///
+    /// Note: this field is advisory, and we ignore it.
+    _idw: bool,
 
     /// Attribute – Integral Dataset for Read (IDR)
     ///
@@ -840,7 +849,9 @@ pub struct DatasetManagementCmd {
     /// The host expects to perform operations on all ranges provided as an integral unit for
     /// reads, indicating that if a portion of the dataset is read it is expected that all of the
     /// ranges in the dataset are going to be read.
-    idr: bool,
+    ///
+    /// Note: this field is advisory, and we ignore it.
+    _idr: bool,
 }
 
 impl DatasetManagementCmd {
@@ -855,27 +866,23 @@ impl DatasetManagementCmd {
         )
     }
 
-    /// Returns an Iterator that yields the LBA ranges specified in this command.  Note that if
-    /// some of the ranges couldn't be read from guest memory, this will yield fewer than
-    /// `Self.nr` ranges.
+    /// Returns an Iterator that yields the LBA ranges specified in this command.  If any of the
+    /// ranges cannot be read from guest memory, yields an error for that range instead.
     pub fn ranges<'a>(
         &self,
         mem: &'a MemCtx,
-    ) -> impl Iterator<Item = DatasetManagementRangeDefinition> + 'a {
+    ) -> impl Iterator<
+        Item = Result<DatasetManagementRangeDefinition, &'static str>,
+    > + 'a {
         self.data(mem).flat_map(|region| {
-            let mut ranges = Vec::new();
-            if let Some(mapping) = mem.readable_region(&region) {
-                ranges.resize_with(
-                    mapping.len()
-                        / size_of::<DatasetManagementRangeDefinition>(),
-                    Default::default,
-                );
-                if mapping.read_many(&mut ranges).is_err() {
-                    ranges.clear();
-                }
-            };
-
-            ranges.into_iter()
+            if let Some(Ok(defs)) = mem
+                .readable_region(&region)
+                .map(|mapping| mapping.read_many_owned())
+            {
+                defs.into_iter().map(Ok).collect::<Vec<_>>().into_iter()
+            } else {
+                vec![Err("Failed to read LBA range")].into_iter()
+            }
         })
     }
 

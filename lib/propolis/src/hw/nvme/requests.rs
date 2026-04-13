@@ -2,12 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use itertools::Itertools;
 use std::sync::Arc;
 use std::time::Instant;
 
 use super::{cmds::NvmCmd, queue::Permit, PciNvme};
 use crate::accessors::MemAccessor;
 use crate::block::{self, Operation, Request};
+use crate::hw::nvme::cmds::ParseErr;
 use crate::hw::nvme::{bits, cmds::Completion, queue::SubQueue};
 
 #[usdt::provider(provider = "propolis")]
@@ -147,7 +149,7 @@ impl block::DeviceQueue for NvmeBlockQueue {
                 }
                 Ok(NvmCmd::DatasetManagement(cmd)) => {
                     // We only support the "deallocate" (discard/trim) operation of Dataset
-                    // Management.  XXX should we return success?
+                    // Management.
                     if !cmd.is_deallocate() {
                         permit.complete(
                             Completion::generic_err(bits::STS_INVAL_FIELD)
@@ -161,18 +163,18 @@ impl block::DeviceQueue for NvmeBlockQueue {
                         cid,
                         cmd.nr,
                     ));
-                    let ranges: Vec<_> = cmd
+                    let Ok(ranges): Result<Vec<_>, _> = cmd
                         .ranges(&mem)
-                        .map(|r| r.offset_len(params.lba_data_size))
-                        .collect();
-                    if ranges.len() != cmd.nr as usize {
-                        // If we couldn't read all the ranges, fail the command
+                        .map_ok(|r| r.offset_len(params.lba_data_size))
+                        .try_collect()
+                    else {
+                        // If we couldn't read the ranges, fail the command
                         permit.complete(
                             Completion::generic_err(bits::STS_DATA_XFER_ERR)
                                 .dnr(),
                         );
                         continue;
-                    }
+                    };
                     let req = Request::new_discard(ranges);
                     return Some((req, permit, None));
                 }
@@ -180,6 +182,13 @@ impl block::DeviceQueue for NvmeBlockQueue {
                     probes::nvme_flush_enqueue!(|| (sq.devq_id(), idx, cid));
                     let req = Request::new_flush();
                     return Some((req, permit, None));
+                }
+                Err(ParseErr::ReservedFuse) | Err(ParseErr::Reserved) => {
+                    // For commands that fail parsing due to reserved fields being set,
+                    // complete with an invalid field error
+                    let comp =
+                        Completion::generic_err(bits::STS_INVAL_FIELD).dnr();
+                    permit.complete(comp);
                 }
                 Ok(NvmCmd::Unknown(_)) | Err(_) => {
                     // For any other unrecognized or malformed command,
