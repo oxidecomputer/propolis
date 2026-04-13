@@ -285,10 +285,6 @@ impl Lifecycle for PciVirtioSock {
         // We need to support migration propolis#1065
         Migrator::NonMigratable
     }
-
-    fn paused(&self) -> futures::future::BoxFuture<'static, ()> {
-        Box::pin(futures::future::ready(()))
-    }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
