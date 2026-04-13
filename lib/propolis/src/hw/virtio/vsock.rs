@@ -201,7 +201,7 @@ impl PciVirtioSock {
         );
         let port_mappings = port_mappings.into_iter().collect();
 
-        let backend = VsockProxy::new(cid, vvq, log, port_mappings);
+        let backend = VsockProxy::new(log, cid, vvq, port_mappings);
 
         Arc::new(Self { cid, backend, virtio_state, pci_state })
     }
@@ -262,6 +262,10 @@ impl Lifecycle for PciVirtioSock {
     fn type_name(&self) -> &'static str {
         "pci-virtio-socket"
     }
+    fn start(&self) -> Result<(), anyhow::Error> {
+        self.backend.start();
+        Ok(())
+    }
     fn pause(&self) {
         let _ = self.backend.pause();
         self.backend.wait_stopped();
@@ -280,6 +284,10 @@ impl Lifecycle for PciVirtioSock {
         // TODO (MTZ):
         // We need to support migration propolis#1065
         Migrator::NonMigratable
+    }
+
+    fn paused(&self) -> futures::future::BoxFuture<'static, ()> {
+        Box::pin(futures::future::ready(()))
     }
 }
 

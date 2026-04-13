@@ -11,6 +11,7 @@ use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::Barrier;
 use std::sync::Condvar;
 use std::sync::Mutex;
 use std::thread::JoinHandle;
@@ -192,6 +193,7 @@ struct ClosingConn {
 
 pub struct VsockPoller {
     log: Logger,
+    start_barrier: Arc<Barrier>,
     /// The guest context id
     guest_cid: GuestCid,
     /// Port mappings we are proxying packets to and from
@@ -220,9 +222,10 @@ impl VsockPoller {
     /// This poller is responsible for driving virtio-socket connections between
     /// the guest VM and host sockets.
     pub fn new(
+        log: Logger,
+        start_barrier: Arc<Barrier>,
         cid: GuestCid,
         queues: VsockVq,
-        log: Logger,
         port_mappings: IdHashMap<VsockPortMapping>,
     ) -> std::io::Result<Self> {
         let port_fd = unsafe {
@@ -254,6 +257,7 @@ impl VsockPoller {
 
         Ok(Self {
             log,
+            start_barrier,
             guest_cid: cid,
             port_mappings,
             port_fd: Arc::new(unsafe { OwnedFd::from_raw_fd(port_fd) }),
@@ -949,6 +953,9 @@ impl VsockPoller {
     // every tracked fd and later re-associating them, this allows us to yield
     // execution until one of the desired next state events is delivered.
     fn poller_loop(&mut self) {
+        // Wait until propolis tells us to start the virtio-socket device.
+        self.start_barrier.wait();
+
         loop {
             // We are running!
             self.state.set_running();
