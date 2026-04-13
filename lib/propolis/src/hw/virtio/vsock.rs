@@ -115,7 +115,8 @@ impl VsockVq {
         // If propolis-server has started the vsock device but a different
         // device has encountered an error at startup there's a good chance
         // we attempt to access guest memory and panic. A way of preventing
-        // us from doing that is to first check if the virtqueue is alive.
+        // us from doing that is to first check if the virtqueue is alive. A
+        // virtqueue only becomes alive once a guest vCPU has ran.
         if !vq.is_alive() {
             return None;
         }
