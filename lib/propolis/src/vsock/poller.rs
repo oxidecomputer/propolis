@@ -11,6 +11,7 @@ use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::Barrier;
 use std::sync::Condvar;
 use std::sync::Mutex;
 use std::thread::JoinHandle;
@@ -192,6 +193,7 @@ struct ClosingConn {
 
 pub struct VsockPoller {
     log: Logger,
+    start_barrier: Arc<Barrier>,
     /// The guest context id
     guest_cid: GuestCid,
     /// Port mappings we are proxying packets to and from
@@ -220,9 +222,10 @@ impl VsockPoller {
     /// This poller is responsible for driving virtio-socket connections between
     /// the guest VM and host sockets.
     pub fn new(
+        log: Logger,
+        start_barrier: Arc<Barrier>,
         cid: GuestCid,
         queues: VsockVq,
-        log: Logger,
         port_mappings: IdHashMap<VsockPortMapping>,
     ) -> std::io::Result<Self> {
         let port_fd = unsafe {
@@ -254,6 +257,7 @@ impl VsockPoller {
 
         Ok(Self {
             log,
+            start_barrier,
             guest_cid: cid,
             port_mappings,
             port_fd: Arc::new(unsafe { OwnedFd::from_raw_fd(port_fd) }),
@@ -949,6 +953,18 @@ impl VsockPoller {
     // every tracked fd and later re-associating them, this allows us to yield
     // execution until one of the desired next state events is delivered.
     fn poller_loop(&mut self) {
+        // Wait until propolis tells us to start the virtio-socket device.
+        // If we are never told to start that is okay as there will be no need
+        // to ever transition the device from running->paused->halt.
+        //
+        // TODO: If propolis-server is started but the VM is never transitioned
+        // to running this will leave a useless thread around that will be
+        // cleanned up when propolis-server exits. This also means if one sends
+        // a new instance spec to the pre-existing propolis-server we will
+        // accumulate these "dead" threads, howerver we never do this in the
+        // actual product.
+        self.start_barrier.wait();
+
         loop {
             // We are running!
             self.state.set_running();
@@ -1077,6 +1093,7 @@ mod test {
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::Barrier;
     use std::time::Duration;
 
     use iddqd::IdHashMap;
@@ -1241,12 +1258,21 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let poller = VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+        let start_barrier = Arc::new(Barrier::new(2));
+        let poller = VsockPoller::new(
+            log,
+            start_barrier.clone(),
+            guest_cid,
+            vq,
+            backends,
+        )
+        .unwrap();
 
         harness.add_rx_writable(256);
 
         let notify = poller.notify_handle();
         let handle = poller.run();
+        start_barrier.wait();
 
         let mut hdr = VsockPacketHeader::new();
         hdr.set_src_cid(guest_cid)
@@ -1285,13 +1311,21 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let poller =
-            VsockPoller::new(guest_cid, vq, log, IdHashMap::new()).unwrap();
+        let start_barrier = Arc::new(Barrier::new(2));
+        let poller = VsockPoller::new(
+            log,
+            start_barrier.clone(),
+            guest_cid,
+            vq,
+            IdHashMap::new(),
+        )
+        .unwrap();
 
         harness.add_rx_writable(256);
 
         let notify = poller.notify_handle();
         let handle = poller.run();
+        start_barrier.wait();
 
         let mut hdr = VsockPacketHeader::new();
         hdr.set_src_cid(guest_cid)
@@ -1333,7 +1367,15 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let poller = VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+        let start_barrier = Arc::new(Barrier::new(2));
+        let poller = VsockPoller::new(
+            log,
+            start_barrier.clone(),
+            guest_cid,
+            vq,
+            backends,
+        )
+        .unwrap();
 
         for _ in 0..4 {
             harness.add_rx_writable(4096);
@@ -1341,6 +1383,7 @@ mod test {
 
         let notify = poller.notify_handle();
         let handle = poller.run();
+        start_barrier.wait();
 
         // Send REQUEST
         let mut req_hdr = VsockPacketHeader::new();
@@ -1406,7 +1449,15 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let poller = VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+        let start_barrier = Arc::new(Barrier::new(2));
+        let poller = VsockPoller::new(
+            log,
+            start_barrier.clone(),
+            guest_cid,
+            vq,
+            backends,
+        )
+        .unwrap();
 
         // Provide plenty of RX descriptors for RESPONSE + credit updates
         for _ in 0..16 {
@@ -1415,6 +1466,7 @@ mod test {
 
         let notify = poller.notify_handle();
         let handle = poller.run();
+        start_barrier.wait();
 
         // Establish connection
         let mut req_hdr = VsockPacketHeader::new();
@@ -1511,7 +1563,15 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let poller = VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+        let start_barrier = Arc::new(Barrier::new(2));
+        let poller = VsockPoller::new(
+            log,
+            start_barrier.clone(),
+            guest_cid,
+            vq,
+            backends,
+        )
+        .unwrap();
 
         for _ in 0..4 {
             harness.add_rx_writable(4096);
@@ -1519,6 +1579,7 @@ mod test {
 
         let notify = poller.notify_handle();
         let handle = poller.run();
+        start_barrier.wait();
 
         // Send REQUEST
         let mut req_hdr = VsockPacketHeader::new();
@@ -1588,7 +1649,15 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let poller = VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+        let start_barrier = Arc::new(Barrier::new(2));
+        let poller = VsockPoller::new(
+            log,
+            start_barrier.clone(),
+            guest_cid,
+            vq,
+            backends,
+        )
+        .unwrap();
 
         // Pre-populate RX queue with writable descriptors for RESPONSE + data
         for _ in 0..8 {
@@ -1597,6 +1666,7 @@ mod test {
 
         let notify = poller.notify_handle();
         let handle = poller.run();
+        start_barrier.wait();
 
         // Write REQUEST packet into TX queue
         let mut req_hdr = VsockPacketHeader::new();
@@ -1680,13 +1750,22 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let poller = VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+        let start_barrier = Arc::new(Barrier::new(2));
+        let poller = VsockPoller::new(
+            log,
+            start_barrier.clone(),
+            guest_cid,
+            vq,
+            backends,
+        )
+        .unwrap();
 
         // Provide only one RX descriptor, just enough for the RESPONSE.
         harness.add_rx_writable(4096);
 
         let notify = poller.notify_handle();
         let handle = poller.run();
+        start_barrier.wait();
 
         // Send REQUEST
         let mut req_hdr = VsockPacketHeader::new();
@@ -1756,7 +1835,15 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let poller = VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+        let start_barrier = Arc::new(Barrier::new(2));
+        let poller = VsockPoller::new(
+            log,
+            start_barrier.clone(),
+            guest_cid,
+            vq,
+            backends,
+        )
+        .unwrap();
 
         // Provide initial RX descriptors for RESPONSE + credit updates
         for _ in 0..8 {
@@ -1765,6 +1852,7 @@ mod test {
 
         let notify = poller.notify_handle();
         let handle = poller.run();
+        start_barrier.wait();
 
         // Establish connection
         // Use a large buf_alloc so host->guest credit doesn't run out
@@ -1964,7 +2052,15 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let poller = VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+        let start_barrier = Arc::new(Barrier::new(2));
+        let poller = VsockPoller::new(
+            log,
+            start_barrier.clone(),
+            guest_cid,
+            vq,
+            backends,
+        )
+        .unwrap();
 
         // Provide RX descriptors for RESPONSE + SHUTDOWN
         for _ in 0..4 {
@@ -1973,6 +2069,7 @@ mod test {
 
         let notify = poller.notify_handle();
         let handle = poller.run();
+        start_barrier.wait();
 
         // Establish connection
         let mut req_hdr = VsockPacketHeader::new();
@@ -2045,7 +2142,15 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let poller = VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+        let start_barrier = Arc::new(Barrier::new(2));
+        let poller = VsockPoller::new(
+            log,
+            start_barrier.clone(),
+            guest_cid,
+            vq,
+            backends,
+        )
+        .unwrap();
 
         // Pre-populate RX queue with writable descriptors for RESPONSE + data
         for _ in 0..8 {
@@ -2054,6 +2159,7 @@ mod test {
 
         let notify = poller.notify_handle();
         let handle = poller.run();
+        start_barrier.wait();
 
         // Write REQUEST packet into TX queue
         let mut req_hdr = VsockPacketHeader::new();
@@ -2153,7 +2259,15 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let poller = VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+        let start_barrier = Arc::new(Barrier::new(2));
+        let poller = VsockPoller::new(
+            log,
+            start_barrier.clone(),
+            guest_cid,
+            vq,
+            backends,
+        )
+        .unwrap();
 
         for _ in 0..4 {
             harness.add_rx_writable(4096);
@@ -2161,6 +2275,7 @@ mod test {
 
         let notify = poller.notify_handle();
         let handle = poller.run();
+        start_barrier.wait();
 
         // Establish a connection
         let mut req_hdr = VsockPacketHeader::new();
@@ -2219,7 +2334,15 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let poller = VsockPoller::new(guest_cid, vq, log, backends).unwrap();
+        let start_barrier = Arc::new(Barrier::new(2));
+        let poller = VsockPoller::new(
+            log,
+            start_barrier.clone(),
+            guest_cid,
+            vq,
+            backends,
+        )
+        .unwrap();
 
         for _ in 0..8 {
             harness.add_rx_writable(4096);
@@ -2227,6 +2350,7 @@ mod test {
 
         let notify = poller.notify_handle();
         let handle = poller.run();
+        start_barrier.wait();
 
         // Establish a connection
         let mut req_hdr = VsockPacketHeader::new();
@@ -2279,11 +2403,19 @@ mod test {
         let harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let poller =
-            VsockPoller::new(guest_cid, vq, log, IdHashMap::new()).unwrap();
+        let start_barrier = Arc::new(Barrier::new(2));
+        let poller = VsockPoller::new(
+            log,
+            start_barrier.clone(),
+            guest_cid,
+            vq,
+            IdHashMap::new(),
+        )
+        .unwrap();
 
         let notify = poller.notify_handle();
         let handle = poller.run();
+        start_barrier.wait();
 
         notify.pause().unwrap();
         notify.halt();
