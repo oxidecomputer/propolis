@@ -180,7 +180,7 @@ impl CompletionQueueEntry {
 /// A Dataset Management Range Definition as represented in memory.
 ///
 /// See NVMe 1.0e Section 6.6 Figure 114: Dataset Management – Range Definition
-#[derive(Debug, Default, Copy, Clone, FromBytes)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, FromBytes)]
 #[repr(C, packed(1))]
 pub struct DatasetManagementRangeDefinition {
     /// The context attributes specified for each range provides information about how the range
@@ -1230,5 +1230,6 @@ mod test {
         assert_eq!(size_of::<IdentifyController>(), 4096);
         assert_eq!(size_of::<LbaFormat>(), 4);
         assert_eq!(size_of::<IdentifyNamespace>(), 4096);
+        assert_eq!(size_of::<DatasetManagementRangeDefinition>(), 16);
     }
 }

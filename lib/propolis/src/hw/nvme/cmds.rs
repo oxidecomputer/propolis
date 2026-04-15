@@ -1206,6 +1206,8 @@ impl From<block::Result> for Completion {
 mod test {
     use crate::accessors::MemAccessor;
     use crate::common::*;
+    use crate::hw::nvme::bits::DatasetManagementRangeDefinition;
+    use crate::hw::nvme::cmds::DatasetManagementCmd;
     use crate::vmm::mem::PhysMap;
 
     use super::PrpIter;
@@ -1409,5 +1411,128 @@ mod test {
             bufaddr += pages(1);
         }
         assert_eq!(iter.next(), None);
+    }
+
+    static RANGES: [DatasetManagementRangeDefinition; 3] = [
+        DatasetManagementRangeDefinition {
+            context_attributes: 0,
+            starting_lba: 0x1000,
+            number_logical_blocks: 0x10,
+        },
+        DatasetManagementRangeDefinition {
+            context_attributes: 0,
+            starting_lba: 0x2000,
+            number_logical_blocks: 0x20,
+        },
+        DatasetManagementRangeDefinition {
+            context_attributes: 0,
+            starting_lba: 0x3000,
+            number_logical_blocks: 0x30,
+        },
+    ];
+
+    #[test]
+    fn test_dsmgmt_ranges() {
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
+
+        let listaddr = 0x80000u64;
+        memctx.write_many(GuestAddr(listaddr), &RANGES);
+
+        let cmd = DatasetManagementCmd {
+            prp1: listaddr,
+            prp2: 0,
+            nr: RANGES.len() as u16,
+            ad: true,
+            _idw: false,
+            _idr: false,
+        };
+
+        let mut iter = cmd.ranges(&memctx);
+        for expected in &RANGES {
+            assert_eq!(
+                iter.next(),
+                Some(Ok(*expected)),
+                "bad range definition"
+            );
+        }
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_dsmgmt_ranges_dual() {
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
+
+        let listaddr1 = 0x80FF0u64;
+        let listaddr2 = 0x90000u64;
+        memctx.write_many(GuestAddr(listaddr1), &RANGES[0..1]);
+        memctx.write_many(GuestAddr(listaddr2), &RANGES[1..]);
+
+        let cmd = DatasetManagementCmd {
+            prp1: listaddr1,
+            prp2: listaddr2,
+            nr: RANGES.len() as u16,
+            ad: true,
+            _idw: false,
+            _idr: false,
+        };
+
+        let mut iter = cmd.ranges(&memctx);
+        for expected in &RANGES {
+            assert_eq!(
+                iter.next(),
+                Some(Ok(*expected)),
+                "bad range definition"
+            );
+        }
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_dsmgmt_ranges_bad_dual() {
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
+
+        let listaddr1 = 0x80FF8u64;
+        let listaddr2 = 0x90000u64;
+        memctx.write_many(GuestAddr(listaddr1), &RANGES[0..1]);
+        memctx.write_many(GuestAddr(listaddr2), &RANGES[1..]);
+
+        let cmd = DatasetManagementCmd {
+            prp1: listaddr1,
+            prp2: listaddr2,
+            nr: RANGES.len() as u16,
+            ad: true,
+            _idw: false,
+            _idr: false,
+        };
+
+        let mut iter = cmd.ranges(&memctx);
+        match iter.next() {
+            Some(Err(_)) => {}
+            other => panic!("expected alignment error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_dsmgmt_ranges_bad_address() {
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
+
+        let cmd = DatasetManagementCmd {
+            prp1: VM_SIZE as u64, // out of bounds
+            prp2: 0,
+            nr: 1,
+            ad: true,
+            _idw: false,
+            _idr: false,
+        };
+
+        let mut iter = cmd.ranges(&memctx);
+        match iter.next() {
+            Some(Err(_)) => {}
+            other => panic!("expected alignment error, got {other:?}"),
+        }
     }
 }
