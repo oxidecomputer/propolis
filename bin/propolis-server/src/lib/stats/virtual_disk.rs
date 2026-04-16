@@ -87,7 +87,7 @@ impl VirtualDiskStats {
     fn on_read_completion(
         &mut self,
         result: block::Result,
-        len: usize,
+        len: u64,
         duration: Duration,
     ) {
         let index = match result {
@@ -95,9 +95,9 @@ impl VirtualDiskStats {
                 let _ = self.io_latency[READ_INDEX]
                     .datum
                     .sample(duration.as_nanos() as u64);
-                let _ = self.io_size[READ_INDEX].datum.sample(len as u64);
+                let _ = self.io_size[READ_INDEX].datum.sample(len);
                 self.reads.datum += 1;
-                self.bytes_read.datum += len as u64;
+                self.bytes_read.datum += len;
                 return;
             }
             block::Result::Failure => FAILURE_INDEX,
@@ -110,7 +110,7 @@ impl VirtualDiskStats {
     fn on_write_completion(
         &mut self,
         result: block::Result,
-        len: usize,
+        len: u64,
         duration: Duration,
     ) {
         let index = match result {
@@ -118,9 +118,9 @@ impl VirtualDiskStats {
                 let _ = self.io_latency[WRITE_INDEX]
                     .datum
                     .sample(duration.as_nanos() as u64);
-                let _ = self.io_size[WRITE_INDEX].datum.sample(len as u64);
+                let _ = self.io_size[WRITE_INDEX].datum.sample(len);
                 self.writes.datum += 1;
-                self.bytes_written.datum += len as u64;
+                self.bytes_written.datum += len;
                 return;
             }
             block::Result::Failure => FAILURE_INDEX,

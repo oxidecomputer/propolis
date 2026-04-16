@@ -66,7 +66,7 @@ impl SharedState {
                 })?;
 
                 let bytes = self.bytes.lock().unwrap();
-                process_read_request(&bytes, off as u64, len, &maps)?;
+                process_read_request(&bytes, off, len, &maps)?;
             }
             block::Operation::Write(off, len) => {
                 if self.info.read_only {
@@ -81,7 +81,7 @@ impl SharedState {
                 })?;
 
                 let mut bytes = self.bytes.lock().unwrap();
-                process_write_request(&mut bytes, off as u64, len, &maps)?;
+                process_write_request(&mut bytes, off, len, &maps)?;
             }
             block::Operation::Flush => {
                 // nothing to do
@@ -182,11 +182,11 @@ impl block::Backend for InMemoryBackend {
 fn process_read_request(
     bytes: &[u8],
     offset: u64,
-    len: usize,
+    len: u64,
     mappings: &[SubMapping],
 ) -> Result<()> {
     let start = offset as usize;
-    let end = offset as usize + len;
+    let end = offset as usize + len as usize;
 
     if start >= bytes.len() || end > bytes.len() {
         return Err(std::io::Error::new(
@@ -215,11 +215,11 @@ fn process_read_request(
 fn process_write_request(
     bytes: &mut [u8],
     offset: u64,
-    len: usize,
+    len: u64,
     mappings: &[SubMapping],
 ) -> Result<()> {
     let start = offset as usize;
-    let end = offset as usize + len;
+    let end = offset as usize + len as usize;
 
     if start >= bytes.len() || end > bytes.len() {
         return Err(std::io::Error::new(
