@@ -19,6 +19,7 @@ use crate::vmm::MemCtx;
 use crate::vsock::packet::VsockPacket;
 use crate::vsock::packet::VsockPacketError;
 use crate::vsock::packet::VsockPacketHeader;
+use crate::vsock::probes;
 use crate::vsock::proxy::VsockPortMapping;
 use crate::vsock::GuestCid;
 use crate::vsock::VsockBackend;
@@ -84,6 +85,7 @@ impl RxPermit<'_> {
             });
         }
 
+        probes::vsock_pkt_rx!(|| header);
         queue.push_used(&mut chain, &mem);
     }
 }
@@ -108,11 +110,21 @@ impl VsockVq {
     /// Returns `Some(RxPermit)` if a descriptor chain is available,
     /// `None` if the rx queue is full.
     pub fn try_rx_permit(&mut self) -> Option<RxPermit<'_>> {
+        let vq = self.queues.get(VSOCK_RX_QUEUE as usize)?;
+        // See propolis#1110 & propolis#1115
+        // If propolis-server has started the vsock device but a different
+        // device has encountered an error at startup there's a good chance
+        // we attempt to access guest memory and panic. A way of preventing
+        // us from doing that is to first check if the virtqueue is alive. A
+        // virtqueue only becomes alive once a guest vCPU has ran.
+        if !vq.is_alive() {
+            return None;
+        }
+
         // Reuse cached chain or pop a new one
         if self.rx_chain.is_none() {
             // TODO: cannot access memory?
             let mem = self.acc_mem.access().expect("mem access for write");
-            let vq = self.queues.get(VSOCK_RX_QUEUE as usize)?;
             let mut chain = Chain::with_capacity(10);
             if let Some(_) = vq.pop_avail(&mut chain, &mem) {
                 self.rx_chain = Some(chain);
@@ -148,6 +160,15 @@ impl VsockVq {
         vq.push_used(&mut chain, &mem);
 
         Some(packet)
+    }
+
+    /// Drop any cached descriptor chain.
+    ///
+    /// This MUST be called when reseting the virtio-socket device so
+    /// that we don't use stale `GuestAddr`s across device resets.
+    #[cfg(target_os = "illumos")]
+    pub(crate) fn clear_rx_chain(&mut self) {
+        self.rx_chain = None;
     }
 }
 
@@ -190,7 +211,7 @@ impl PciVirtioSock {
         );
         let port_mappings = port_mappings.into_iter().collect();
 
-        let backend = VsockProxy::new(cid, vvq, log, port_mappings);
+        let backend = VsockProxy::new(log, cid, vvq, port_mappings);
 
         Arc::new(Self { cid, backend, virtio_state, pci_state })
     }
@@ -251,8 +272,23 @@ impl Lifecycle for PciVirtioSock {
     fn type_name(&self) -> &'static str {
         "pci-virtio-socket"
     }
+    fn start(&self) -> Result<(), anyhow::Error> {
+        self.backend.start();
+        Ok(())
+    }
+    fn pause(&self) {
+        let _ = self.backend.pause();
+        self.backend.wait_stopped();
+    }
     fn reset(&self) {
         self.virtio_state.reset(self);
+        self.backend.reset();
+    }
+    fn resume(&self) {
+        self.backend.resume();
+    }
+    fn halt(&self) {
+        self.backend.halt();
     }
     fn migrate(&'_ self) -> Migrator<'_> {
         // TODO (MTZ):

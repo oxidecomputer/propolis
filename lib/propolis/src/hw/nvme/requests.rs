@@ -73,7 +73,7 @@ impl block::DeviceQueue for NvmeBlockQueue {
     /// the underlying block backend
     fn next_req(&self) -> Option<(Request, Self::Token, Option<Instant>)> {
         let sq = &self.sq;
-        let mem = self.acc_mem.access_borrow()?;
+        let mem = self.acc_mem.access_locked()?;
         let mem = mem.view();
         let params = self.sq.params();
 

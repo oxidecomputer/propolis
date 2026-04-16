@@ -4,7 +4,6 @@
 
 use std::convert::TryInto;
 use std::fs::File;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
@@ -25,6 +24,9 @@ use crucible_client_types::VolumeConstructionRequest;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use oximeter_instruments::kstat::KstatSampler;
+use propolis::attestation;
+use propolis::attestation::server::AttestationServerConfig;
+use propolis::attestation::server::AttestationSock;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::{Lifecycle, GB, MB, PAGE_SIZE};
@@ -96,6 +98,12 @@ pub enum MachineInitError {
     #[error("boot order entry {0:?} does not refer to an attached disk")]
     BootOrderEntryWithoutDevice(SpecKey),
 
+    #[error(
+        "disk device {device_id:?} refers to a \
+         non-existent block backend {backend_id:?}"
+    )]
+    DeviceWithoutBlockBackend { device_id: SpecKey, backend_id: SpecKey },
+
     #[error("boot entry {0:?} refers to a device on non-zero PCI bus {1}")]
     BootDeviceOnDownstreamPciBus(SpecKey, u8),
 
@@ -104,6 +112,9 @@ pub enum MachineInitError {
 
     #[error("failed to specialize CPUID for vcpu {0}")]
     CpuidSpecializationFailed(i32, #[source] propolis::cpuid::SpecializeError),
+
+    #[error("failed to start attestation server")]
+    AttestationServer(#[source] std::io::Error),
 
     #[cfg(feature = "falcon")]
     #[error("softnpu p9 device missing")]
@@ -478,31 +489,25 @@ impl MachineInitializer<'_> {
         Ok(())
     }
 
-    pub fn initialize_vsock(
+    pub async fn initialize_vsock(
         &mut self,
         chipset: &RegisteredChipset,
-    ) -> Result<(), MachineInitError> {
+        attest_cfg: Option<AttestationServerConfig>,
+    ) -> Result<Option<AttestationSock>, MachineInitError> {
         use propolis::vsock::proxy::VsockPortMapping;
-
-        // OANA Port 605 - VM Attestation RFD 605
-        const ATTESTATION_PORT: u16 = 605;
-        const ATTESTATION_ADDR: SocketAddr = SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-            ATTESTATION_PORT,
-        );
 
         if let Some(vsock) = &self.spec.vsock {
             let bdf: pci::Bdf = vsock.spec.pci_path.into();
 
             let mappings = vec![VsockPortMapping::new(
-                ATTESTATION_PORT.into(),
-                ATTESTATION_ADDR,
+                attestation::ATTESTATION_PORT.into(),
+                attestation::ATTESTATION_ADDR,
             )];
 
             let guest_cid = GuestCid::try_from(vsock.spec.guest_cid)
-                .context("guest cid")?;
+                .context("could not parse guest cid")?;
             // While the spec does not recommend how large the virtio descriptor
-            // table should be we sized this appropriately in testing so
+            // table should be, we sized this appropriately in testing, so
             // that the guest is able to move vsock packets at a reasonable
             // throughput without the need to be much larger.
             let num_queues = 256;
@@ -516,9 +521,23 @@ impl MachineInitializer<'_> {
 
             self.devices.insert(vsock.id.clone(), device.clone());
             chipset.pci_attach(bdf, device);
+
+            // Spawn attestation server that will go over the vsock device
+            if let Some(cfg) = attest_cfg {
+                let attest = AttestationSock::new(
+                    self.log.new(slog::o!("component" => "attestation-server")),
+                    cfg.sled_agent_addr,
+                )
+                .await
+                .map_err(MachineInitError::AttestationServer)?;
+                return Ok(Some(attest));
+            }
+        } else {
+            info!(self.log, "no vsock device in instance spec");
+            return Ok(None);
         }
 
-        Ok(())
+        Ok(None)
     }
 
     async fn create_storage_backend_from_spec(
@@ -670,6 +689,99 @@ impl MachineInitializer<'_> {
                 Ok(StorageBackendInstance { be, crucible: None })
             }
         }
+    }
+
+    /// Collect the necessary information out of the VM under construction into
+    /// the provided `AttestationSocketInit`. This is expected to populate
+    /// `attest_init` with information so the caller can spawn off
+    /// `AttestationSockInit::run`.
+    pub fn prepare_rot_initializer(
+        &self,
+        vm_rot: &mut AttestationSock,
+    ) -> Result<(), MachineInitError> {
+        let uuid = self.properties.id;
+
+        // The first boot entry is a key into `self.spec.disks`, which is how
+        // we'll get to a Crucible volume backing this boot option.
+        let boot_disk_entry =
+            self.spec.boot_settings.as_ref().and_then(|settings| {
+                if settings.order.len() >= 2 {
+                    // In a rack we only configure propolis-server with zero or
+                    // one boot disks.  It's possible to provide a fuller list,
+                    // and in the future the product may actually expose such a
+                    // capability. At that time, we'll need to have a reckoning
+                    // for what "boot disk measurement" from the RoT actually
+                    // means; it probably "should" be "the measurement of the
+                    // disk that EDK2 decided to boot into", but that
+                    // communication to and from the guest is a little more
+                    // complicated than we want or need to build out today.
+                    //
+                    // Since as the system exists we either have no specific
+                    // boot disk (and don't know where the guest is expected to
+                    // end up), or one boot disk (and can determine which disk
+                    // to collect a measurement of before even running guest
+                    // firmware), we encode this expectation up front. If the
+                    // product has changed such that this assert is reached,
+                    // "that's exciting!" and "sorry for crashing your
+                    // Propolis".
+                    panic!(
+                        "Unsupported VM RoT configuration: \
+                            more than one boot disk"
+                    );
+                }
+
+                settings.order.first()
+            });
+
+        let crucible_volume = if let Some(entry) = boot_disk_entry {
+            let disk_dev =
+                self.spec.disks.get(&entry.device_id).ok_or_else(|| {
+                    MachineInitError::BootOrderEntryWithoutDevice(
+                        entry.device_id.clone(),
+                    )
+                })?;
+
+            let backend_id = match &disk_dev.device_spec {
+                spec::StorageDevice::Virtio(disk) => &disk.backend_id,
+                spec::StorageDevice::Nvme(disk) => &disk.backend_id,
+            };
+
+            let Some(block_backend) = self.block_backends.get(backend_id)
+            else {
+                return Err(MachineInitError::DeviceWithoutBlockBackend {
+                    device_id: entry.device_id.to_owned(),
+                    backend_id: backend_id.to_owned(),
+                });
+            };
+
+            if let Some(backend) =
+                block_backend.as_any().downcast_ref::<block::CrucibleBackend>()
+            {
+                if backend.is_read_only() {
+                    Some(backend.clone_volume())
+                } else {
+                    // Disk must be read-only to be used for attestation.
+                    slog::info!(
+                        self.log,
+                        "boot disk is not read-only (and will not be used for attestations)",
+                    );
+                    None
+                }
+            } else {
+                // Probably fine, just not handled right now.
+                slog::warn!(
+                    self.log,
+                    "VM RoT ignoring boot disk: not a Crucible volume"
+                );
+                None
+            }
+        } else {
+            None
+        };
+
+        vm_rot.prepare_instance_conf(uuid, crucible_volume);
+
+        Ok(())
     }
 
     /// Initializes the storage devices and backends listed in this

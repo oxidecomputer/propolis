@@ -2,14 +2,51 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Hierarchical access control for emulated resources
+//! Hierarchical access control for emulated resources.
 //!
-//! Device emulation logic requires access to resources which may be
-//! subsequently moderated by intervening parts of the emulation.
+//! The structures in this module are designed to support some of our current
+//! needs, but also aspirationally for anticipated needs.
+//!
+//! First and foremost, device emulation logic requires access to resources
+//! which may be subsequently moderated by intervening parts of the emulation.
+//! Acquisition of the underlying resource is fallible for this reason.
 //!
 //! For example: A PCI device performs DMA to guest memory.  If bus-mastering is
 //! disabled on the device, or any parent bridge in its bus hierarchy, then its
 //! contained emulation should fail any DMA accesses.
+//!
+//! This also motivates the tree-like structure of the accessor.  Keeping the
+//! PCI bus mastering example, an individual endpoint can be allowed to perform
+//! bus mastering if Bus Master Enable is set.  Additionally, a PCI-PCI bridge
+//! has a Bus Master Enable bit with a similar semantic for all devices behind
+//! that bridge.
+//!
+//! There is not yet any support for bus mastering bits, but it's expected this
+//! should be straightforward on top of `Node` or `NodeEntry`.
+//!
+//! Secondly, and more relevant to how Accessor is used in Propolis today, an
+//! accessor tree provides a mechanism to provide or remove a reference to the
+//! protected resource from an entire device or machine. While the accessor tree
+//! is at heart a fancy `Arc<Mutex<Arc<T>>`, an `Arc<T>` is never exposed in the
+//! accessor's API; only a wrapper that derefs as `T`.
+//!
+//! Accessor structures being the sole access mechanism to a guarded resource
+//! ensures that the resource can be added or removed *almost*[1] arbitrarily.
+//! [`MsiAccessor`] is an example of double-duty here; on one hand, a PCI bridge
+//! can have MSI enabled or disabled, as well as the functions behind that
+//! bridge. On the other hand, the MSI accessor is mostly just an `Arc<VmmHdl>`,
+//! and it would be unfortunate to have stray `Arc<VmmHdl>` littered across
+//! device emulation[2].
+//!
+//! 1: A user of Propolis should only change the guarded resource for devices that
+//! are in the initial (pre-run) state, paused, or halted.  Removing a guarded
+//! resource during arbitrary device operation could, at worst, look to a device
+//! like it was the bus master while also losing its ownership of the bus!
+//! There is no expectation of correct operation in such a bogus state.
+//!
+//! 2: `Arc<VmmHdl>` has since found its way into device emulation in different
+//! ways, though the ownership model is simple enough there is little risk of
+//! cyclic references keeping a `VmmHdl` alive overly-long.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::marker::PhantomData;
@@ -638,12 +675,25 @@ impl<T: AccessedResource> Accessor<T> {
     /// Will return [None] if any ancestor node disables access, or if the node
     /// is not attached to a hierarchy containing a valid resource.
     ///
-    /// Unlike [`Accesor::access()`], this returns a guard on the node's Mutex.
-    /// This will block other calls to `access()` or `access_borrow()`, as well
-    /// as attempts to replace or modify the tree's guarded resource. Prefer
-    /// frequently refreshing borrows with calls to `access_borrow()` to holding
-    /// a `LockedView` for substantial durations.
-    pub fn access_borrow(&self) -> Option<LockedView<'_, T>> {
+    /// Unlike [`Accesor::access()`], this returns a wrapped MutexGuard for this
+    /// accessor node; callers must carefully consider lock ordering when
+    /// holding this guard across other operations.  As with any other mutex,
+    /// perfer holding this guard for as small a window as permitted.
+    ///
+    /// This function exists solely to support very hot code accessing the same
+    /// resource across many processors.  When the underlying resource is an
+    /// `Arc`, `access()` implies an `Arc::clone`, which would contentously
+    /// modify the reference count to disastrous effect. `access_locked()` only
+    /// involves this (hopefully-uncontended!) node, at the cost of a more
+    /// error-prone API.  If `lock incq/lock decq` aren't in your profile, this
+    /// probably isn't helpful!
+    ///
+    /// Some examples of the added consideration with this function: holding
+    /// this guard will block other calls to this node's `access()` or
+    /// `access_locked()`, and *may* block attempts to `access()` or
+    /// `access_locked()` a child of this node. Holding this guard will block
+    /// removal of the underlying resource, potentially blocking VM teardown.
+    pub fn access_locked(&self) -> Option<LockedView<'_, T>> {
         let guard = self.0.guard_borrow()?;
         if guard.res_leaf.is_some() {
             Some(LockedView { guard })

@@ -8,6 +8,8 @@ use std::num::NonZeroUsize;
 use std::num::Wrapping;
 use std::os::fd::AsRawFd;
 use std::os::fd::RawFd;
+use std::sync::Arc;
+use std::sync::Barrier;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -40,7 +42,8 @@ pub enum ConnState {
     /// We have sent VIRTIO_VSOCK_OP_RESPONSE - connection can send/recv data
     Established,
     /// The connection is in the process of closing - read and write halves are
-    /// tracked seperately
+    /// tracked seperately.
+    /// NB: This is tracking what the Guest has told us about itself.
     Closing {
         read: bool,
         write: bool,
@@ -321,29 +324,69 @@ impl IdHashItem for VsockPortMapping {
 /// virtio-socket backend that proxies between a guest and a host UDS.
 pub struct VsockProxy {
     log: Logger,
+    start_barrier: Arc<Barrier>,
     poller: VsockPollerNotify,
     _evloop_handle: JoinHandle<()>,
 }
 
 impl VsockProxy {
     pub fn new(
+        log: Logger,
         cid: GuestCid,
         queues: VsockVq,
-        log: Logger,
         port_mappings: IdHashMap<VsockPortMapping>,
     ) -> Self {
-        let evloop =
-            VsockPoller::new(cid, queues, log.clone(), port_mappings).unwrap();
+        // We use a `Barrier` to gate when the spawned `VsockPoller` thread is
+        // allowed to transition to the running state and is allowed to start
+        // using guest memory. Forward progress will be made when the
+        // virtio-socket device calls `Lifecycle::start`.
+        let start_barrier = Arc::new(Barrier::new(2));
+        let evloop = VsockPoller::new(
+            log.clone(),
+            start_barrier.clone(),
+            cid,
+            queues,
+            port_mappings,
+        )
+        .unwrap();
         let poller = evloop.notify_handle();
         let jh = evloop.run();
 
-        Self { log, poller, _evloop_handle: jh }
+        Self { log, start_barrier, poller, _evloop_handle: jh }
     }
 
     /// Notification from the vsock device that one of the queues has had an
     /// event.
     fn queue_notify(&self, vq_id: u16) -> std::io::Result<()> {
         self.poller.queue_notify(vq_id)
+    }
+
+    pub fn start(&self) {
+        // TODO this *should* only be called once given the guarantees propolis
+        // gives us. We might want to start using the `Indicator` type in the
+        // future.
+        self.start_barrier.wait();
+    }
+
+    pub fn pause(&self) -> std::io::Result<()> {
+        self.poller.pause()
+    }
+
+    pub fn wait_stopped(&self) {
+        self.poller.wait_stopped();
+    }
+
+    pub fn resume(&self) {
+        self.poller.resume();
+    }
+
+    pub fn reset(&self) {
+        self.poller.reset();
+    }
+
+    pub fn halt(&self) {
+        self.poller.halt();
+        self.poller.wait_stopped();
     }
 }
 

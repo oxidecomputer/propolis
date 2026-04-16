@@ -171,6 +171,8 @@ impl<T> ASpace<T> {
     }
 }
 
+// Compute the end of the inclusive range beginning at `start` and covering
+// `len` address space.
 fn safe_end(start: usize, len: usize) -> Option<usize> {
     if len == 0 {
         None
@@ -179,6 +181,25 @@ fn safe_end(start: usize, len: usize) -> Option<usize> {
     } else {
         (start - 1).checked_add(len)
     }
+}
+
+#[test]
+fn safe_end_bounds() {
+    // An inclusive region of size zero is nonsense.
+    assert_eq!(safe_end(0, 0), None);
+    assert_eq!(safe_end(1, 0), None);
+
+    // An inclusive region of size one can exist anywhere.
+    assert_eq!(safe_end(0, 1), Some(0));
+    assert_eq!(safe_end(16, 1), Some(16));
+    assert_eq!(safe_end(usize::MAX, 1), Some(usize::MAX));
+
+    // Given `[0, usize::MAX]` as possible addresses, the size of that set is
+    // actually `usize::MAX + 1`. This means:
+    // * there is no `len` that covers the entire possible span
+    // * start=0, len=usize::MAX is a span that ends at usize::MAX-1
+    assert_eq!(safe_end(0, usize::MAX), Some(usize::MAX - 1));
+    assert_eq!(safe_end(1, usize::MAX), Some(usize::MAX));
 }
 
 // Flatten the K/V nested tuple
