@@ -163,10 +163,8 @@ impl block::DeviceQueue for NvmeBlockQueue {
                         cid,
                         cmd.nr,
                     ));
-                    let Ok(ranges): Result<Vec<_>, _> = cmd
-                        .ranges(&mem)
-                        .map_ok(|r| r.offset_len(params.lba_data_size))
-                        .try_collect()
+                    let Ok(ranges): Result<Vec<_>, _> =
+                        cmd.ranges(&mem).try_collect()
                     else {
                         // If we couldn't read the ranges, fail the command
                         permit.complete(
@@ -175,6 +173,19 @@ impl block::DeviceQueue for NvmeBlockQueue {
                         );
                         continue;
                     };
+                    let Ok(ranges) = ranges
+                        .into_iter()
+                        .map(|r| r.offset_len(params.lba_data_size))
+                        .try_collect()
+                    else {
+                        // If the ranges were invalid (e.g. arithmetic overflow), fail the command
+                        permit.complete(
+                            Completion::generic_err(bits::STS_INVAL_FIELD)
+                                .dnr(),
+                        );
+                        continue;
+                    };
+
                     let req = Request::new_discard(ranges);
                     return Some((req, permit, None));
                 }

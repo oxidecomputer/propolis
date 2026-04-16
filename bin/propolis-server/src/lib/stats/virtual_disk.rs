@@ -78,8 +78,8 @@ impl VirtualDiskStats {
             }
             Operation::Flush => self.on_flush_completion(result, duration),
             Operation::Discard => {
-                // Discard is only partially wired up in backends we care about, and it's not
-                // clear what stats (if any) to report yet.
+                // Discard is now wired up for local disks. We need to add support for it to the
+                // schema in Omicron before we can report stats for it. For now, just ignore it.
             }
         }
     }

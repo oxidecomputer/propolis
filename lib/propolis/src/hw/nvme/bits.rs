@@ -201,11 +201,23 @@ impl DatasetManagementRangeDefinition {
         Self { context_attributes, number_logical_blocks, starting_lba }
     }
 
-    pub fn offset_len(&self, lba_data_size: u64) -> (ByteOffset, ByteLen) {
-        (
-            (self.starting_lba * lba_data_size) as ByteOffset,
-            (self.number_logical_blocks as u64 * lba_data_size) as ByteLen,
-        )
+    pub fn offset_len(
+        &self,
+        lba_data_size: u64,
+    ) -> Result<(ByteOffset, ByteLen), &'static str> {
+        // Check for overflow in the byte offset calculation
+        let byte_offset = self.starting_lba.checked_mul(lba_data_size).ok_or(
+            "Starting LBA and LBA data size multiplication overflowed",
+        )?;
+        // Check for overflow in the byte length calculation
+        let byte_len = (u64::from(self.number_logical_blocks))
+                .checked_mul(lba_data_size)
+                .ok_or("Number of logical blocks and LBA data size multiplication overflowed")?;
+        // Check for overflow of offset + length
+        byte_offset
+            .checked_add(byte_len)
+            .ok_or("Byte offset and byte length addition overflowed")?;
+        Ok((byte_offset as ByteOffset, byte_len as ByteLen))
     }
 }
 

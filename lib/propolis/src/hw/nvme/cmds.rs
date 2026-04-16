@@ -858,6 +858,7 @@ impl DatasetManagementCmd {
     /// Returns an Iterator that yields [`GuestRegion`]'s which contain the array of LBA ranges.
     pub fn data<'a>(&self, mem: &'a MemCtx) -> PrpIter<'a> {
         PrpIter::new(
+            // given that self.nr is at most 256, the multiplication here cannot overflow a u64
             u64::from(self.nr)
                 * size_of::<DatasetManagementRangeDefinition>() as u64,
             self.prp1,

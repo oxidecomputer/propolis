@@ -116,6 +116,10 @@ impl SharedState {
             block::Operation::Discard => {
                 if let Some(mech) = self.discard_mech {
                     for &(off, len) in &req.ranges {
+                        // There might be some performance benefits to combining the ranges into
+                        // one DKIOCFREE call, but ZFS will only issue one range to the
+                        // underlying disk at a time, so we expect the benefit to be minimal in
+                        // practice.
                         dkioc::do_discard(
                             &self.fp, mech, off as u64, len as u64,
                         )
