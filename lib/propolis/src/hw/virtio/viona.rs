@@ -668,7 +668,10 @@ impl PciVirtioViona {
     fn poller_start(&self) {
         let mut inner = self.inner.lock().unwrap();
         let poller = inner.poller.as_mut().expect("poller should be spawned");
+        let wait_state = poller.state.clone();
         let _ = poller.sender.send(TargetState::Run);
+        drop(inner);
+        wait_state.wait_running();
     }
     fn poller_stop(&self, should_exit: bool) {
         let mut inner = self.inner.lock().unwrap();
@@ -689,7 +692,7 @@ impl PciVirtioViona {
     // Transition the emulation to a "running" state, either at initial start-up
     // or resumption from a "paused" state.
     fn run(&self) {
-        self.poller_start();
+        tokio::task::block_in_place(|| self.poller_start());
         if self.queues_restart().is_err() {
             self.virtio_state.set_needs_reset(self);
             self.notify_port_update(None);
@@ -1247,6 +1250,10 @@ impl PollerState {
         let guard = self.running.lock().unwrap();
         let _res = self.cv.wait_while(guard, |g| *g).unwrap();
     }
+    fn wait_running(&self) {
+        let guard = self.running.lock().unwrap();
+        let _res = self.cv.wait_while(guard, |g| !*g).unwrap();
+    }
     fn set_stopped(&self) {
         let mut guard = self.running.lock().unwrap();
         if *guard {
@@ -1256,7 +1263,10 @@ impl PollerState {
     }
     fn set_running(&self) {
         let mut guard = self.running.lock().unwrap();
-        *guard = true;
+        if !*guard {
+            *guard = true;
+            self.cv.notify_all();
+        }
     }
 }
 
@@ -1444,6 +1454,7 @@ mod test {
         VIRTIO_NET_F_STATUS,
     };
     use crate::hw::virtio::PciVirtioViona;
+    use crate::lifecycle::Lifecycle;
     use crate::migrate::{
         MigrateCtx, MigrateMulti, PayloadOffer, PayloadOffers, PayloadOutputs,
     };
@@ -1461,8 +1472,8 @@ mod test {
 
     impl Drop for TestCtx {
         fn drop(&mut self) {
-            crate::lifecycle::Lifecycle::pause(self.dev.as_ref());
-            crate::lifecycle::Lifecycle::halt(self.dev.as_ref());
+            Lifecycle::pause(self.dev.as_ref());
+            Lifecycle::halt(self.dev.as_ref());
         }
     }
 
@@ -1522,6 +1533,8 @@ mod test {
             let new_migrate = MigrateCtx { mem: &acc_mem };
             <PciVirtioViona>::import(&new_ctx.dev, &mut offers, &new_migrate)
                 .expect("can import PciVirtioViona");
+            Lifecycle::start(new_ctx.dev.as_ref())
+                .expect("can start viona device");
             new_ctx
         }
     }
@@ -2088,7 +2101,7 @@ mod test {
         // `Lifecycle::reset` is the kind of reset that occurs when a VM is
         // restarted. Do that now, as if the guest rebooted, triple faulted,
         // etc.
-        crate::lifecycle::Lifecycle::reset(test_ctx.dev.as_ref());
+        Lifecycle::reset(test_ctx.dev.as_ref());
 
         // After a reset, reinit the device as if through OVMF->bootloader->OS
         // again..
@@ -2114,7 +2127,7 @@ mod test {
         driver.modern_device_init(expected_feats);
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats);
-        crate::lifecycle::Lifecycle::reset(test_ctx.dev.as_ref());
+        Lifecycle::reset(test_ctx.dev.as_ref());
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats);
         let mut driver = test_ctx.create_driver();
@@ -2135,7 +2148,7 @@ mod test {
 
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
-        crate::lifecycle::Lifecycle::reset(test_ctx.dev.as_ref());
+        Lifecycle::reset(test_ctx.dev.as_ref());
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats);
         let mut driver = test_ctx.create_driver();
@@ -2154,7 +2167,16 @@ mod test {
 
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
-        crate::lifecycle::Lifecycle::reset(test_ctx.dev.as_ref());
+
+        let drv_state = driver.export();
+        let test_ctx = test_ctx.migrate();
+        let driver = VirtioNetDriver::import(
+            &test_ctx.machine,
+            &test_ctx.dev,
+            drv_state,
+        );
+        Lifecycle::reset(test_ctx.dev.as_ref());
+
         let drv_state = driver.export();
         let test_ctx = test_ctx.migrate();
         let mut driver = VirtioNetDriver::import(
@@ -2163,7 +2185,14 @@ mod test {
             drv_state,
         );
         driver.modern_device_init(expected_feats);
-        let mut driver = test_ctx.create_driver();
+
+        let drv_state = driver.export();
+        let test_ctx = test_ctx.migrate();
+        let mut driver = VirtioNetDriver::import(
+            &test_ctx.machine,
+            &test_ctx.dev,
+            drv_state,
+        );
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
 
         test_ctx
@@ -2208,7 +2237,7 @@ mod test {
     #[test]
     #[cfg_attr(not(target_os = "illumos"), ignore)]
     fn run_viona_tests() {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap();
@@ -2262,6 +2291,8 @@ mod test {
                 create_vnic(&underlying_nic, TEST_VNIC).await;
 
                 let test_ctx = create_test_ctx(test.name, TEST_VNIC);
+                Lifecycle::start(test_ctx.dev.as_ref())
+                    .expect("can start viona device");
                 let test_ctx = (test.test_fn)(test_ctx);
                 drop(test_ctx);
 
