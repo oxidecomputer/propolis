@@ -18,7 +18,7 @@ use dice_verifier::Attest;
 
 use vm_attest::VmInstanceConf;
 
-use crate::attestation::ATTESTATION_ADDR;
+use crate::attestation::{boot_digest, ATTESTATION_ADDR};
 
 #[derive(Copy, Clone)]
 pub struct AttestationServerConfig {
@@ -58,49 +58,36 @@ pub struct AttestationSockInit {
     log: slog::Logger,
     vm_conf_send: oneshot::Sender<VmInstanceConf>,
     uuid: uuid::Uuid,
-    volume_ref: Option<crucible::Volume>,
+    boot_backend_ref: Option<boot_digest::Backend>,
 }
 
 impl AttestationSockInit {
     /// Do any any remaining work of collecting VM RoT measurements in support
     /// of this VM's attestation server.
     pub async fn run(self) {
-        let AttestationSockInit { log, vm_conf_send, uuid, volume_ref } = self;
+        let AttestationSockInit { log, vm_conf_send, uuid, boot_backend_ref } =
+            self;
 
         let mut vm_conf = vm_attest::VmInstanceConf { uuid, boot_digest: None };
 
-        if let Some(volume) = volume_ref {
-            // TODO: load-bearing sleep: we have a Crucible volume, but we can
-            // be here and chomping at the bit to get a digest calculation
-            // started well before the volume has been activated; in
-            // `propolis-server` we need to wait for at least a subsequent
-            // instance start. Similar to the scrub task for Crucible disks,
-            // delay some number of seconds in the hopes that activation is done
-            // promptly.
-            //
-            // This should be replaced by awaiting for some kind of actual
-            // "activated" signal.
-            //
-            // see #1078
-            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-
-            let boot_digest =
-                match crate::attestation::boot_digest::boot_disk_digest(
-                    volume, &log,
-                )
-                .await
-                {
-                    Ok(digest) => digest,
-                    Err(e) => {
-                        // a panic here is unfortunate, but helps us debug for
-                        // now; if the digest calculation fails it may be some
-                        // retryable issue that a guest OS would survive. but
-                        // panicking here means we've stopped Propolis at the
-                        // actual error, rather than noticing the
-                        // `vm_conf_sender` having dropped elsewhere.
-                        panic!("failed to compute boot disk digest: {e:?}");
-                    }
-                };
+        if let Some(digest_backend) = boot_backend_ref {
+            let boot_digest = match crate::attestation::boot_digest::compute(
+                digest_backend,
+                &log,
+            )
+            .await
+            {
+                Ok(digest) => digest,
+                Err(e) => {
+                    // a panic here is unfortunate, but helps us debug for
+                    // now; if the digest calculation fails it may be some
+                    // retryable issue that a guest OS would survive. but
+                    // panicking here means we've stopped Propolis at the
+                    // actual error, rather than noticing the
+                    // `vm_conf_sender` having dropped elsewhere.
+                    panic!("failed to compute boot disk digest: {e:?}");
+                }
+            };
 
             vm_conf.boot_digest = Some(boot_digest);
         } else {
@@ -287,7 +274,7 @@ impl AttestationSock {
     pub fn prepare_instance_conf(
         &mut self,
         uuid: uuid::Uuid,
-        volume_ref: Option<crucible::Volume>,
+        boot_backend_ref: Option<boot_digest::Backend>,
     ) {
         let init_state = std::mem::replace(
             &mut self.init_state,
@@ -305,7 +292,7 @@ impl AttestationSock {
         let init = AttestationSockInit {
             log: self.log.clone(),
             uuid,
-            volume_ref,
+            boot_backend_ref,
             vm_conf_send,
         };
         let init_task = tokio::spawn(init.run());
