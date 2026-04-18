@@ -4,8 +4,13 @@
 #: variety = "basic"
 #: target = "lab-2.0-gimlet"
 #: rust_toolchain = false
+#: skip_clone = true
 #
-# Why a "lab-2.0-gimlet" target specifically?
+# That buildomat frontmatter is kinda absurd. This job is going to build
+# Propolis tests, so we need the repo and we need Rust. And `lab-2.0-gimlet`
+# specifically?
+#
+# # The Target
 #
 # Propolis has a handful of tests that would like to create and destroy real
 # VMMs. In particular the tests involving virtio-nic set up a viona device
@@ -13,23 +18,32 @@
 #
 # This means we have effectively the same constraints as the `phd-run` jobs to
 # be able to run *all* of the Propolis tests.
+#
+# # The Skips
+#
+# The Gimlet target doesn't have git out of the box, so auto-cloning is too
+# early and will fail. The Gimlet target also reports `uname -m` of `oxide`
+# rather than the `i86pc` that rustup knows to look for from illumos.
+#
+# So skip all of this, set this all up by hand, and on with the show!
 
 set -o errexit
 set -o pipefail
 set -o xtrace
 
+banner clone
+
+pkg install git
+
+git clone https://github.com/oxidecomupter/propolis /work/propolis
+
 banner prerequisites
 
-# Being on a `gimlet` means that `uname -m` returns "oxide" rather than
-# "i86pc". This in turn means that rustup thinks the CPU is unsupported and
-# bails from setting up toolchains.
-#
+# This is a kind of silly way to get the pinned toolchain version, but it keeps
+# you from having to edit the pinned version in two places. Sorry?
+TOOLCHAIN_VER="$(grep channel rust-toolchain.toml | sed 's/channel = "\(.*\)"/\1/')"
 # We know (or, *I* know) that an x86_64-unknown-illumos toolchain will work
-# just fine, so avoid all that and just get one in place by ourselves.
-#
-# Expediency has me requiring that you keep this toolchain version in sync with
-# the one in `rust-toolchain.toml` by hand though, sorry.
-TOOLCHAIN_VER="1.95.0"
+# just fine on our `$(uname -m) == "oxide"` system.
 RUST_TAR="rust-"$TOOLCHAIN_VER"-x86_64-unknown-illumos.tar.xz"
 
 wget https://static.rust-lang.org/dist/"$RUST_TAR"
@@ -42,6 +56,11 @@ bash ./rust-"$TOOLCHAIN_VER"-x86_64-unknown-illumos/install.sh
 # ... if everything went right, this should report `TOOLCHAIN_VER`!
 cargo --version
 rustc --version
+
+# With that all sorted, finally switch to the Propolis directory, install any
+# remaining Propolis-specific requirements, and finally do normal test stuff.
+
+cd /work/propolis
 
 ptime -m ./tools/install_builder_prerequisites.sh -y
 
