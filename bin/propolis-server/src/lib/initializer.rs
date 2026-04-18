@@ -733,7 +733,7 @@ impl MachineInitializer<'_> {
                 settings.order.first()
             });
 
-        let crucible_volume = if let Some(entry) = boot_disk_entry {
+        let boot_backend = if let Some(entry) = boot_disk_entry {
             let disk_dev =
                 self.spec.disks.get(&entry.device_id).ok_or_else(|| {
                     MachineInitError::BootOrderEntryWithoutDevice(
@@ -758,7 +758,9 @@ impl MachineInitializer<'_> {
                 block_backend.as_any().downcast_ref::<block::CrucibleBackend>()
             {
                 if backend.is_read_only() {
-                    Some(backend.clone_volume())
+                    Some(attestation::boot_digest::Backend::Crucible(
+                        backend.clone_volume(),
+                    ))
                 } else {
                     // Disk must be read-only to be used for attestation.
                     slog::info!(
@@ -779,7 +781,7 @@ impl MachineInitializer<'_> {
             None
         };
 
-        vm_rot.prepare_instance_conf(uuid, crucible_volume);
+        vm_rot.prepare_instance_conf(uuid, boot_backend);
 
         Ok(())
     }
