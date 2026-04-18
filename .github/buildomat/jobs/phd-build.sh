@@ -35,7 +35,8 @@ ptime -m ./tools/install_builder_prerequisites.sh -y
 # whole suite doesn't take much time so we'll just run all of them here..
 banner test-propolis
 
-TEST_FEATURES="omicron-build,failure-injection"
+# Get $TEST_FEATURES defined for below.
+. .github/buildomat/propolis-vars.sh
 
 # Set up an etherstub to use for VNICs in virtio-nic tests. We might want the
 # tests to run on a real link one day to do actual networking, but we don't need
