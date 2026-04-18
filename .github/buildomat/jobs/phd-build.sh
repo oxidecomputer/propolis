@@ -56,9 +56,11 @@ ptime -m cargo build --verbose -p propolis-server \
 # * we don't have `git` on a Gimlet target.
 # * or `pkg`.
 # * `uname -m` is "oxide", which confuses rustup too.
+# * some tests need a VMM, but this job is probably run inside a VM.
 #
-# Setting this up by hand is "possible", but it's much easier to just build the
-# test binaries here and squirrel them off to *run* on a Gimlet. So do that.
+# Doing the build on a bare gimlet host is "possible", but it's much easier to
+# just build the test binaries here and squirrel them off to *run* on a Gimlet.
+# So do that.
 ptime -m cargo build --tests --verbose --features "$TEST_FEATURES"
 
 # The PHD runner requires unwind-on-panic to catch certain test failures, so
