@@ -47,6 +47,7 @@ TEST_FEATURES="omicron-build,failure-injection"
 # though the `omicron-build` feature is enabled. This should be a relatively
 # small incremental step after building and running tests with the same
 # features, above.
+export PHD_BUILD="true"
 ptime -m cargo build --verbose -p propolis-server \
 	--features "$TEST_FEATURES"
 
