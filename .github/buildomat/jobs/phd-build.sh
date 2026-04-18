@@ -17,6 +17,11 @@
 #: series = "phd_build"
 #: name = "propolis-server.sha256.txt"
 #: from_output = "/out/propolis-server-debug.sha256.txt"
+#:
+#: [[publish]]
+#: series = "propolis_tests"
+#: name = "propolis-tests.tar.gz"
+#: from_output = "/out/propolis-tests-debug.tar.gz"
 
 set -o errexit
 set -o pipefail
@@ -30,24 +35,13 @@ rustc --version
 banner prerequisites
 ptime -m ./tools/install_builder_prerequisites.sh -y
 
-# Before we commit to building propolis-server or PHD, there are a handful of
-# tests that are illumos-specific and not currently run in other test jobs. The
-# whole suite doesn't take much time so we'll just run all of them here..
-banner test-propolis
-
-# Get $TEST_FEATURES defined for below.
-. .github/buildomat/propolis-vars.sh
-
-# Set up an etherstub to use for VNICs in virtio-nic tests. We might want the
-# tests to run on a real link one day to do actual networking, but we don't need
-# that yet!
-pfexec dladm create-etherstub prop_viona_test0
-VIONA_TEST_NIC=prop_viona_test0 pfexec ptime -m \
-	cargo test --verbose --features "$TEST_FEATURES"
-
 # Build the Propolis server binary with 'dev' profile to enable assertions that
 # should fire during tests.
 banner build-propolis
+
+# We'll do a few cargo builds, keeping features the same means we reuse build
+# artifacts from crates these configure.
+TEST_FEATURES="omicron-build,failure-injection"
 
 # Compile propolis-server so that it allows development features to be used even
 # though the `omicron-build` feature is enabled. This should be a relatively
@@ -55,6 +49,16 @@ banner build-propolis
 # features, above.
 ptime -m cargo build --verbose -p propolis-server \
 	--features "$TEST_FEATURES"
+
+# Build Propolis test binaries, but they won't run here. The path to get here
+# is unfortunate:
+# * we don't have `git` on a Gimlet target.
+# * or `pkg`.
+# * `uname -m` is "oxide", which confuses rustup too.
+#
+# Setting this up by hand is "possible", but it's much easier to just build the
+# test binaries here and squirrel them off to *run* on a Gimlet. So do that.
+ptime -m cargo build --tests --verbose --features "$TEST_FEATURES"
 
 # The PHD runner requires unwind-on-panic to catch certain test failures, so
 # build it with the 'dev' profile which is so configured.
@@ -69,6 +73,9 @@ tar -czvf target/debug/phd-runner.tar.gz \
 	-C target/debug phd-runner \
 	-C phd-tests artifacts.toml
 
+tar -czvf target/debug/propolis-tests-debug.tar.gz \
+	$(find target/debug/deps/ -perm -111 -type f -name 'propolis-*')
+
 banner copy
 pfexec mkdir -p $outdir
 pfexec chown "$UID" $outdir
@@ -76,6 +83,7 @@ cp .github/buildomat/phd-run-with-args.sh $outdir/phd-run-with-args.sh
 mv target/debug/propolis-server-debug.tar.gz \
 	$outdir/propolis-server-debug.tar.gz
 mv target/debug/phd-runner.tar.gz $outdir/phd-runner.tar.gz
+mv target/debug/propolis-tests-debug.tar.gz $outdir/propolis-tests-debug.tar.gz
 cd $outdir
 digest -a sha256 propolis-server-debug.tar.gz > \
 	propolis-server-debug.sha256.txt

@@ -5,10 +5,12 @@
 #: target = "lab-2.0-gimlet"
 #: rust_toolchain = false
 #: skip_clone = true
+#:
+#: [dependencies.phd-build]
+#: job = "phd-build"
 #
-# That buildomat frontmatter is kinda absurd. This job is going to build
-# Propolis tests, so we need the repo and we need Rust. And `lab-2.0-gimlet`
-# specifically?
+# That buildomat frontmatter is kinda absurd. We're going to run Propolis
+# tests, but not build them? And `lab-2.0-gimlet` specifically?
 #
 # # The Target
 #
@@ -21,58 +23,29 @@
 #
 # # The Skips
 #
-# The Gimlet target doesn't have git out of the box, so auto-cloning is too
-# early and will fail. The Gimlet target also reports `uname -m` of `oxide`
-# rather than the `i86pc` that rustup knows to look for from illumos.
-#
-# So skip all of this, set this all up by hand, and on with the show!
+# The Gimlet target doesn't have git, or pkg to get git. Installing the Rust
+# toolchain by hand is doable, but pretty funky. Instead, we *build* Propolis
+# tests in the `phd-build` job, and only *run* them here. We've built most of
+# the dependency tree there already anyway, so we're not going too far out of
+# our way for this.
 
 set -o errexit
 set -o pipefail
 set -o xtrace
 
-banner clone
+banner prepare
 
-pkg install git
-
-git clone https://github.com/oxidecomupter/propolis /work/propolis
-
-banner prerequisites
-
-# This is a kind of silly way to get the pinned toolchain version, but it keeps
-# you from having to edit the pinned version in two places. Sorry?
-TOOLCHAIN_VER="$(grep channel rust-toolchain.toml | sed 's/channel = "\(.*\)"/\1/')"
-# We know (or, *I* know) that an x86_64-unknown-illumos toolchain will work
-# just fine on our `$(uname -m) == "oxide"` system.
-RUST_TAR="rust-"$TOOLCHAIN_VER"-x86_64-unknown-illumos.tar.xz"
-
-wget https://static.rust-lang.org/dist/"$RUST_TAR"
-tar xvf "$RUST_TAR"
-
-# The included install.sh will do; this gets cargo and rustc into
-# /usr/local/bin/, and other bits (like libstd) at the right places.
-bash ./rust-"$TOOLCHAIN_VER"-x86_64-unknown-illumos/install.sh
-
-# ... if everything went right, this should report `TOOLCHAIN_VER`!
-cargo --version
-rustc --version
-
-# With that all sorted, finally switch to the Propolis directory, install any
-# remaining Propolis-specific requirements, and finally do normal test stuff.
-
-cd /work/propolis
-
-ptime -m ./tools/install_builder_prerequisites.sh -y
+TEST_TAR="propolis-tests-debug.tar.gz"
+cp /input/phd-build/out/"$TEST_TAR" .
+tar xvf "$TEST_TAR"
 
 banner test-propolis
-
-# Get $TEST_FEATURES defined for below.
-. .github/buildomat/propolis-vars.sh
 
 # Set up an etherstub to use for VNICs in virtio-nic tests. We might want the
 # tests to run on a real link one day to do actual networking, but we don't need
 # that yet!
 pfexec dladm create-etherstub prop_viona_test0
 
-VIONA_TEST_NIC=prop_viona_test0 pfexec ptime -m \
-	cargo test --verbose --features "$TEST_FEATURES"
+for testbin in ./target/debug/deps/propolis-*; do
+	VIONA_TEST_NIC=prop_viona_test0 pfexec ptime -m "$testbin"
+done
