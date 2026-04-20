@@ -1326,7 +1326,7 @@ impl MigrateMulti for PciVirtioState {
         state.msix_queue_vec = dev.msix_queue_vec;
         self.isr_state.import(dev.isr_queue, dev.isr_cfg);
 
-        self.queues.import(&input.queues)?;
+        self.queues.import(&input.queues, state.mode)?;
 
         Ok(())
     }

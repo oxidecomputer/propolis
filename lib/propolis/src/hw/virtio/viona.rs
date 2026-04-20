@@ -1444,12 +1444,17 @@ mod test {
         VIRTIO_NET_F_STATUS,
     };
     use crate::hw::virtio::PciVirtioViona;
+    use crate::migrate::{
+        MigrateCtx, MigrateMulti, PayloadOffer, PayloadOffers, PayloadOutputs,
+    };
     use crate::Machine;
     use std::env::VarError;
     use std::sync::Arc;
     use tokio::process::Command;
 
     struct TestCtx {
+        test_name: &'static str,
+        vnic_name: String,
         machine: Machine,
         dev: Arc<PciVirtioViona>,
     }
@@ -1465,9 +1470,63 @@ mod test {
         fn create_driver(&self) -> VirtioNetDriver<'_, '_> {
             VirtioNetDriver::for_hardware(&self.machine, &self.dev)
         }
+
+        fn migrate(self) -> TestCtx {
+            let mut dev_payloads = PayloadOutputs::new();
+            let acc_mem =
+                self.machine.acc_mem.access().expect("machine has memory");
+            let ctx = MigrateCtx { mem: &acc_mem };
+            <PciVirtioViona>::export(&self.dev, &mut dev_payloads, &ctx)
+                .expect("can export PciVirtioViona");
+            let mut payloads = Vec::new();
+            for output in dev_payloads.into_iter() {
+                let bytes = serde_json::to_string(&output.payload)
+                    .expect("serializing payload output");
+                let serialized = (output.kind, output.version, bytes);
+                payloads.push(serialized);
+            }
+
+            // Loosely follow the structure of `import_device` as `propolis-server` would; the
+            // combination of type erasure and borrows make this somewhat more complicated than it
+            // would ideally be..
+            let mut desers = Vec::new();
+            for (_, _, bytes) in payloads.iter() {
+                desers.push(serde_json::Deserializer::from_str(&bytes));
+            }
+            let mut offers = Vec::new();
+            for ((kind, version, _bytes), deser) in
+                payloads.iter().zip(desers.iter_mut())
+            {
+                let deserialized =
+                    Box::new(<dyn erased_serde::Deserializer>::erase(deser));
+                offers.push(PayloadOffer {
+                    kind,
+                    version: *version,
+                    payload: deserialized,
+                });
+            }
+            let mut offers = PayloadOffers::new(offers);
+
+            let vnic_name = self.vnic_name.clone();
+            let test_name = self.test_name;
+
+            std::mem::drop(acc_mem);
+            std::mem::drop(self);
+
+            let new_ctx = create_test_ctx(test_name, &vnic_name);
+            let acc_mem = new_ctx
+                .machine
+                .acc_mem
+                .access()
+                .expect("new machine has memory");
+            let new_migrate = MigrateCtx { mem: &acc_mem };
+            <PciVirtioViona>::import(&new_ctx.dev, &mut offers, &new_migrate)
+                .expect("can import PciVirtioViona");
+            new_ctx
+        }
     }
 
-    fn create_test_ctx(test_name: &str, vnic_name: &str) -> TestCtx {
+    fn create_test_ctx(test_name: &'static str, vnic_name: &str) -> TestCtx {
         // Create the VM with `force: true`: if we're running tests concurrently
         // this will trample an existing test (which should then fail!). We do
         // this so that if a test misconfiguration left a stray old VM hanging
@@ -1513,7 +1572,12 @@ mod test {
             None,
         );
 
-        TestCtx { machine, dev: viona_dev }
+        TestCtx {
+            machine,
+            dev: viona_dev,
+            test_name,
+            vnic_name: vnic_name.to_owned(),
+        }
     }
 
     /// Glue for a nicer test interface to read/write a specific structure in a
@@ -1653,13 +1717,42 @@ mod test {
         dev: &'nic PciVirtioViona,
         common_config: BarAccessor<'nic>,
         device_config: BarAccessor<'nic>,
+        state: DriverState,
+    }
+
+    /// The "volatile" part of `VirtioNetDriver`: whatever "guest-side" part
+    /// should remain constant when tests migrate the corresponding
+    /// `PciVirtioViona`.
+    //
+    // Theoretically this state could live in the test VM, but that would
+    // require "migrating" guest memory, which is more work than is strictly
+    // necessary to test the de vice. On top of that it's a bit annoying to
+    // fulfill "driver memory" as reads/writes into the test VM, so we don't.
+    struct DriverState {
         next_queue_gpa: u64,
+    }
+
+    impl DriverState {
+        fn new() -> Self {
+            Self {
+                // Start virtio-nic queues somewhere other than address 0.
+                next_queue_gpa: 2 * MB as u64,
+            }
+        }
     }
 
     impl<'mach, 'nic> VirtioNetDriver<'mach, 'nic> {
         fn for_hardware(
             machine: &'mach Machine,
             dev: &'nic PciVirtioViona,
+        ) -> Self {
+            Self::import(machine, dev, DriverState::new())
+        }
+
+        fn import(
+            machine: &'mach Machine,
+            dev: &'nic PciVirtioViona,
+            state: DriverState,
         ) -> Self {
             // We place virtio_pci_common_cfg at BAR 2, offset 0, so hardcode this
             // in the test for now.
@@ -1675,13 +1768,11 @@ mod test {
             let device_config =
                 BarAccessor::at(dev, pci::BarN::BAR2, PAGE_SIZE);
 
-            Self {
-                machine,
-                dev,
-                common_config,
-                device_config,
-                next_queue_gpa: 2 * MB as u64,
-            }
+            Self { machine, dev, common_config, device_config, state }
+        }
+
+        fn export(self) -> DriverState {
+            self.state
         }
 
         fn read_status(&self) -> Status {
@@ -1738,7 +1829,7 @@ mod test {
             let acc_mem =
                 self.machine.acc_mem.access().expect("can access memory");
 
-            let descriptor_table_gpa = self.next_queue_gpa;
+            let descriptor_table_gpa = self.state.next_queue_gpa;
             self.common_config
                 .write_le64(common_cfg::queue_desc, descriptor_table_gpa);
 
@@ -1763,7 +1854,7 @@ mod test {
 
             // Finally, round up so the next queue (if there is one) starts
             // page-aligned like it should.
-            self.next_queue_gpa = used_gpa.next_multiple_of(page_u64);
+            self.state.next_queue_gpa = used_gpa.next_multiple_of(page_u64);
 
             let msi_vector = 0x100 + queue;
             self.common_config
@@ -1906,7 +1997,7 @@ mod test {
         }
     }
 
-    fn test_device_status_writes(test_ctx: &TestCtx) {
+    fn test_device_status_writes(test_ctx: TestCtx) -> TestCtx {
         // The device and driver collaborate via `device_status` to get the
         // device turned on. There's a subtlety here though, in VirtIO 1.2
         // section 2.1.2:
@@ -1971,9 +2062,11 @@ mod test {
         // We should not be able to clear NEEDS_RESET without .. a reset.
         let real_status = driver.read_status();
         assert!(real_status.contains(Status::NEEDS_RESET));
+
+        test_ctx
     }
 
-    fn basic_operation_modern(test_ctx: &TestCtx) {
+    fn basic_operation_modern(test_ctx: TestCtx) -> TestCtx {
         let expected_feats =
             VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_CTRL_VQ;
 
@@ -2005,9 +2098,11 @@ mod test {
         driver.modern_device_init(expected_feats);
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats);
+
+        test_ctx
     }
 
-    fn basic_operation_multiqueue(test_ctx: &TestCtx) {
+    fn basic_operation_multiqueue(test_ctx: TestCtx) -> TestCtx {
         // All the same operation as `basic_operation_modern`, but with
         // `VIRTIO_NET_F_MQ`.
         let expected_feats = VIRTIO_NET_F_MAC
@@ -2026,11 +2121,13 @@ mod test {
         driver.modern_device_init(expected_feats);
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats);
+
+        test_ctx
     }
 
     /// Roughly approximation of a MQ-capable OS restarting, booting through
     /// with a simple single-queue driver, then booting back to a MQ-capable OS.
-    fn multiqueue_to_singlequeue_to_multiqueue(test_ctx: &TestCtx) {
+    fn multiqueue_to_singlequeue_to_multiqueue(test_ctx: TestCtx) -> TestCtx {
         // All the same operation as `basic_operation_modern`, but with
         // `VIRTIO_NET_F_MQ`.
         let expected_feats =
@@ -2043,12 +2140,39 @@ mod test {
         driver.modern_device_init(expected_feats);
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
+
+        test_ctx
+    }
+
+    /// The same operations as `multiqueue_to_singlequeue_to_multiqueue`, above,
+    /// but migrate the device between each operation.
+    fn multiqueue_migration(test_ctx: TestCtx) -> TestCtx {
+        // All the same operation as `basic_operation_modern`, but with
+        // `VIRTIO_NET_F_MQ`.
+        let expected_feats =
+            VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_CTRL_VQ;
+
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
+        crate::lifecycle::Lifecycle::reset(test_ctx.dev.as_ref());
+        let drv_state = driver.export();
+        let test_ctx = test_ctx.migrate();
+        let mut driver = VirtioNetDriver::import(
+            &test_ctx.machine,
+            &test_ctx.dev,
+            drv_state,
+        );
+        driver.modern_device_init(expected_feats);
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
+
+        test_ctx
     }
 
     // Bears an uncanny resemblance to `phd-test`...
     struct TestCase {
         name: &'static str,
-        test_fn: fn(&TestCtx),
+        test_fn: fn(TestCtx) -> TestCtx,
     }
 
     async fn create_vnic(phys_nic: &str, vnic_name: &str) {
@@ -2100,6 +2224,7 @@ mod test {
             testcase!(basic_operation_modern),
             testcase!(basic_operation_multiqueue),
             testcase!(multiqueue_to_singlequeue_to_multiqueue),
+            testcase!(multiqueue_migration),
         ];
 
         let underlying_nic = match std::env::var("VIONA_TEST_NIC") {
@@ -2137,7 +2262,7 @@ mod test {
                 create_vnic(&underlying_nic, TEST_VNIC).await;
 
                 let test_ctx = create_test_ctx(test.name, TEST_VNIC);
-                (test.test_fn)(&test_ctx);
+                let test_ctx = (test.test_fn)(test_ctx);
                 drop(test_ctx);
 
                 delete_vnic(TEST_VNIC).await;

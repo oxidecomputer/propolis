@@ -14,6 +14,7 @@ use super::probes;
 use super::{VirtioIntr, VqIntr};
 use crate::accessors::MemAccessor;
 use crate::common::*;
+use crate::hw::virtio;
 use crate::migrate::MigrateStateError;
 use crate::vmm::MemCtx;
 
@@ -614,6 +615,7 @@ impl VirtQueue {
     pub fn import(
         &self,
         state: &migrate::VirtQueueV1,
+        mode: virtio::Mode,
     ) -> Result<(), MigrateStateError> {
         let mut avail = self.avail.lock().unwrap();
         let mut used = self.used.lock().unwrap();
@@ -624,18 +626,48 @@ impl VirtQueue {
                 self.id, state.id,
             )));
         }
-        if self.size() != state.size {
-            return Err(MigrateStateError::ImportFailed(format!(
-                "VirtQueue: mismatched size {} vs {}",
-                self.size(),
-                state.size,
-            )));
+        if mode == virtio::Mode::Legacy {
+            // As VirtIO 1.0 notes, for a device operated as legacy,
+            //
+            // > There was no mechanism to negotiate the queue size.
+            //
+            // so if these sizes don't match, the payload is truly incompatible
+            // with this device.
+            if self.size() != state.size {
+                return Err(MigrateStateError::ImportFailed(format!(
+                    "VirtQueue: mismatched size {} vs {}",
+                    self.size(),
+                    state.size,
+                )));
+            }
+        } else {
+            // Otherwise, we expect to import into a freshly-created VirtIO PCI
+            // device, with queues all set to their maximum sizes. The sizes to
+            // import may be smaller if the guest OS's driver configured them
+            // down.
+            let mut queue_size = self.size.lock().unwrap();
+            if queue_size.0.get() < state.size {
+                return Err(MigrateStateError::ImportFailed(format!(
+                    "VirtQueue: larger than supported {} > {}",
+                    queue_size.0.get(),
+                    state.size,
+                )));
+            }
+            let new_size = match VqSize::try_from(state.size) {
+                Ok(size) => size,
+                Err(e) => {
+                    return Err(MigrateStateError::ImportFailed(format!(
+                        "VirtQueue: unacceptable queue size: {}",
+                        e
+                    )));
+                }
+            };
+            *queue_size = new_size;
         }
         if self.notify_data != state.notify_data {
             return Err(MigrateStateError::ImportFailed(format!(
                 "VirtQueue: mismatched notify data {} vs {}",
-                self.size(),
-                state.size,
+                self.notify_data, state.notify_data,
             )));
         }
 
@@ -1054,9 +1086,10 @@ impl VirtQueues {
     pub fn import(
         &self,
         state: &migrate::VirtQueuesV1,
+        mode: virtio::Mode,
     ) -> Result<(), MigrateStateError> {
         for (vq, vq_input) in self.queues.iter().zip(state.queues.iter()) {
-            vq.import(vq_input)?;
+            vq.import(vq_input, mode)?;
         }
         self.set_len(state.len as usize).map_err(|len| {
             MigrateStateError::ImportFailed(format!(
