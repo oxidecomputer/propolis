@@ -229,6 +229,7 @@ impl Aml for LpcUart {
             None => return, // Device is not attached to any port.
         };
 
+        #[allow(clippy::wildcard_in_or_patterns)]
         let uid: u32 = match self.name {
             "COM1" => 1,
             "COM2" => 2,
