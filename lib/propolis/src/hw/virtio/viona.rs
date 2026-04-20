@@ -2109,6 +2109,20 @@ mod test {
                     "Skipping viona tests as env does not have VIONA_TEST_NIC. \
                     Set this environment variable to an existing link that \
                     Propolis viona tests should create test vnics on.");
+                let uname = nix::sys::utsname::uname().unwrap();
+                if uname.machine() != std::ffi::OsStr::new("i86pc") {
+                    // Since the tests are running on i86pc, this might be a dev
+                    // host that does not actually want us messing with devices
+                    // for tests.
+                    //
+                    // If the *tests* are running on a different architecture
+                    // (say, "oxide"), assume that this is a misconfiguration
+                    // instead and fail tests rather than "skip".
+                    panic!(
+                        "host ({}) is not i86pc, refusing to skip viona tests",
+                        uname.machine().display()
+                    );
+                }
                 return;
             }
             Err(VarError::NotUnicode(e)) => {
