@@ -2111,13 +2111,13 @@ mod test {
                     Propolis viona tests should create test vnics on.");
                 let uname = nix::sys::utsname::uname().unwrap();
                 if uname.machine() != std::ffi::OsStr::new("i86pc") {
-                    // If the tests are running on i86pc, this might be a dev
+                    // Since the tests are running on i86pc, this might be a dev
                     // host that does not actually want us messing with devices
                     // for tests.
                     //
-                    // If the *tests* are running on a different architecture,
-                    // assume that this is a misconfiguration instead and fail
-                    // tests rather than "skip".
+                    // If the *tests* are running on a different architecture
+                    // (say, "oxide"), assume that this is a misconfiguration
+                    // instead and fail tests rather than "skip".
                     panic!(
                         "host ({}) is not i86pc, refusing to skip viona tests",
                         uname.machine().display()

@@ -44,8 +44,9 @@ banner test-propolis
 # Set up an etherstub to use for VNICs in virtio-nic tests. We might want the
 # tests to run on a real link one day to do actual networking, but we don't need
 # that yet!
-pfexec dladm create-etherstub prop_viona_test0
+TEST_DEV="prop_viona_test0"
+pfexec dladm create-etherstub "$TEST_DEV"
 
 for testbin in ./target/debug/deps/propolis-*; do
-	VIONA_TEST_NIC=prop_viona_test0 pfexec ptime -m "$testbin"
+	VIONA_TEST_NIC="$TEST_DEV" pfexec ptime -m "$testbin"
 done
