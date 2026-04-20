@@ -89,18 +89,18 @@ impl Aml for Fadt {
 
         fadt.sci_int = (SCI_IRQ as u16).into();
         fadt.smi_cmd = 0xb2.into();
-        fadt.acpi_enable = 0xf1.into();
-        fadt.acpi_disable = 0xf0.into();
+        fadt.acpi_enable = 0xf1;
+        fadt.acpi_disable = 0xf0;
 
         fadt.pm1a_evt_blk = PM1A_EVT_BLK_ADDR.into();
         fadt.pm1a_cnt_blk = PM1A_CNT_BLK_ADDR.into();
         fadt.pm_tmr_blk = PM_TMR_BLK_ADDR.into();
         fadt.gpe0_blk = GPE0_BLK_ADDR.into();
 
-        fadt.pm1_evt_len = PM1A_EVT_BLK_LEN.into();
-        fadt.pm1_cnt_len = PM1A_CNT_BLK_LEN.into();
-        fadt.pm_tmr_len = PM_TMR_BLK_LEN.into();
-        fadt.gpe0_blk_len = GPE0_BLK_LEN.into();
+        fadt.pm1_evt_len = PM1A_EVT_BLK_LEN;
+        fadt.pm1_cnt_len = PM1A_CNT_BLK_LEN;
+        fadt.pm_tmr_len = PM_TMR_BLK_LEN;
+        fadt.gpe0_blk_len = GPE0_BLK_LEN;
 
         fadt.p_lvl2_lat = 101.into();
         fadt.p_lvl3_lat = 1001.into();

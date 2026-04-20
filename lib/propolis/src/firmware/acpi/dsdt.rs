@@ -450,8 +450,7 @@ struct PciRootBridgePrt {}
 
 impl Aml for PciRootBridgePrt {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
-        let sources =
-            vec!["^LPC_.LNKA", "^LPC_.LNKB", "^LPC_.LNKC", "^LPC_.LNKD"];
+        let sources = ["^LPC_.LNKA", "^LPC_.LNKB", "^LPC_.LNKC", "^LPC_.LNKD"];
         let sources_len: u8 = sources.len() as u8;
 
         let mut ptr_entries = Vec::new();
@@ -1115,7 +1114,7 @@ impl Aml for Byte {
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use super::*;
 
     struct MockDsdtGenerator {
