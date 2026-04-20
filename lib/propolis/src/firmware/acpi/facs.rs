@@ -11,7 +11,7 @@ use acpi_tables::{facs, Aml, AmlSink};
 
 /// The FACS table stores information about the firmware.
 ///
-/// https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#firmware-acpi-control-structure-facs
+/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#firmware-acpi-control-structure-facs>
 pub struct Facs {}
 
 impl Facs {
