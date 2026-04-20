@@ -31,7 +31,7 @@ pub const RSDP_EXTENDED_TABLE_LEN: usize = 36;
 /// The RSDP table is the root table the operating system loads first to
 /// discover the other tables.
 ///
-/// https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#root-system-description-pointer-rsdp
+/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#root-system-description-pointer-rsdp>
 pub struct Rsdp {
     xsdt_addr: u64,
 }

@@ -65,7 +65,8 @@ impl<'a> Aml for DsdtGeneratorAml<'a> {
 }
 
 /// Values for the PM1a_CNT.SLP_TYP register to enter different sleep states.
-/// https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/07_Power_and_Performance_Mgmt/oem-supplied-system-level-control-methods.html?highlight=_sx#sx-system-states
+///
+/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/07_Power_and_Performance_Mgmt/oem-supplied-system-level-control-methods.html?highlight=_sx#sx-system-states>
 const PM1A_CNT_SLP_TYP_S0: u8 = 5;
 const PM1A_CNT_SLP_TYP_S3: u8 = 1;
 const PM1A_CNT_SLP_TYP_S4: u8 = 2;
@@ -78,7 +79,7 @@ pub struct DsdtConfig<'a> {
 /// The DSDT table is part of the fixed ACPI tables and is used to describe
 /// system resources.
 ///
-/// https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#differentiated-system-description-table-dsdt
+/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#differentiated-system-description-table-dsdt>
 pub struct Dsdt<'a> {
     config: DsdtConfig<'a>,
 }
@@ -185,7 +186,8 @@ impl<'a> Aml for PciRootBridge<'a> {
 }
 
 /// I/O port range for PCI configuration.
-/// https://wiki.osdev.org/PCI#Configuration_Space_Access_Mechanism_#1
+///
+/// <https://wiki.osdev.org/PCI#Configuration_Space_Access_Mechanism_#1>
 const PCI_CONFIG_IO_BASE: u16 = 0x0cf8;
 const PCI_CONFIG_IO_SIZE: u8 = 8;
 
@@ -194,7 +196,8 @@ const PCI_BUS_START: u16 = 0x00;
 const PCI_BUS_END: u16 = 0xff;
 
 /// MMIO address region used for legacy VGA devices.
-/// https://en.wikipedia.org/wiki/Video_Graphics_Array#Use
+///
+/// <https://en.wikipedia.org/wiki/Video_Graphics_Array#Use>
 const LEGACY_VGA_BASE: u32 = 0x000a_0000;
 const LEGACY_VGA_LIMIT: u32 = 0x000b_ffff;
 
@@ -442,7 +445,7 @@ const PCI_INT_PINS: u8 = 4;
 
 /// _PRT method for the PCI0 device (\_SB.PCI0._PRT)
 ///
-/// https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/06_Device_Configuration/Device_Configuration.html?highlight=_prt#prt-pci-routing-table
+/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/06_Device_Configuration/Device_Configuration.html?highlight=_prt#prt-pci-routing-table>
 struct PciRootBridgePrt {}
 
 impl Aml for PciRootBridgePrt {
@@ -497,7 +500,7 @@ impl Aml for PciRootBridgePrt {
 
 /// Low-word of an _ADR value that refers to all PCI functions.
 ///
-/// https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/06_Device_Configuration/Device_Configuration.html#adr-object-address-encodings
+/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/06_Device_Configuration/Device_Configuration.html#adr-object-address-encodings>
 const PCI_ADR_ALL_FUNC: u32 = 0xffff;
 
 /// Representation of an entry in the _PRT table.
@@ -526,7 +529,7 @@ impl<'a> Aml for PrtEntry<'a> {
 /// Refer to the original _PRT table from EDK2 for more details on what is being
 /// defined here.
 ///
-/// https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiTables/Dsdt.asl#L299-L303
+/// <https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiTables/Dsdt.asl#L299-L303>
 struct PciRootBridgeLpc<'a> {
     generators: &'a [&'a dyn DsdtGenerator],
 }
@@ -869,7 +872,7 @@ impl<'a> Lnk<'a> {
 
 impl<'a> Lnk<'a> {
     // AML code for the special SCI link.
-    // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiTables/Dsdt.asl#L200-L220
+    // <https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiTables/Dsdt.asl#L200-L220>
     fn to_aml_bytes_sci(&self, sink: &mut dyn AmlSink) {
         aml::Device::new(
             "LNKS".into(),
@@ -969,7 +972,8 @@ impl<'a> Aml for Lnk<'a> {
 
 /// Length in bytes of the SSDT header. Used to calculate the offset of other
 /// fields.
-/// https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html?highlight=ssdt#secondary-system-description-table-fields-ssdt
+///
+/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html?highlight=ssdt#secondary-system-description-table-fields-ssdt>
 const SSDT_HEADER_LEN: usize = 36;
 
 /// Byte offset of the FWDT OperationRegion offset address field in the SSDT
@@ -979,7 +983,7 @@ const SSDT_HEADER_LEN: usize = 36;
 /// OperationRegion prefix (1 byte) + OperationRegion name (4 bytes) +
 /// OperationRegion space (1 byte) + DWordPrefix (1 byte)
 ///
-/// https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/20_AML_Specification/AML_Specification.html#defopregion
+/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/20_AML_Specification/AML_Specification.html#defopregion>
 pub const SSDT_FWDT_ADDR_OFFSET: usize = SSDT_HEADER_LEN + 8;
 
 /// Number of bytes used to store the offset address value in the FWDT
@@ -989,7 +993,7 @@ pub const SSDT_FWDT_ADDR_LEN: usize = 4;
 /// The SSDT table is an extension to DSDT table and can be used to extend
 /// resources defined in the DSDT.
 ///
-/// https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#secondary-system-description-table-ssdt
+/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#secondary-system-description-table-ssdt>
 pub struct Ssdt {
     /// Offset of the area reserved for the FWDT OperationRegion data in the
     /// overall ACPI tables storage.

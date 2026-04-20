@@ -10,7 +10,9 @@
 use super::{OEM_ID, OEM_REVISION, OEM_TABLE_ID, SCI_IRQ};
 use acpi_tables::{
     // XXX(acpi): Use version 3 to keep FADT table consistent with the original
-    //            EKD2 static tables.
+    //            EKD2 static tables. The acpi_tables crate also generates the
+    //            MADT table using revision 1, which fwts reports not being
+    //            compatible with FADT 6.5.
     fadt_3::{FADTBuilder, Flags},
     gas::{AccessSize, AddressSpace, GAS},
     Aml,
@@ -41,7 +43,7 @@ const GPE0_BLK_LEN: u8 = 4;
 
 // Represent a bit flag for the FADT IA-PC boot architecture flags.
 //
-// https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#ia-pc-boot-architecture-flags
+// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#ia-pc-boot-architecture-flags>
 bitflags! {
     pub struct FadtIaPcBootArchFlags: u16 {
         const LEGACY_DEVICES = 1 << 0;
@@ -55,7 +57,7 @@ bitflags! {
 
 /// The FADT table stores fixed hardware ACPI information.
 ///
-/// https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#fixed-acpi-description-table-fadt
+/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#fixed-acpi-description-table-fadt>
 pub struct Fadt {
     facs_offset: u32,
     dsdt_offset: u32,
