@@ -915,13 +915,12 @@ impl MachineInitializer<'_> {
         //
         // NOTE: SoftNpu squats on com4.
         let uart = LpcUart::new(
-            chipset.irq_pin(ibmpc::IRQ_COM4).unwrap(),
-            ibmpc::PORT_COM4,
-            ibmpc::IRQ_COM4,
             "COM4",
+            ibmpc::IRQ_COM4,
+            chipset.irq_pin(ibmpc::IRQ_COM4).unwrap(),
         );
         uart.set_autodiscard(true);
-        uart.attach(&self.machine.bus_pio);
+        uart.attach(&self.machine.bus_pio, ibmpc::PORT_COM4);
         self.devices
             .insert(SpecKey::Name("softnpu-uart".to_string()), uart.clone());
 
