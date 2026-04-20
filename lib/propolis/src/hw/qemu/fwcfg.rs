@@ -1342,6 +1342,7 @@ pub mod formats {
     /// The ACPI tables are organized in a hierarchy, with some tables having
     /// fields that hold the address of another table.
     ///
+    /// ```text
     /// ┌─────────┐    ┌─────────┐      ┌─────────────┐                
     /// │  RSDP   │ ┌─▶│  XSDT   │  ┌──▶│    FADT     │                
     /// ├─────────┤ │  ├─────────┤  │   ├─────────────┤    ┌──────────┐
@@ -1365,7 +1366,8 @@ pub mod formats {
     ///                                 │Interrupt Controller│         
     ///                                 │     Structures     │         
     ///                                 └────────────────────┘         
-    /// Adapted from https://docs.kernel.org/firmware-guide/acpi/namespace.html
+    /// ```
+    /// Adapted from <https://docs.kernel.org/firmware-guide/acpi/namespace.html>
     ///
     /// These addresses are only know at boot time, so each reference has a
     /// corresponding [`AddPointerCommand`] that the firmware executes on boot.
@@ -1628,7 +1630,8 @@ pub mod formats {
     /// ACPI tables are loaded.
     ///
     /// Refer to the EDK2 source code for more information on the commands.
-    /// https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/QemuLoader.h
+    ///
+    /// <https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/QemuLoader.h>
     pub struct TableLoader {
         commands: Vec<u8>,
     }

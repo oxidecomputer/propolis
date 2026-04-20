@@ -27,7 +27,7 @@ pub struct MadtConfig {
 
 /// The MADT/APIC table describes the interrupts for the entire system.
 ///
-/// https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#multiple-apic-description-table-madt
+/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#multiple-apic-description-table-madt>
 pub struct Madt<'a> {
     config: &'a MadtConfig,
 }
@@ -44,8 +44,8 @@ impl<'a> Madt<'a> {
 //              - madt: LAPIC has no matching processor UID 1
 //              - madt: LAPICNMI has no matching processor UID 255
 //
-// https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiTables/Madt.aslc
-// https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/Qemu.c#L58
+// <https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiTables/Madt.aslc>
+// <https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/Qemu.c#L58>
 impl<'a> Aml for Madt<'a> {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
         let mut table = madt::MADT::new(

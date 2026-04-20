@@ -16,7 +16,7 @@ pub const XSDT_HEADER_LEN: usize = 36;
 
 /// The XSDT table provides the addresses of additional tables.
 ///
-/// https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#extended-system-description-table-xsdt
+/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#extended-system-description-table-xsdt>
 pub struct Xsdt {
     entries: Vec<u64>,
 }
