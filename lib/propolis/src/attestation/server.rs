@@ -69,7 +69,12 @@ impl AttestationSockInit {
     pub async fn run(self) {
         let AttestationSockInit { log, vm_conf_send, uuid, project, silo, boot_backend_ref } = self;
 
-        let mut vm_conf = vm_attest::VmInstanceConf { uuid, project, silo, boot_digest: None };
+        let mut vm_conf = vm_attest::VmInstanceConf {
+            uuid,
+            project,
+            silo,
+            boot_digest: None,
+        };
 
         if let Some(digest_backend) = boot_backend_ref {
             let boot_digest = match crate::attestation::boot_digest::compute(
