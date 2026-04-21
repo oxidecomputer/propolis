@@ -703,6 +703,13 @@ impl MachineInitializer<'_> {
         let project = self.properties.metadata.project_id;
         let silo = self.properties.metadata.silo_id;
 
+        let vm_attestation_conf = vm_attest::VmInstanceConf {
+            uuid,
+            project,
+            silo,
+            boot_digest: None,
+        };
+
         // The first boot entry is a key into `self.spec.disks`, which is how
         // we'll get to a Crucible volume backing this boot option.
         let boot_disk_entry =
@@ -783,7 +790,7 @@ impl MachineInitializer<'_> {
             None
         };
 
-        vm_rot.prepare_instance_conf(uuid, project, silo, boot_backend);
+        vm_rot.prepare_init_state(vm_attestation_conf, boot_backend);
 
         Ok(())
     }
