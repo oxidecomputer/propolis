@@ -8,6 +8,7 @@ mod boot_order;
 mod cpuid;
 mod crucible;
 mod disk;
+mod firmware;
 mod framework;
 mod hw;
 mod hyperv;
