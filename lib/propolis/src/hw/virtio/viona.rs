@@ -671,7 +671,12 @@ impl PciVirtioViona {
         let wait_state = poller.state.clone();
         let _ = poller.sender.send(TargetState::Run);
         drop(inner);
-        wait_state.wait_running();
+        // wait_running() will wait on a condition variable, but the signaller
+        // of that condition variable is the Poller task that we've also spawned
+        // on this runtime. `block_in_place` to avoid blocking this runtime
+        // thread and help make sure the Poller we've asked to start actually
+        // can.
+        tokio::task::block_in_place(|| wait_state.wait_running());
     }
     fn poller_stop(&self, should_exit: bool) {
         let mut inner = self.inner.lock().unwrap();
@@ -686,13 +691,14 @@ impl PciVirtioViona {
             poller.state.clone()
         };
         drop(inner);
-        wait_state.wait_stopped();
+        // Same general problem as `wait_running` in `poller_start` above.
+        tokio::task::block_in_place(|| wait_state.wait_stopped());
     }
 
     // Transition the emulation to a "running" state, either at initial start-up
     // or resumption from a "paused" state.
     fn run(&self) {
-        tokio::task::block_in_place(|| self.poller_start());
+        self.poller_start();
         if self.queues_restart().is_err() {
             self.virtio_state.set_needs_reset(self);
             self.notify_port_update(None);
