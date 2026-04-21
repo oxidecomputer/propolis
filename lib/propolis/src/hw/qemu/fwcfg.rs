@@ -1465,7 +1465,7 @@ pub mod formats {
             let ssdt_offset = self.tables.len();
             ssdt.to_aml_bytes(&mut self.tables);
 
-            // Mark the FWDT Operatioon offset field as a pointer to the
+            // Mark the FWDT OperationRegion offset field as a pointer to the
             // FWDT data.
             self.loader.add_pointer(
                 FW_CFG_ACPI_TABLES_PATH,
@@ -1586,9 +1586,7 @@ pub mod formats {
                 checksum_offset + acpi::TABLE_HEADER_CHECKSUM_LEN;
 
             // Zero existing checksum so it doesn't affect the new value.
-            self.rsdp[checksum_offset..checksum_end]
-                .copy_from_slice(&0_u8.to_le_bytes());
-
+            self.rsdp[checksum_offset..checksum_end].copy_from_slice(&[0_u8]);
             self.loader.add_checksum(
                 FW_CFG_ACPI_RSDP_PATH,
                 checksum_offset as u32,
@@ -1611,9 +1609,7 @@ pub mod formats {
                 + acpi::TABLE_HEADER_CHECKSUM_LEN;
 
             // Zero existing checksum so it doesn't affect the new value.
-            self.tables[checksum_start..checksum_end]
-                .copy_from_slice(&0_u8.to_le_bytes());
-
+            self.tables[checksum_start..checksum_end].copy_from_slice(&[0u8]);
             self.loader.add_checksum(
                 FW_CFG_ACPI_TABLES_PATH,
                 checksum_start as u32,

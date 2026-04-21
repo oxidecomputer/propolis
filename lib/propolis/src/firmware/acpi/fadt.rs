@@ -10,7 +10,7 @@
 use super::{OEM_ID, OEM_REVISION, OEM_TABLE_ID, SCI_IRQ};
 use acpi_tables::{
     // XXX(acpi): Use version 3 to keep FADT table consistent with the original
-    //            EKD2 static tables. The acpi_tables crate also generates the
+    //            EDK2 static tables. The acpi_tables crate also generates the
     //            MADT table using revision 1, which fwts reports not being
     //            compatible with FADT 6.5.
     fadt_3::{FADTBuilder, Flags},
@@ -102,6 +102,7 @@ impl Aml for Fadt {
         fadt.pm_tmr_len = PM_TMR_BLK_LEN;
         fadt.gpe0_blk_len = GPE0_BLK_LEN;
 
+        // Disable C2 and C3 state support.
         fadt.p_lvl2_lat = 101.into();
         fadt.p_lvl3_lat = 1001.into();
 

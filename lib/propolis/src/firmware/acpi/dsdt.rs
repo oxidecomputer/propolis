@@ -201,6 +201,17 @@ const PCI_BUS_END: u16 = 0xff;
 const LEGACY_VGA_BASE: u32 = 0x000a_0000;
 const LEGACY_VGA_LIMIT: u32 = 0x000b_ffff;
 
+// Byte offset for different fields that are referenced by other structures.
+const ADDRESS_SPACE_32_MIN_OFFSET: usize = 0x0a;
+const ADDRESS_SPACE_32_MAX_OFFSET: usize = 0x0e;
+const ADDRESS_SPACE_32_LEN_OFFSET: usize = 0x16;
+
+const ADDRESS_SPACE_64_MIN_OFFSET: usize = 0x0e;
+const ADDRESS_SPACE_64_MAX_OFFSET: usize = 0x16;
+const ADDRESS_SPACE_64_LEN_OFFSET: usize = 0x26;
+
+const INTERRUPT_LIST_OFFSET: usize = 0x05;
+
 /// _CRS method for the PCI0 device (\_SB.PCI0._CRS).
 ///
 /// Refer to section 4.3 of the PCI Firmware Specification for more
@@ -351,17 +362,17 @@ impl Aml for PciRootBridgeCrs {
                 &aml::CreateDWordField::new(
                     &aml::Path::new("PS32"),
                     &aml::Path::new("CRES"),
-                    &(mmio32_offset + 0x0a), // Byte offset for min.
+                    &(mmio32_offset + ADDRESS_SPACE_32_MIN_OFFSET),
                 ),
                 &aml::CreateDWordField::new(
                     &aml::Path::new("PE32"),
                     &aml::Path::new("CRES"),
-                    &(mmio32_offset + 0x0e), // Byte offset for max.
+                    &(mmio32_offset + ADDRESS_SPACE_32_MAX_OFFSET),
                 ),
                 &aml::CreateDWordField::new(
                     &aml::Path::new("PL32"),
                     &aml::Path::new("CRES"),
-                    &(mmio32_offset + 0x16), // Byte offset for len.
+                    &(mmio32_offset + ADDRESS_SPACE_32_LEN_OFFSET),
                 ),
                 // Update the values of mmio32 based on the FWDT.
                 &aml::Store::new(
@@ -390,17 +401,17 @@ impl Aml for PciRootBridgeCrs {
                     &aml::CreateQWordField::new(
                         &aml::Path::new("PS64"),
                         &aml::Path::new("CR64"),
-                        &(mmio64_offset + 0x0e),
+                        &(mmio64_offset + ADDRESS_SPACE_64_MIN_OFFSET),
                     ),
                     &aml::CreateQWordField::new(
                         &aml::Path::new("PE64"),
                         &aml::Path::new("CR64"),
-                        &(mmio64_offset + 0x16),
+                        &(mmio64_offset + ADDRESS_SPACE_64_MAX_OFFSET),
                     ),
                     &aml::CreateQWordField::new(
                         &aml::Path::new("PL64"),
                         &aml::Path::new("CR64"),
-                        &(mmio64_offset + 0x26),
+                        &(mmio64_offset + ADDRESS_SPACE_64_LEN_OFFSET),
                     ),
                     // Update the values of mmio64 based on the FWDT.
                     &aml::Store::new(
@@ -431,10 +442,10 @@ impl Aml for PciRootBridgeCrs {
 
 fn aml_len(vec: &[&dyn Aml]) -> usize {
     let mut sink = Vec::new();
-    vec.iter().fold(0, |_acc, aml| {
+    for aml in vec {
         aml.to_aml_bytes(&mut sink);
-        sink.len()
-    })
+    }
+    sink.len()
 }
 
 /// Number of devices in the PCI0 root bridge.
@@ -596,7 +607,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                         &aml::CreateDWordField::new(
                             &aml::Path::new("IRQW"),
                             &aml::Path::new("BUF0"),
-                            &0x05_u64, // TODO: document.
+                            &INTERRUPT_LIST_OFFSET,
                         ),
                         &aml::If::new(
                             &aml::LogicalNot::new(&aml::And::new(
@@ -1140,35 +1151,32 @@ mod test {
             &MockDsdtGenerator { scope: DsdtScope::Lpc },
         ];
 
-        // Filter by SystemBus.
         let mut got = Vec::new();
+        let mut expected = Vec::new();
+
+        // Filter by SystemBus.
         DsdtGeneratorAml::new(&generators, DsdtScope::SystemBus)
             .to_aml_bytes(&mut got);
-
-        let mut expected = Vec::new();
         aml::Name::new("TEST".into(), &"SystemBus").to_aml_bytes(&mut expected);
         assert_eq!(expected, got);
+
         got.clear();
+        expected.clear();
 
         // Filter by PciRoot.
-        let mut got = Vec::new();
         DsdtGeneratorAml::new(&generators, DsdtScope::PciRoot)
             .to_aml_bytes(&mut got);
-
-        let mut expected = Vec::new();
         aml::Name::new("TEST".into(), &"PciRoot").to_aml_bytes(&mut expected);
         assert_eq!(expected, got);
+
         got.clear();
+        expected.clear();
 
         // Filter by Lpc.
-        let mut got = Vec::new();
         DsdtGeneratorAml::new(&generators, DsdtScope::Lpc)
             .to_aml_bytes(&mut got);
-
-        let mut expected = Vec::new();
         aml::Name::new("TEST".into(), &"Lpc").to_aml_bytes(&mut expected);
         assert_eq!(expected, got);
-        got.clear();
     }
 
     #[test]
@@ -1189,5 +1197,88 @@ mod test {
         assert!(aml.windows(4).any(|w| w == b"PCI0"));
         assert!(aml.windows(4).any(|w| w == b"_PRT"));
         assert!(aml.windows(4).any(|w| w == b"LPC_"));
+    }
+
+    #[test]
+    fn field_references() {
+        let mut sink = Vec::new();
+
+        // Validate DWord AddressSpace min, max, and len offsets.
+        let min = 0xf800_0000_u32;
+        let max = 0xfffb_ffff_u32;
+        let len = max - min + 1;
+        aml::AddressSpace::new_memory(
+            aml::AddressSpaceCacheable::NotCacheable,
+            true,
+            min,
+            max,
+            None,
+        )
+        .to_aml_bytes(&mut sink);
+        assert_eq!(
+            sink[ADDRESS_SPACE_32_MIN_OFFSET
+                ..(ADDRESS_SPACE_32_MIN_OFFSET + 4)],
+            min.to_le_bytes()
+        );
+        assert_eq!(
+            sink[ADDRESS_SPACE_32_MAX_OFFSET
+                ..(ADDRESS_SPACE_32_MAX_OFFSET + 4)],
+            max.to_le_bytes()
+        );
+        assert_eq!(
+            sink[ADDRESS_SPACE_32_LEN_OFFSET
+                ..(ADDRESS_SPACE_32_LEN_OFFSET + 4)],
+            len.to_le_bytes()
+        );
+
+        sink.clear();
+
+        // Validate QWord AddressSpace min, max, and len offsets.
+        let min = 0x0080_0000_0000_u64;
+        let max = 0x0fff_ffff_ffff_u64;
+        let len = max - min + 1;
+        aml::AddressSpace::new_memory(
+            aml::AddressSpaceCacheable::Cacheable,
+            true,
+            min,
+            max,
+            None,
+        )
+        .to_aml_bytes(&mut sink);
+        assert_eq!(
+            sink[ADDRESS_SPACE_64_MIN_OFFSET
+                ..(ADDRESS_SPACE_64_MIN_OFFSET + 8)],
+            min.to_le_bytes()
+        );
+        assert_eq!(
+            sink[ADDRESS_SPACE_64_MAX_OFFSET
+                ..(ADDRESS_SPACE_64_MAX_OFFSET + 8)],
+            max.to_le_bytes()
+        );
+        assert_eq!(
+            sink[ADDRESS_SPACE_64_LEN_OFFSET
+                ..(ADDRESS_SPACE_64_LEN_OFFSET + 8)],
+            len.to_le_bytes()
+        );
+
+        sink.clear();
+
+        // Validate Interrupt interrupt list offset.
+        aml::Interrupt::new(true, false, false, true, vec![0x05])
+            .to_aml_bytes(&mut sink);
+        assert_eq!(
+            sink[INTERRUPT_LIST_OFFSET..(INTERRUPT_LIST_OFFSET + 4)],
+            0x05_u32.to_le_bytes()
+        );
+
+        sink.clear();
+
+        // Validate FWDT offset address field offset.
+        Ssdt::new(0xabc).to_aml_bytes(&mut sink);
+        assert_eq!(
+            sink[SSDT_FWDT_ADDR_OFFSET
+                ..(SSDT_FWDT_ADDR_OFFSET + SSDT_FWDT_ADDR_LEN)],
+            0xabc_u32.to_le_bytes()
+        );
     }
 }
