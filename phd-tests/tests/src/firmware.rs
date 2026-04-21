@@ -2,12 +2,11 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use acpi_tables;
 use phd_testcase::*;
 use tracing::info;
 
 #[phd_testcase]
-async fn acpi_tables_generation(ctx: &Framework) {
+async fn acpi_tables_generation(ctx: &TestCtx) {
     let mut vm = ctx
         .spawn_vm(&ctx.vm_config_builder("lspci_lifecycle_test"), None)
         .await?;
@@ -60,5 +59,6 @@ async fn acpi_tables_generation(ctx: &Framework) {
     );
     let facs_version = vm.run_shell_command(&facs_version_cmd).await?;
     info!(facs_version, "FACS table version");
+
     assert_eq!(facs_version, "01");
 }
