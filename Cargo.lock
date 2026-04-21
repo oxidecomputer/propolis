@@ -6074,6 +6074,7 @@ dependencies = [
 name = "phd-tests"
 version = "0.1.0"
 dependencies = [
+ "acpi_tables",
  "anyhow",
  "backoff",
  "byteorder",
