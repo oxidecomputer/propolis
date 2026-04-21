@@ -57,7 +57,7 @@ impl<'a> Aml for Madt<'a> {
         .pc_at_compat();
 
         // Processor Local APIC.
-        // https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#i-o-apic-structure
+        // https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#processor-local-apic-structure
         for i in 0..self.config.num_cpus {
             table.add_structure(madt::ProcessorLocalApic::new(
                 i,
