@@ -57,9 +57,7 @@ enum AttestationInitState {
 pub struct AttestationSockInit {
     log: slog::Logger,
     vm_conf_send: oneshot::Sender<VmInstanceConf>,
-    uuid: uuid::Uuid,
-    project: uuid::Uuid,
-    silo: uuid::Uuid,
+    vm_instance_conf: vm_attest::VmInstanceConf,
     boot_backend_ref: Option<boot_digest::Backend>,
 }
 
@@ -70,18 +68,9 @@ impl AttestationSockInit {
         let AttestationSockInit {
             log,
             vm_conf_send,
-            uuid,
-            project,
-            silo,
+            mut vm_instance_conf,
             boot_backend_ref,
         } = self;
-
-        let mut vm_conf = vm_attest::VmInstanceConf {
-            uuid,
-            project,
-            silo,
-            boot_digest: None,
-        };
 
         if let Some(digest_backend) = boot_backend_ref {
             let boot_digest = match crate::attestation::boot_digest::compute(
@@ -102,12 +91,12 @@ impl AttestationSockInit {
                 }
             };
 
-            vm_conf.boot_digest = Some(boot_digest);
+            vm_instance_conf.boot_digest = Some(boot_digest);
         } else {
             slog::warn!(log, "not computing boot disk digest");
         }
 
-        let send_res = vm_conf_send.send(vm_conf);
+        let send_res = vm_conf_send.send(vm_instance_conf);
         if let Err(_) = send_res {
             slog::error!(
                 log,
@@ -284,11 +273,9 @@ impl AttestationSock {
         Ok(())
     }
 
-    pub fn prepare_instance_conf(
+    pub fn prepare_init_state(
         &mut self,
-        uuid: uuid::Uuid,
-        project: uuid::Uuid,
-        silo: uuid::Uuid,
+        vm_instance_conf: vm_attest::VmInstanceConf,
         boot_backend_ref: Option<boot_digest::Backend>,
     ) {
         let init_state = std::mem::replace(
@@ -306,11 +293,9 @@ impl AttestationSock {
         };
         let init = AttestationSockInit {
             log: self.log.clone(),
-            uuid,
-            project,
-            silo,
             boot_backend_ref,
             vm_conf_send,
+            vm_instance_conf,
         };
         let init_task = tokio::spawn(init.run());
         self.init_state = AttestationInitState::Running { init_task };
