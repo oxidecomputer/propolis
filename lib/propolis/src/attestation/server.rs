@@ -67,7 +67,14 @@ impl AttestationSockInit {
     /// Do any any remaining work of collecting VM RoT measurements in support
     /// of this VM's attestation server.
     pub async fn run(self) {
-        let AttestationSockInit { log, vm_conf_send, uuid, project, silo, boot_backend_ref } = self;
+        let AttestationSockInit {
+            log,
+            vm_conf_send,
+            uuid,
+            project,
+            silo,
+            boot_backend_ref,
+        } = self;
 
         let mut vm_conf = vm_attest::VmInstanceConf {
             uuid,
