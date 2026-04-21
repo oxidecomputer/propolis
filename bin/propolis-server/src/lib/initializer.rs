@@ -700,6 +700,8 @@ impl MachineInitializer<'_> {
         vm_rot: &mut AttestationSock,
     ) -> Result<(), MachineInitError> {
         let uuid = self.properties.id;
+        let project = self.properties.metadata.project_id;
+        let silo = self.properties.metadata.silo_id;
 
         // The first boot entry is a key into `self.spec.disks`, which is how
         // we'll get to a Crucible volume backing this boot option.
@@ -781,7 +783,7 @@ impl MachineInitializer<'_> {
             None
         };
 
-        vm_rot.prepare_instance_conf(uuid, boot_backend);
+        vm_rot.prepare_instance_conf(uuid, project, silo, boot_backend);
 
         Ok(())
     }
