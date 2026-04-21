@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
+use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues, CpuidVendor};
 use itertools::Itertools;
 use phd_framework::{test_vm::MigrationTimeout, TestVm};
 use phd_testcase::*;
@@ -276,7 +276,16 @@ impl<'a> LinuxGuestTopo<'a> {
     }
 }
 
-#[phd_testcase]
+fn host_not_intel(_ctx: &TestCtx) -> bool {
+    let base_leaf: CpuidIdent = CpuidIdent::leaf(0);
+
+    let values = cpuid_utils::host::query(base_leaf);
+    let vendor = CpuidVendor::try_from(values).expect("recognized CPU vendor");
+
+    vendor != CpuidVendor::Intel
+}
+
+#[phd_testcase(check_skip = host_not_intel)]
 async fn guest_cpu_topo_test(ctx: &TestCtx) {
     let vm = launch_cpuid_smoke_test_vm(ctx, "guest_cpu_topo_test").await?;
 

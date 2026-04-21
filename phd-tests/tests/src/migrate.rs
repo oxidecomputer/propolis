@@ -31,13 +31,17 @@ async fn serial_history(ctx: &TestCtx) {
 mod from_base {
     use super::*;
 
-    #[phd_testcase]
+    fn migration_disabled(ctx: &TestCtx) -> bool {
+        !ctx.migration_base_enabled()
+    }
+
+    #[phd_testcase(check_skip = migration_disabled)]
     async fn can_migrate_from_base(ctx: &TestCtx) {
         run_smoke_test(ctx, spawn_base_vm(ctx, "migration_from_base").await?)
             .await?;
     }
 
-    #[phd_testcase]
+    #[phd_testcase(check_skip = migration_disabled)]
     async fn serial_history(ctx: &TestCtx) {
         run_serial_history_test(
             ctx,
@@ -49,7 +53,7 @@ mod from_base {
     // Tests migrating from the "migration base" propolis artifact to the Propolis
     // version under test, back to "base", and back to the version under
     // test.
-    #[phd_testcase]
+    #[phd_testcase(check_skip = migration_disabled)]
     async fn migration_from_base_and_back(ctx: &TestCtx) {
         let mut source =
             spawn_base_vm(ctx, "migration_from_base_and_back").await?;

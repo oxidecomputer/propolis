@@ -50,6 +50,10 @@ pub struct TestCase {
 
     /// The test function to execute to run this test.
     pub(crate) function: TestFunction,
+
+    /// A function used to check if a test's skip or pass was actually expected
+    /// for the given `TestCtx`.
+    pub(crate) check_skip_fn: Option<fn(&TestCtx) -> bool>,
 }
 
 #[allow(dead_code)]
@@ -59,8 +63,9 @@ impl TestCase {
         module_path: &'static str,
         name: &'static str,
         function: TestFunction,
+        check_skip_fn: Option<fn(&TestCtx) -> bool>,
     ) -> Self {
-        Self { module_path, name, function }
+        Self { module_path, name, function, check_skip_fn }
     }
 
     /// Returns the test case's fully qualified name, i.e. `module_path::name`.
@@ -76,7 +81,48 @@ impl TestCase {
     /// Runs the test case's body with the supplied test context and returns its
     /// outcome.
     pub async fn run(&self, ctx: &TestCtx) -> TestOutcome {
-        (self.function.f)(ctx).await
+        let outcome = (self.function.f)(ctx).await;
+        match (outcome, self.check_skip_fn) {
+            (TestOutcome::Passed, check_skip_fn) => {
+                let wanted_skip = if let Some(check_skip_fn) = check_skip_fn {
+                    check_skip_fn(ctx)
+                } else {
+                    false
+                };
+
+                if wanted_skip {
+                    return TestOutcome::Failed(Some(
+                        "test passed but expected skip?".to_string(),
+                    ));
+                }
+
+                TestOutcome::Passed
+            }
+            (TestOutcome::Failed(skip_msg), _) => TestOutcome::Failed(skip_msg),
+            (TestOutcome::Skipped(skip_msg), None) => {
+                let fail_msg = match skip_msg {
+                    Some(msg) => {
+                        format!("skipped without check_skip attribute: {msg}")
+                    }
+                    None => "skipped without check_skip attribute".to_string(),
+                };
+                TestOutcome::Failed(Some(fail_msg))
+            }
+            (TestOutcome::Skipped(skip_msg), Some(check_skip_fn)) => {
+                if check_skip_fn(ctx) {
+                    return TestOutcome::Skipped(skip_msg);
+                }
+
+                let fail_msg = match skip_msg {
+                    Some(msg) => {
+                        format!("skipped but did not expect skip: {msg}")
+                    }
+                    None => "skipped but did not expect skip".to_string(),
+                };
+
+                TestOutcome::Failed(Some(fail_msg))
+            }
+        }
     }
 }
 

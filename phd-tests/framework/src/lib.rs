@@ -35,7 +35,7 @@ use camino::Utf8PathBuf;
 
 use disk::DiskFactory;
 use futures::{stream::FuturesUnordered, StreamExt};
-use guest_os::GuestOsKind;
+use guest_os::{GuestOs, GuestOsKind};
 use log_config::LogConfig;
 use port_allocator::PortAllocator;
 pub use test_vm::TestVm;
@@ -152,10 +152,14 @@ impl TestCtx {
         self.framework.default_guest_os_artifact()
     }
 
-    /// Yields the guest OS adapter corresponding to the default guest OS
-    /// artifact.
-    pub async fn default_guest_os_kind(&self) -> anyhow::Result<GuestOsKind> {
-        self.framework.default_guest_os_kind().await
+    /// Returns the guest OS kind corresponding to the default guest OS artifact.
+    pub fn default_guest_os_kind(&self) -> anyhow::Result<GuestOsKind> {
+        self.framework.default_guest_os_kind()
+    }
+
+    /// Returns the guest OS adapter corresponding to the default guest OS artifact.
+    pub fn default_guest_os_adapter(&self) -> anyhow::Result<Box<dyn GuestOs>> {
+        self.default_guest_os_kind().map(guest_os::get_guest_os_adapter)
     }
 
     /// Indicates whether the disk factory in this framework supports the
@@ -378,12 +382,9 @@ impl Framework {
 
     /// Yields the guest OS adapter corresponding to the default guest OS
     /// artifact.
-    pub async fn default_guest_os_kind(&self) -> anyhow::Result<GuestOsKind> {
-        Ok(self
-            .artifact_store
-            .get_guest_os_image(&self.default_guest_os_artifact)
-            .await?
-            .1)
+    pub fn default_guest_os_kind(&self) -> anyhow::Result<GuestOsKind> {
+        self.artifact_store
+            .get_guest_os_image_kind(&self.default_guest_os_artifact)
     }
 
     /// Indicates whether the disk factory in this framework supports the

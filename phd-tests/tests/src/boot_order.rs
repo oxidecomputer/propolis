@@ -20,6 +20,14 @@ use efi_utils::{
     EDK2_FIRMWARE_VOL_GUID, EDK2_UI_APP_GUID,
 };
 
+fn no_efivarfs(ctx: &TestCtx) -> bool {
+    // A predicate function most boot order tests are gated on. There is some
+    // minimum Linux version where efivarfs first shipped, but we're assuming
+    // that no one is testing such an old Linux under PHD; kernel version's
+    // aren't directly represented in the guest OS kind anyway.
+    !ctx.default_guest_os_kind().expect("has default guest os kind").is_linux()
+}
+
 // This test checks that with a specified boot order, the guest boots whichever
 // disk we wanted to come first. This is simple enough, until you want to know
 // "what you booted from"..
@@ -48,7 +56,7 @@ use efi_utils::{
 //
 // Unlike later tests, this test does not manipulate boot configuration from
 // inside the guest OS.
-#[phd_testcase]
+#[phd_testcase(check_skip = no_efivarfs)]
 async fn configurable_boot_order(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("configurable_boot_order");
 
@@ -114,7 +122,7 @@ async fn configurable_boot_order(ctx: &TestCtx) {
 // specifically asserts that the unbootable disk is first in the boot order; the
 // system booting means that boot order is respected and a non-bootable disk
 // does not wedge startup.
-#[phd_testcase]
+#[phd_testcase(check_skip = no_efivarfs)]
 async fn unbootable_disk_skipped(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("unbootable_disk_skipped");
 
@@ -233,7 +241,12 @@ async fn unbootable_disk_skipped(ctx: &TestCtx) {
 // Start with the boot order being `["boot-disk", "unbootable"]`, then change it
 // so that next boot we'll boot from `unbootable` first. Then reboot and verify
 // that the boot order is still "boot-disk" first.
-#[phd_testcase]
+//
+// TODO: this test will `skip` if the guest is a read-only Alpine, for example.
+// if the guest doesn't have an efivarfs, this test warns loudly and then
+// passes. The predicate function checks for a much simpler "is linux". Both of
+// these are hard to discover from a predicate function (probably?)
+#[phd_testcase(check_skip = no_efivarfs)]
 async fn guest_can_adjust_boot_order(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("guest_can_adjust_boot_order");
 
@@ -400,7 +413,7 @@ async fn guest_can_adjust_boot_order(ctx: &TestCtx) {
 // If `bootorder` is removed for subsequent reboots, the EFI System Partition's
 // store of NvVar variables is the source of boot order, and guests can control
 // their boot fates.
-#[phd_testcase]
+#[phd_testcase(check_skip = no_efivarfs)]
 async fn boot_order_source_priority(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("boot_order_source_priority");
 
@@ -507,7 +520,7 @@ async fn boot_order_source_priority(ctx: &TestCtx) {
     );
 }
 
-#[phd_testcase]
+#[phd_testcase(check_skip = no_efivarfs)]
 async fn nvme_boot_option_description(ctx: &TestCtx) {
     let mut cfg = ctx.vm_config_builder("nvme_boot_option_description");
 

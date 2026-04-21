@@ -7,7 +7,7 @@ use phd_testcase::*;
 use tracing::info;
 use uuid::Uuid;
 
-#[phd_testcase]
+#[phd_testcase(check_skip = super::crucible_disabled)]
 async fn smoke_test(ctx: &TestCtx) {
     let mut config = ctx.vm_config_builder("crucible_migrate_smoke_source");
     super::add_default_boot_disk(ctx, &mut config)?;
@@ -37,7 +37,7 @@ async fn smoke_test(ctx: &TestCtx) {
     assert_eq!(lsout, "foo.bar");
 }
 
-#[phd_testcase]
+#[phd_testcase(check_skip = super::crucible_disabled)]
 async fn load_test(ctx: &TestCtx) {
     let mut config = ctx.vm_config_builder("crucible_load_test_source");
     super::add_default_boot_disk(ctx, &mut config)?;
