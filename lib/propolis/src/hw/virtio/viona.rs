@@ -59,6 +59,7 @@ enum MqSetPairsCause {
     Reset = 0,
     MqEnabled = 1,
     Commanded = 2,
+    Import = 3,
 }
 
 #[usdt::provider(provider = "propolis")]
@@ -934,6 +935,25 @@ impl MigrateMulti for PciVirtioViona {
         self.hdl.set_features(feat).map_err(|e| {
             MigrateStateError::ImportFailed(format!(
                 "error while setting viona features ({feat:x}): {e:?}"
+            ))
+        })?;
+
+        if (feat & VIRTIO_NET_F_MQ) != 0 {
+            self.hdl.set_pairs(PROPOLIS_MAX_MQ_PAIRS).unwrap();
+        }
+        let queues = self.virtio_state.queues.count().get();
+        let Some(pairs) = (queues - 1).checked_div(2) else {
+            return Err(MigrateStateError::ImportFailed(format!(
+                "source queue count was not a number of pairs + 1: {queues}"
+            )));
+        };
+        probes::virtio_viona_mq_set_use_pairs!(|| (
+            MqSetPairsCause::Import as u8,
+            pairs
+        ));
+        self.hdl.set_usepairs(pairs).map_err(|e| {
+            MigrateStateError::ImportFailed(format!(
+                "error while restoring use pairs ({pairs}): {e:?}"
             ))
         })?;
 
@@ -2181,7 +2201,9 @@ mod test {
             &test_ctx.dev,
             drv_state,
         );
+        assert!(driver.status_ok());
         Lifecycle::reset(test_ctx.dev.as_ref());
+        assert!(driver.status_ok());
 
         let drv_state = driver.export();
         let test_ctx = test_ctx.migrate();
@@ -2190,6 +2212,7 @@ mod test {
             &test_ctx.dev,
             drv_state,
         );
+        assert!(driver.status_ok());
         driver.modern_device_init(expected_feats);
 
         let drv_state = driver.export();
