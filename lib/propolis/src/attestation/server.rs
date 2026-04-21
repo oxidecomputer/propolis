@@ -58,6 +58,8 @@ pub struct AttestationSockInit {
     log: slog::Logger,
     vm_conf_send: oneshot::Sender<VmInstanceConf>,
     uuid: uuid::Uuid,
+    project: uuid::Uuid,
+    silo: uuid::Uuid,
     boot_backend_ref: Option<boot_digest::Backend>,
 }
 
@@ -65,10 +67,9 @@ impl AttestationSockInit {
     /// Do any any remaining work of collecting VM RoT measurements in support
     /// of this VM's attestation server.
     pub async fn run(self) {
-        let AttestationSockInit { log, vm_conf_send, uuid, boot_backend_ref } =
-            self;
+        let AttestationSockInit { log, vm_conf_send, uuid, project, silo, boot_backend_ref } = self;
 
-        let mut vm_conf = vm_attest::VmInstanceConf { uuid, boot_digest: None };
+        let mut vm_conf = vm_attest::VmInstanceConf { uuid, project, silo, boot_digest: None };
 
         if let Some(digest_backend) = boot_backend_ref {
             let boot_digest = match crate::attestation::boot_digest::compute(
@@ -274,6 +275,8 @@ impl AttestationSock {
     pub fn prepare_instance_conf(
         &mut self,
         uuid: uuid::Uuid,
+        project: uuid::Uuid,
+        silo: uuid::Uuid,
         boot_backend_ref: Option<boot_digest::Backend>,
     ) {
         let init_state = std::mem::replace(
@@ -292,6 +295,8 @@ impl AttestationSock {
         let init = AttestationSockInit {
             log: self.log.clone(),
             uuid,
+            project,
+            silo,
             boot_backend_ref,
             vm_conf_send,
         };
