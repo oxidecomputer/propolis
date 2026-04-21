@@ -452,7 +452,12 @@ pub enum FeatureIdent {
     /// This feature is persistent across power states.
     /// See NVMe 1.0e Section 7.6.1.1 Software Progress Marker
     SoftwareProgressMarker,
-    /// Vendor specific feature.
+
+    // Vendor specific features.
+    /// Oxide-specific feature - returns relevant device features.
+    OxideDeviceFeatures,
+
+    /// All other vendor specific features.
     Vendor(#[allow(dead_code)] u8),
 }
 
@@ -476,6 +481,7 @@ impl From<u8> for FeatureIdent {
             0xC..=0x7F => Reserved,
             0x80 => SoftwareProgressMarker,
             0x81..=0xBF => Reserved,
+            FEAT_ID_OXIDE_DEVICE_FEATURES => OxideDeviceFeatures,
             0xC0..=0xFF => Vendor(fid),
         }
     }
@@ -648,6 +654,17 @@ impl From<u32> for FeatInterruptVectorConfig {
 impl From<FeatInterruptVectorConfig> for u32 {
     fn from(value: FeatInterruptVectorConfig) -> Self {
         u32::from(value.iv) | (u32::from(value.cd) << 16)
+    }
+}
+
+bitstruct! {
+    pub struct OxideDeviceFeatures(pub u32) {
+        /// Indicates the device is read-only and will complete all attempted
+        /// writes with `STS_WRITE_READ_ONLY_RANGE`.
+        pub read_only: bool = 0;
+
+        /// Reserved
+        reserved: u32 = 1..32;
     }
 }
 
@@ -851,7 +868,7 @@ impl PrpIter<'_> {
                     // The first PRP List entry:
                     // - shall be Qword aligned, and
                     // - may also have a non-zero offset within the memory page.
-                    if (self.prp2 % 8) != 0 {
+                    if !self.prp2.is_multiple_of(8) {
                         return Err("PRP2 not Qword aligned!");
                     }
 

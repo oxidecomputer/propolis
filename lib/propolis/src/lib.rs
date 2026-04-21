@@ -16,6 +16,7 @@ extern crate bitflags;
 
 pub mod accessors;
 pub mod api_version;
+pub mod attestation;
 pub mod block;
 pub mod chardev;
 pub mod common;
@@ -34,6 +35,7 @@ pub mod tasks;
 pub mod util;
 pub mod vcpu;
 pub mod vmm;
+pub mod vsock;
 
 pub use exits::{VmEntry, VmExit};
 pub use vmm::Machine;

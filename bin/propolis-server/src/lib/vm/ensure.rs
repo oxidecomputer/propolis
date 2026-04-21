@@ -98,13 +98,13 @@ use propolis::enlightenment::{
     hyperv::{Features as HyperVFeatures, HyperV},
     Enlightenment,
 };
-use propolis_api_types::{
-    instance_spec::components::board::{
-        GuestHypervisorInterface, HyperVFeatureFlag,
-    },
-    InstanceEnsureResponse, InstanceMigrateInitiateResponse,
-    InstanceProperties, InstanceState,
+use propolis_api_types::instance::{
+    InstanceEnsureResponse, InstanceProperties, InstanceState,
 };
+use propolis_api_types::instance_spec::components::board::{
+    GuestHypervisorInterface, HyperVFeatureFlag,
+};
+use propolis_api_types::migration::InstanceMigrateInitiateResponse;
 use slog::{debug, info};
 
 use crate::{
@@ -563,6 +563,8 @@ async fn initialize_vm_objects(
         &properties,
     ))?;
     init.initialize_network_devices(&chipset).await?;
+    let mut attest_handle =
+        init.initialize_vsock(&chipset, options.attest_config).await?;
 
     #[cfg(feature = "failure-injection")]
     init.initialize_test_devices();
@@ -573,17 +575,65 @@ async fn initialize_vm_objects(
         init.initialize_9pfs(&chipset);
     }
 
-    init.initialize_storage_devices(&chipset, options.nexus_client.clone())
+    let wanted_heap = init
+        .initialize_storage_devices(&chipset, options.nexus_client.clone())
         .await?;
 
     let ramfb =
         init.initialize_fwcfg(spec.board.cpus, &options.bootrom_version)?;
 
+    // If we have a VM RoT, that RoT needs to be able to collect some
+    // information about the guest before it can be actually usable. It will do
+    // that asynchronously, but have to provide references for initial necessary
+    // VM state.
+    if let Some(attest_handle) = attest_handle.as_mut() {
+        init.prepare_rot_initializer(attest_handle)?;
+    }
+
     init.register_guest_hv_interface(guest_hv_lifecycle);
     init.initialize_cpus().await?;
+
+    let total_cpus = pbind::online_cpus()?;
+    let vcpu_count: i32 = machine
+        .vcpus
+        .len()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("more than 2^31 vCPUs"))?;
+
+    // When a VM has I/O-heavy workloads across many cores, vCPUs can end up
+    // moving across the host and come with wasted time in juggling cyclics.
+    //
+    // Nexus can't yet determine CPU binding assignments in a central manner. In
+    // lieu of it, knowing that Nexus won't oversubscribe a host we can
+    // autonomously follow a CPU pinning strategy as: "if the VM is larger than
+    // half of the sled, there can only be one, so bind it to specific CPUs and
+    // rely on the OS to sort out the rest". This gets the largest VMs to fixed
+    // vCPU->CPU assignments, which also are most likely to benefit.
+    let cpu_threshold = total_cpus / 2;
+    let bind_cpus = if vcpu_count > cpu_threshold {
+        if vcpu_count > total_cpus {
+            anyhow::bail!("spec requested more CPUs than are online!");
+        }
+
+        // Bind to the upper range of CPUs, fairly arbitrary.
+        let first_bind_cpu = total_cpus - vcpu_count;
+        let bind_cpus = (first_bind_cpu..total_cpus).collect();
+
+        info!(log, "applying automatic vCPU->CPU binding";
+                  "vcpu_count" => vcpu_count,
+                  "total_cpus" => total_cpus,
+                  "threshold" => cpu_threshold,
+                  "vcpu_cpus" => #?bind_cpus);
+
+        Some(bind_cpus)
+    } else {
+        None
+    };
+
     let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
         &machine,
         event_queue.clone() as Arc<dyn super::guest_event::VcpuEventHandler>,
+        bind_cpus,
         log.new(slog::o!("component" => "vcpu_tasks")),
     )?);
 
@@ -591,7 +641,7 @@ async fn initialize_vm_objects(
         devices, block_backends, crucible_backends, ..
     } = init;
 
-    Ok(InputVmObjects {
+    let res = InputVmObjects {
         instance_spec: spec.clone(),
         vcpu_tasks,
         machine,
@@ -601,7 +651,50 @@ async fn initialize_vm_objects(
         com1,
         framebuffer: Some(ramfb),
         ps2ctrl,
-    })
+        attest_handle,
+    };
+
+    // Another really terrible hack. As we've found in Propolis#1008, brk()
+    // can end end up starved by a long stream of page faults. We allocate
+    // and deallocate often enough in the hot parts of Propolis at runtime,
+    // but the working set is expected to be relatively tiny; we'd brk()
+    // once or twice, get up to a reasonable size, and never thing twice a
+    // bout it.
+    //
+    // In practice that later allocation may be blocked for tens of
+    // *minutes*, and might be while holding locks for device state (in
+    // 1008 we hold a queue state lock, for example). Everything goes off
+    // the rails from there, as vCPUs can easily get dragged into the mess,
+    // guest NMIs aren't acknowledged because vCPUs can't run, etc.
+    //
+    // So, the awful hack. Most of the runtime growth, that we can think of,
+    // comes from storage backend implementation. We guess at that amount in
+    // `initialize_storage_devices`. Now' we'll alloc at least that much, free
+    // it, and try to avoid brk() when the OS won't be able to get to it.
+    //
+    // This should be able to be removed when we are confident we can
+    // actually brk() at runtime without starving ourselves out.
+    //
+    // As one last step, include an extra 134 MiB in the balloon. In the happy
+    // case, even just 16 MiB was sufficient for Oximeter and regular check-ins
+    // with Propolis. In at least one case, though, we saw a Propolis with a
+    // heap about 126 MiB larger than the balloon had wanted. We don't know what
+    // happened to grow the heap like that, but size against the worst case for
+    // now for safety.
+    //
+    // All in all the worst case balloon puts propolis-server's heap a bit over
+    // (around 483 MiB + 30MiB) the RFD 413 expectation of 0.5 GiB for Propolis
+    // memory.
+    let balloon_size = wanted_heap + 134 * propolis::common::MB;
+    info!(log, "inflating balloon";
+        "balloon_size" => balloon_size);
+    let balloon = vec![0u8; balloon_size];
+    // Do a volatile access to the Vec to make sure Rust doesn't optimize it
+    // out...
+    unsafe { std::ptr::read_volatile(balloon.as_ptr()) };
+    std::mem::drop(balloon);
+
+    Ok(res)
 }
 
 /// Create an object used to sample kstats.

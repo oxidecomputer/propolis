@@ -20,15 +20,16 @@ use crate::{
     test_vm::{
         environment::Environment, server::ServerProcessParameters, spec::VmSpec,
     },
-    Framework,
+    TestCtx,
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use camino::Utf8PathBuf;
 use core::result::Result as StdResult;
+use futures::FutureExt;
 use propolis_client::{
     instance_spec::{
-        ComponentV0, InstanceProperties, InstanceSpecGetResponse,
+        Component, InstanceProperties, InstanceSpecGetResponse,
         ReplacementComponent,
     },
     support::{InstanceSerialConsoleHelper, WSClientOffset},
@@ -42,7 +43,7 @@ use propolis_client::{
 use propolis_client::{Client, ResponseValue};
 use thiserror::Error;
 use tokio::{
-    sync::{mpsc::UnboundedSender, oneshot},
+    sync::{mpsc::UnboundedSender, oneshot, watch},
     task::JoinHandle,
     time::timeout,
 };
@@ -152,6 +153,106 @@ enum VmState {
     Ensured { serial: SerialConsole },
 }
 
+/// Description of the acceptable status codes from executing a command in a
+/// [`TestVm::run_shell_command`].
+// This could reasonably have a `Status(u16)` variant to check specific non-zero
+// statuses, but specific codes are not terribly portable! In the few cases we
+// can expect a specific status for errors, those specific codes change between
+// f.ex illumos and Linux guests.
+enum StatusCheck {
+    Ok,
+    NotOk,
+}
+
+pub struct ShellOutputExecutor<'ctx> {
+    vm: &'ctx TestVm,
+    cmd: &'ctx str,
+    status_check: Option<StatusCheck>,
+}
+
+impl<'a> ShellOutputExecutor<'a> {
+    pub fn ignore_status(mut self) -> ShellOutputExecutor<'a> {
+        self.status_check = None;
+        self
+    }
+
+    pub fn check_ok(mut self) -> ShellOutputExecutor<'a> {
+        self.status_check = Some(StatusCheck::Ok);
+        self
+    }
+
+    pub fn check_err(mut self) -> ShellOutputExecutor<'a> {
+        self.status_check = Some(StatusCheck::NotOk);
+        self
+    }
+}
+
+impl<'a> std::future::IntoFuture for ShellOutputExecutor<'a> {
+    type Output = Result<String>;
+    type IntoFuture = futures::future::BoxFuture<'a, Result<String>>;
+
+    fn into_future(self) -> Self::IntoFuture {
+        Box::pin(async move {
+            // Allow the guest OS to transform the input command into a
+            // guest-specific command sequence. This accounts for the guest's
+            // shell type (which affects e.g. affects how it displays multi-line
+            // commands) and serial console buffering discipline.
+            let command_sequence =
+                self.vm.guest_os.shell_command_sequence(self.cmd);
+            self.vm.run_command_sequence(command_sequence).await?;
+
+            // `shell_command_sequence` promises that the generated command
+            // sequence clears buffer of everything up to and including the
+            // input command before actually issuing the final '\n' that issues
+            // the command.  This ensures that the buffer contents returned by
+            // this call contain only the command's output.
+            let output = self
+                .vm
+                .wait_for_serial_output(
+                    self.vm.guest_os.get_shell_prompt(),
+                    Duration::from_secs(300),
+                )
+                .await?;
+
+            // Trim any leading newlines inserted when the command was issued
+            // and any trailing whitespace that isn't actually part of the
+            // command output. Any other embedded whitespace is the caller's
+            // problem.
+            let output = output.trim().to_string();
+
+            if let Some(check) = self.status_check {
+                let status_command_sequence =
+                    self.vm.guest_os.shell_command_sequence("echo $?");
+                self.vm.run_command_sequence(status_command_sequence).await?;
+                let status = self
+                    .vm
+                    .wait_for_serial_output(
+                        self.vm.guest_os.get_shell_prompt(),
+                        Duration::from_secs(300),
+                    )
+                    .await?;
+                let status = status.trim().parse::<u16>()?;
+
+                match check {
+                    StatusCheck::Ok => {
+                        if status != 0 {
+                            bail!("expected status 0, got {}", status);
+                        }
+                    }
+                    StatusCheck::NotOk => {
+                        if status == 0 {
+                            bail!("expected non-zero status, got {}", status);
+                        }
+                    }
+                }
+            }
+
+            Ok(output)
+        })
+        .boxed()
+    }
+}
+
 /// A virtual machine running in a Propolis server. Test cases create these VMs
 /// using the `factory::VmFactory` embedded in their test contexts.
 ///
@@ -165,11 +266,15 @@ pub struct TestVm {
     metrics: Option<metrics::FakeOximeterServer>,
     spec: VmSpec,
     environment_spec: EnvironmentSpec,
-    data_dir: Utf8PathBuf,
+    output_dir: Utf8PathBuf,
 
     guest_os: Box<dyn GuestOs>,
 
     state: VmState,
+
+    /// If we should wait for operator intervention before terminating this
+    /// instance, this will be populated.
+    manual_stop: Option<TestVmManualStop>,
 
     /// Sending a task handle to this channel will ensure that the task runs to
     /// completion as part of the post-test cleanup fixture (i.e. before any
@@ -198,7 +303,7 @@ impl TestVm {
     /// - guest_os_kind: The kind of guest OS this VM will host.
     #[instrument(skip_all)]
     pub(crate) async fn new(
-        framework: &Framework,
+        ctx: &TestCtx,
         spec: VmSpec,
         environment: &EnvironmentSpec,
     ) -> Result<Self> {
@@ -217,7 +322,7 @@ impl TestVm {
         info!(%vm_name, ?guest_os_kind, ?environment);
 
         match environment
-            .build(framework)
+            .build(ctx)
             .await
             .context("building environment for new VM")?
         {
@@ -226,7 +331,8 @@ impl TestVm {
                 spec,
                 environment.clone(),
                 params,
-                framework.cleanup_task_channel(),
+                ctx.framework.cleanup_task_channel(),
+                ctx.manual_stop.clone(),
             ),
         }
     }
@@ -237,6 +343,7 @@ impl TestVm {
         environment_spec: EnvironmentSpec,
         mut params: ServerProcessParameters,
         cleanup_task_tx: UnboundedSender<JoinHandle<()>>,
+        manual_stop: Option<TestVmManualStop>,
     ) -> Result<Self> {
         let metrics = environment_spec.metrics.as_ref().map(|m| match m {
             MetricsLocation::Local => {
@@ -250,7 +357,7 @@ impl TestVm {
             }
         });
 
-        let data_dir = params.data_dir.to_path_buf();
+        let output_dir = params.output_dir.to_path_buf();
         let server_addr = params.server_addr;
         let server = server::PropolisServer::new(
             &vm_spec.vm_name,
@@ -267,10 +374,11 @@ impl TestVm {
             metrics,
             spec: vm_spec,
             environment_spec,
-            data_dir,
+            output_dir,
             guest_os,
             state: VmState::New,
             cleanup_task_tx,
+            manual_stop,
         })
     }
 
@@ -339,8 +447,12 @@ impl TestVm {
         // it's possible to create a boxed future that abstracts over the
         // caller's chosen endpoint.
         let ensure_fn = || async {
-            let result =
-                self.client.instance_ensure().body(&ensure_req).send().await;
+            let result = self
+                .client
+                .instance_ensure()
+                .body(ensure_req.clone())
+                .send()
+                .await;
             if let Err(e) = result {
                 match e {
                     propolis_client::Error::CommunicationError(_) => {
@@ -602,7 +714,7 @@ impl TestVm {
         let mut map = ReplacementComponents::new();
         for (id, comp) in &self.spec.instance_spec().components {
             match comp {
-                ComponentV0::MigrationFailureInjector(inj) => {
+                Component::MigrationFailureInjector(inj) => {
                     map.insert(
                         id.to_string(),
                         ReplacementComponent::MigrationFailureInjector(
@@ -610,7 +722,7 @@ impl TestVm {
                         ),
                     );
                 }
-                ComponentV0::CrucibleStorageBackend(be) => {
+                Component::CrucibleStorageBackend(be) => {
                     map.insert(
                         id.to_string(),
                         ReplacementComponent::CrucibleStorageBackend(
@@ -782,7 +894,15 @@ impl TestVm {
         .instrument(info_span!("wait_to_boot"));
 
         match timeout(timeout_duration, boot).await {
-            Err(_) => anyhow::bail!("timed out while waiting to boot"),
+            Err(_) => {
+                error!(
+                    "Guest did not boot after {}ms! Collecting core..",
+                    timeout_duration.as_millis()
+                );
+                let proc = self.server.as_ref().unwrap();
+                proc.core();
+                anyhow::bail!("timed out while waiting to boot")
+            }
             Ok(inner) => {
                 inner.context("executing guest login sequence")?;
             }
@@ -885,30 +1005,23 @@ impl TestVm {
     /// waits for another shell prompt to appear using
     /// [`Self::wait_for_serial_output`] and returns any text that was buffered
     /// to the serial console after the command was sent.
-    pub async fn run_shell_command(&self, cmd: &str) -> Result<String> {
-        // Allow the guest OS to transform the input command into a
-        // guest-specific command sequence. This accounts for the guest's shell
-        // type (which affects e.g. affects how it displays multi-line commands)
-        // and serial console buffering discipline.
-        let command_sequence = self.guest_os.shell_command_sequence(cmd);
-        self.run_command_sequence(command_sequence).await?;
-
-        // `shell_command_sequence` promises that the generated command sequence
-        // clears buffer of everything up to and including the input command
-        // before actually issuing the final '\n' that issues the command.
-        // This ensures that the buffer contents returned by this call contain
-        // only the command's output.
-        let out = self
-            .wait_for_serial_output(
-                self.guest_os.get_shell_prompt(),
-                Duration::from_secs(300),
-            )
-            .await?;
-
-        // Trim any leading newlines inserted when the command was issued and
-        // any trailing whitespace that isn't actually part of the command
-        // output. Any other embedded whitespace is the caller's problem.
-        Ok(out.trim().to_string())
+    ///
+    /// After running the shell command, sends `echo $?` to query and return the
+    /// command's return status as well.
+    ///
+    /// This will return an error if the command returns a non-zero status by
+    /// default; to ignore the status or expect a non-zero as a positive
+    /// condition, see [`ShellOutputExecutor::ignore_status`] or
+    /// [`ShellOutputExecutor::check_err`].
+    pub fn run_shell_command<'a>(
+        &'a self,
+        cmd: &'a str,
+    ) -> ShellOutputExecutor<'a> {
+        ShellOutputExecutor {
+            vm: self,
+            cmd,
+            status_check: Some(StatusCheck::Ok),
+        }
     }
 
     pub async fn graceful_reboot(&self) -> Result<()> {
@@ -997,7 +1110,7 @@ impl TestVm {
     /// can log serial console output.
     fn serial_log_file_path(&self) -> Utf8PathBuf {
         let filename = format!("{}.serial.log", self.spec.vm_name);
-        let mut path = self.data_dir.clone();
+        let mut path = self.output_dir.clone();
         path.push(filename);
         path
     }
@@ -1028,6 +1141,9 @@ impl Drop for TestVm {
 
         let disks: Vec<_> = self.vm_spec().disk_handles.drain(..).collect();
 
+        let manual_stop_opt = self.manual_stop.take();
+        let vm_name = self.vm_spec().vm_name.to_owned();
+
         // The order in which the task destroys objects is important: the server
         // can't be killed until the client has gotten a chance to shut down
         // the VM, and the disks can't be destroyed until the server process has
@@ -1037,6 +1153,12 @@ impl Drop for TestVm {
                 // The task doesn't use the disks directly, but they need to be
                 // kept alive until the server process is gone.
                 let _disks = disks;
+
+                // Check if we should let the user access the instance of a
+                // failed testcase before ensuring its demolition
+                if let Some(manual_stop) = manual_stop_opt {
+                    manual_stop.wait_for_stop(vm_name, &client, &server).await;
+                }
 
                 // Try to make sure the server's kernel VMM is cleaned up before
                 // killing the server process. This is best-effort; if it fails,
@@ -1125,5 +1247,76 @@ async fn try_ensure_vm_destroyed(client: &Client) {
 
     if let Err(error) = destroyed {
         error!(%error, "VM not destroyed after 5 seconds");
+    }
+}
+
+/// For waiting for instances of failed testcases to be manually shut down,
+/// when phd-runner is invoked with --manual-stop-on-failure
+#[derive(Clone)]
+pub struct TestVmManualStop {
+    test_name: String,
+    /// If we should wait for operator intervention before terminating this
+    /// instance, this will be sent a `Some(false)`.
+    success_rx: watch::Receiver<Option<bool>>,
+    /// While waiting for instance shutdown, this may be sent a `true` if the
+    /// user sends a keyboard interrupt to indicate we should stop waiting.
+    sigint_rx: watch::Receiver<bool>,
+}
+impl TestVmManualStop {
+    pub fn new(
+        test_name: String,
+        success_rx: watch::Receiver<Option<bool>>,
+        sigint_rx: watch::Receiver<bool>,
+    ) -> Self {
+        Self { test_name, success_rx, sigint_rx }
+    }
+    async fn wait_for_stop(
+        mut self,
+        vm_name: String,
+        client: &Client,
+        server: &server::PropolisServer,
+    ) {
+        if self.success_rx.changed().await.is_ok() {
+            let success_opt = *self.success_rx.borrow();
+            if let Some(false) = success_opt {
+                let sock = server.server_addr();
+                let ip = sock.ip();
+                let port = sock.port();
+                let test_name = self.test_name;
+                let mut uninformed = true;
+                // States that might be worth inspecting out-of-band
+                while let Ok(
+                    InstanceState::Running
+                    | InstanceState::Migrating
+                    | InstanceState::Rebooting
+                    | InstanceState::Repairing,
+                ) = client
+                    .instance_get()
+                    .send()
+                    .await
+                    .map(|inst| inst.instance.state)
+                {
+                    if *self.sigint_rx.borrow() {
+                        break;
+                    }
+                    if uninformed {
+                        error!(
+                            r#"
+test {test_name:?} failed. propolis-server {vm_name:?} was left running,
+with API accessible at http://{sock}
+phd-runner will resume when this instance is shut down; e.g. by one of:
+
+$ propolis-cli -s {ip} -p {port} serial
+localhost:~# poweroff
+
+$ propolis-cli -s {ip} -p {port} state stop
+"#
+                        );
+                        uninformed = false;
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
     }
 }

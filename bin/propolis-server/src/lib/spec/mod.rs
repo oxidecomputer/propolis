@@ -28,12 +28,15 @@ use propolis_api_types::instance_spec::{
         devices::{
             NvmeDisk, PciPciBridge, QemuPvpanic as QemuPvpanicDesc,
             SerialPortNumber, VirtioDisk, VirtioNic,
+            VirtioSocket as VirtioSocketDesc,
         },
     },
-    v0::{ComponentV0, InstanceSpecV0},
     PciPath, SpecKey,
 };
-use propolis_api_types::{InstanceSpec, SmbiosType1Input};
+use propolis_api_types::instance_spec::{
+    Component, InstanceSpec, SmbiosType1Input,
+};
+use propolis_api_types_versions::{v1, v2};
 use thiserror::Error;
 
 #[cfg(feature = "failure-injection")]
@@ -53,8 +56,18 @@ pub(crate) mod builder;
 impl From<Spec> for InstanceSpec {
     fn from(val: Spec) -> Self {
         let smbios = val.smbios_type1_input.clone();
-        let InstanceSpecV0 { board, components } = InstanceSpecV0::from(val);
-        InstanceSpec { board, components, smbios }
+        let vsock = val.vsock.clone();
+
+        let v1_spec: v1::instance_spec::InstanceSpec = val.into();
+        let v2_spec =
+            v2::instance_spec::InstanceSpec { smbios, ..v1_spec.into() };
+        let mut spec: InstanceSpec = v2_spec.into();
+
+        if let Some(vsock) = vsock {
+            spec.components
+                .insert(vsock.id, Component::VirtioSocket(vsock.spec));
+        }
+        spec
     }
 }
 
@@ -63,9 +76,25 @@ impl TryFrom<InstanceSpec> for Spec {
     type Error = ApiSpecError;
 
     fn try_from(value: InstanceSpec) -> Result<Self, Self::Error> {
-        let InstanceSpec { board, components, smbios } = value;
-        let v0 = InstanceSpecV0 { board, components };
-        let mut spec: Spec = v0.try_into()?;
+        // Extract vsock before conversion since it's v3-only and will be
+        // filtered out during the v3→v2→v1 chain.
+        let mut vsock_entry = None;
+        for (id, component) in &value.components {
+            if let Component::VirtioSocket(v) = component {
+                vsock_entry = Some(VirtioSocket { id: id.clone(), spec: *v });
+                break;
+            }
+        }
+
+        let v2_spec: v2::instance_spec::InstanceSpec = value.into();
+        let smbios = v2_spec.smbios.clone();
+        let v1_spec: v1::instance_spec::InstanceSpec = v2_spec.into();
+
+        let mut builder = api_spec_v0::v1_to_spec_builder(v1_spec)?;
+        if let Some(vsock) = vsock_entry {
+            builder.add_vsock_device(vsock)?;
+        }
+        let mut spec = builder.finish();
         spec.smbios_type1_input = smbios;
         Ok(spec)
     }
@@ -97,6 +126,8 @@ pub(crate) struct Spec {
     pub pci_pci_bridges: BTreeMap<SpecKey, PciPciBridge>,
     pub pvpanic: Option<QemuPvpanic>,
 
+    pub vsock: Option<VirtioSocket>,
+
     #[cfg(feature = "failure-injection")]
     pub migration_failure: Option<MigrationFailure>,
 
@@ -109,8 +140,8 @@ pub(crate) struct Spec {
     // backwards compatibility, but that isn't currently possible.
     //
     // One way to fix this would be to remove the `Builder` and directly
-    // construct `Spec` from a function that takes an `InstanceSpecV0` and the
-    // VM UUID. This would replace `impl TryFrom<InstanceSpecV0> for Spec`, and
+    // construct `Spec` from a function that takes an `v1::instance_spec::InstanceSpec` and the
+    // VM UUID. This would replace `impl TryFrom<v1::instance_spec::InstanceSpec> for Spec`, and
     // would allow removing the `Default` derive on `Spec`, and the `Option`
     // from the `smbios_type1_input` field.
     pub smbios_type1_input: Option<SmbiosType1Input>,
@@ -202,7 +233,7 @@ impl StorageDevice {
     }
 }
 
-impl From<StorageDevice> for ComponentV0 {
+impl From<StorageDevice> for v1::instance_spec::Component {
     fn from(value: StorageDevice) -> Self {
         match value {
             StorageDevice::Virtio(d) => Self::VirtioDisk(d),
@@ -211,13 +242,15 @@ impl From<StorageDevice> for ComponentV0 {
     }
 }
 
-impl TryFrom<ComponentV0> for StorageDevice {
+impl TryFrom<v1::instance_spec::Component> for StorageDevice {
     type Error = ComponentTypeMismatch;
 
-    fn try_from(value: ComponentV0) -> Result<Self, Self::Error> {
+    fn try_from(
+        value: v1::instance_spec::Component,
+    ) -> Result<Self, Self::Error> {
         match value {
-            ComponentV0::VirtioDisk(d) => Ok(Self::Virtio(d)),
-            ComponentV0::NvmeDisk(d) => Ok(Self::Nvme(d)),
+            v1::instance_spec::Component::VirtioDisk(d) => Ok(Self::Virtio(d)),
+            v1::instance_spec::Component::NvmeDisk(d) => Ok(Self::Nvme(d)),
             _ => Err(ComponentTypeMismatch),
         }
     }
@@ -249,7 +282,7 @@ impl StorageBackend {
     }
 }
 
-impl From<StorageBackend> for ComponentV0 {
+impl From<StorageBackend> for v1::instance_spec::Component {
     fn from(value: StorageBackend) -> Self {
         match value {
             StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),
@@ -259,14 +292,22 @@ impl From<StorageBackend> for ComponentV0 {
     }
 }
 
-impl TryFrom<ComponentV0> for StorageBackend {
+impl TryFrom<v1::instance_spec::Component> for StorageBackend {
     type Error = ComponentTypeMismatch;
 
-    fn try_from(value: ComponentV0) -> Result<Self, Self::Error> {
+    fn try_from(
+        value: v1::instance_spec::Component,
+    ) -> Result<Self, Self::Error> {
         match value {
-            ComponentV0::CrucibleStorageBackend(be) => Ok(Self::Crucible(be)),
-            ComponentV0::FileStorageBackend(be) => Ok(Self::File(be)),
-            ComponentV0::BlobStorageBackend(be) => Ok(Self::Blob(be)),
+            v1::instance_spec::Component::CrucibleStorageBackend(be) => {
+                Ok(Self::Crucible(be))
+            }
+            v1::instance_spec::Component::FileStorageBackend(be) => {
+                Ok(Self::File(be))
+            }
+            v1::instance_spec::Component::BlobStorageBackend(be) => {
+                Ok(Self::Blob(be))
+            }
             _ => Err(ComponentTypeMismatch),
         }
     }
@@ -319,6 +360,12 @@ pub struct QemuPvpanic {
     #[allow(dead_code)]
     pub id: SpecKey,
     pub spec: QemuPvpanicDesc,
+}
+
+#[derive(Clone, Debug)]
+pub struct VirtioSocket {
+    pub id: SpecKey,
+    pub spec: VirtioSocketDesc,
 }
 
 #[cfg(feature = "failure-injection")]

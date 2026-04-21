@@ -113,7 +113,13 @@ struct QueueState<QS> {
     /// a `SubQueueState` for a Submission Queue.
     inner: Mutex<QueueInner<QS>>,
 
-    pub acc_mem: MemAccessor,
+    /// This queue's memory accessor node.
+    ///
+    /// Be careful about lock ordering when using this accessor; access_locked()
+    /// holds this node's lock. If a user of this queue state requires both
+    /// `access_locked()` and `QueueInner`, the protocol is to lock queue
+    /// state first and this accessor second.
+    acc_mem: MemAccessor,
 }
 impl<QS> QueueState<QS> {
     fn new(size: u32, acc_mem: MemAccessor, inner: QS) -> Self {
@@ -343,18 +349,36 @@ impl QueueGuard<'_, CompQueueState> {
     /// Write update to the EventIdx in Doorbell Buffer page, if possible
     fn db_buf_write(&mut self, devq_id: u64, mem: &MemCtx) {
         if let Some(db_buf) = self.state.db_buf {
-            probes::nvme_cq_dbbuf_write!(|| (devq_id, self.state.tail));
-            // Keep EventIdx populated with the position of the CQ tail.  We are
-            // not especially concerned with receiving timely (doorbell) updates
-            // from the guest about where the head pointer sits.  We keep our
-            // own tally of how many entries are in the CQ are available for
-            // completions to land.
+            // Update EventIdx as far as we're willing to forego doorbell
+            // updates about the CQ head.  We are not especially concerned with
+            // receiving timely doorbell updates from the guest about the head.
+            // We keep our own tally of how many entries in the CQ are available
+            // for completions to land.  In the typical case, we will read the
+            // shadow doorbell from db_buf JIT to update the available CQ space.
             //
-            // When checking for available space before issuing a Permit, we can
-            // perform our own JIT read from the db_buf to stay updated on the
-            // true space available.
+            // However, simply keeping EventIdx matching the queue tail means we
+            // opt out of *any* notification that a completion is posted.  Then,
+            // if an I/O was submitted, not processed immediately due to
+            // insufficient CQ space, but the guest submits no further I/Os on
+            // that queue, we would never notice that there is space in the CQ.
+            // The I/O would go unfulfilled forever.
+            //
+            // For now, leave EventIdx one before the actual CQ tail, so that
+            // making the CQ empty requires a doorbell notify.  This is
+            // excessive; there are many cases where we don't care if the CQ is
+            // to be emptied.
+            if self.avail_occupied() <= 1 {
+                // The queue was empty and just became non-empty.  So `tail` has
+                // not advanced far enough that we can actually advance
+                // EventIdx.
+                return;
+            }
+
+            let next_evtidx = self.idx_sub(self.state.tail, 1);
+
+            probes::nvme_cq_dbbuf_write!(|| (devq_id, next_evtidx));
             fence(Ordering::Release);
-            mem.write(db_buf.eventidx, &self.state.tail);
+            mem.write(db_buf.eventidx, &next_evtidx);
         }
     }
 
@@ -631,11 +655,15 @@ impl SubQueue {
     pub fn pop(
         self: &Arc<SubQueue>,
     ) -> Option<(GuestData<SubmissionQueueEntry>, Permit, u16)> {
-        let Some(mem) = self.state.acc_mem.access() else { return None };
+        // Lock the SubQueueState early to conform to lock ordering requirement;
+        // see docs on QueueState::acc_mem.
+        let mut state = self.state.lock();
+
+        let Some(mem) = self.state.acc_mem.access_locked() else { return None };
+        let mem = mem.view();
 
         // Attempt to reserve an entry on the Completion Queue
         let permit = self.cq.reserve_entry(&self, &mem)?;
-        let mut state = self.state.lock();
 
         // Check for last-minute updates to the tail via any configured doorbell
         // page, prior to attempting the pop itself.
@@ -868,18 +896,20 @@ impl CompQueue {
         //
         // XXX: handle a guest addr that becomes unmapped later
         let addr = self.base.offset::<CompletionQueueEntry>(idx as usize);
-        if let Some(mem) = self.state.acc_mem.access() {
-            cqe.set_phase(!phase);
-            mem.write(addr, &cqe);
-            cqe.set_phase(phase);
-            mem.write(addr, &cqe);
-
-            let devq_id = self.devq_id();
-            state.db_buf_read(devq_id, &mem);
-            state.db_buf_write(devq_id, &mem);
-        } else {
+        // TODO: access disallowed?
+        let Some(mem) = self.state.acc_mem.access_locked() else {
             // TODO: mark the queue/controller in error state?
-        }
+            return;
+        };
+        let mem = mem.view();
+        cqe.set_phase(!phase);
+        mem.write(addr, &cqe);
+        cqe.set_phase(phase);
+        mem.write(addr, &cqe);
+
+        let devq_id = self.devq_id();
+        state.db_buf_read(devq_id, &mem);
+        state.db_buf_write(devq_id, &mem);
     }
 
     pub(super) fn set_db_buf(
@@ -1113,7 +1143,7 @@ pub fn sqid_to_block_qid(sqid: super::QueueId) -> block::QueueId {
 #[derive(Copy, Clone, Debug, Default)]
 pub struct TransferParams {
     pub lba_data_size: u64,
-    pub max_data_tranfser_size: u64,
+    pub max_data_transfer_size: u64,
 }
 
 /// Configuration for Doorbell Buffer feature

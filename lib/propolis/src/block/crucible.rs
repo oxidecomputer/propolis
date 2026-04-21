@@ -168,7 +168,10 @@ impl CrucibleBackend {
             .map_err(|e| io::Error::from(CrucibleError::from(e)))?;
 
         // Decide if we need to scrub this volume or not.
-        if volume.has_read_only_parent() {
+        //
+        // We should not scrub read-only volumes, as we cannot write back to
+        // them, due to...you know, being read-only. So just don't do that.
+        if !opts.is_read_only() && volume.has_read_only_parent() {
             let vclone = volume.clone();
             tokio::spawn(async move {
                 let volume_id = vclone.get_uuid().await.unwrap();
@@ -217,7 +220,7 @@ impl CrucibleBackend {
         let info = block::DeviceInfo {
             block_size: block_size as u32,
             total_size: sectors,
-            read_only: opts.read_only.unwrap_or(false),
+            read_only: opts.is_read_only(),
             supports_discard: false,
         };
 
@@ -360,6 +363,14 @@ impl CrucibleBackend {
     pub async fn volume_is_active(&self) -> Result<bool, CrucibleError> {
         self.state.volume.query_is_active().await
     }
+
+    pub fn clone_volume(&self) -> Volume {
+        self.state.volume.clone()
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.state.info.read_only
+    }
 }
 
 #[async_trait::async_trait]
@@ -376,6 +387,9 @@ impl block::Backend for CrucibleBackend {
     async fn stop(&self) -> () {
         self.block_attach.stop();
         self.workers.join_all().await;
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -416,7 +430,9 @@ fn block_offset_count(
     len_bytes: usize,
     block_size: usize,
 ) -> Result<(crucible::BlockIndex, usize), Error> {
-    if off_bytes % block_size == 0 && len_bytes % block_size == 0 {
+    if off_bytes.is_multiple_of(block_size)
+        && len_bytes.is_multiple_of(block_size)
+    {
         Ok((
             crucible::BlockIndex((off_bytes / block_size) as u64),
             len_bytes / block_size,

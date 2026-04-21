@@ -1,0 +1,70 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+use std::sync::Arc;
+use std::sync::Barrier;
+use std::thread::JoinHandle;
+
+use iddqd::IdHashMap;
+use slog::Logger;
+
+use crate::hw::virtio::vsock::VsockVq;
+use crate::vsock::proxy::VsockPortMapping;
+use crate::vsock::GuestCid;
+
+bitflags! {
+    pub struct PollEvents: i32 {
+        const IN = libc::POLLIN as i32;
+        const OUT = libc::POLLOUT as i32;
+    }
+}
+
+pub struct VsockPollerNotify;
+
+impl VsockPollerNotify {
+    pub fn queue_notify(&self, _id: u16) -> std::io::Result<()> {
+        return Err(std::io::Error::other(
+            "not available on non-illumos systems",
+        ));
+    }
+
+    pub fn pause(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    pub fn resume(&self) {}
+
+    pub fn reset(&self) {}
+
+    pub fn halt(&self) {}
+
+    pub fn wait_stopped(&self) {}
+}
+
+pub struct VsockPoller;
+
+impl VsockPoller {
+    pub fn new(
+        _log: Logger,
+        _start_barrier: Arc<Barrier>,
+        _cid: GuestCid,
+        _queues: VsockVq,
+        _port_mappings: IdHashMap<VsockPortMapping>,
+    ) -> std::io::Result<Self> {
+        return Err(std::io::Error::other(
+            "VsockPoller is not available on non-illumos systems",
+        ));
+    }
+
+    pub fn notify_handle(&self) -> VsockPollerNotify {
+        VsockPollerNotify {}
+    }
+
+    pub fn run(self) -> JoinHandle<()> {
+        std::thread::Builder::new()
+            .name("vsock-event-loop".to_string())
+            .spawn(move || {})
+            .expect("failed to spawn vsock event loop")
+    }
+}

@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use omicron_common::address::Ipv6Subnet;
+use propolis::attestation::server::AttestationServerConfig;
 use propolis::usdt::register_probes;
 use propolis_server::{
     config,
@@ -18,8 +20,8 @@ use propolis_server::{
 use anyhow::{anyhow, Context};
 use clap::Parser;
 use dropshot::{
-    ClientSpecifiesVersionInHeader, ConfigDropshot, HandlerTaskMode,
-    VersionPolicy,
+    ClientSpecifiesVersionInHeader, CompressionConfig, ConfigDropshot,
+    HandlerTaskMode, VersionPolicy,
 };
 use slog::{info, Logger};
 
@@ -114,6 +116,7 @@ fn run_server(
     config_dropshot: dropshot::ConfigDropshot,
     config_metrics: Option<MetricsEndpointConfig>,
     vnc_addr: Option<SocketAddr>,
+    attest_config: Option<AttestationServerConfig>,
     log: slog::Logger,
 ) -> anyhow::Result<()> {
     use propolis::api_version;
@@ -147,6 +150,7 @@ fn run_server(
         use_reservoir,
         log.new(slog::o!()),
         config_metrics,
+        attest_config,
     );
 
     // Spawn the runtime for handling API processing
@@ -308,6 +312,7 @@ fn main() -> anyhow::Result<()> {
                 default_request_body_max_bytes: 1024 * 1024, // 1M for ISO bytes
                 default_handler_task_mode: HandlerTaskMode::Detached,
                 log_headers: vec![],
+                compression: CompressionConfig::None,
             };
 
             let log = build_logger(log_level);
@@ -318,12 +323,26 @@ fn main() -> anyhow::Result<()> {
                 propolis_addr.ip(),
             )?;
 
+            let attest_config = match propolis_addr.ip() {
+                IpAddr::V4(_) => None,
+                IpAddr::V6(ipv6_addr) => {
+                    let sled_subnet = Ipv6Subnet::<
+                        { omicron_common::address::SLED_PREFIX },
+                    >::new(ipv6_addr);
+                    let sa_addr =
+                        omicron_common::address::get_sled_address(sled_subnet);
+
+                    Some(AttestationServerConfig::new(sa_addr))
+                }
+            };
+
             run_server(
                 bootrom_path,
                 bootrom_version,
                 config_dropshot,
                 metric_config,
                 vnc_addr,
+                attest_config,
                 log,
             )
         }

@@ -3,13 +3,15 @@ name = "propolis"
 version = "0.1.0"
 license = "MPL-2.0"
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.90"
 
 [dependencies]
 libc.workspace = true
-bitflags.workspace = true
+bit_field.workspace = true
+bitflags = { workspace = true, features = ["serde"] }
 bitstruct.workspace = true
 byteorder.workspace = true
+dice-verifier.workspace = true
 lazy_static.workspace = true
 thiserror.workspace = true
 bhyve_api.workspace = true
@@ -31,6 +33,7 @@ serde.workspace = true
 serde_arrays.workspace = true
 erased-serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 strum = { workspace = true, features = ["derive"] }
 uuid.workspace = true
 zerocopy = { workspace = true, features = ["derive"] }
@@ -39,6 +42,9 @@ crucible = { workspace = true, optional = true }
 oximeter = { workspace = true, optional = true }
 nexus-client = { workspace = true, optional = true }
 async-trait.workspace = true
+iddqd.workspace = true
+nix.workspace = true
+vm-attest.workspace = true
 
 # falcon
 libloading = { workspace = true, optional = true }

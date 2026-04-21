@@ -275,6 +275,13 @@ pub struct BackendOpts {
     pub skip_flush: Option<bool>,
 }
 
+impl BackendOpts {
+    /// Return `true` if and only if this backend is configured to be read-only.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only.unwrap_or(false)
+    }
+}
+
 /// Top-level trait for block devices (frontends) to translate guest block IO
 /// requests into [Request]s for the attached [Backend]
 pub trait Device: Send + Sync + 'static {
@@ -320,6 +327,9 @@ pub trait Backend: Send + Sync + 'static {
     /// requests when they are told to pause (and will only report they are
     /// fully paused when all their in-flight requests have completed).
     async fn stop(&self);
+
+    /// TODO: good comment here explaining the downcasting
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// Consumer of per-[Request] metrics

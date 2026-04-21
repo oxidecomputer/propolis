@@ -207,6 +207,8 @@ struct NvmeCtrl {
 
     /// The Identify structure returned for Identify namespace commands
     ns_ident: IdentifyNamespace,
+
+    read_only: bool,
 }
 
 impl NvmeCtrl {
@@ -542,11 +544,11 @@ impl NvmeCtrl {
     fn transfer_params(&self) -> queue::TransferParams {
         let lba_data_size = 1u64
             << (self.ns_ident.lbaf[(self.ns_ident.flbas & 0xF) as usize]).lbads;
-        let max_data_tranfser_size = match self.ctrl_ident.mdts {
+        let max_data_transfer_size = match self.ctrl_ident.mdts {
             0 => u64::MAX,
             mdts => (self.ctrl.cap.mpsmin_sz() as u64) << mdts,
         };
-        queue::TransferParams { lba_data_size, max_data_tranfser_size }
+        queue::TransferParams { lba_data_size, max_data_transfer_size }
     }
 
     fn update_block_info(&mut self, info: block::DeviceInfo) {
@@ -566,6 +568,8 @@ impl NvmeCtrl {
             .iter()
             .filter_map(Option::as_ref)
             .for_each(|sq| sq.update_params(params));
+
+        self.read_only = info.read_only;
     }
 
     /// Get Memory Page Size (MPS), expressed in bytes
@@ -814,8 +818,8 @@ impl PciNvme {
             device_id: PROPOLIS_NVME_DEV_ID,
             sub_vendor_id: VENDOR_OXIDE,
             sub_device_id: PROPOLIS_NVME_DEV_ID,
-            class: pci::bits::CLASS_STORAGE,
-            subclass: pci::bits::SUBCLASS_STORAGE_NVM,
+            device_class: pci::bits::CLASS_STORAGE,
+            device_subclass: pci::bits::SUBCLASS_STORAGE_NVM,
             prog_if: pci::bits::PROGIF_ENTERPRISE_NVME,
             ..Default::default()
         });
@@ -899,6 +903,7 @@ impl PciNvme {
             sqs: Default::default(),
             ctrl_ident,
             ns_ident,
+            read_only: false,
         };
 
         let pci_state = builder

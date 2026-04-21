@@ -16,6 +16,7 @@ use anyhow::Context;
 use clap::Parser;
 use futures::future::BoxFuture;
 use propolis::hw::qemu::pvpanic::QemuPvpanic;
+use propolis::vsock::GuestCid;
 use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor};
 use slog::{o, Drain};
 use strum::IntoEnumIterator;
@@ -263,6 +264,7 @@ struct InstInner {
     eq: Arc<EventQueue>,
     cv: Condvar,
     config: config::Config,
+    com1_sock: Arc<UDSock>,
 }
 
 struct Instance(Arc<InstInner>);
@@ -272,6 +274,7 @@ impl Instance {
         config: config::Config,
         from_restore: bool,
         log: slog::Logger,
+        com1_sock: Arc<UDSock>,
     ) -> Self {
         let this = Self(Arc::new(InstInner {
             state: Mutex::new(InstState {
@@ -285,6 +288,7 @@ impl Instance {
             eq: EventQueue::new(),
             cv: Condvar::new(),
             config,
+            com1_sock,
         }));
 
         // Some gymnastics required for the split borrow through the MutexGuard
@@ -292,7 +296,36 @@ impl Instance {
         let state = &mut *state_guard;
         let machine = state.machine.as_ref().unwrap();
 
-        for vcpu in machine.vcpus.iter().map(Arc::clone) {
+        let bind_cpus = match this.0.config.main.cpu_binding {
+            Some(config::BindingStrategy::UpperHalf) => {
+                let total_cpus =
+                    pbind::online_cpus().expect("can get processor count");
+                let vcpu_count: i32 = machine
+                    .vcpus
+                    .len()
+                    .try_into()
+                    .expect("vCPU count <= MAXCPU < i32::MAX");
+
+                let first_bound_cpu = total_cpus - vcpu_count;
+                let bind_cpus =
+                    (first_bound_cpu..total_cpus).map(Some).collect();
+                slog::info!(
+                    &log,
+                    "Explicit CPU binding requested";
+                    "last_cpu" => total_cpus,
+                    "first_cpu" => first_bound_cpu,
+                    "vcpu_count" => vcpu_count,
+                );
+                bind_cpus
+            }
+            Some(config::BindingStrategy::Any) | None => {
+                vec![None; machine.vcpus.len()]
+            }
+        };
+
+        for (vcpu, bind_cpu) in
+            machine.vcpus.iter().map(Arc::clone).zip(bind_cpus.into_iter())
+        {
             let (task, ctrl) =
                 propolis::tasks::TaskHdl::new_held(Some(vcpu.barrier_fn()));
 
@@ -301,6 +334,9 @@ impl Instance {
             let _ = std::thread::Builder::new()
                 .name(format!("vcpu-{}", vcpu.id))
                 .spawn(move || {
+                    if let Some(bind_cpu) = bind_cpu {
+                        pbind::bind_lwp(bind_cpu).expect("can bind vcpu");
+                    }
                     Instance::vcpu_loop(inner, vcpu.as_ref(), &task, task_log)
                 })
                 .unwrap();
@@ -522,6 +558,9 @@ impl Instance {
                 State::Destroy => {
                     // Drop the machine
                     let _ = guard.machine.take().unwrap();
+
+                    // Abort any pending serial connection
+                    inner.com1_sock.shutdown();
 
                     // Clean up the inventory as well
                     guard.inventory.destroy();
@@ -1102,14 +1141,19 @@ fn setup_instance(
         cpus, lowmem, highmem;);
     let machine = build_machine(vm_name, cpus, lowmem, highmem, use_reservoir)
         .context("Failed to create VM Machine")?;
-    let inst =
-        Instance::new(machine, config.clone(), from_restore, log.clone());
+    let com1_sock =
+        UDSock::bind(Path::new("./ttya")).context("Cannot open UD socket")?;
+    let inst = Instance::new(
+        machine,
+        config.clone(),
+        from_restore,
+        log.clone(),
+        com1_sock.clone(),
+    );
     slog::info!(log, "VM created"; "name" => vm_name);
 
     let (romfp, rom_len) =
         open_bootrom(&config.main.bootrom).context("Cannot open bootrom")?;
-    let com1_sock =
-        UDSock::bind(Path::new("./ttya")).context("Cannot open UD socket")?;
 
     // Get necessary access to innards, now that it is nestled in `Instance`
     let mut inst_guard = inst.lock().unwrap();
@@ -1271,19 +1315,11 @@ fn setup_instance(
                         config::VionaDeviceParams::from_opts(&dev.options)
                             .expect("viona params are valid");
 
-                    if viona_params.is_some()
-                        && hw::virtio::viona::api_version()
-                            .expect("can query viona version")
-                            < hw::virtio::viona::ApiVersion::V3
-                    {
-                        // lazy cop-out for now
-                        panic!("can't set viona params on too-old version");
-                    }
-
+                    // The viona_params here (currently just copy_data and
+                    // header_pad) require `viona::ApiVersion::V3`, below
+                    // Propolis' minimum of V6, so we can always set them.
                     let viona = hw::virtio::PciVirtioViona::new(
                         vnic_name,
-                        0x0800.try_into().unwrap(),
-                        0x0100.try_into().unwrap(),
                         &hdl,
                         viona_params,
                     )?;
@@ -1335,6 +1371,20 @@ fn setup_instance(
                         pvpanic.attach_pio(pio);
                         guard.inventory.register(&pvpanic);
                     }
+                }
+                "pci-virtio-socket" => {
+                    let config = config::VsockDevice::from_opts(&dev.options)?;
+                    let bdf = bdf.unwrap();
+                    let guest_cid = GuestCid::try_from(config.guest_cid)
+                        .context("guest cid")?;
+                    let vsock = hw::virtio::PciVirtioSock::new(
+                        512,
+                        guest_cid,
+                        log.new(slog::o!("dev" => "vsock")),
+                        config.port_mappings,
+                    );
+                    guard.inventory.register(&vsock);
+                    chipset_pci_attach(bdf, vsock);
                 }
                 _ => {
                     slog::error!(log, "unrecognized driver {driver}"; "name" => name);
@@ -1486,18 +1536,12 @@ fn api_version_checks(log: &slog::Logger) -> std::io::Result<()> {
         }
         Err(VersionCheckError {
             component,
+            err: source @ Error::TooLow { .. },
             path: _,
-            err: Error::Mismatch(act, exp),
         }) => {
             // Make noise about version mismatch, but soldier on and let the
             // user decide if they want to quit
-            slog::error!(
-                log,
-                "{} API version mismatch {} != {}",
-                component,
-                act,
-                exp
-            );
+            slog::error!(log, "{component}: {source}");
             Ok(())
         }
         Ok(_) => Ok(()),
@@ -1593,14 +1637,14 @@ fn main() -> anyhow::Result<ExitCode> {
 
     // Wait until someone connects to ttya
     slog::info!(log, "Waiting for a connection to ttya");
-    com1_sock.wait_for_connect();
-
-    // Let the VM start and we're off to the races
-    slog::info!(log, "Starting instance...");
-    inst.eq().push(
-        InstEvent::ReqStart,
-        EventCtx::User("UDS connection".to_string()),
-    );
+    if com1_sock.wait_for_connect() {
+        // Let the VM start and we're off to the races
+        slog::info!(log, "Starting instance...");
+        inst.eq().push(
+            InstEvent::ReqStart,
+            EventCtx::User("UDS connection".to_string()),
+        );
+    }
 
     // wait for instance to be destroyed
     Ok(inst.wait_destroyed())

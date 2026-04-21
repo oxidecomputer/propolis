@@ -67,7 +67,7 @@ impl InstanceContext {
             queue.insert(
                 0,
                 api::InstanceStateMonitorResponse {
-                    gen: 0,
+                    gen_: 0,
                     state: api::InstanceState::Creating,
                     migration: api::InstanceMigrateStatusResponse {
                         migration_in: None,
@@ -186,7 +186,7 @@ impl InstanceContext {
                 mock_state.queue.insert(
                     generation,
                     api::InstanceStateMonitorResponse {
-                        gen: generation,
+                        gen_: generation,
                         migration: api::InstanceMigrateStatusResponse {
                             migration_in: None,
                             migration_out: None,
@@ -280,7 +280,7 @@ async fn instance_state_monitor(
                 "Server not initialized (no instance)".to_string(),
             )
         })?;
-        let gen = request.into_inner().gen;
+        let gen = request.into_inner().gen_;
         let state_watcher = instance.state_watcher_rx.clone();
         (state_watcher, gen)
     };

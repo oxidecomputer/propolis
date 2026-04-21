@@ -50,7 +50,9 @@ pub fn all_apis() -> anyhow::Result<ManagedApis> {
         api_description: propolis_server_api_mod::stub_api_description,
     }];
 
-    let apis = ManagedApis::new(apis).context("error creating ManagedApis")?;
+    let apis = ManagedApis::new(apis)
+        .context("error creating ManagedApis")?
+        .with_git_stub_storage();
     Ok(apis)
 }
 
