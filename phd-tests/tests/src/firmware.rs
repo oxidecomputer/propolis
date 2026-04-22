@@ -8,7 +8,7 @@ use tracing::info;
 #[phd_testcase]
 async fn acpi_tables_generation(ctx: &TestCtx) {
     let mut vm = ctx
-        .spawn_vm(&ctx.vm_config_builder("lspci_lifecycle_test"), None)
+        .spawn_vm(&ctx.vm_config_builder("acpi_tables_generation"), None)
         .await?;
 
     if !vm.guest_os_kind().is_linux() {
