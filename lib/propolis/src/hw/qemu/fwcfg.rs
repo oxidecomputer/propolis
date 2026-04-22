@@ -1304,6 +1304,14 @@ pub mod formats {
         }
     }
 
+    #[derive(thiserror::Error, Debug)]
+    pub enum AcpiTablesError {
+        #[error(
+            "invalid PCI window range, base address ({0:#04x}) must be lower than end ({1:#04x})"
+        )]
+        InvalidPCIWindowRange(u64, u64),
+    }
+
     /// Instance configuration that are relevant when building the ACPI tables.
     pub struct AcpiConfig<'a> {
         pub num_cpus: u8,
@@ -1313,12 +1321,29 @@ pub mod formats {
     }
 
     /// A range of address to be used for PCI MMIO.
+    #[derive(PartialEq)]
     pub struct PciWindow {
-        pub base: u64,
-        pub end: u64,
+        base: u64,
+        end: u64,
     }
     impl PciWindow {
+        pub fn new(base: u64, end: u64) -> Result<Self, AcpiTablesError> {
+            if base > end {
+                return Err(AcpiTablesError::InvalidPCIWindowRange(base, end));
+            }
+            Ok(Self { base, end })
+        }
+
+        pub fn empty() -> Self {
+            Self { base: 0, end: 0 }
+        }
+
         pub fn len(&self) -> u64 {
+            if *self == PciWindow::empty() {
+                return 0;
+            }
+            // Values are checked on creation to ensure the subtraction doesn't
+            // underflow.
             self.end - self.base + 1
         }
     }
@@ -1381,26 +1406,15 @@ pub mod formats {
 
     impl<'a> AcpiTablesBuilder<'a> {
         pub fn new(config: &'a AcpiConfig) -> Self {
-            let mut tables = Self {
+            Self {
                 config,
                 tables: Vec::new(),
                 rsdp: Vec::new(),
                 loader: TableLoader::new(),
-            };
-
-            tables.build();
-            tables
-        }
-
-        pub fn finish(self) -> AcpiTables {
-            AcpiTables {
-                tables: Entry::Bytes(self.tables),
-                rsdp: Entry::Bytes(self.rsdp),
-                table_loader: self.loader.finish(),
             }
         }
 
-        fn build(&mut self) {
+        pub fn build(mut self) -> AcpiTables {
             self.loader.add_allocate(
                 FW_CFG_ACPI_TABLES_PATH,
                 64,
@@ -1423,6 +1437,12 @@ pub mod formats {
             let xsdt_offset = self.add_xsdt(xsdt_entries);
 
             self.add_rsdp(xsdt_offset);
+
+            AcpiTables {
+                tables: Entry::Bytes(self.tables),
+                rsdp: Entry::Bytes(self.rsdp),
+                table_loader: self.loader.finish(),
+            }
         }
 
         fn add_facs(&mut self) -> usize {
