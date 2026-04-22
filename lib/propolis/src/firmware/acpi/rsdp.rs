@@ -47,3 +47,19 @@ impl Aml for Rsdp {
         rsdp::Rsdp::new(*OEM_ID, self.xsdt_addr).to_aml_bytes(sink);
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn field_references() {
+        let mut sink = Vec::new();
+        Rsdp::new(0x0abc_def0).to_aml_bytes(&mut sink);
+        assert_eq!(
+            sink[RSDP_XSDT_ADDR_OFFSET
+                ..(RSDP_XSDT_ADDR_OFFSET + RSDP_XSDT_ADDR_LEN)],
+            0x0abc_def0_u64.to_le_bytes()
+        );
+    }
+}
