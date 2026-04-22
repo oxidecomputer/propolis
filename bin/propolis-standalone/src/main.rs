@@ -1088,23 +1088,24 @@ fn generate_acpi_tables(
         .filter_map(|dev| dev.as_dsdt_generator())
         .collect();
 
+    let pci_window_32 =
+        fwcfg::formats::PciWindow::new(lowmem as u64, PCI_MMIO32_END as u64)
+            .context("invalid PCI window range")?;
+
     let config = &fwcfg::formats::AcpiConfig {
         num_cpus: cpus,
-        pci_window_32: fwcfg::formats::PciWindow {
-            base: lowmem as u64,
-            end: PCI_MMIO32_END as u64,
-        },
+        pci_window_32,
         // XXX(acpi): Value inherited from the original EDK2 static tables,
         //            where the 64-bit PCI MMIO region was never set. It
         //            should match the actual memory regions registered in
         //            the instance.
         // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/Qemu.c#L284-L286
-        pci_window_64: fwcfg::formats::PciWindow { base: 0, end: 0 },
+        pci_window_64: fwcfg::formats::PciWindow::empty(),
         dsdt_generators: &generators,
     };
     let acpi_tables = fwcfg::formats::AcpiTablesBuilder::new(config);
 
-    Ok(acpi_tables.finish())
+    Ok(acpi_tables.build())
 }
 
 fn setup_instance(
