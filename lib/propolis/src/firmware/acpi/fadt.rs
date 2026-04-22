@@ -152,3 +152,26 @@ impl Aml for Fadt {
         fadt.finalize().to_aml_bytes(sink);
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn field_references() {
+        let mut sink = Vec::new();
+        Fadt::new(0x0abc, 0x0def).to_aml_bytes(&mut sink);
+        assert_eq!(
+            sink[FADT_FACS_OFFSET..(FADT_FACS_OFFSET + FADT_FACS_LEN)],
+            0x0abc_u32.to_le_bytes()
+        );
+        assert_eq!(
+            sink[FADT_DSDT_OFFSET..(FADT_DSDT_OFFSET + FADT_DSDT_LEN)],
+            0x0000_u32.to_le_bytes() // Calling dsdt_64 zeros the 32-bit field.
+        );
+        assert_eq!(
+            sink[FADT_X_DSDT_OFFSET..(FADT_X_DSDT_OFFSET + FADT_X_DSDT_LEN)],
+            0x0def_u64.to_le_bytes()
+        );
+    }
+}

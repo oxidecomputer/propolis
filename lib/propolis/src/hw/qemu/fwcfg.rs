@@ -1328,7 +1328,7 @@ pub mod formats {
     }
     impl PciWindow {
         pub fn new(base: u64, end: u64) -> Result<Self, AcpiTablesError> {
-            if base > end {
+            if base >= end {
                 return Err(AcpiTablesError::InvalidPCIWindowRange(base, end));
             }
             Ok(Self { base, end })
@@ -1638,8 +1638,8 @@ pub mod formats {
         }
     }
 
-    pub const TABLE_LOADER_FILESZ: usize = 56;
-    pub const TABLE_LOADER_COMMAND_SIZE: usize = 128;
+    const TABLE_LOADER_FILESZ: usize = 56;
+    const TABLE_LOADER_COMMAND_SIZE: usize = 128;
 
     /// Stores commands that will be executed by the EDK2 firmware when the
     /// ACPI tables are loaded.
