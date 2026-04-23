@@ -2251,6 +2251,7 @@ mod test {
             &test_ctx.dev,
             drv_state,
         );
+        assert!(driver.status_ok());
 
         let mut driver = test_ctx.create_driver();
         // Unlike OVMF, some Linuxes (seen on kernel 6.6.49 in Alpine 3.20.3)
