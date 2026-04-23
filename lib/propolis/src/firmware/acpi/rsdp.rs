@@ -43,6 +43,10 @@ impl Rsdp {
 }
 
 impl Aml for Rsdp {
+    // OVMF ignores the RSDP table loaded via fw_cfg and instead it generates
+    // its own, so changes here will not appear to the guest when using OVMF.
+    //
+    // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/QemuFwCfgAcpi.c#L891-L899
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
         rsdp::Rsdp::new(*OEM_ID, self.xsdt_addr).to_aml_bytes(sink);
     }

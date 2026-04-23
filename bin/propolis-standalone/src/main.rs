@@ -1479,16 +1479,16 @@ fn setup_instance(
     fwcfg.insert_named("etc/e820", e820_entry).unwrap();
 
     let acpi_entries = generate_acpi_tables(cpus, lowmem, &guard.inventory)
-        .expect("failed to build ACPI tables");
+        .expect("can build ACPI tables");
     fwcfg
         .insert_named("etc/acpi/tables", acpi_entries.tables)
-        .context("failed to insert ACPI tables")?;
+        .context("Failed to insert ACPI tables")?;
     fwcfg
         .insert_named("etc/acpi/rsdp", acpi_entries.rsdp)
-        .context("failed to insert ACPI RSDP")?;
+        .context("Failed to insert ACPI RSDP")?;
     fwcfg
         .insert_named("etc/table-loader", acpi_entries.table_loader)
-        .context("failed to insert ACPI table-loader")?;
+        .context("Failed to insert ACPI table-loader")?;
 
     fwcfg.attach(pio, &machine.acc_mem);
 

@@ -46,7 +46,7 @@ async fn acpi_tables_generation(ctx: &TestCtx) {
         let out = vm.run_shell_command(&cmd).await?;
         info!(out, "{} creator ID", case.table);
 
-        assert!(out.contains(&creator_id_hex));
+        assert_eq!(out, creator_id_hex);
     }
 
     // Verify FACS table have the expected version.
@@ -61,4 +61,96 @@ async fn acpi_tables_generation(ctx: &TestCtx) {
     info!(facs_version, "FACS table version");
 
     assert_eq!(facs_version, "01");
+}
+
+#[phd_testcase]
+async fn acpi_tables_parse(ctx: &TestCtx) {
+    let mut vm = ctx
+        .spawn_vm(
+            ctx.vm_config_builder("acpi_tables_parse").cpus(2), // Ensure fwts results are consistent.
+            None,
+        )
+        .await?;
+
+    if !vm.guest_os_kind().is_linux() {
+        phd_skip!("requires Linux");
+    }
+
+    vm.launch().await?;
+    vm.wait_to_boot().await?;
+
+    // Skip test if guest doesn't have the necessary tools installed.
+    let required_tools = ["acpidump", "iasl", "fwts"];
+    for tool in required_tools.iter() {
+        if vm.run_shell_command(&format!("which {}", tool)).await.is_err() {
+            phd_skip!(format!("guest doesn't have {} installed", tool));
+        }
+    }
+
+    let expected_files = ["apic", "dsdt", "facp", "facs", "ssdt"];
+
+    // Verify we can dump the expected tables.
+    vm.run_shell_command("acpidump -b").await.expect("acpidump");
+
+    let ls = vm.run_shell_command("ls *.dat").await?;
+    for file in expected_files.iter() {
+        let expect = format!("{}.dat", file);
+        assert!(ls.contains(&expect), "expected file {} to exist", expect);
+    }
+
+    // Verify ACPI tables can be parsed and disassembled.
+    for file in expected_files.iter() {
+        vm.run_shell_command(&format!("iasl -we -d {}.dat", file))
+            .await
+            .unwrap_or_else(|_| panic!("failed to disassemble {}.dat", file));
+
+        let expect = format!("{}.dsl", file);
+        let ls = vm.run_shell_command(&format!("ls {}", expect)).await?;
+        assert!(ls.contains(&expect), "expected file {} to exist", expect);
+    }
+
+    // Verify fwts results.
+    vm.run_shell_command("fwts --acpicompliance --acpitests; true").await?;
+    let fwts_results: Vec<_> = vm
+        .run_shell_command("tail -n 2 results.log | head -n 1")
+        .await?
+        .split('|')
+        .map(|s| s.replace(" ", ""))
+        .collect();
+
+    // XXX(acpi): The current ACPI tables generate (num_cpus + 2) errors and 1
+    //            warning.
+    //
+    // Test Failure Summary
+    // ================================================================================
+    //
+    // Critical failures: NONE
+    //
+    // High failures: 1
+    //  fadt: FADT X_GPE0_BLK Access width 0x00 but it should be 1 (byte access).
+    //
+    // Medium failures: 3
+    //  madt: LAPIC has no matching processor UID 0
+    //  madt: LAPIC has no matching processor UID 1
+    //  madt: LAPICNMI has no matching processor UID 255
+    //
+    // Low failures: NONE
+    //
+    // Other failures: NONE
+    let expexted_fwts_results = ["", "", "4", "0", "1"];
+    assert_eq!(
+        fwts_results[2], expexted_fwts_results[2],
+        "expected {} fwts failures, got {}",
+        expexted_fwts_results[2], fwts_results[2],
+    );
+    assert_eq!(
+        fwts_results[3], expexted_fwts_results[3],
+        "expected {} fwts aborts, got {}",
+        expexted_fwts_results[3], fwts_results[3]
+    );
+    assert_eq!(
+        fwts_results[4], expexted_fwts_results[4],
+        "expected {} fwts warnings, got {}",
+        expexted_fwts_results[4], fwts_results[4],
+    );
 }

@@ -415,18 +415,18 @@ impl MachineInitializer<'_> {
                 continue;
             }
 
-            let (irq, port, uart_name) = match desc.num {
+            let (uart_name, irq, port) = match desc.num {
                 SerialPortNumber::Com1 => {
-                    (ibmpc::IRQ_COM1, ibmpc::PORT_COM1, "COM1")
+                    ("COM1", ibmpc::IRQ_COM1, ibmpc::PORT_COM1)
                 }
                 SerialPortNumber::Com2 => {
-                    (ibmpc::IRQ_COM2, ibmpc::PORT_COM2, "COM2")
+                    ("COM2", ibmpc::IRQ_COM2, ibmpc::PORT_COM2)
                 }
                 SerialPortNumber::Com3 => {
-                    (ibmpc::IRQ_COM3, ibmpc::PORT_COM3, "COM3")
+                    ("COM3", ibmpc::IRQ_COM3, ibmpc::PORT_COM3)
                 }
                 SerialPortNumber::Com4 => {
-                    (ibmpc::IRQ_COM4, ibmpc::PORT_COM4, "COM4")
+                    ("COM4", ibmpc::IRQ_COM4, ibmpc::PORT_COM4)
                 }
             };
 
