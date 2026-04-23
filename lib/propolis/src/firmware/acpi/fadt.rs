@@ -11,8 +11,10 @@ use super::{OEM_ID, OEM_REVISION, OEM_TABLE_ID, SCI_IRQ};
 use acpi_tables::{
     // XXX(acpi): Use version 3 to keep FADT table consistent with the original
     //            EDK2 static tables. The acpi_tables crate also generates the
-    //            MADT table using revision 1, which fwts reports not being
-    //            compatible with FADT 6.5.
+    //            MADT table using revision 1, which is only compatible with
+    //            FADT up to version 3.
+    //
+    // https://github.com/fwts/fwts/blob/3e05ba9c2640a85cac1f408a423d25e712677fa1/src/acpi/madt/madt.c#L30
     fadt_3::{FADTBuilder, Flags},
     gas::{AccessSize, AddressSpace, GAS},
     Aml,
@@ -41,9 +43,9 @@ const PM1A_CNT_BLK_LEN: u8 = 2;
 const PM_TMR_BLK_LEN: u8 = 4;
 const GPE0_BLK_LEN: u8 = 4;
 
-// Represent a bit flag for the FADT IA-PC boot architecture flags.
+// Represents a bit flag for the FADT IA-PC boot architecture flags.
 //
-// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#ia-pc-boot-architecture-flags>
+// https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#ia-pc-boot-architecture-flags
 bitflags! {
     pub struct FadtIaPcBootArchFlags: u16 {
         const LEGACY_DEVICES = 1 << 0;

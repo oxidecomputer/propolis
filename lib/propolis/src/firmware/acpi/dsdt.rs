@@ -275,8 +275,8 @@ impl Aml for PciRootBridgeCrs {
         let mmio32 = aml::AddressSpace::new_memory(
             aml::AddressSpaceCacheable::NotCacheable,
             true,
-            0xf800_0000_u32,
-            0xfffb_ffff_u32,
+            0xf800_0000_u32, // Value overwritten by _CRS.
+            0xfffb_ffff_u32, // Value overwritten by _CRS.
             None,
         );
         cres.push(&mmio32);
@@ -299,8 +299,8 @@ impl Aml for PciRootBridgeCrs {
         let mmio64 = aml::AddressSpace::new_memory(
             aml::AddressSpaceCacheable::Cacheable,
             true,
-            0x0080_0000_0000_u64,
-            0x0fff_ffff_ffff_u64,
+            0x0080_0000_0000_u64, // Value overwritten by _CRS.
+            0x0fff_ffff_ffff_u64, // Value overwritten by _CRS.
             None,
         );
         cr64.push(&mmio64);
@@ -313,7 +313,7 @@ impl Aml for PciRootBridgeCrs {
         // This method returns a ResourceTemplate describing the PCI root
         // bridge resources.
         //
-        // It read the FWDT OperationRegion that is declared in the SSDT. This
+        // It reads the FWDT OperationRegion that is declared in the SSDT. This
         // region is populated by Propolis in lib/propolis/src/hw/qemu/fwcfg.rs
         // and it stores the 32-bit and 64-bit MMIO regions reserved for PCI
         // devices.
@@ -322,8 +322,8 @@ impl Aml for PciRootBridgeCrs {
             0,
             true,
             vec![
+                // Create references to values in the FWDT OperationRegion.
                 &aml::Field::new(
-                    // Create references to values in the FWDT OperationRegion.
                     "FWDT".into(),
                     aml::FieldAccessType::QWord,
                     aml::FieldLockRule::NoLock,
@@ -357,8 +357,7 @@ impl Aml for PciRootBridgeCrs {
                         aml::FieldEntry::Named(*b"P1LH", 32),
                     ],
                 ),
-                // Create fields that reference values from the mmio32
-                // AddressSpace from CRES.
+                // Create references to values in the mmio32 AddressSpace.
                 &aml::CreateDWordField::new(
                     &aml::Path::new("PS32"),
                     &aml::Path::new("CRES"),
@@ -376,28 +375,35 @@ impl Aml for PciRootBridgeCrs {
                 ),
                 // Update the values of mmio32 based on the FWDT.
                 &aml::Store::new(
-                    &aml::Path::new("PS32"),
-                    &aml::Path::new("P0SL"),
+                    &aml::Path::new("PS32"), // mmio32.min
+                    &aml::Path::new("P0SL"), // FWDT.32bit.min (low bits)
                 ),
                 &aml::Store::new(
-                    &aml::Path::new("PE32"),
-                    &aml::Path::new("P0EL"),
+                    &aml::Path::new("PE32"), // mmio32.max
+                    &aml::Path::new("P0EL"), // FWDT.32bit.max (low bits)
                 ),
                 &aml::Store::new(
-                    &aml::Path::new("PL32"),
-                    &aml::Path::new("P0LL"),
+                    &aml::Path::new("PL32"), // mmo32.len
+                    &aml::Path::new("P0LL"), // FWDT.32bit.len (low bits)
                 ),
                 // Check if a 64-bit MMIO region is needed.
                 &aml::If::new(
                     &aml::LogicalAnd::new(
-                        &aml::Equal::new(&aml::Path::new("P1SL"), &aml::ZERO),
-                        &aml::Equal::new(&aml::Path::new("P1SH"), &aml::ZERO),
+                        &aml::Equal::new(
+                            &aml::Path::new("P1SL"), // FWDT.64bit.min (low bits)
+                            &aml::ZERO,
+                        ),
+                        &aml::Equal::new(
+                            &aml::Path::new("P1SH"), // FWDT.64bit.min (high bits)
+                            &aml::ZERO,
+                        ),
                     ),
+                    // Only use CRES if FWDT.64bit.min is zero...
                     vec![&aml::Return::new(&aml::Path::new("CRES"))],
                 ),
+                // ...otherwise concatenate CRES and CR64.
                 &aml::Else::new(vec![
-                    // Create fields that reference values from the mmio64
-                    // AddressSpace from CR64.
+                    // Create references to values in the mmio64 AddressSpace.
                     &aml::CreateQWordField::new(
                         &aml::Path::new("PS64"),
                         &aml::Path::new("CR64"),
@@ -415,16 +421,16 @@ impl Aml for PciRootBridgeCrs {
                     ),
                     // Update the values of mmio64 based on the FWDT.
                     &aml::Store::new(
-                        &aml::Path::new("PS64"),
-                        &aml::Path::new("P1S_"),
+                        &aml::Path::new("PS64"), // mmio64.min
+                        &aml::Path::new("P1S_"), // FWDT.64bit.min
                     ),
                     &aml::Store::new(
-                        &aml::Path::new("PE64"),
-                        &aml::Path::new("P1E_"),
+                        &aml::Path::new("PE64"), // mmio64.max
+                        &aml::Path::new("P1E_"), // FWDT.64bit.max
                     ),
                     &aml::Store::new(
-                        &aml::Path::new("PL64"),
-                        &aml::Path::new("P1L_"),
+                        &aml::Path::new("PL64"), // mmio64.max
+                        &aml::Path::new("P1L_"), // FWDT.64bit.max
                     ),
                     // Concatenate CRES and CR64.
                     &aml::ConcatRes::new(
@@ -553,7 +559,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
             "LPC_".into(),
             vec![
                 &aml::Name::new("_ADR".into(), &0x0001_0000_u64),
-                &Lnk::new("S", 0),
+                &Lnk::new("LNKS", 0),
                 // PCI Interrupt Routing Configuration Registers, PIRQRC[A:D].
                 &aml::OpRegion::new(
                     "PRR0".into(),
@@ -638,10 +644,10 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                             .collect(),
                     )]),
                 ),
-                &Lnk::new("A", 1),
-                &Lnk::new("B", 2),
-                &Lnk::new("C", 3),
-                &Lnk::new("D", 4),
+                &Lnk::new("LNKA", 1),
+                &Lnk::new("LNKB", 2),
+                &Lnk::new("LNKC", 3),
+                &Lnk::new("LNKD", 4),
                 // Programmable Interrupt Controller (PIC).
                 &aml::Device::new(
                     "PIC_".into(),
@@ -870,13 +876,13 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
 
 /// Represents a PCI IRQ link in the LPC device.
 struct Lnk<'a> {
-    letter: &'a str,
+    name: &'a str,
     uid: u32,
 }
 
 impl<'a> Lnk<'a> {
-    fn new(letter: &'a str, uid: u32) -> Self {
-        Self { letter, uid }
+    fn new(name: &'a str, uid: u32) -> Self {
+        Self { name, uid }
     }
 }
 
@@ -921,10 +927,13 @@ impl<'a> Aml for Lnk<'a> {
             return;
         }
 
-        let pir = aml::Path::new(&format!("PIR{}", self.letter));
+        let pir = aml::Path::new(&format!(
+            "PIR{}",
+            self.name.chars().last().unwrap()
+        ));
 
         aml::Device::new(
-            aml::Path::new(&format!("LNK{}", self.letter)),
+            aml::Path::new(self.name),
             vec![
                 &aml::Name::new("_HID".into(), &aml::EISAName::new("PNP0C0F")),
                 &aml::Name::new("_UID".into(), &self.uid),

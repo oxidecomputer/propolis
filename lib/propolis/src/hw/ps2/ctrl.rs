@@ -1101,8 +1101,6 @@ impl acpi::DsdtGenerator for PS2Ctrl {
     }
 }
 
-const PS2_KBD_IRQ: u8 = 1;
-
 impl Aml for PS2Ctrl {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
         aml::Device::new(
@@ -1125,7 +1123,7 @@ impl Aml for PS2Ctrl {
                             0x00,
                             0x01,
                         ),
-                        &aml::IrqNoFlags::new(PS2_KBD_IRQ),
+                        &aml::IrqNoFlags::new(ibmpc::IRQ_PS2_PRI),
                     ]),
                 ),
             ],
