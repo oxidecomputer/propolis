@@ -67,7 +67,6 @@ impl LpcUart {
             notify_writable: NotifierCell::new(),
         })
     }
-
     pub fn attach(self: &Arc<Self>, bus: &PioBus, port: u16) {
         let this = self.clone();
         let piofn = Arc::new(move |_port: u16, rwo: RWOp| this.pio_rw(rwo))

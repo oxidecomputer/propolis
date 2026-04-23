@@ -1433,6 +1433,11 @@ pub mod formats {
             let madt_offset = self.add_madt();
             let ssdt_offset = self.add_ssdt();
 
+            // OVMF actually ignores the XSDT and RSDP tables provided via
+            // fw_cfg and always generates its own versions, but include them
+            // here regardless for completeness.
+            //
+            // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/QemuFwCfgAcpi.c#L891-L899
             let xsdt_entries = vec![fadt_offset, madt_offset, ssdt_offset];
             let xsdt_offset = self.add_xsdt(xsdt_entries);
 

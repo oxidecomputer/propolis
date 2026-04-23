@@ -28,6 +28,10 @@ impl Xsdt {
 }
 
 impl Aml for Xsdt {
+    // OVMF ignores the XSDT table loaded via fw_cfg and instead it generates
+    // its own, so changes here will not appear to the guest when using OVMF.
+    //
+    // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/QemuFwCfgAcpi.c#L891-L899
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
         let mut table = xsdt::XSDT::new(*OEM_ID, *OEM_TABLE_ID, OEM_REVISION);
         self.entries.iter().for_each(|e| table.add_entry(*e));
