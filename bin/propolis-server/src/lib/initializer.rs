@@ -107,6 +107,9 @@ pub enum MachineInitError {
     #[error("boot entry {0:?} refers to a device on non-zero PCI bus {1}")]
     BootDeviceOnDownstreamPciBus(SpecKey, u8),
 
+    #[error("failed to generate ACPI tables: {0}")]
+    AcpiTableError(#[from] fwcfg::formats::AcpiTablesError),
+
     #[error("failed to insert {0} fwcfg entry")]
     FwcfgInsertFailed(&'static str, #[source] fwcfg::InsertError),
 
@@ -123,6 +126,12 @@ pub enum MachineInitError {
 
 /// Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
+
+/// End address of the 32-bit PCI MMIO window.
+// XXX(acpi): Value inherited from the original EDK2 static tables. It should
+//            match the actual memory regions registered in the instance.
+// https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/PlatformPei/Platform.c#L180-L192
+const PCI_MMIO32_END: usize = 0xfeef_ffff;
 
 fn get_spec_guest_ram_limits(spec: &Spec) -> (usize, usize) {
     let memsize = spec.board.memory_mb as usize * MB;
@@ -406,16 +415,25 @@ impl MachineInitializer<'_> {
                 continue;
             }
 
-            let (irq, port) = match desc.num {
-                SerialPortNumber::Com1 => (ibmpc::IRQ_COM1, ibmpc::PORT_COM1),
-                SerialPortNumber::Com2 => (ibmpc::IRQ_COM2, ibmpc::PORT_COM2),
-                SerialPortNumber::Com3 => (ibmpc::IRQ_COM3, ibmpc::PORT_COM3),
-                SerialPortNumber::Com4 => (ibmpc::IRQ_COM4, ibmpc::PORT_COM4),
+            let (uart_name, irq, port) = match desc.num {
+                SerialPortNumber::Com1 => {
+                    ("COM1", ibmpc::IRQ_COM1, ibmpc::PORT_COM1)
+                }
+                SerialPortNumber::Com2 => {
+                    ("COM2", ibmpc::IRQ_COM2, ibmpc::PORT_COM2)
+                }
+                SerialPortNumber::Com3 => {
+                    ("COM3", ibmpc::IRQ_COM3, ibmpc::PORT_COM3)
+                }
+                SerialPortNumber::Com4 => {
+                    ("COM4", ibmpc::IRQ_COM4, ibmpc::PORT_COM4)
+                }
             };
 
-            let dev = LpcUart::new(chipset.irq_pin(irq).unwrap());
+            let dev =
+                LpcUart::new(uart_name, irq, chipset.irq_pin(irq).unwrap());
             dev.set_autodiscard(true);
-            LpcUart::attach(&dev, &self.machine.bus_pio, port);
+            dev.attach(&self.machine.bus_pio, port);
             self.devices.insert(name.to_owned(), dev.clone());
             if desc.num == SerialPortNumber::Com1 {
                 assert!(com1.is_none());
@@ -1091,9 +1109,13 @@ impl MachineInitializer<'_> {
         // Set up an LPC uart for ASIC management comms from the guest.
         //
         // NOTE: SoftNpu squats on com4.
-        let uart = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM4).unwrap());
+        let uart = LpcUart::new(
+            "COM4",
+            ibmpc::IRQ_COM4,
+            chipset.irq_pin(ibmpc::IRQ_COM4).unwrap(),
+        );
         uart.set_autodiscard(true);
-        LpcUart::attach(&uart, &self.machine.bus_pio, ibmpc::PORT_COM4);
+        uart.attach(&self.machine.bus_pio, ibmpc::PORT_COM4);
         self.devices
             .insert(SpecKey::Name("softnpu-uart".to_string()), uart.clone());
 
@@ -1416,8 +1438,39 @@ impl MachineInitializer<'_> {
         Ok(Some(order.finish()))
     }
 
+    fn generate_acpi_tables(
+        &self,
+        cpus: u8,
+    ) -> Result<fwcfg::formats::AcpiTables, MachineInitError> {
+        let (lowmem, _) = get_spec_guest_ram_limits(self.spec);
+        let generators: Vec<_> = self
+            .devices
+            .values()
+            .filter_map(|dev| dev.as_dsdt_generator())
+            .collect();
+
+        let pci_window_32 = fwcfg::formats::PciWindow::new(
+            lowmem as u64,
+            PCI_MMIO32_END as u64,
+        )?;
+
+        let config = &fwcfg::formats::AcpiConfig {
+            num_cpus: cpus,
+            pci_window_32,
+            // XXX(acpi): Value inherited from the original EDK2 static tables,
+            //            where the 64-bit PCI MMIO region was never set. It
+            //            should match the actual memory regions registered in
+            //            the instance.
+            // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/Qemu.c#L284-L286
+            pci_window_64: fwcfg::formats::PciWindow::empty(),
+            dsdt_generators: &generators,
+        };
+        let acpi_tables = fwcfg::formats::AcpiTablesBuilder::new(config);
+        Ok(acpi_tables.build())
+    }
+
     /// Initialize qemu `fw_cfg` device, and populate it with data including CPU
-    /// count, SMBIOS tables, and attached RAM-FB device.
+    /// count, SMBIOS and ACPI tables, and attached RAM-FB device.
     ///
     /// Should not be called before [`Self::initialize_rom()`].
     pub fn initialize_fwcfg(
@@ -1461,6 +1514,19 @@ impl MachineInitializer<'_> {
         fwcfg
             .insert_named("etc/e820", e820_entry)
             .map_err(|e| MachineInitError::FwcfgInsertFailed("e820", e))?;
+
+        let acpi_entries = self.generate_acpi_tables(cpus)?;
+        fwcfg.insert_named("etc/acpi/tables", acpi_entries.tables).map_err(
+            |e| MachineInitError::FwcfgInsertFailed("acpi/tables", e),
+        )?;
+        fwcfg
+            .insert_named("etc/acpi/rsdp", acpi_entries.rsdp)
+            .map_err(|e| MachineInitError::FwcfgInsertFailed("acpi/rsdp", e))?;
+        fwcfg
+            .insert_named("etc/table-loader", acpi_entries.table_loader)
+            .map_err(|e| {
+                MachineInitError::FwcfgInsertFailed("table-loader", e)
+            })?;
 
         let ramfb = ramfb::RamFb::create(
             self.log.new(slog::o!("component" => "ramfb")),

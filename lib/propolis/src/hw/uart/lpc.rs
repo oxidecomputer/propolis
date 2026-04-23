@@ -7,9 +7,12 @@ use std::sync::{Arc, Mutex};
 use super::uart16550::{migrate, Uart};
 use crate::chardev::*;
 use crate::common::*;
+use crate::firmware::acpi;
 use crate::intr_pins::IntrPin;
 use crate::migrate::*;
 use crate::pio::{PioBus, PioFn};
+
+use acpi_tables::{aml, Aml, AmlSink};
 
 // Low Pin Count UART
 
@@ -36,20 +39,30 @@ impl UartState {
 }
 
 pub struct LpcUart {
+    name: &'static str,
+    irq: u8,
     state: Mutex<UartState>,
+    port: Mutex<Option<u16>>,
     notify_readable: NotifierCell<dyn Source>,
     notify_writable: NotifierCell<dyn Sink>,
 }
 
 impl LpcUart {
-    pub fn new(irq_pin: Box<dyn IntrPin>) -> Arc<Self> {
+    pub fn new(
+        name: &'static str,
+        irq: u8,
+        irq_pin: Box<dyn IntrPin>,
+    ) -> Arc<Self> {
         Arc::new(Self {
+            name,
+            irq,
             state: Mutex::new(UartState {
                 uart: Uart::new(),
                 irq_pin,
                 auto_discard: true,
                 paused: false,
             }),
+            port: Mutex::new(None),
             notify_readable: NotifierCell::new(),
             notify_writable: NotifierCell::new(),
         })
@@ -59,6 +72,9 @@ impl LpcUart {
         let piofn = Arc::new(move |_port: u16, rwo: RWOp| this.pio_rw(rwo))
             as Arc<PioFn>;
         bus.register(port, REGISTER_LEN as u16, piofn).unwrap();
+
+        let mut current_port = self.port.lock().unwrap();
+        *current_port = Some(port);
     }
     fn pio_rw(&self, rwo: RWOp) {
         assert!(rwo.offset() < REGISTER_LEN);
@@ -172,6 +188,10 @@ impl Lifecycle for LpcUart {
         let mut state = self.state.lock().unwrap();
         state.paused = false;
     }
+
+    fn as_dsdt_generator(&self) -> Option<&dyn acpi::DsdtGenerator> {
+        Some(self)
+    }
 }
 impl MigrateSingle for LpcUart {
     fn export(
@@ -192,5 +212,48 @@ impl MigrateSingle for LpcUart {
         state.uart.import(&data)?;
         state.irq_pin.import_state(state.uart.intr_state());
         Ok(())
+    }
+}
+
+impl acpi::DsdtGenerator for LpcUart {
+    fn dsdt_scope(&self) -> acpi::DsdtScope {
+        acpi::DsdtScope::Lpc
+    }
+}
+
+impl Aml for LpcUart {
+    fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
+        let port = match *self.port.lock().unwrap() {
+            Some(p) => p,
+            None => return, // Device is not attached to any port.
+        };
+
+        #[allow(clippy::wildcard_in_or_patterns)]
+        let uid: u32 = match self.name {
+            "COM1" => 1,
+            "COM2" => 2,
+            "COM3" | "COM4" | _ => {
+                // XXX(acpi): COM3 and COM4 are also attached to the instance
+                // but the original EDK2 static tables didn't include them.
+                return;
+            }
+        };
+
+        aml::Device::new(
+            aml::Path::new(&format!("UAR{}", uid)),
+            vec![
+                &aml::Name::new("_HID".into(), &aml::EISAName::new("PNP0501")),
+                &aml::Name::new("_DDN".into(), &self.name),
+                &aml::Name::new("_UID".into(), &uid),
+                &aml::Name::new(
+                    "_CRS".into(),
+                    &aml::ResourceTemplate::new(vec![
+                        &aml::IO::new(port, port, 1, REGISTER_LEN as u8),
+                        &aml::Irq::new(true, false, false, self.irq),
+                    ]),
+                ),
+            ],
+        )
+        .to_aml_bytes(sink);
     }
 }

@@ -44,6 +44,12 @@ const PAGE_OFFSET: u64 = 0xfff;
 // Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
 
+/// End address of the 32-bit PCI MMIO window.
+// XXX(acpi): Value inherited from the original EDK2 static tables. It should
+//            match the actual memory regions registered in the instance.
+// https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/PlatformPei/Platform.c#L180-L192
+const PCI_MMIO32_END: usize = 0xfeef_ffff;
+
 const MIN_RT_THREADS: usize = 8;
 const BASE_RT_THREADS: usize = 4;
 
@@ -1071,6 +1077,37 @@ fn generate_bootorder(
     Ok(Some(order.finish()))
 }
 
+fn generate_acpi_tables(
+    cpus: u8,
+    lowmem: usize,
+    inventory: &Inventory,
+) -> anyhow::Result<fwcfg::formats::AcpiTables> {
+    let generators: Vec<_> = inventory
+        .devs
+        .values()
+        .filter_map(|dev| dev.as_dsdt_generator())
+        .collect();
+
+    let pci_window_32 =
+        fwcfg::formats::PciWindow::new(lowmem as u64, PCI_MMIO32_END as u64)
+            .context("invalid PCI window range")?;
+
+    let config = &fwcfg::formats::AcpiConfig {
+        num_cpus: cpus,
+        pci_window_32,
+        // XXX(acpi): Value inherited from the original EDK2 static tables,
+        //            where the 64-bit PCI MMIO region was never set. It
+        //            should match the actual memory regions registered in
+        //            the instance.
+        // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/Qemu.c#L284-L286
+        pci_window_64: fwcfg::formats::PciWindow::empty(),
+        dsdt_generators: &generators,
+    };
+    let acpi_tables = fwcfg::formats::AcpiTablesBuilder::new(config);
+
+    Ok(acpi_tables.build())
+}
+
 fn setup_instance(
     config: config::Config,
     from_restore: bool,
@@ -1183,10 +1220,26 @@ fn setup_instance(
     guard.inventory.register(&hpet);
 
     // UARTs
-    let com1 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM1).unwrap());
-    let com2 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM2).unwrap());
-    let com3 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM3).unwrap());
-    let com4 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM4).unwrap());
+    let com1 = LpcUart::new(
+        "COM1",
+        ibmpc::IRQ_COM1,
+        chipset_lpc.irq_pin(ibmpc::IRQ_COM1).unwrap(),
+    );
+    let com2 = LpcUart::new(
+        "COM2",
+        ibmpc::IRQ_COM2,
+        chipset_lpc.irq_pin(ibmpc::IRQ_COM2).unwrap(),
+    );
+    let com3 = LpcUart::new(
+        "COM3",
+        ibmpc::IRQ_COM3,
+        chipset_lpc.irq_pin(ibmpc::IRQ_COM3).unwrap(),
+    );
+    let com4 = LpcUart::new(
+        "COM4",
+        ibmpc::IRQ_COM4,
+        chipset_lpc.irq_pin(ibmpc::IRQ_COM4).unwrap(),
+    );
 
     com1_sock.spawn(
         Arc::clone(&com1) as Arc<dyn Sink>,
@@ -1200,10 +1253,10 @@ fn setup_instance(
     com4.set_autodiscard(true);
 
     let pio = &machine.bus_pio;
-    LpcUart::attach(&com1, pio, ibmpc::PORT_COM1);
-    LpcUart::attach(&com2, pio, ibmpc::PORT_COM2);
-    LpcUart::attach(&com3, pio, ibmpc::PORT_COM3);
-    LpcUart::attach(&com4, pio, ibmpc::PORT_COM4);
+    com1.attach(pio, ibmpc::PORT_COM1);
+    com2.attach(pio, ibmpc::PORT_COM2);
+    com3.attach(pio, ibmpc::PORT_COM3);
+    com4.attach(pio, ibmpc::PORT_COM4);
     guard.inventory.register_instance(&com1, "com1");
     guard.inventory.register_instance(&com2, "com2");
     guard.inventory.register_instance(&com3, "com3");
@@ -1424,6 +1477,18 @@ fn setup_instance(
     }
     let e820_entry = generate_e820(machine, log).expect("can build E820 table");
     fwcfg.insert_named("etc/e820", e820_entry).unwrap();
+
+    let acpi_entries = generate_acpi_tables(cpus, lowmem, &guard.inventory)
+        .expect("can build ACPI tables");
+    fwcfg
+        .insert_named("etc/acpi/tables", acpi_entries.tables)
+        .context("Failed to insert ACPI tables")?;
+    fwcfg
+        .insert_named("etc/acpi/rsdp", acpi_entries.rsdp)
+        .context("Failed to insert ACPI RSDP")?;
+    fwcfg
+        .insert_named("etc/table-loader", acpi_entries.table_loader)
+        .context("Failed to insert ACPI table-loader")?;
 
     fwcfg.attach(pio, &machine.acc_mem);
 
