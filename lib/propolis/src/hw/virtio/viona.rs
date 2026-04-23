@@ -2193,9 +2193,10 @@ mod test {
             | VIRTIO_NET_F_MQ;
 
         let mut driver = test_ctx.create_driver();
-        // OVMF just initializes all queues. Linux initializes all queues, then
-        // turns down the number of used queues based on available CPUs, if this
-        // would be a limiter. Do similar here to keep up the act.
+        // OVMF just initializes all queues. Linux (6at least 6.6.49/Alpine
+        // 3.20.3) initializes all queues, then turns down the number of used
+        // queues based on available CPUs, if this would be a limiter. Do
+        // similar here to keep up the act.
         driver.set_max_pairs(Some(4));
         driver.modern_device_init(expected_feats);
         let mut driver = test_ctx.create_driver();
@@ -2205,8 +2206,7 @@ mod test {
         driver.modern_device_init(expected_feats);
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats);
-        // Similar to above, this is representative of the first "after OVMF"
-        // driver. Assume it's Linux again.
+        // Pretending to be Linux, like above set_max_pairs().
         driver.set_max_pairs(Some(4));
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats);
@@ -2254,9 +2254,8 @@ mod test {
         assert!(driver.status_ok());
 
         let mut driver = test_ctx.create_driver();
-        // Unlike OVMF, some Linuxes (seen on kernel 6.6.49 in Alpine 3.20.3)
-        // limit the number of queue pairs they'll use. Do similar here to keep
-        // up the act.
+        // `basic_operation_multiqueue()` talks about why it's an interesting
+        // test to shink max pairs.
         driver.set_max_pairs(Some(4));
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
 
@@ -2310,9 +2309,8 @@ mod test {
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
         let mut driver = test_ctx.create_driver();
-        // Unlike OVMF, some Linuxes (seen on kernel 6.6.49 in Alpine 3.20.3)
-        // limit the number of queue pairs they'll use. Do similar here to keep
-        // up the act.
+        // `basic_operation_multiqueue()` talks about why it's an interesting
+        // test to shink max pairs.
         driver.set_max_pairs(Some(4));
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
 
