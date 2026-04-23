@@ -611,9 +611,11 @@ impl Vm {
             };
 
             let vm_for_driver = self.clone();
+            let base_log = log.clone();
             guard.driver = Some(tokio::spawn(async move {
                 state_driver::ensure_vm_and_launch_driver(
                     log_for_driver,
+                    base_log,
                     vm_for_driver,
                     external_publisher,
                     ensure_request,
