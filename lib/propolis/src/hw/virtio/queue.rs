@@ -192,10 +192,11 @@ impl VqUsed {
         mem.write(self.gpa_flags, &value);
     }
 
-    /// Disables notifications on this queue; returns the previous state.
+    /// Disables notifications on this queue; returns whether notfications were
+    /// enabled before.
     fn disable_notify(&self, mem: &MemCtx) -> bool {
         let flags = self.flags(mem);
-        let current = flags.contains(UsedFlags::NO_NOTIFY);
+        let current = !flags.contains(UsedFlags::NO_NOTIFY);
         self.set_flags(flags | UsedFlags::NO_NOTIFY, mem);
         current
     }
@@ -326,6 +327,7 @@ impl VirtQueue {
         used.reset();
         self.live.store(false, Ordering::Release);
         self.enabled.store(false, Ordering::Release);
+        self.is_control.store(false, Ordering::Release);
     }
 
     pub(super) fn enable(&self) {
@@ -564,7 +566,9 @@ impl VirtQueue {
         used.interrupt.as_ref().map(|x| x.read())
     }
 
-    /// Disables interrupts (notifications) on the `Used` ring
+    /// Disables interrupts (notifications) on the `Used` ring.
+    ///
+    /// Returns `true` if notifications were previously enabled.
     pub(super) fn disable_intr(&self, mem: &MemCtx) -> bool {
         let used = self.used.lock().unwrap();
         used.disable_notify(mem)
@@ -1052,7 +1056,7 @@ impl VirtQueues {
         // section 5.1.2).  None of the other devices currently handle queues
         // specially in this way, but we should come up with some better
         // mechanism here.
-        if qid + 1 == len {
+        if qid + 1 == self.max_capacity() {
             Some(self.get_control())
         } else {
             self.queues[..len].get(qid)

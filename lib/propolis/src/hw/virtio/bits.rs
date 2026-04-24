@@ -22,6 +22,7 @@ pub const VIRTIO_NET_F_CTRL_VQ: u64 = 1 << 17;
 pub const VIRTIO_NET_F_CTRL_RX: u64 = 1 << 18;
 pub const VIRTIO_NET_F_CTRL_VLAN: u64 = 1 << 19;
 pub const VIRTIO_NET_F_CTRL_RX_EXTRA: u64 = 1 << 20;
+pub const VIRTIO_NET_F_GUEST_ANNOUNCE: u64 = 1 << 21;
 pub const VIRTIO_NET_F_MQ: u64 = 1 << 22;
 
 // virtio-block feature bits
