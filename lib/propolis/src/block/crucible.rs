@@ -145,9 +145,11 @@ impl WorkerState {
                     let _ = block.flush(None).await?;
                 }
             }
-            block::Operation::Discard(..) => {
-                // Crucible does not support discard operations for now
-                return Err(Error::Unsupported);
+            block::Operation::Discard => {
+                // Crucible does not support discard operations for now, so we implement this as
+                // a no-op (which technically is a valid implementation of discard, just one that
+                // doesn't actually free any space).
+                return Ok(());
             }
         }
         Ok(())

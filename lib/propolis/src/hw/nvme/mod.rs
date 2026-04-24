@@ -846,6 +846,8 @@ impl PciNvme {
             // Supporting multiple namespaces complicates I/O dispatching,
             // so for now we limit the device to a single namespace.
             nn: 1,
+            // bit 2 indicates support for the Dataset Management command
+            oncs: (1 << 2),
             // bit 0 indicates volatile write cache is present
             vwc: 1,
             // bit 8 indicates Doorbell Buffer support

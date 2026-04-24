@@ -283,9 +283,9 @@ impl QueueMinder {
                 Operation::Flush => {
                     probes::block_begin_flush!(|| { (devqid, id) });
                 }
-                Operation::Discard(off, len) => {
+                Operation::Discard => {
                     probes::block_begin_discard!(|| {
-                        (devqid, id, off as u64, len as u64)
+                        (devqid, id, req.ranges.len() as u64)
                     });
                 }
             }
@@ -355,7 +355,7 @@ impl QueueMinder {
                     (devqid, id, rescode, ns_processed, ns_queued)
                 });
             }
-            Operation::Discard(..) => {
+            Operation::Discard => {
                 probes::block_complete_discard!(|| {
                     (devqid, id, rescode, ns_processed, ns_queued)
                 });

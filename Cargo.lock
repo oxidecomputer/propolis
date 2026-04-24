@@ -6434,6 +6434,7 @@ dependencies = [
  "futures",
  "iddqd",
  "ispf",
+ "itertools 0.13.0",
  "lazy_static",
  "libc",
  "libloading 0.7.4",
