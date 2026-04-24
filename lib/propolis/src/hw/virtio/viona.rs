@@ -49,6 +49,13 @@ pub const fn max_num_queues() -> usize {
     PROPOLIS_MAX_MQ_PAIRS as usize * 2
 }
 
+/// The index of the control queue when multiqueue ([`VIRTIO_NET_F_MQ`]) has
+/// not been negotiated.
+///
+/// In this case, the driver will behave as though we have allocated only one
+/// Rx/Tx queue pair, making the control queue the third
+pub const VIRTIO_NO_MQ_CTRL_Q_INDEX: usize = 2;
+
 const ETHERADDRL: usize = 6;
 
 /// The caller of `set_use_pairs` will probably be inlined into a larger
@@ -64,6 +71,13 @@ enum MqSetPairsCause {
 #[usdt::provider(provider = "propolis")]
 mod probes {
     fn virtio_viona_mq_set_use_pairs(cause: u8, npairs: u16) {}
+    fn virtio_viona_cq_req(class: u8, command: u8) {}
+    fn virtio_viona_cq_notif(vq: libc::uintptr_t, idx: u16) {}
+    fn virtio_viona_q_notif(vq: libc::uintptr_t, idx: u16) {}
+
+    fn virtio_viona_no_access(vq: libc::uintptr_t) {}
+
+    fn virtio_viona_cq_result(vq: libc::uintptr_t, res: u8, len: u32) {}
 }
 
 /// Types and so forth for supporting the control queue.
@@ -81,8 +95,8 @@ pub mod control {
     #[derive(Clone, Copy, Debug, Default)]
     #[repr(C)]
     pub struct Header {
-        class: u8,
-        command: u8,
+        pub class: u8,
+        pub command: u8,
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -196,10 +210,12 @@ pub mod control {
     ) -> Result<Box<[[u8; ETHERADDRL]]>, ()> {
         let mut entry_count = 0u32;
         if !chain.read(&mut entry_count, mem) {
+            eprintln!("MAC list: insuff bytes for entry count");
             return Err(());
         }
 
         if entry_count == 0 {
+            eprintln!("MAC list empty");
             return Ok(Box::new([]));
         }
 
@@ -207,6 +223,7 @@ pub mod control {
             vec![[0; ETHERADDRL]; entry_count as usize].into_boxed_slice();
         for i in 0..space.len() {
             if !chain.read(&mut space[i], mem) {
+                eprintln!("Failed to read MAC {}/{}", i + 1, space.len());
                 return Err(());
             }
         }
@@ -517,13 +534,14 @@ impl PciVirtioViona {
             .chain([ctl_queue_size])
             .collect::<Vec<VqSize>>();
         // The vector is sized with the maximum number of rings/queues, but
-        // until the driver negotiates multiqueue, we only use the first two.
+        // until the driver negotiates multiqueue, we only use the first two
+        // for the datapath. The third will serve as the control queue if
+        // multiqueue is not negotiated, even if it is a little large for that
+        // purpose.
         let queues = VirtQueues::new_with_len(3, &queue_sizes);
-        if let Some(ctlq) = queues.get(2) {
-            ctlq.set_control();
-        }
         let nqueues = queues.max_capacity();
         hdl.set_pairs(1).unwrap();
+
         // Add one for config space.
         let msix_count = Some(1 + nqueues as u16);
         let (virtio_state, pci_state) = PciVirtioState::new(
@@ -574,20 +592,17 @@ impl PciVirtioViona {
         }
     }
 
-    fn is_ctl_queue(&self, vq: &VirtQueue) -> bool {
-        usize::from(vq.id) + 1 == self.virtio_state.queues.len()
-    }
-
     fn ctl_queue_notify(&self, vq: &VirtQueue) {
         if let Some(mem) = self.pci_state.acc_mem.access() {
             while !vq.avail_is_empty(&mem) {
                 let mut chain = Chain::with_capacity(4);
                 let intrs_en = vq.disable_intr(&mem);
-                while let Some((_idx, _len)) = vq.pop_avail(&mut chain, &mem) {
+                while let Some((_idx, len)) = vq.pop_avail(&mut chain, &mem) {
                     let res = match self.ctl_msg(vq, &mut chain, &mem) {
                         Ok(_) => control::Ack::Ok,
                         Err(_) => control::Ack::Err,
                     } as u8;
+                    probes::virtio_viona_cq_result!(|| ((vq as *const VirtQueue).addr(), res, len));
                     chain.write(&res, &mem);
                     vq.push_used(&mut chain, &mem);
                 }
@@ -595,6 +610,8 @@ impl PciVirtioViona {
                     vq.enable_intr(&mem);
                 }
             }
+        } else {
+            probes::virtio_viona_no_access!(|| (vq as *const VirtQueue).addr());
         }
     }
 
@@ -608,10 +625,12 @@ impl PciVirtioViona {
         if !chain.read(&mut header, &mem) {
             return Err(());
         }
+        probes::virtio_viona_cq_req!(|| (header.class, header.command));
+
         use control::Command;
         match Command::try_from(header).map_err(|_| ())? {
-            Command::Rx(cmd) => self.ctl_rx(cmd, chain, mem),
-            Command::Mac(cmd) => self.ctl_mac(cmd, chain, mem),
+            Command::Rx(cmd) => self.ctl_rx(cmd, vq, chain, mem),
+            Command::Mac(cmd) => self.ctl_mac(cmd, vq, chain, mem),
             Command::Vlan(_) => Ok(()),
             Command::Announce(_) => Ok(()),
             Command::Mq(cmd) => self.ctl_mq(cmd, vq, chain, mem),
@@ -621,6 +640,7 @@ impl PciVirtioViona {
     fn ctl_rx(
         &self,
         cmd: control::RxCmd,
+        vq: &VirtQueue,
         chain: &mut Chain,
         mem: &MemCtx,
     ) -> Result<(), ()> {
@@ -634,10 +654,14 @@ impl PciVirtioViona {
             RxCmd::NoBroadcast => FilterState::NO_BROADCAST,
         };
 
+        eprintln!("RX: got {filter:?} from guest [q {}]", vq.id);
+
         let mut msg = control::Rx::default();
         if !chain.read(&mut msg, &mem) {
+            eprintln!("filter {filter:?} -- req too small?");
             return Err(());
         }
+        eprintln!("\tval is {}", msg.set);
         let active = match msg.set {
             0 => false,
             1 => true,
@@ -649,14 +673,18 @@ impl PciVirtioViona {
     fn ctl_mac(
         &self,
         cmd: control::MacCmd,
+        vq: &VirtQueue,
         chain: &mut Chain,
         mem: &MemCtx,
     ) -> Result<(), ()> {
         use control::MacCmd;
+        eprintln!("MAC: got {cmd:?} from guest [q {}]", vq.id);
         match cmd {
             MacCmd::TableSet => {
                 let unicast = control::read_mac_list(chain, mem)?;
+                eprintln!("\tMAC UCAST [{}]: {unicast:x?}", unicast.len());
                 let multicast = control::read_mac_list(chain, mem)?;
+                eprintln!("\tMAC MCAST [{}]: {multicast:x?}", multicast.len());
 
                 self.set_mac_filters(unicast, multicast)
             }
@@ -689,13 +717,15 @@ impl PciVirtioViona {
         mem: &MemCtx,
     ) -> Result<(), ()> {
         use control::MqCmd;
-        let _todo = vq;
+        // let _todo = vq;
+        eprintln!("MQ: got {cmd:?} from guest [q {}]", vq.id);
         match cmd {
             MqCmd::SetPairs => {
                 let mut msg = control::Mq::default();
                 if !chain.read(&mut msg, &mem) {
                     return Err(());
                 }
+
                 let npairs = msg.npairs;
                 probes::virtio_viona_mq_set_use_pairs!(|| (
                     MqSetPairsCause::Commanded as u8,
@@ -883,7 +913,7 @@ impl PciVirtioViona {
         }
     }
 
-    /// Set or unset unicast/multicast filters on behalf of a driver.
+    /// Set or unset unicast/multicast class-wide filters on behalf of a driver.
     fn set_filter_state(
         &self,
         filter: FilterState,
@@ -892,11 +922,13 @@ impl PciVirtioViona {
         if (self.virtio_state.negotiated_features() & VIRTIO_NET_F_CTRL_RX) == 0
             && filter.intersects(FilterState::RX_CMDS)
         {
+            eprintln!("Backing out, no VIRTIO_NET_F_CTRL_RX...");
             return Err(());
         }
 
         if filter.intersects(FilterState::RX_EXTRA_CMDS) {
             // We cannot express any of the extra filters within viona yet.
+            eprintln!("Backing out, no VIRTIO_NET_F_CTRL_RX_EXTRA...");
             return Err(());
         }
 
@@ -913,7 +945,8 @@ impl PciVirtioViona {
         }
     }
 
-    /// Replace
+    /// Replace the requested set of explicit MAC address filters on a device
+    /// with a new table provided by the driver.
     fn set_mac_filters(
         &self,
         mut unicast: Box<[[u8; ETHERADDRL]]>,
@@ -946,15 +979,20 @@ impl PciVirtioViona {
         state: &mut Inner,
     ) -> Result<(), ()> {
         if level == state.promisc {
+            eprintln!("Promisc no change.");
             return Ok(());
         }
 
         match self.hdl.set_promisc(level) {
             Ok(_) => {
+                eprintln!("Promisc changed to {level:?}.");
                 state.promisc = level;
                 Ok(())
             }
-            Err(_) => Err(()),
+            Err(_) => {
+                eprintln!("Failed to change promisc to {level:?}.");
+                Err(())
+            }
         }
     }
 
@@ -965,9 +1003,13 @@ impl PciVirtioViona {
         // be downgraded.
         #[cfg(feature = "falcon")]
         if state.promisc == PromiscLevel::AllVlan {
+            eprintln!("AllVlan->AllVlan");
             return PromiscLevel::AllVlan;
         }
 
+        // We don't have an ioctl yet for viona to explicitly install a set of
+        // filters. For now, we need to apply some level of promiscuous mode
+        // to give the guest what it asks for.
         let need_mcast = state.filter.contains(FilterState::ALL_MULTICAST)
             || !state.multicast_mac_filters.is_empty();
 
@@ -982,10 +1024,13 @@ impl PciVirtioViona {
             || !(filter_is_self || state.unicast_mac_filters.is_empty());
 
         if need_promisc {
+            eprintln!("{:?}->All", state.promisc);
             PromiscLevel::All
         } else if need_mcast {
+            eprintln!("{:?}->AllMulti", state.promisc);
             PromiscLevel::AllMulti
         } else {
+            eprintln!("{:?}->None", state.promisc);
             PromiscLevel::None
         }
     }
@@ -1028,26 +1073,52 @@ impl VirtioDevice for PciVirtioViona {
 
     fn set_features(&self, feat: u64) -> Result<(), ()> {
         self.hdl.set_features(feat).map_err(|_| ())?;
-        if (feat & VIRTIO_NET_F_MQ) != 0 {
+
+        // Any remaining setup is for control-queue based features.
+        if (feat & VIRTIO_NET_F_CTRL_VQ) == 0 {
+            return Ok(());
+        }
+
+        let ctl_q_idx = if (feat & VIRTIO_NET_F_MQ) != 0 {
             self.hdl.set_pairs(PROPOLIS_MAX_MQ_PAIRS).map_err(|_| ())?;
             probes::virtio_viona_mq_set_use_pairs!(|| (
                 MqSetPairsCause::MqEnabled as u8,
                 PROPOLIS_MAX_MQ_PAIRS
             ));
             self.set_use_pairs(PROPOLIS_MAX_MQ_PAIRS)?;
-        }
+
+            self.virtio_state.queues.max_capacity() - 1
+        } else {
+            VIRTIO_NO_MQ_CTRL_Q_INDEX
+        };
+
+        ctl_q_idx.try_into()
+            .ok()
+            .and_then(|i| self.virtio_state.queues.get(i))
+            .map(|v| v.set_control())
+            .ok_or_else(|| ())?;
+
         if (feat & VIRTIO_NET_F_CTRL_RX) != 0 {
             let mut state = self.inner.lock().unwrap();
             self.set_promisc(PromiscLevel::None, &mut state)?;
         }
+
         Ok(())
     }
 
     fn queue_notify(&self, vq: &VirtQueue) {
-        if self.is_ctl_queue(vq) {
+        if vq.is_control() {
+            probes::virtio_viona_cq_notif!(|| (
+                (vq as *const VirtQueue).addr(),
+                vq.id
+            ));
             self.ctl_queue_notify(vq);
             return;
         }
+        probes::virtio_viona_q_notif!(|| (
+            (vq as *const VirtQueue).addr(),
+            vq.id
+        ));
         let mut inner = self.inner.lock().unwrap();
         let ring_state = inner.for_vq(vq);
         match ring_state {
