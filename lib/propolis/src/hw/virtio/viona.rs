@@ -2193,7 +2193,7 @@ mod test {
             | VIRTIO_NET_F_MQ;
 
         let mut driver = test_ctx.create_driver();
-        // OVMF just initializes all queues. Linux (6at least 6.6.49/Alpine
+        // OVMF just initializes all queues. Linux (at least 6.6.49/Alpine
         // 3.20.3) initializes all queues, then turns down the number of used
         // queues based on available CPUs, if this would be a limiter. Do
         // similar here to keep up the act.
