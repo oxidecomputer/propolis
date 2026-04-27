@@ -50,6 +50,8 @@ jobs:
       run: cargo build -p propolis-mock-server --verbose
     - name: Test Libraries
       run: cargo test --lib --verbose
+    - name: Test everything
+      run: cargo test --locked
   # Build and test propolis-the-library on its own; `cargo test --lib` as used
   # above builds the entire workspace, meaning propolis-server default features
   # are used to build and run propolis-lib tests. Instead, this check uses

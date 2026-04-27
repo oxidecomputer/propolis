@@ -2032,9 +2032,9 @@ dependencies = [
 
 [[package]]
 name = "dropshot-api-manager"
-version = "0.7.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27edffb6c55e640e420fb4a03ac0a066449100e936457e2db074ab8f5f208c8a"
+checksum = "bf576868db63e888512129acd5f59e36e61b7d1ac285239e76ed40dc43d7b2e8"
 dependencies = [
  "anyhow",
  "atomicwrites",
@@ -2042,7 +2042,7 @@ dependencies = [
  "clap",
  "debug-ignore",
  "drift",
- "dropshot 0.17.0",
+ "dropshot 0.16.7",
  "dropshot-api-manager-types",
  "fs-err",
  "git-stub",
@@ -2065,9 +2065,9 @@ dependencies = [
 
 [[package]]
 name = "dropshot-api-manager-types"
-version = "0.7.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63d655f88937cd3cc3a99b81f731af996084f2f16d0067b2cfad43411ad4317f"
+checksum = "a04cc5bc280e21332f33acfd180705a9e8ace302e9eb08000786135d27497731"
 dependencies = [
  "anyhow",
  "camino",
@@ -5796,7 +5796,7 @@ dependencies = [
  "camino",
  "cfg-if",
  "cpuid_utils",
- "dropshot 0.17.0",
+ "dropshot 0.16.7",
  "errno 0.2.8",
  "fatfs",
  "flate2",
@@ -5878,7 +5878,7 @@ dependencies = [
  "byteorder",
  "chrono",
  "cpuid_utils",
- "dropshot 0.17.0",
+ "dropshot 0.16.7",
  "futures",
  "http",
  "itertools 0.13.0",
@@ -6585,7 +6585,7 @@ dependencies = [
  "atty",
  "base64 0.21.7",
  "clap",
- "dropshot 0.17.0",
+ "dropshot 0.16.7",
  "futures",
  "hyper",
  "progenitor 0.13.0",
@@ -6637,7 +6637,7 @@ dependencies = [
  "const_format",
  "cpuid_utils",
  "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=ae1da83e66c648574827298f4bc444632bf4d047)",
- "dropshot 0.17.0",
+ "dropshot 0.16.7",
  "erased-serde 0.4.5",
  "expectorate",
  "futures",
@@ -6693,7 +6693,7 @@ name = "propolis-server-api"
 version = "0.1.0"
 dependencies = [
  "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=ae1da83e66c648574827298f4bc444632bf4d047)",
- "dropshot 0.17.0",
+ "dropshot 0.16.7",
  "dropshot-api-manager-types",
  "propolis-api-types-versions",
 ]
@@ -7253,7 +7253,7 @@ dependencies = [
  "ascii",
  "bitflags 2.9.4",
  "clap",
- "dropshot 0.17.0",
+ "dropshot 0.16.7",
  "futures",
  "image",
  "rgb_frame",
@@ -8446,7 +8446,7 @@ version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1c97747dbf44bb1ca44a561ece23508e99cb592e862f22222dcf42f51d1e451"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
