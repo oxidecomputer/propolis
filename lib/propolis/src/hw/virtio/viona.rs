@@ -28,6 +28,7 @@ use super::{VirtioDevice, VqChange, VqIntr};
 
 use bit_field::BitField;
 use lazy_static::lazy_static;
+use serde::{Deserialize, Serialize};
 use tokio::io::unix::AsyncFd;
 use tokio::io::Interest;
 use tokio::sync::watch;
@@ -218,6 +219,25 @@ pub mod control {
     }
 }
 
+pub mod migrate {
+    use super::*;
+    use crate::migrate::*;
+
+    #[derive(Deserialize, Serialize)]
+    pub struct VionaStateV1 {
+        pub promisc: PromiscLevel,
+        pub filter: u8,
+        pub unicast_mac_filters: Vec<MacAddr>,
+        pub multicast_mac_filters: Vec<MacAddr>,
+    }
+
+    impl Schema<'_> for VionaStateV1 {
+        fn id() -> SchemaId {
+            ("pci-virtio-viona", 1)
+        }
+    }
+}
+
 /// Viona's in-kernel emulation of the device VirtQueues is performed in what
 /// are calls "vrings". Since the userspace portion of the Viona emulation is
 /// tasked with keeping the vring state in sync with the VirtQueue it
@@ -398,8 +418,10 @@ impl Default for DeviceParams {
 }
 
 /// Relaxed levels of packet filtering offered by viona.
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-enum PromiscLevel {
+#[derive(
+    Copy, Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize,
+)]
+pub enum PromiscLevel {
     /// The device should receive only packets for its installed MAC
     /// filters.
     ///
@@ -449,6 +471,8 @@ impl From<PromiscLevel> for usize {
     FromBytes,
     IntoBytes,
     Immutable,
+    Serialize,
+    Deserialize,
 )]
 pub struct MacAddr([u8; ETHERADDRL]);
 
@@ -1274,7 +1298,20 @@ impl MigrateMulti for PciVirtioViona {
         output: &mut PayloadOutputs,
         ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        <dyn PciVirtio>::export(self, output, ctx)
+        <dyn PciVirtio>::export(self, output, ctx)?;
+
+        let viona_state = {
+            let state = self.inner.lock().unwrap();
+
+            migrate::VionaStateV1 {
+                promisc: state.promisc,
+                filter: state.filter.bits(),
+                unicast_mac_filters: state.unicast_mac_filters.to_vec(),
+                multicast_mac_filters: state.multicast_mac_filters.to_vec(),
+            }
+        };
+
+        output.push(viona_state.into())
     }
 
     fn import(
@@ -1291,7 +1328,18 @@ impl MigrateMulti for PciVirtioViona {
             ))
         })?;
 
-        Ok(())
+        let input: migrate::VionaStateV1 = offer.take()?;
+
+        let mut state = self.inner.lock().unwrap();
+        state.filter = FilterState::from_bits_retain(input.filter);
+        state.unicast_mac_filters = input.unicast_mac_filters.into();
+        state.unicast_mac_filters = input.multicast_mac_filters.into();
+        self.set_promisc(input.promisc, &mut state).map_err(|_| {
+            MigrateStateError::ImportFailed(format!(
+                "Could not move device promisc level to {:?}.",
+                input.promisc
+            ))
+        })
     }
 }
 
