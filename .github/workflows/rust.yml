@@ -44,12 +44,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      with:
+        # see https://github.com/oxidecomputer/omicron/issues/4461
+        # (by default the action picks a merge commit with the target branch
+        # rather than the actual PR tip)
+        ref: ${{ github.event.pull_request.head.sha }}
+        # `test_apis_up_to_date` needs a full history for the gitstubs
+        fetch-depth: 0
     - name: Build
       run: cargo build --verbose
     - name: Build mock-only server
       run: cargo build -p propolis-mock-server --verbose
     - name: Test Libraries
       run: cargo test --lib --verbose
+    - name: Test everything
+      run: cargo test --locked
   # Build and test propolis-the-library on its own; `cargo test --lib` as used
   # above builds the entire workspace, meaning propolis-server default features
   # are used to build and run propolis-lib tests. Instead, this check uses

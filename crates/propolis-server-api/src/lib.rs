@@ -22,6 +22,7 @@ api_versions!([
     // |  example for the next person.
     // v
     // (next_int, IDENT),
+    (4, DROPSHOT_BUMP_WEBSOCKET),
     (3, ADD_VSOCK),
     (2, PROGRAMMABLE_SMBIOS),
     (1, INITIAL),
