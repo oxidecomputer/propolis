@@ -55,6 +55,7 @@ use propolis_api_types::serial::{
     InstanceSerialConsoleHistoryRequest, InstanceSerialConsoleHistoryResponse,
     InstanceSerialConsoleStreamRequest,
 };
+use propolis_api_types_versions::v1::disk::VolumeStatus as VolumeStatusV1;
 use propolis_server_api::PropolisServerApi;
 use rfb::tungstenite::BinaryWs;
 use slog::{error, warn, Logger};
@@ -557,6 +558,34 @@ impl PropolisServerApi for PropolisServerImpl {
         Ok(HttpResponseOk(()))
     }
 
+    async fn disk_volume_status_v1(
+        rqctx: RequestContext<Self::Context>,
+        path_params: Path<VolumeStatusPathParams>,
+    ) -> Result<HttpResponseOk<VolumeStatusV1>, HttpError> {
+        let path_params = path_params.into_inner();
+        let vm = rqctx
+            .context()
+            .vm
+            .active_vm()
+            .await
+            .ok_or_else(not_created_error)?;
+        let objects = vm.objects().lock_shared().await;
+        let backend = objects
+            .crucible_backends()
+            .get(&SpecKey::from(path_params.id.clone()))
+            .ok_or_else(|| {
+                let s =
+                    format!("No crucible backend for id {}", path_params.id);
+                HttpError::for_not_found(Some(s.clone()), s)
+            })?;
+
+        Ok(HttpResponseOk(VolumeStatusV1 {
+            active: backend.volume_is_active().await.map_err(|e| {
+                HttpError::for_bad_request(Some(e.to_string()), e.to_string())
+            })?,
+        }))
+    }
+
     async fn disk_volume_status(
         rqctx: RequestContext<Self::Context>,
         path_params: Path<VolumeStatusPathParams>,
@@ -578,11 +607,11 @@ impl PropolisServerApi for PropolisServerImpl {
                 HttpError::for_not_found(Some(s.clone()), s)
             })?;
 
-        Ok(HttpResponseOk(VolumeStatus {
-            active: backend.volume_is_active().await.map_err(|e| {
-                HttpError::for_bad_request(Some(e.to_string()), e.to_string())
-            })?,
-        }))
+        let volume_info = backend.query_volume_info().await.map_err(|e| {
+            HttpError::for_bad_request(Some(e.to_string()), e.to_string())
+        })?;
+
+        Ok(HttpResponseOk(VolumeStatus { volume_info }))
     }
 
     async fn instance_issue_crucible_vcr_request(

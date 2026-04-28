@@ -22,6 +22,7 @@ api_versions!([
     // |  example for the next person.
     // v
     // (next_int, IDENT),
+    (5, CRUCIBLE_VOLUME_INFO),
     (4, DROPSHOT_BUMP_WEBSOCKET),
     (3, ADD_VSOCK),
     (2, PROGRAMMABLE_SMBIOS),
@@ -266,8 +267,21 @@ pub trait PropolisServerApi {
 
     /// Gets the status of a Crucible volume backing a disk
     #[endpoint {
+        operation_id = "disk_volume_status",
         method = GET,
         path = "/instance/disk/{id}/status",
+        versions = VERSION_INITIAL..VERSION_CRUCIBLE_VOLUME_INFO,
+    }]
+    async fn disk_volume_status_v1(
+        rqctx: RequestContext<Self::Context>,
+        path_params: Path<v1::disk::VolumeStatusPathParams>,
+    ) -> Result<HttpResponseOk<v1::disk::VolumeStatus>, HttpError>;
+
+    /// Gets the status of a Crucible volume backing a disk
+    #[endpoint {
+        method = GET,
+        path = "/instance/disk/{id}/status",
+        versions = VERSION_CRUCIBLE_VOLUME_INFO..,
     }]
     async fn disk_volume_status(
         rqctx: RequestContext<Self::Context>,

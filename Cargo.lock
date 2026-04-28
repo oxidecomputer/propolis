@@ -1213,7 +1213,7 @@ checksum = "248e3bacc7dc6baa3b21e405ee045c3047101a49145e7e9eca583ab4c2ca5345"
 [[package]]
 name = "crucible"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=ae1da83e66c648574827298f4bc444632bf4d047#ae1da83e66c648574827298f4bc444632bf4d047"
+source = "git+https://github.com/oxidecomputer/crucible?rev=3c1708d86e10f0370807388a1efe092edd99d431#3c1708d86e10f0370807388a1efe092edd99d431"
 dependencies = [
  "aes-gcm-siv",
  "anyhow",
@@ -1224,7 +1224,7 @@ dependencies = [
  "bytes",
  "cfg-if",
  "chrono",
- "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=ae1da83e66c648574827298f4bc444632bf4d047)",
+ "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=3c1708d86e10f0370807388a1efe092edd99d431)",
  "crucible-common",
  "crucible-protocol",
  "crucible-workspace-hack",
@@ -1269,7 +1269,7 @@ dependencies = [
 [[package]]
 name = "crucible-client-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=7103cd3a3d7b0112d2949dd135db06fef0c156bb#7103cd3a3d7b0112d2949dd135db06fef0c156bb"
+source = "git+https://github.com/oxidecomputer/crucible?rev=3c1708d86e10f0370807388a1efe092edd99d431#3c1708d86e10f0370807388a1efe092edd99d431"
 dependencies = [
  "base64 0.22.1",
  "crucible-workspace-hack",
@@ -1282,7 +1282,7 @@ dependencies = [
 [[package]]
 name = "crucible-client-types"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=ae1da83e66c648574827298f4bc444632bf4d047#ae1da83e66c648574827298f4bc444632bf4d047"
+source = "git+https://github.com/oxidecomputer/crucible?rev=7103cd3a3d7b0112d2949dd135db06fef0c156bb#7103cd3a3d7b0112d2949dd135db06fef0c156bb"
 dependencies = [
  "base64 0.22.1",
  "crucible-workspace-hack",
@@ -1295,7 +1295,7 @@ dependencies = [
 [[package]]
 name = "crucible-common"
 version = "0.0.1"
-source = "git+https://github.com/oxidecomputer/crucible?rev=ae1da83e66c648574827298f4bc444632bf4d047#ae1da83e66c648574827298f4bc444632bf4d047"
+source = "git+https://github.com/oxidecomputer/crucible?rev=3c1708d86e10f0370807388a1efe092edd99d431#3c1708d86e10f0370807388a1efe092edd99d431"
 dependencies = [
  "anyhow",
  "atty",
@@ -1325,7 +1325,7 @@ dependencies = [
 [[package]]
 name = "crucible-protocol"
 version = "0.0.0"
-source = "git+https://github.com/oxidecomputer/crucible?rev=ae1da83e66c648574827298f4bc444632bf4d047#ae1da83e66c648574827298f4bc444632bf4d047"
+source = "git+https://github.com/oxidecomputer/crucible?rev=3c1708d86e10f0370807388a1efe092edd99d431#3c1708d86e10f0370807388a1efe092edd99d431"
 dependencies = [
  "anyhow",
  "bincode",
@@ -6432,7 +6432,7 @@ dependencies = [
  "cpuid_utils",
  "crossbeam-channel",
  "crucible",
- "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=ae1da83e66c648574827298f4bc444632bf4d047)",
+ "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=3c1708d86e10f0370807388a1efe092edd99d431)",
  "dice-verifier",
  "dladm",
  "dlpi 0.2.0 (git+https://github.com/oxidecomputer/dlpi-sys?branch=main)",
@@ -6477,7 +6477,7 @@ dependencies = [
 name = "propolis-api-types-versions"
 version = "0.0.0"
 dependencies = [
- "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=ae1da83e66c648574827298f4bc444632bf4d047)",
+ "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=3c1708d86e10f0370807388a1efe092edd99d431)",
  "propolis_types 0.0.0",
  "schemars 0.8.22",
  "serde",
@@ -6493,7 +6493,7 @@ dependencies = [
  "anyhow",
  "base64 0.21.7",
  "clap",
- "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=ae1da83e66c648574827298f4bc444632bf4d047)",
+ "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=3c1708d86e10f0370807388a1efe092edd99d431)",
  "futures",
  "libc",
  "newtype-uuid",
@@ -6516,7 +6516,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64 0.21.7",
- "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=ae1da83e66c648574827298f4bc444632bf4d047)",
+ "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=3c1708d86e10f0370807388a1efe092edd99d431)",
  "futures",
  "progenitor 0.14.0",
  "progenitor-client 0.14.0",
@@ -6642,7 +6642,7 @@ dependencies = [
  "clap",
  "const_format",
  "cpuid_utils",
- "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=ae1da83e66c648574827298f4bc444632bf4d047)",
+ "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=3c1708d86e10f0370807388a1efe092edd99d431)",
  "dropshot 0.17.0",
  "erased-serde 0.4.5",
  "expectorate",
@@ -6698,7 +6698,7 @@ dependencies = [
 name = "propolis-server-api"
 version = "0.1.0"
 dependencies = [
- "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=ae1da83e66c648574827298f4bc444632bf4d047)",
+ "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=3c1708d86e10f0370807388a1efe092edd99d431)",
  "dropshot 0.17.0",
  "dropshot-api-manager-types",
  "propolis-api-types-versions",
@@ -6714,7 +6714,7 @@ dependencies = [
  "clap",
  "cpuid_profile_config",
  "cpuid_utils",
- "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=ae1da83e66c648574827298f4bc444632bf4d047)",
+ "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=3c1708d86e10f0370807388a1efe092edd99d431)",
  "ctrlc",
  "erased-serde 0.4.5",
  "fatfs",
@@ -6757,7 +6757,7 @@ dependencies = [
 name = "propolis_api_types"
 version = "0.0.0"
 dependencies = [
- "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=ae1da83e66c648574827298f4bc444632bf4d047)",
+ "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=3c1708d86e10f0370807388a1efe092edd99d431)",
  "propolis-api-types-versions",
 ]
 

@@ -7,7 +7,7 @@
       "url": "https://oxide.computer",
       "email": "api@oxide.computer"
     },
-    "version": "4.0.0"
+    "version": "5.0.0"
   },
   "paths": {
     "/instance": {
@@ -1045,6 +1045,117 @@
         ],
         "additionalProperties": false
       },
+      "DownstairsInfo": {
+        "type": "object",
+        "properties": {
+          "region_id": {
+            "nullable": true,
+            "type": "string",
+            "format": "uuid"
+          },
+          "repair_addr": {
+            "nullable": true,
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/DownstairsInfoStatus"
+          },
+          "target_addr": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "DownstairsInfoConnectionMode": {
+        "type": "string",
+        "enum": [
+          "new",
+          "offline",
+          "faulted",
+          "replaced"
+        ]
+      },
+      "DownstairsInfoNegotiationStatus": {
+        "type": "string",
+        "enum": [
+          "wait_connect",
+          "negotiating",
+          "wait_quorum",
+          "reconcile",
+          "live_repair_ready"
+        ]
+      },
+      "DownstairsInfoStatus": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "$ref": "#/components/schemas/DownstairsInfoConnectionMode"
+              },
+              "state": {
+                "$ref": "#/components/schemas/DownstairsInfoNegotiationStatus"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "connecting"
+                ]
+              }
+            },
+            "required": [
+              "mode",
+              "state",
+              "type"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "active"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "live_repair"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "stopping"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        ]
+      },
       "Error": {
         "description": "Error information from a response.",
         "type": "object",
@@ -1979,6 +2090,16 @@
           }
         ]
       },
+      "UpstairsInfoStatus": {
+        "type": "string",
+        "enum": [
+          "initializing",
+          "go_active",
+          "active",
+          "deactivating",
+          "disabled"
+        ]
+      },
       "VirtioDisk": {
         "description": "A disk that presents a virtio-block interface to the guest.",
         "type": "object",
@@ -2078,15 +2199,116 @@
         ],
         "additionalProperties": false
       },
+      "VolumeInfo": {
+        "description": "A tree representation of the info and status of all parts of a Volume.",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "volume": {
+                "type": "object",
+                "properties": {
+                  "read_only_parent": {
+                    "nullable": true,
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/VolumeInfo"
+                      }
+                    ]
+                  },
+                  "sub_volumes": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/VolumeInfo"
+                    }
+                  }
+                },
+                "required": [
+                  "sub_volumes"
+                ]
+              }
+            },
+            "required": [
+              "volume"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "upstairs": {
+                "type": "object",
+                "properties": {
+                  "block_size": {
+                    "nullable": true,
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "encrypted": {
+                    "type": "boolean"
+                  },
+                  "generation": {
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  },
+                  "live_repair_in_progress": {
+                    "type": "boolean"
+                  },
+                  "read_only": {
+                    "type": "boolean"
+                  },
+                  "reconcile_in_progress": {
+                    "type": "boolean"
+                  },
+                  "session_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "state": {
+                    "$ref": "#/components/schemas/UpstairsInfoStatus"
+                  },
+                  "targets": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/DownstairsInfo"
+                    }
+                  },
+                  "upstairs_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "encrypted",
+                  "generation",
+                  "live_repair_in_progress",
+                  "read_only",
+                  "reconcile_in_progress",
+                  "session_id",
+                  "state",
+                  "targets",
+                  "upstairs_id"
+                ]
+              }
+            },
+            "required": [
+              "upstairs"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
       "VolumeStatus": {
         "type": "object",
         "properties": {
-          "active": {
-            "type": "boolean"
+          "volume_info": {
+            "$ref": "#/components/schemas/VolumeInfo"
           }
         },
         "required": [
-          "active"
+          "volume_info"
         ]
       }
     },
