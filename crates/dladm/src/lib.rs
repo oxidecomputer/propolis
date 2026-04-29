@@ -3,8 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::ffi::CString;
-use std::io::{BufRead, BufReader, Error, ErrorKind};
 use std::io;
+use std::io::{BufRead, BufReader, Error, ErrorKind};
 use std::process::{Command, Stdio};
 use std::slice;
 
@@ -14,6 +14,20 @@ mod sys;
 use libc::c_void;
 use sys::{datalink_class, dladm_handle_t, dladm_status};
 
+pub type Result<T> = core::result::Result<T, DlAdmError>;
+
+pub enum DlAdmError {
+    DladmSubsystem(dladm_status),
+    UnexpectedClass(datalink_class),
+    InvalidClass,
+}
+
+impl From<std::io::Error> for DlAdmError {
+    fn from(e: std::io::Error) -> Self {
+        Self::InvalidClass
+    }
+}
+
 /// Rust-flavoured wrapper around `libdladm`.
 /// Brokers access to dladm without execing the dladm CLI.
 pub struct Dladm {
@@ -22,15 +36,16 @@ pub struct Dladm {
 
 impl Dladm {
     /// Open a handle to the `dladm` subsystem.
-    pub fn new() -> io::Result<Self> {
+    pub fn new() -> Result<Self> {
         let mut hdl: dladm_handle_t = std::ptr::null_mut();
         Self::handle_dladm_err(unsafe {
             sys::dladm_open(&mut hdl as *mut dladm_handle_t)
         })?;
+        debug_assert!(!hdl.is_null());
         Ok(Self { inner: hdl })
     }
 
-    pub fn query_link(&self, name: &str) -> io::Result<LinkInfo> {
+    pub fn query_link(&self, name: &str) -> Result<LinkInfo> {
         let name_cstr = CString::new(name).unwrap();
         let mut link_id: sys::datalink_id_t = 0;
         let mut class: i32 = 0;
@@ -57,17 +72,9 @@ impl Dladm {
                 self.get_misc_mac(link_id, &mut res.mac_addr[..])?;
             }
             Some(c) => {
-                return Err(Error::new(
-                    ErrorKind::InvalidInput,
-                    format!("{name} is not vnic/misc class, but {c:?}"),
-                ));
+                return Err(DlAdmError::UnexpectedClass(c));
             }
-            None => {
-                return Err(Error::new(
-                    ErrorKind::InvalidInput,
-                    format!("{name} is of invalid class {class:x}"),
-                ));
-            }
+            None => return Err(DlAdmError::InvalidClass),
         }
 
         res.mtu = Self::get_mtu(name).ok();
@@ -91,12 +98,12 @@ impl Dladm {
         BufReader::new(&output.stdout[..])
             .lines()
             .next()
-            .and_then(Result::ok)
+            .and_then(io::Result::ok)
             .and_then(|line| line.parse::<u16>().ok())
             .ok_or_else(|| Error::other("invalid mtu"))
     }
 
-    fn get_vnic_mac(name: &str, mac: &mut [u8]) -> io::Result<()> {
+    fn get_vnic_mac(name: &str, mac: &mut [u8]) -> Result<()> {
         // dladm show-vnic -p -o macaddress <VNIC_NAME>
         // 2:8:20:2d:e9:24
         let output = Command::new("dladm")
@@ -107,12 +114,12 @@ impl Dladm {
             .stdout(Stdio::piped())
             .output()?;
         if !output.status.success() {
-            return Err(Error::other("failed dladm"));
+            return Err(Error::other("failed dladm"))?;
         }
         let addr = BufReader::new(&output.stdout[..])
             .lines()
             .next()
-            .and_then(Result::ok)
+            .and_then(io::Result::ok)
             .and_then(|line| {
                 let fields: Vec<u8> = line
                     .split(':')
@@ -132,7 +139,7 @@ impl Dladm {
         &self,
         linkid: sys::datalink_id_t,
         mac: &mut [u8],
-    ) -> io::Result<()> {
+    ) -> Result<()> {
         // Unfortunately, XDE/OPTE creates 'misc' type devices, as it is
         // a pseudo device. `dladm` has no built-in commands for these,
         // and macaddr queries for all other link types go through their
@@ -182,22 +189,22 @@ impl Dladm {
         })?;
 
         if state.n_seen == 0 {
-            return Err(Error::other("no mac addrs found on link"));
+            return Err(Error::other("no mac addrs found on link"))?;
         } else if !state.written {
             return Err(Error::other(
                 "no mac addrs on link had correct length (6B)",
-            ));
+            ))?;
         }
 
         Ok(())
     }
 
-    fn handle_dladm_err(v: i32) -> io::Result<()> {
+    fn handle_dladm_err(v: i32) -> Result<()> {
         match dladm_status::from_repr(v)
             .unwrap_or(dladm_status::DLADM_STATUS_FAILED)
         {
             dladm_status::DLADM_STATUS_OK => Ok(()),
-            e => Err(Error::other(format!("{e:?}"))),
+            e => Err(DlAdmError::DladmSubsystem(e)),
         }
     }
 }
