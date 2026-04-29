@@ -7,9 +7,6 @@ extern crate alloc;
 use core::cell::UnsafeCell;
 use core::ptr::NonNull;
 use core::slice;
-use std::io;
-use std::io::{BufRead, BufReader, Error, ErrorKind};
-use std::process::{Command, Stdio};
 
 #[allow(non_camel_case_types)]
 mod sys;
@@ -26,12 +23,7 @@ pub enum DladmError {
     DladmSubsystem(dladm_status),
     UnexpectedClass(datalink_class),
     InvalidClass,
-}
-
-impl From<std::io::Error> for DladmError {
-    fn from(e: std::io::Error) -> Self {
-        Self::InvalidClass
-    }
+    Other,
 }
 
 /// Rust-flavoured wrapper around `libdladm`.
@@ -78,7 +70,7 @@ impl Dladm {
             // acceptable values: this supports both VNICs
             // and direct use of XDE/OPTE ports.
             Some(datalink_class::DATALINK_CLASS_VNIC) => {
-                Self::get_vnic_mac(name, &mut res.mac_addr[..])?;
+                //Self::get_vnic_mac(name, &mut res.mac_addr[..])?;
             }
             Some(datalink_class::DATALINK_CLASS_MISC) => {
                 self.get_misc_mac(link_id, &mut res.mac_addr[..])?;
@@ -89,62 +81,9 @@ impl Dladm {
             None => return Err(DladmError::InvalidClass),
         }
 
-        res.mtu = Self::get_mtu(name).ok();
+        //res.mtu = Self::get_mtu(name).ok();
 
         Ok(res)
-    }
-
-    fn get_mtu(name: &str) -> io::Result<u16> {
-        // dladm show-linkprop -c -o value -p mtu <NIC_NAME>
-        // 1500
-        let output = Command::new("dladm")
-            .args(["show-linkprop", "-c", "-o", "value", "-p", "mtu"])
-            .arg(name)
-            .stderr(Stdio::null())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .output()?;
-        if !output.status.success() {
-            return Err(Error::other("failed dladm"));
-        }
-        BufReader::new(&output.stdout[..])
-            .lines()
-            .next()
-            .and_then(io::Result::ok)
-            .and_then(|line| line.parse::<u16>().ok())
-            .ok_or_else(|| Error::other("invalid mtu"))
-    }
-
-    fn get_vnic_mac(name: &str, mac: &mut [u8]) -> Result<()> {
-        // dladm show-vnic -p -o macaddress <VNIC_NAME>
-        // 2:8:20:2d:e9:24
-        let output = Command::new("dladm")
-            .args(["show-vnic", "-p", "-o", "macaddress"])
-            .arg(name)
-            .stderr(Stdio::null())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .output()?;
-        if !output.status.success() {
-            return Err(Error::other("failed dladm"))?;
-        }
-        let addr = BufReader::new(&output.stdout[..])
-            .lines()
-            .next()
-            .and_then(io::Result::ok)
-            .and_then(|line| {
-                let fields: Vec<u8> = line
-                    .split(':')
-                    .filter_map(|f| u8::from_str_radix(f, 16).ok())
-                    .collect();
-                match fields.len() {
-                    ETHERADDRL => Some(fields),
-                    _ => None,
-                }
-            })
-            .ok_or_else(|| Error::other("cannot query mac addr"))?;
-        mac.copy_from_slice(&addr[..]);
-        Ok(())
     }
 
     fn get_misc_mac(
@@ -201,11 +140,9 @@ impl Dladm {
         })?;
 
         if state.n_seen == 0 {
-            return Err(Error::other("no mac addrs found on link"))?;
+            return Err(DladmError::Other);
         } else if !state.written {
-            return Err(Error::other(
-                "no mac addrs on link had correct length (6B)",
-            ))?;
+            return Err(DladmError::Other);
         }
 
         Ok(())
