@@ -5,20 +5,22 @@
 extern crate alloc;
 
 use alloc::ffi::CString;
+use core::cell::UnsafeCell;
+use core::ptr::NonNull;
+use core::slice;
 use std::io;
 use std::io::{BufRead, BufReader, Error, ErrorKind};
 use std::process::{Command, Stdio};
-use core::slice;
-use core::ptr::NonNull;
 
 #[allow(non_camel_case_types)]
 mod sys;
 
 use libc::c_void;
-use sys::{datalink_class, dladm_handle_t, dladm_status};
+use sys::{datalink_class, dladm_handle, dladm_handle_t, dladm_status};
 
 pub type Result<T> = core::result::Result<T, DlAdmError>;
 
+#[derive(Debug)]
 pub enum DlAdmError {
     DladmSubsystem(dladm_status),
     UnexpectedClass(datalink_class),
@@ -34,18 +36,18 @@ impl From<std::io::Error> for DlAdmError {
 /// Rust-flavoured wrapper around `libdladm`.
 /// Brokers access to dladm without execing the dladm CLI.
 pub struct Dladm {
-    inner: dladm_handle_t,
+    inner: NonNull<dladm_handle>,
 }
 
 impl Dladm {
     /// Open a handle to the `dladm` subsystem.
     pub fn new() -> Result<Self> {
-        let mut hdl: dladm_handle_t = std::ptr::null_mut();
-        Self::handle_dladm_err(unsafe {
-            sys::dladm_open(&mut hdl as *mut dladm_handle_t)
-        })?;
+        let mut hdl: *mut dladm_handle = std::ptr::null_mut();
+        Self::handle_dladm_err(unsafe { sys::dladm_open(&mut hdl) })?;
+
         debug_assert!(!hdl.is_null());
-        Ok(Self { inner: hdl })
+
+        Ok(Self { inner: unsafe { NonNull::new_unchecked(hdl) } })
     }
 
     pub fn query_link(&self, name: &str) -> Result<LinkInfo> {
@@ -54,7 +56,7 @@ impl Dladm {
         let mut class: i32 = 0;
         Self::handle_dladm_err(unsafe {
             sys::dladm_name2info(
-                self.inner,
+                self.inner.as_ptr(),
                 name_cstr.to_bytes_with_nul().as_ptr(),
                 &mut link_id as *mut sys::datalink_id_t,
                 std::ptr::null_mut(),
@@ -184,7 +186,7 @@ impl Dladm {
         // to state is only held inside the callback.
         Self::handle_dladm_err(unsafe {
             sys::dladm_walk_macaddr(
-                self.inner,
+                self.inner.as_ptr(),
                 linkid,
                 &mut state as *mut _ as *mut c_void,
                 per_macaddr,
@@ -216,14 +218,13 @@ impl Drop for Dladm {
     fn drop(&mut self) {
         // Recall that dladm_handle_t is not just a close-able fd.
         // dladm_close performs the necessary cleanups.
-        unsafe { sys::dladm_close(self.inner) }
-        self.inner = std::ptr::null_mut();
+        unsafe { sys::dladm_close(self.inner.as_mut()) }
     }
 }
 
 const ETHERADDRL: usize = 6;
 
-#[derive(Copy, Clone, Default)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct LinkInfo {
     pub link_id: u32,
     pub mtu: Option<u16>,

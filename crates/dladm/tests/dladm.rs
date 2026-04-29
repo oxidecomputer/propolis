@@ -4,8 +4,9 @@ use dladm::Dladm;
 use std::io::Result;
 
 #[test]
-fn basic() -> Result<()> {
-    let hnd = Dladm::new();
+fn basic() {
+    let hnd = Dladm::new().expect("the inquisition");
 
-    Ok(())
+    let x = hnd.query_link("opte0");
+    dbg!(x);
 }

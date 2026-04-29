@@ -4,7 +4,6 @@
 
 use libc::{c_char, c_int, c_uchar, c_uint, c_void};
 use strum::FromRepr;
-use strum::IntoStaticStr;
 
 #[cfg(target_os = "illumos")]
 #[link(name = "dladm")]
@@ -90,7 +89,7 @@ pub enum boolean_t {
 const MAXMACADDRLEN: usize = 20;
 const MAXNAMELEN: usize = 256;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, FromRepr, IntoStaticStr)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, FromRepr)]
 #[repr(i32)]
 pub enum datalink_class {
     DATALINK_CLASS_PHYS = 0x01,
@@ -105,7 +104,7 @@ pub enum datalink_class {
     DATALINK_CLASS_MISC = 0x400,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, FromRepr, IntoStaticStr)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, FromRepr)]
 #[repr(i32)]
 pub enum dladm_status {
     DLADM_STATUS_OK = 0,
