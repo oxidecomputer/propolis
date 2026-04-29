@@ -88,6 +88,7 @@ pub enum boolean_t {
 
 const MAXMACADDRLEN: usize = 20;
 const MAXNAMELEN: usize = 256;
+pub(crate) const MAXLINKNAMELEN: usize = 32;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, FromRepr)]
 #[repr(i32)]

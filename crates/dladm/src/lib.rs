@@ -4,7 +4,6 @@
 
 extern crate alloc;
 
-use alloc::ffi::CString;
 use core::cell::UnsafeCell;
 use core::ptr::NonNull;
 use core::slice;
@@ -16,18 +15,20 @@ use std::process::{Command, Stdio};
 mod sys;
 
 use libc::c_void;
-use sys::{datalink_class, dladm_handle, dladm_handle_t, dladm_status};
+use sys::{
+    datalink_class, dladm_handle, dladm_handle_t, dladm_status, MAXLINKNAMELEN,
+};
 
-pub type Result<T> = core::result::Result<T, DlAdmError>;
+pub type Result<T> = core::result::Result<T, DladmError>;
 
 #[derive(Debug)]
-pub enum DlAdmError {
+pub enum DladmError {
     DladmSubsystem(dladm_status),
     UnexpectedClass(datalink_class),
     InvalidClass,
 }
 
-impl From<std::io::Error> for DlAdmError {
+impl From<std::io::Error> for DladmError {
     fn from(e: std::io::Error) -> Self {
         Self::InvalidClass
     }
@@ -51,13 +52,19 @@ impl Dladm {
     }
 
     pub fn query_link(&self, name: &str) -> Result<LinkInfo> {
-        let name_cstr = CString::new(name).unwrap();
+        let mut stack_alloc_link_name = [0; MAXLINKNAMELEN];
+
+        for (index, copyme) in name.bytes().take(MAXLINKNAMELEN - 1).enumerate()
+        {
+            stack_alloc_link_name[index] = copyme;
+        }
+
         let mut link_id: sys::datalink_id_t = 0;
         let mut class: i32 = 0;
         Self::handle_dladm_err(unsafe {
             sys::dladm_name2info(
                 self.inner.as_ptr(),
-                name_cstr.to_bytes_with_nul().as_ptr(),
+                stack_alloc_link_name.as_ptr(),
                 &mut link_id as *mut sys::datalink_id_t,
                 std::ptr::null_mut(),
                 &mut class,
@@ -77,9 +84,9 @@ impl Dladm {
                 self.get_misc_mac(link_id, &mut res.mac_addr[..])?;
             }
             Some(c) => {
-                return Err(DlAdmError::UnexpectedClass(c));
+                return Err(DladmError::UnexpectedClass(c));
             }
-            None => return Err(DlAdmError::InvalidClass),
+            None => return Err(DladmError::InvalidClass),
         }
 
         res.mtu = Self::get_mtu(name).ok();
@@ -209,7 +216,7 @@ impl Dladm {
             .unwrap_or(dladm_status::DLADM_STATUS_FAILED)
         {
             dladm_status::DLADM_STATUS_OK => Ok(()),
-            e => Err(DlAdmError::DladmSubsystem(e)),
+            e => Err(DladmError::DladmSubsystem(e)),
         }
     }
 }
