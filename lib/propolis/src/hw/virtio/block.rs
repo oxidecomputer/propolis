@@ -22,6 +22,7 @@ use bits::*;
 
 use futures::future::BoxFuture;
 use lazy_static::lazy_static;
+use zerocopy::FromBytes;
 
 /// Sizing for virtio-block is specified in 512B sectors
 const SECTOR_SZ: usize = 512;
@@ -352,7 +353,7 @@ impl MigrateMulti for PciVirtioBlock {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default, FromBytes)]
 #[repr(C)]
 struct VbReq {
     rtype: u32,
@@ -360,7 +361,7 @@ struct VbReq {
     sector: u64,
 }
 
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default, FromBytes)]
 #[repr(C)]
 struct DiscardWriteZeroes {
     sector: u64,

@@ -72,13 +72,14 @@ mod probes {
 pub mod control {
     use super::ETHERADDRL;
     use std::convert::TryFrom;
+    use zerocopy::FromBytes;
 
     /// The control message header has two data: a u8 representing the "class"
     /// of control message, which describes what the message applies to, and a
     /// "command", which describes what action we should take in response to the
     /// command. So for example, class Mq and command Set means to set the
     /// number of multiqueue queue pairs.
-    #[derive(Clone, Copy, Debug, Default)]
+    #[derive(Clone, Copy, Debug, Default, FromBytes)]
     #[repr(C)]
     pub struct Header {
         class: u8,
@@ -141,7 +142,7 @@ pub mod control {
         mac: [u8; ETHERADDRL],
     }
 
-    #[derive(Clone, Copy, Debug, Default)]
+    #[derive(Clone, Copy, Debug, Default, FromBytes)]
     #[repr(C)]
     pub struct Mq {
         pub npairs: u16,
