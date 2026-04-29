@@ -2,9 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-extern crate alloc;
+//! Ultra-low overhead (no_std, no_alloc) access to the dladm subsystem.
 
-use core::cell::UnsafeCell;
+#![no_std]
+
 use core::ptr::NonNull;
 use core::slice;
 
@@ -35,7 +36,7 @@ pub struct Dladm {
 impl Dladm {
     /// Open a handle to the `dladm` subsystem.
     pub fn new() -> Result<Self> {
-        let mut hdl: *mut dladm_handle = std::ptr::null_mut();
+        let mut hdl: *mut dladm_handle = core::ptr::null_mut();
         Self::handle_dladm_err(unsafe { sys::dladm_open(&mut hdl) })?;
 
         debug_assert!(!hdl.is_null());
@@ -58,9 +59,9 @@ impl Dladm {
                 self.inner.as_ptr(),
                 stack_alloc_link_name.as_ptr(),
                 &mut link_id as *mut sys::datalink_id_t,
-                std::ptr::null_mut(),
+                core::ptr::null_mut(),
                 &mut class,
-                std::ptr::null_mut(),
+                core::ptr::null_mut(),
             )
         })?;
 
