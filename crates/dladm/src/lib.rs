@@ -3,7 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::ffi::CString;
-use std::io::{BufRead, BufReader, Error, ErrorKind, Result};
+use std::io::{BufRead, BufReader, Error, ErrorKind};
+use std::io;
 use std::process::{Command, Stdio};
 use std::slice;
 
@@ -21,7 +22,7 @@ pub struct Dladm {
 
 impl Dladm {
     /// Open a handle to the `dladm` subsystem.
-    pub fn new() -> Result<Self> {
+    pub fn new() -> io::Result<Self> {
         let mut hdl: dladm_handle_t = std::ptr::null_mut();
         Self::handle_dladm_err(unsafe {
             sys::dladm_open(&mut hdl as *mut dladm_handle_t)
@@ -29,7 +30,7 @@ impl Dladm {
         Ok(Self { inner: hdl })
     }
 
-    pub fn query_link(&self, name: &str) -> Result<LinkInfo> {
+    pub fn query_link(&self, name: &str) -> io::Result<LinkInfo> {
         let name_cstr = CString::new(name).unwrap();
         let mut link_id: sys::datalink_id_t = 0;
         let mut class: i32 = 0;
@@ -74,7 +75,7 @@ impl Dladm {
         Ok(res)
     }
 
-    fn get_mtu(name: &str) -> Result<u16> {
+    fn get_mtu(name: &str) -> io::Result<u16> {
         // dladm show-linkprop -c -o value -p mtu <NIC_NAME>
         // 1500
         let output = Command::new("dladm")
@@ -95,7 +96,7 @@ impl Dladm {
             .ok_or_else(|| Error::other("invalid mtu"))
     }
 
-    fn get_vnic_mac(name: &str, mac: &mut [u8]) -> Result<()> {
+    fn get_vnic_mac(name: &str, mac: &mut [u8]) -> io::Result<()> {
         // dladm show-vnic -p -o macaddress <VNIC_NAME>
         // 2:8:20:2d:e9:24
         let output = Command::new("dladm")
@@ -131,7 +132,7 @@ impl Dladm {
         &self,
         linkid: sys::datalink_id_t,
         mac: &mut [u8],
-    ) -> Result<()> {
+    ) -> io::Result<()> {
         // Unfortunately, XDE/OPTE creates 'misc' type devices, as it is
         // a pseudo device. `dladm` has no built-in commands for these,
         // and macaddr queries for all other link types go through their
@@ -191,7 +192,7 @@ impl Dladm {
         Ok(())
     }
 
-    fn handle_dladm_err(v: i32) -> Result<()> {
+    fn handle_dladm_err(v: i32) -> io::Result<()> {
         match dladm_status::from_repr(v)
             .unwrap_or(dladm_status::DLADM_STATUS_FAILED)
         {
