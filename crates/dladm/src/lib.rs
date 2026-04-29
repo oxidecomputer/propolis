@@ -2,11 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::ffi::CString;
+extern crate alloc;
+
+use alloc::ffi::CString;
 use std::io;
 use std::io::{BufRead, BufReader, Error, ErrorKind};
 use std::process::{Command, Stdio};
-use std::slice;
+use core::slice;
+use core::ptr::NonNull;
 
 #[allow(non_camel_case_types)]
 mod sys;
