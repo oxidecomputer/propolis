@@ -16,6 +16,7 @@ use sys::{datalink_class, dladm_handle_t, dladm_status};
 pub struct Handle {
     inner: dladm_handle_t,
 }
+
 impl Handle {
     pub fn new() -> Result<Self> {
         let mut hdl: dladm_handle_t = std::ptr::null_mut();
@@ -69,6 +70,7 @@ impl Handle {
 
         Ok(res)
     }
+
     fn get_mtu(name: &str) -> Result<u16> {
         // dladm show-linkprop -c -o value -p mtu <NIC_NAME>
         // 1500
@@ -89,6 +91,7 @@ impl Handle {
             .and_then(|line| line.parse::<u16>().ok())
             .ok_or_else(|| Error::other("invalid mtu"))
     }
+
     fn get_vnic_mac(name: &str, mac: &mut [u8]) -> Result<()> {
         // dladm show-vnic -p -o macaddress <VNIC_NAME>
         // 2:8:20:2d:e9:24
@@ -120,6 +123,7 @@ impl Handle {
         mac.copy_from_slice(&addr[..]);
         Ok(())
     }
+
     fn get_misc_mac(
         &self,
         linkid: sys::datalink_id_t,
@@ -193,8 +197,11 @@ impl Handle {
         }
     }
 }
+
 impl Drop for Handle {
     fn drop(&mut self) {
+        // Recall that dladm_handle_t is not just a close-able fd.
+        // dladm_close performs the necessary cleanups.
         unsafe { sys::dladm_close(self.inner) }
         self.inner = std::ptr::null_mut();
     }
