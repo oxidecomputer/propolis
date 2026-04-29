@@ -335,7 +335,7 @@ impl PciVirtioViona {
         vm: &VmmHdl,
         viona_params: Option<DeviceParams>,
     ) -> io::Result<Arc<PciVirtioViona>> {
-        let dlhdl = dladm::Handle::new()?;
+        let dlhdl = dladm::Dladm::new()?;
         let info = dlhdl.query_link(vnic_name)?;
         let hdl = VionaHdl::new(info.link_id, vm.fd())?;
 

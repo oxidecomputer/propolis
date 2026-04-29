@@ -13,11 +13,14 @@ mod sys;
 use libc::c_void;
 use sys::{datalink_class, dladm_handle_t, dladm_status};
 
-pub struct Handle {
+/// Rust-flavoured wrapper around `libdladm`.
+/// Brokers access to dladm without execing the dladm CLI.
+pub struct Dladm {
     inner: dladm_handle_t,
 }
 
-impl Handle {
+impl Dladm {
+    /// Open a handle to the `dladm` subsystem.
     pub fn new() -> Result<Self> {
         let mut hdl: dladm_handle_t = std::ptr::null_mut();
         Self::handle_dladm_err(unsafe {
@@ -198,7 +201,7 @@ impl Handle {
     }
 }
 
-impl Drop for Handle {
+impl Drop for Dladm {
     fn drop(&mut self) {
         // Recall that dladm_handle_t is not just a close-able fd.
         // dladm_close performs the necessary cleanups.

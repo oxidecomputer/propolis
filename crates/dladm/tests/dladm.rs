@@ -1,11 +1,11 @@
 #![cfg(target_os = "illumos")]
 
-use dladm::Handle;
+use dladm::Dladm;
 use std::io::Result;
 
 #[test]
 fn basic() -> Result<()> {
-    let hnd = Handle::new();
+    let hnd = Dladm::new();
 
     Ok(())
 }
