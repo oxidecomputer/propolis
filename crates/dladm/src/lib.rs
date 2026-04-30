@@ -70,8 +70,7 @@ impl Dladm {
         let n = nb.len().min(MAXLINKNAMELEN - SPACE_NEEDED_FOR_NULL_TERMINATOR);
         buf[..n].copy_from_slice(&nb[..n]);
 
-        let Ok(link_name) = CStr::from_bytes_until_nul(&buf)
-        else {
+        let Ok(link_name) = CStr::from_bytes_until_nul(&buf) else {
             return Err(DladmError::InvalidLinkName);
         };
 
@@ -80,6 +79,8 @@ impl Dladm {
 
         // SAFETY: All pointers we're passing to libdladm are valid
         // for their upcoming accesses.
+        // The link name is a stack-allocated C-string that we've
+        // ensured contains exactly one null terminator.
         Self::handle_dladm_err(unsafe {
             sys::dladm_name2info(
                 self.inner.as_ptr(),
