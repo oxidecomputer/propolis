@@ -32,7 +32,7 @@ extern "C" {
     pub fn dladm_get_linkprop(
         handle: dladm_handle_t,
         linkid: datalink_id_t,
-        prop_type: u32,
+        prop_type: PropType,
         prop_name: *const c_char,
         prop_val: *mut *mut c_char,
         val_cntp: *mut u32,
@@ -75,7 +75,7 @@ mod compat {
     pub fn dladm_get_linkprop(
         handle: dladm_handle_t,
         linkid: datalink_id_t,
-        prop_type: u32,
+        prop_type: PropType,
         prop_name: *const c_char,
         prop_val: *mut *mut c_char,
         val_cntp: *mut u32,
@@ -252,6 +252,16 @@ pub enum DlMediaType {
     SunwIpmp = 0x8000_0006,
     /// 6to4 Tunnel Link.
     SixToFour = 0x8000_0007,
+}
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PropType {
+    Current = 1,
+    _Default,
+    _Modifiable,
+    _Persistent,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, FromRepr, IntoStaticStr)]

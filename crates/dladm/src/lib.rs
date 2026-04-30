@@ -17,7 +17,7 @@ use core::slice;
 use libc::c_void;
 use sys::{
     datalink_class_t, dladm_handle, dladm_status, DlAdmOpt, DlMediaType,
-    MAXLINKNAMELEN,
+    PropType, MAXLINKNAMELEN,
 };
 
 #[allow(non_camel_case_types)]
@@ -129,7 +129,7 @@ impl Dladm {
             sys::dladm_get_linkprop(
                 self.inner.as_ptr(),
                 res.link_id,
-                1,
+                PropType::Current,
                 MTU_PROP_NAME.as_ptr(),
                 &mut buffer.as_mut_ptr(),
                 &mut len,
