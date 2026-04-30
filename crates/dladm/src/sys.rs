@@ -75,7 +75,12 @@ mod compat {
 pub use compat::*;
 
 /* opaque dladm handle to libdladm functions */
-pub enum dladm_handle {}
+#[repr(C)]
+pub struct dladm_handle {
+    _data: (),
+    _marker: core::marker::PhantomData<()>,
+}
+
 pub type dladm_handle_t = *mut dladm_handle;
 pub type datalink_id_t = u32;
 
@@ -105,6 +110,7 @@ bitflags::bitflags! {
     /// certain operations. It is very convenient
     /// to simply pretend it is a bitflag.
     #[derive(Copy, Clone, Default, Debug)]
+    #[repr(transparent)]
     pub struct datalink_class_t: u32 {
         const DATALINK_CLASS_PHYS = 0x01;
         const DATALINK_CLASS_VLAN = 0x02;
@@ -125,6 +131,7 @@ bitflags::bitflags! {
     /// naming convention reflects that this is a Rust type
     /// that happens to be marshallable across an FFI boundary.
     #[derive(Copy, Clone, Default, Debug)]
+    #[repr(transparent)]
     pub struct DlAdmOpt: u32 {
         /// The function requests to bringup some configuration that only takes
         /// effect on the active system (not persistent).
