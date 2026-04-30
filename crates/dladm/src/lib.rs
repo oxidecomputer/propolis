@@ -117,10 +117,16 @@ impl Dladm {
 
         let media = DlpiMediaType::new(media);
 
-        let mut res =
-            LinkInfo { link_id, class, flags, media, mtu: 0, mac_addr: [0; 6] };
+        let mut res = LinkInfo {
+            link_id,
+            class,
+            flags,
+            media,
+            mtu: None,
+            mac_addr: [0; 6],
+        };
 
-        self.yoink_first_mac(res.link_id, &mut res.mac_addr)?;
+        self.pick_first_mac(res.link_id, &mut res.mac_addr)?;
 
         let mut buffer = [0; 256];
         let mut len = 1u32;
@@ -140,15 +146,17 @@ impl Dladm {
             // SAFETY: it's a pointer to a stack alloc.
             let mtu_string = unsafe { CStr::from_ptr(buffer.as_ptr()) };
 
-            let mtu: u16 = mtu_string.to_str().unwrap().parse().unwrap();
-
-            res.mtu = mtu;
+            if let Ok(s) = mtu_string.to_str() {
+                if let Ok(mtu) = s.parse() {
+                    res.mtu = Some(mtu);
+                }
+            }
         }
 
         Ok(res)
     }
 
-    fn yoink_first_mac(
+    fn pick_first_mac(
         &self,
         linkid: sys::datalink_id_t,
         mac: &mut [u8],
@@ -247,7 +255,7 @@ impl DlpiMediaType {
 #[derive(Debug, Copy, Clone)]
 pub struct LinkInfo {
     pub link_id: u32,
-    pub mtu: u16,
+    pub mtu: Option<u16>,
     pub mac_addr: [u8; ETHERADDRL],
     pub class: datalink_class_t,
     pub flags: DlAdmOpt,
