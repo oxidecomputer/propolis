@@ -95,14 +95,8 @@ impl Dladm {
 
         let media = DlpiMediaType::new(media);
 
-        let mut res = LinkInfo {
-            link_id,
-            class,
-            flags,
-            media,
-            mtu: Some(0),
-            mac_addr: [0; 6],
-        };
+        let mut res =
+            LinkInfo { link_id, class, flags, media, mtu: 0, mac_addr: [0; 6] };
 
         self.yoink_first_mac(res.link_id, &mut res.mac_addr);
 
@@ -120,7 +114,12 @@ impl Dladm {
             )
         })?;
 
-        panic!("{:#?}", buffer);
+        if len > 0 {
+            let mtu_string = unsafe { CStr::from_ptr(buffer.as_ptr()) };
+            let mtu: u16 = mtu_string.to_str().unwrap().parse().unwrap();
+
+            res.mtu = mtu;
+        }
 
         Ok(res)
     }
@@ -201,7 +200,7 @@ impl Drop for Dladm {
 
 const ETHERADDRL: usize = 6;
 
-static MTU_PROP_NAME:  &CStr = c"mtu";
+static MTU_PROP_NAME: &CStr = c"mtu";
 
 #[derive(Debug, Copy, Clone)]
 pub enum DlpiMediaType {
@@ -224,7 +223,7 @@ impl DlpiMediaType {
 #[derive(Debug, Copy, Clone)]
 pub struct LinkInfo {
     pub link_id: u32,
-    pub mtu: Option<u16>,
+    pub mtu: u16,
     pub mac_addr: [u8; ETHERADDRL],
     pub class: datalink_class_t,
     pub flags: DlAdmOpt,
