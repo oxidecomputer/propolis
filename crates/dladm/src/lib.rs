@@ -11,8 +11,8 @@ use core::ptr::NonNull;
 use core::slice;
 use libc::c_void;
 use sys::{
-    datalink_class_t, datalink_id_t, dladm_handle, dladm_handle_t,
-    dladm_status, DlAdmOpt, DlMediaType, MAXLINKNAMELEN,
+    datalink_class_t, dladm_handle, dladm_status, DlAdmOpt, DlMediaType,
+    MAXLINKNAMELEN,
 };
 
 #[allow(non_camel_case_types)]
@@ -98,7 +98,7 @@ impl Dladm {
         let mut res =
             LinkInfo { link_id, class, flags, media, mtu: 0, mac_addr: [0; 6] };
 
-        self.yoink_first_mac(res.link_id, &mut res.mac_addr);
+        self.yoink_first_mac(res.link_id, &mut res.mac_addr)?;
 
         let mut buffer = [0; 256];
         let mut len = 1u32;
@@ -115,7 +115,7 @@ impl Dladm {
         })?;
 
         if len > 0 {
-            /// SAFETY: it's a pointer to a stack alloc.
+            // SAFETY: it's a pointer to a stack alloc.
             let mtu_string = unsafe { CStr::from_ptr(buffer.as_ptr()) };
 
             panic!("{:#?}", mtu_string);
