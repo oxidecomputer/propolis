@@ -77,6 +77,9 @@ impl Dladm {
 
         let mut link_id = 0;
         let mut class = datalink_class_t::empty();
+
+        // SAFETY: All pointers we're passing to libdladm are valid
+        // for their upcoming accesses.
         Self::handle_dladm_err(unsafe {
             sys::dladm_name2info(
                 self.inner.as_ptr(),
