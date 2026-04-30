@@ -23,7 +23,10 @@
 //            for some devices when possible.
 // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiTables/Dsdt.asl
 
-use super::{IO_APIC_ADDR, LOCAL_APIC_ADDR, PCI_LINK_IRQS, SCI_IRQ};
+use super::{
+    GPE0_BLK_ADDR, GPE0_BLK_LEN, IO_APIC_ADDR, LOCAL_APIC_ADDR, PCI_LINK_IRQS,
+    PM1A_EVT_BLK_ADDR, SCI_IRQ,
+};
 use acpi_tables::{aml, sdt::Sdt, Aml, AmlSink};
 
 /// The ACPI scope in which DsdtGenerators are placed.
@@ -793,9 +796,19 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                                 &aml::IO::new(0x0402, 0x0402, 0x00, 0x01),
                                 &aml::IO::new(0x0440, 0x0440, 0x00, 0x10),
                                 // QEMU GPE0 BLK.
-                                &aml::IO::new(0xafe0, 0xafe0, 0x00, 0x04),
+                                &aml::IO::new(
+                                    GPE0_BLK_ADDR,
+                                    GPE0_BLK_ADDR,
+                                    0x00,
+                                    GPE0_BLK_LEN,
+                                ),
                                 // PMBLK1.
-                                &aml::IO::new(0xb000, 0xb000, 0x00, 0x40),
+                                &aml::IO::new(
+                                    PM1A_EVT_BLK_ADDR,
+                                    PM1A_EVT_BLK_ADDR,
+                                    0x00,
+                                    0x40,
+                                ),
                                 // IO APIC.
                                 &aml::Memory32Fixed::new(
                                     false,
