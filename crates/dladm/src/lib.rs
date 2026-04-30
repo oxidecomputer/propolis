@@ -27,14 +27,34 @@ pub type Result<T> = core::result::Result<T, DladmError>;
 
 #[derive(Debug)]
 pub enum DladmError {
+    /// Hoisted straight from `libdladm`.
     DladmSubsystem(dladm_status),
-    Other,
+
+    NoMacAddrsOnLink,
+
+    MalformedMacAddr,
 
     /// A `&str` the caller provided is not a valid link name.
     InvalidLinkName,
 
     /// Either `libdladm` has a bug or our expectations were wrong.
     UnexpectedNullPtr,
+}
+
+impl DladmError {
+    pub fn as_static_str(&self) -> &'static str {
+        match self {
+            Self::DladmSubsystem(err) => err.into(),
+            Self::InvalidLinkName => "invalid link name",
+            Self::UnexpectedNullPtr => {
+                "dladm_open succeeded but returned a null pointer"
+            }
+            Self::NoMacAddrsOnLink => "no mac addrs found on link",
+            Self::MalformedMacAddr => {
+                "no mac addr on the link had the correct length (6B)"
+            }
+        }
+    }
 }
 
 /// Rust-flavoured wrapper around `libdladm`.
@@ -178,9 +198,9 @@ impl Dladm {
         })?;
 
         if state.n_seen == 0 {
-            return Err(DladmError::Other);
+            return Err(DladmError::NoMacAddrsOnLink);
         } else if !state.written {
-            return Err(DladmError::Other);
+            return Err(DladmError::MalformedMacAddr);
         }
 
         Ok(())

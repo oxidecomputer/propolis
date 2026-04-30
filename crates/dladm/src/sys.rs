@@ -5,6 +5,7 @@
 use libc::{c_char, c_int, c_uchar, c_uint, c_void};
 use num_enum::TryFromPrimitive;
 use strum::FromRepr;
+use strum::IntoStaticStr;
 
 #[cfg(target_os = "illumos")]
 #[link(name = "dladm")]
@@ -253,7 +254,7 @@ pub enum DlMediaType {
     SixToFour = 0x8000_0007,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, FromRepr)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, FromRepr, IntoStaticStr)]
 #[repr(i32)]
 pub enum dladm_status {
     DLADM_STATUS_OK = 0,
