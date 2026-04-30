@@ -283,25 +283,6 @@ dependencies = [
 [[package]]
 name = "attest-data"
 version = "0.5.0"
-source = "git+https://github.com/oxidecomputer/dice-util?rev=1d3084b514389847e8e0f5d966d2be4f18d02d32#1d3084b514389847e8e0f5d966d2be4f18d02d32"
-dependencies = [
- "const-oid",
- "der",
- "getrandom 0.3.4",
- "hex",
- "hubpack",
- "rats-corim",
- "salty",
- "serde",
- "serde_with",
- "sha3",
- "static_assertions",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "attest-data"
-version = "0.5.0"
 source = "git+https://github.com/oxidecomputer/dice-util?rev=d7472bfa91aee859c3fe0bdc1dbb1e320285228e#d7472bfa91aee859c3fe0bdc1dbb1e320285228e"
 dependencies = [
  "const-oid",
@@ -1790,10 +1771,10 @@ dependencies = [
 [[package]]
 name = "dice-verifier"
 version = "0.3.0-pre0"
-source = "git+https://github.com/oxidecomputer/dice-util?rev=1d3084b514389847e8e0f5d966d2be4f18d02d32#1d3084b514389847e8e0f5d966d2be4f18d02d32"
+source = "git+https://github.com/oxidecomputer/dice-util?rev=d7472bfa91aee859c3fe0bdc1dbb1e320285228e#d7472bfa91aee859c3fe0bdc1dbb1e320285228e"
 dependencies = [
  "async-trait",
- "attest-data 0.5.0 (git+https://github.com/oxidecomputer/dice-util?rev=1d3084b514389847e8e0f5d966d2be4f18d02d32)",
+ "attest-data",
  "const-oid",
  "ed25519-dalek",
  "env_logger",
@@ -1805,29 +1786,6 @@ dependencies = [
  "sha3",
  "sled-agent-client",
  "sled-agent-types-versions",
- "slog",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "x509-cert",
-]
-
-[[package]]
-name = "dice-verifier"
-version = "0.3.0-pre0"
-source = "git+https://github.com/oxidecomputer/dice-util?rev=d7472bfa91aee859c3fe0bdc1dbb1e320285228e#d7472bfa91aee859c3fe0bdc1dbb1e320285228e"
-dependencies = [
- "async-trait",
- "attest-data 0.5.0 (git+https://github.com/oxidecomputer/dice-util?rev=d7472bfa91aee859c3fe0bdc1dbb1e320285228e)",
- "const-oid",
- "ed25519-dalek",
- "env_logger",
- "hex",
- "hubpack",
- "log",
- "p384",
- "rats-corim",
- "sha3",
  "slog",
  "tempfile",
  "thiserror 2.0.18",
@@ -6475,7 +6433,7 @@ dependencies = [
  "crossbeam-channel",
  "crucible",
  "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=ae1da83e66c648574827298f4bc444632bf4d047)",
- "dice-verifier 0.3.0-pre0 (git+https://github.com/oxidecomputer/dice-util?rev=1d3084b514389847e8e0f5d966d2be4f18d02d32)",
+ "dice-verifier",
  "dladm",
  "dlpi 0.2.0 (git+https://github.com/oxidecomputer/dlpi-sys?branch=main)",
  "erased-serde 0.4.5",
@@ -10151,9 +10109,9 @@ version = "0.1.0"
 source = "git+https://github.com/oxidecomputer/vm-attest?rev=deaf0203ecfa8cbe8c0c28c9bd16645d5d7be4e8#deaf0203ecfa8cbe8c0c28c9bd16645d5d7be4e8"
 dependencies = [
  "anyhow",
- "attest-data 0.5.0 (git+https://github.com/oxidecomputer/dice-util?rev=d7472bfa91aee859c3fe0bdc1dbb1e320285228e)",
+ "attest-data",
  "const-oid",
- "dice-verifier 0.3.0-pre0 (git+https://github.com/oxidecomputer/dice-util?rev=d7472bfa91aee859c3fe0bdc1dbb1e320285228e)",
+ "dice-verifier",
  "ed25519-dalek",
  "getrandom 0.3.4",
  "hex",
