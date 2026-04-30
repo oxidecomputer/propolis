@@ -123,7 +123,7 @@ bitflags::bitflags! {
     /// values of this type double as a mask in
     /// certain operations. It is very convenient
     /// to simply pretend it is a bitflag.
-    #[derive(Copy, Clone, Default, Debug)]
+    #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
     #[repr(transparent)]
     pub struct datalink_class_t: u32 {
         const DATALINK_CLASS_PHYS = 0x01;
@@ -144,7 +144,7 @@ bitflags::bitflags! {
     /// `DLADM_OPT_*` bitflags. We introduce our own here and the
     /// naming convention reflects that this is a Rust type
     /// that happens to be marshallable across an FFI boundary.
-    #[derive(Copy, Clone, Default, Debug)]
+    #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
     #[repr(transparent)]
     pub struct DlAdmOpt: u32 {
         /// The function requests to bringup some configuration that only takes

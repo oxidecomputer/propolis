@@ -15,12 +15,12 @@ use core::ffi::CStr;
 use core::ptr::NonNull;
 use core::slice;
 use libc::c_void;
-use sys::{dladm_handle, dladm_status, DlMediaType, PropType, MAXLINKNAMELEN};
+use sys::{dladm_handle, dladm_status, PropType, MAXLINKNAMELEN};
 
 #[allow(non_camel_case_types)]
 mod sys;
 
-pub use sys::{datalink_class_t, DlAdmOpt};
+pub use sys::{datalink_class_t, DlAdmOpt, DlMediaType};
 
 pub type Result<T> = core::result::Result<T, DladmError>;
 
@@ -233,7 +233,7 @@ const ETHERADDRL: usize = 6;
 
 static MTU_PROP_NAME: &CStr = c"mtu";
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum DlpiMediaType {
     Known(DlMediaType),
 
