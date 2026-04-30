@@ -7,7 +7,10 @@
 //! The [`Fadt`] struct implements the `Aml` trait of the `acpi_tables` crate
 //! and can write the AML bytecode to any AmlSink, like a `Vec<u8>`.
 
-use super::{OEM_ID, OEM_REVISION, OEM_TABLE_ID, SCI_IRQ};
+use super::{
+    GPE0_BLK_ADDR, GPE0_BLK_LEN, OEM_ID, OEM_REVISION, OEM_TABLE_ID,
+    PM1A_EVT_BLK_ADDR, SCI_IRQ,
+};
 use acpi_tables::{
     // XXX(acpi): Use version 3 to keep FADT table consistent with the original
     //            EDK2 static tables. The acpi_tables crate also generates the
@@ -33,15 +36,12 @@ pub const FADT_X_DSDT_OFFSET: usize = 140;
 pub const FADT_X_DSDT_LEN: usize = 8;
 
 // Values used to populate the FADT table.
-const PM1A_EVT_BLK_ADDR: u32 = 0xb000;
 const PM1A_CNT_BLK_ADDR: u32 = 0xb004;
 const PM_TMR_BLK_ADDR: u32 = 0xb008;
-const GPE0_BLK_ADDR: u32 = 0xafe0;
 
 const PM1A_EVT_BLK_LEN: u8 = 4;
 const PM1A_CNT_BLK_LEN: u8 = 2;
 const PM_TMR_BLK_LEN: u8 = 4;
-const GPE0_BLK_LEN: u8 = 4;
 
 // Represents a bit flag for the FADT IA-PC boot architecture flags.
 //
@@ -94,10 +94,10 @@ impl Aml for Fadt {
         fadt.acpi_enable = 0xf1;
         fadt.acpi_disable = 0xf0;
 
-        fadt.pm1a_evt_blk = PM1A_EVT_BLK_ADDR.into();
+        fadt.pm1a_evt_blk = (PM1A_EVT_BLK_ADDR as u32).into();
         fadt.pm1a_cnt_blk = PM1A_CNT_BLK_ADDR.into();
         fadt.pm_tmr_blk = PM_TMR_BLK_ADDR.into();
-        fadt.gpe0_blk = GPE0_BLK_ADDR.into();
+        fadt.gpe0_blk = (GPE0_BLK_ADDR as u32).into();
 
         fadt.pm1_evt_len = PM1A_EVT_BLK_LEN;
         fadt.pm1_cnt_len = PM1A_CNT_BLK_LEN;
