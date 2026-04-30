@@ -8,7 +8,7 @@ use std::io::Result;
 fn empty_link_name() {
     let hnd = Dladm::new().unwrap();
 
-    assert!(matches!(hnd.query_link(""), Err(DladmError::DladmSubsystem(_))));
+    assert!(hnd.query_link("").is_err());
 }
 
 #[test]

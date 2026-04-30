@@ -1849,6 +1849,7 @@ dependencies = [
 name = "dladm"
 version = "0.0.0"
 dependencies = [
+ "bitflags 2.9.4",
  "libc",
  "strum 0.26.3",
 ]

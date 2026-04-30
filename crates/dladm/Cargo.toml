@@ -11,3 +11,4 @@ doctest = false
 [dependencies]
 libc.workspace = true
 strum = { workspace = true, features = ["derive"] }
+bitflags.workspace = true

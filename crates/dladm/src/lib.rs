@@ -6,16 +6,17 @@
 
 #![no_std]
 
+use core::ffi::CStr;
 use core::ptr::NonNull;
 use core::slice;
+use libc::c_void;
+use sys::{
+    datalink_class, datalink_class_t, datalink_id_t, dladm_handle,
+    dladm_handle_t, dladm_status, MAXLINKNAMELEN,
+};
 
 #[allow(non_camel_case_types)]
 mod sys;
-
-use libc::c_void;
-use sys::{
-    datalink_class, dladm_handle, dladm_handle_t, dladm_status, MAXLINKNAMELEN,
-};
 
 pub type Result<T> = core::result::Result<T, DladmError>;
 
@@ -25,10 +26,18 @@ pub enum DladmError {
     UnexpectedClass(datalink_class),
     InvalidClass,
     Other,
+
+    /// A `&str` the caller provided is not a valid link name.
+    InvalidLinkName,
+
+    /// Either `libdladm` has a bug or our expectations were wrong.
+    UnexpectedNullPtr,
 }
 
 /// Rust-flavoured wrapper around `libdladm`.
 /// Brokers access to dladm without execing the dladm CLI.
+/// Ultimately `libdladm` communicates over doors with `dlmgmtd`,
+/// a daemon managed by SMF's `svc:/network/datalink-management:default`.
 pub struct Dladm {
     inner: NonNull<dladm_handle>,
 }
@@ -39,34 +48,49 @@ impl Dladm {
         let mut hdl: *mut dladm_handle = core::ptr::null_mut();
         Self::handle_dladm_err(unsafe { sys::dladm_open(&mut hdl) })?;
 
-        debug_assert!(!hdl.is_null());
+        let Some(ptr) = NonNull::new(hdl) else {
+            return Err(DladmError::UnexpectedNullPtr);
+        };
 
-        Ok(Self { inner: unsafe { NonNull::new_unchecked(hdl) } })
+        Ok(Self { inner: ptr })
     }
 
     pub fn query_link(&self, name: &str) -> Result<LinkInfo> {
-        let mut stack_alloc_link_name = [0; MAXLINKNAMELEN];
+        let nb = name.as_bytes();
 
-        for (index, copyme) in name.bytes().take(MAXLINKNAMELEN - 1).enumerate()
+        const SPACE_NEEDED_FOR_NULL_TERMINATOR: usize = 1;
+
+        if nb.is_empty()
+            || nb.len() + SPACE_NEEDED_FOR_NULL_TERMINATOR > MAXLINKNAMELEN
         {
-            stack_alloc_link_name[index] = copyme;
+            return Err(DladmError::InvalidLinkName);
         }
 
-        let mut link_id: sys::datalink_id_t = 0;
-        let mut class: i32 = 0;
+        let mut buf = [0u8; MAXLINKNAMELEN];
+        let n = nb.len().min(MAXLINKNAMELEN - SPACE_NEEDED_FOR_NULL_TERMINATOR);
+        buf[..n].copy_from_slice(&nb[..n]);
+
+        let Ok(link_name) = CStr::from_bytes_until_nul(&buf)
+        else {
+            return Err(DladmError::InvalidLinkName);
+        };
+
+        let mut link_id = 0;
+        let mut class = datalink_class_t::empty();
         Self::handle_dladm_err(unsafe {
             sys::dladm_name2info(
                 self.inner.as_ptr(),
-                stack_alloc_link_name.as_ptr(),
-                &mut link_id as *mut sys::datalink_id_t,
+                link_name.as_ptr(),
+                &mut link_id,
                 core::ptr::null_mut(),
                 &mut class,
                 core::ptr::null_mut(),
             )
         })?;
 
-        let mut res = LinkInfo { link_id, ..Default::default() };
+        let mut res = LinkInfo { link_id, class, ..Default::default() };
 
+        /*
         match datalink_class::from_repr(class) {
             // acceptable values: this supports both VNICs
             // and direct use of XDE/OPTE ports.
@@ -81,6 +105,7 @@ impl Dladm {
             }
             None => return Err(DladmError::InvalidClass),
         }
+        */
 
         //res.mtu = Self::get_mtu(name).ok();
 
@@ -174,4 +199,5 @@ pub struct LinkInfo {
     pub link_id: u32,
     pub mtu: Option<u16>,
     pub mac_addr: [u8; ETHERADDRL],
+    pub class: datalink_class_t,
 }

@@ -12,11 +12,11 @@ extern "C" {
     pub fn dladm_close(handle: dladm_handle_t);
     pub fn dladm_name2info(
         handle: dladm_handle_t,
-        link: *const u8,
+        link: *const c_char,
         linkidp: *mut datalink_id_t,
         flagp: *mut u32,
         // parse to datalink_class
-        classp: *mut c_int,
+        classp: *mut datalink_class_t,
         mediap: *mut u32,
     ) -> c_int;
     pub fn dladm_walk_macaddr(
@@ -43,11 +43,11 @@ mod compat {
     }
     pub unsafe extern "C" fn dladm_name2info(
         handle: dladm_handle_t,
-        link: *const u8,
+        link: *const c_char,
         linkidp: *mut datalink_id_t,
         flagp: *mut u32,
         // parse to datalink_class
-        classp: *mut c_int,
+        classp: *mut datalink_class_t,
         mediap: *mut u32,
     ) -> c_int {
         panic!("illumos only");
@@ -71,6 +71,7 @@ pub use compat::*;
 pub enum dladm_handle {}
 pub type dladm_handle_t = *mut dladm_handle;
 pub type datalink_id_t = u32;
+
 #[repr(C)]
 pub struct dladm_macaddr_attr_t {
     pub ma_slot: c_uint,
@@ -80,6 +81,7 @@ pub struct dladm_macaddr_attr_t {
     pub ma_client_name: [c_char; MAXNAMELEN],
     pub ma_client_linkid: datalink_id_t,
 }
+
 #[repr(C)]
 pub enum boolean_t {
     B_FALSE,
@@ -103,6 +105,22 @@ pub enum datalink_class {
     DATALINK_CLASS_IPTUN = 0x80,
     DATALINK_CLASS_PART = 0x100,
     DATALINK_CLASS_MISC = 0x400,
+}
+
+bitflags::bitflags! {
+    #[derive(Copy, Clone, Default, Debug)]
+    pub struct datalink_class_t: u32 {
+        const DATALINK_CLASS_PHYS = 0x01;
+        const DATALINK_CLASS_VLAN = 0x02;
+        const DATALINK_CLASS_AGGR = 0x04;
+        const DATALINK_CLASS_VNIC = 0x08;
+        const DATALINK_CLASS_ETHERSTUB = 0x10;
+        const DATALINK_CLASS_SIMNET = 0x20;
+        const DATALINK_CLASS_BRIDGE = 0x40;
+        const DATALINK_CLASS_IPTUN = 0x80;
+        const DATALINK_CLASS_PART = 0x100;
+        const DATALINK_CLASS_MISC = 0x400;
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, FromRepr)]
