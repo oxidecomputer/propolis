@@ -46,3 +46,8 @@ const PCI_LINK_IRQS: [u8; 4] = [0x05, SCI_IRQ, 0x0a, 0x0b];
 
 const IO_APIC_ADDR: u32 = 0xfec0_0000;
 const LOCAL_APIC_ADDR: u32 = 0xfee0_0000;
+
+const PM1A_EVT_BLK_ADDR: u16 = 0xb000;
+
+const GPE0_BLK_ADDR: u16 = 0xafe0;
+const GPE0_BLK_LEN: u8 = 4;
