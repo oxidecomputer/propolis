@@ -336,11 +336,11 @@ impl PciVirtioViona {
         viona_params: Option<DeviceParams>,
     ) -> io::Result<Arc<PciVirtioViona>> {
         let dladm = dladm::Dladm::new()
-            .map_err(|_e| Error::new(ErrorKind::Other, "todo"))?;
+            .map_err(|e| Error::new(ErrorKind::Other, e.as_static_str()))?;
 
         let info = dladm
             .describe_link(vnic_name)
-            .map_err(|_e| Error::new(ErrorKind::Other, "todo"))?;
+            .map_err(|e| Error::new(ErrorKind::Other, e.as_static_str()))?;
 
         let hdl = VionaHdl::new(info.link_id, vm.fd())?;
 
