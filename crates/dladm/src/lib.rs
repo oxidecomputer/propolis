@@ -3,6 +3,11 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! Ultra-low overhead (no_std, no_alloc) access to the dladm subsystem.
+//!
+//! While all usages of this crate will neccesitate a standard library
+//! (you may notice the `libc` includes) the purpose of `no_std` and
+//! `no_alloc` here is to be a Good Citizen within the VMM. Secondarily,
+//! there is one less thing to reason about when dealing with this crate.
 
 #![no_std]
 
