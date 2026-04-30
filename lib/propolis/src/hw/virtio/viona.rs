@@ -1019,13 +1019,16 @@ impl From<&VirtQueue> for viona_api::vioc_ring_state {
         let desc_addr = state.mapping.desc_addr;
         let avail_addr = state.mapping.avail_addr;
         let used_addr = state.mapping.used_addr;
+        let avail_idx = state.avail_idx;
+        let used_idx = state.used_idx;
         viona_api::vioc_ring_state {
             vrs_index: id,
             vrs_qsize: size,
             vrs_qaddr_desc: desc_addr,
             vrs_qaddr_avail: avail_addr,
             vrs_qaddr_used: used_addr,
-            ..Default::default()
+            vrs_used_idx: used_idx,
+            vrs_avail_idx: avail_idx,
         }
     }
 }
