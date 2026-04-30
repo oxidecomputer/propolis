@@ -55,7 +55,7 @@ impl Dladm {
         Ok(Self { inner: ptr })
     }
 
-    pub fn query_link(&self, name: &str) -> Result<LinkInfo> {
+    pub fn describe_link(&self, name: &str) -> Result<LinkInfo> {
         let nb = name.as_bytes();
 
         const SPACE_NEEDED_FOR_NULL_TERMINATOR: usize = 1;

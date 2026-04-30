@@ -8,13 +8,13 @@ use std::io::Result;
 fn empty_link_name() {
     let hnd = Dladm::new().unwrap();
 
-    assert!(hnd.query_link("").is_err());
+    assert!(hnd.describe_link("").is_err());
 }
 
 #[test]
 fn query() {
     let hnd = Dladm::new().unwrap();
 
-    let x = hnd.query_link("opte0");
+    let x = hnd.describe_link("opte0");
     dbg!(x);
 }
