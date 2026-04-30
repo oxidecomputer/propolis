@@ -12,7 +12,7 @@ use core::slice;
 use libc::c_void;
 use sys::{
     datalink_class, datalink_class_t, datalink_id_t, dladm_handle,
-    dladm_handle_t, dladm_status, MAXLINKNAMELEN,
+    dladm_handle_t, dladm_status, DlAdmOpt, MAXLINKNAMELEN,
 };
 
 #[allow(non_camel_case_types)]
@@ -76,6 +76,7 @@ impl Dladm {
 
         let mut link_id = 0;
         let mut class = datalink_class_t::empty();
+        let mut flags = DlAdmOpt::empty();
 
         // SAFETY: All pointers we're passing to libdladm are valid
         // for their upcoming accesses.
@@ -86,13 +87,13 @@ impl Dladm {
                 self.inner.as_ptr(),
                 link_name.as_ptr(),
                 &mut link_id,
-                core::ptr::null_mut(),
+                &mut flags,
                 &mut class,
                 core::ptr::null_mut(),
             )
         })?;
 
-        let mut res = LinkInfo { link_id, class, ..Default::default() };
+        let mut res = LinkInfo { link_id, class, flags, ..Default::default() };
 
         Ok(res)
     }
@@ -185,4 +186,5 @@ pub struct LinkInfo {
     pub mtu: Option<u16>,
     pub mac_addr: [u8; ETHERADDRL],
     pub class: datalink_class_t,
+    pub flags: DlAdmOpt,
 }

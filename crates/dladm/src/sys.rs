@@ -14,7 +14,7 @@ extern "C" {
         handle: dladm_handle_t,
         link: *const c_char,
         linkidp: *mut datalink_id_t,
-        flagp: *mut u32,
+        flagp: *mut DlAdmOpt,
         // parse to datalink_class
         classp: *mut datalink_class_t,
         mediap: *mut u32,
@@ -45,7 +45,7 @@ mod compat {
         handle: dladm_handle_t,
         link: *const c_char,
         linkidp: *mut datalink_id_t,
-        flagp: *mut u32,
+        flagp: *mut DlAdmOpt,
         // parse to datalink_class
         classp: *mut datalink_class_t,
         mediap: *mut u32,
@@ -120,6 +120,47 @@ bitflags::bitflags! {
         const DATALINK_CLASS_IPTUN = 0x80;
         const DATALINK_CLASS_PART = 0x100;
         const DATALINK_CLASS_MISC = 0x400;
+    }
+}
+
+bitflags::bitflags! {
+    /// Annoyingly,`libdladm` does not define an enum for the various
+    /// `DLADM_OPT_*` bitflags. We introduce our own here and the
+    /// naming convention reflects that this is a Rust type
+    /// that happens to be marshallable across an FFI boundary.
+    #[derive(Copy, Clone, Default, Debug)]
+    pub struct DlAdmOpt: u32 {
+        /// The function requests to bringup some configuration that only takes
+        /// effect on the active system (not persistent).
+        const ACTIVE     = 0x00000001;
+
+        /// The function requests to persist some configuration.
+        const PERSIST    = 0x00000002;
+
+        /// Today, only used by `dladm_set_secobj()` — requests to create a secobj.
+        const CREATE     = 0x00000004;
+
+        /// The function requests to execute a specific operation forcefully.
+        const FORCE      = 0x00000008;
+
+        /// The function requests to generate a link name using the specified prefix.
+        const PREFIX     = 0x00000010;
+
+        const ANCHOR     = 0x00000020;
+
+        /// Signifies VLAN creation code path.
+        const VLAN       = 0x00000040;
+
+        /// Do not refresh the daemon after setting parameter (used by STP mcheck).
+        const NOREFRESH  = 0x00000080;
+
+        /// Bypass check functions during boot (used by pool property since pools
+        /// can come up after link properties are set).
+        const BOOT       = 0x00000100;
+
+        /// Indicates that the link assigned to a zone is transient and will be
+        /// removed when the zone shuts down.
+        const TRANSIENT  = 0x00000200;
     }
 }
 
