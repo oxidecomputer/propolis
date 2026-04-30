@@ -104,20 +104,32 @@ impl Dladm {
             mac_addr: [0; 6],
         };
 
+        self.yoink_first_mac(res.link_id, &mut res.mac_addr);
+
+        let mut buffer = [0; 256];
+        let mut len = 1u32;
+
+        Self::handle_dladm_err(unsafe {
+            sys::dladm_get_linkprop(
+                self.inner.as_ptr(),
+                res.link_id,
+                1,
+                MTU_PROP_NAME.as_ptr(),
+                &mut buffer.as_mut_ptr(),
+                &mut len,
+            )
+        })?;
+
+        panic!("{:#?}", buffer);
+
         Ok(res)
     }
 
-    fn get_misc_mac(
+    fn yoink_first_mac(
         &self,
         linkid: sys::datalink_id_t,
         mac: &mut [u8],
     ) -> Result<()> {
-        // Unfortunately, XDE/OPTE creates 'misc' type devices, as it is
-        // a pseudo device. `dladm` has no built-in commands for these,
-        // and macaddr queries for all other link types go through their
-        // dedicated `dladm show-<X>` commands. As a consequence, we have
-        // to go to libdladm/libdllink directly here.
-
         // One-off callback function and arg struct.
         // This will use the first seen mac address attached to the link.
         unsafe extern "C" fn per_macaddr(
@@ -188,6 +200,8 @@ impl Drop for Dladm {
 }
 
 const ETHERADDRL: usize = 6;
+
+static MTU_PROP_NAME:  &CStr = c"mtu";
 
 #[derive(Debug, Copy, Clone)]
 pub enum DlpiMediaType {
