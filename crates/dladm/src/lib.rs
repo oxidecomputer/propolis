@@ -118,13 +118,9 @@ impl Dladm {
             // SAFETY: it's a pointer to a stack alloc.
             let mtu_string = unsafe { CStr::from_ptr(buffer.as_ptr()) };
 
-            panic!("{:#?}", mtu_string);
-
-            /*
             let mtu: u16 = mtu_string.to_str().unwrap().parse().unwrap();
 
             res.mtu = mtu;
-            */
         }
 
         Ok(res)
