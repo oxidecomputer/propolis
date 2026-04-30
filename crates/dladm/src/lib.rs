@@ -23,7 +23,6 @@ pub type Result<T> = core::result::Result<T, DladmError>;
 #[derive(Debug)]
 pub enum DladmError {
     DladmSubsystem(dladm_status),
-    InvalidClass,
     Other,
 
     /// A `&str` the caller provided is not a valid link name.
