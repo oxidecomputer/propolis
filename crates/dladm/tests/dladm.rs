@@ -10,7 +10,6 @@ fn empty_link_name() {
     assert!(hnd.describe_link("").is_err());
 }
 
-#[ignore]
 #[test]
 fn query() {
     let hnd = Dladm::new().unwrap();

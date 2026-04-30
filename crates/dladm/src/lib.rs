@@ -34,10 +34,8 @@ pub enum DladmError {
 
     MalformedMacAddr,
 
-    /// A `&str` the caller provided is not a valid link name.
     InvalidLinkName,
 
-    /// Either `libdladm` has a bug or our expectations were wrong.
     UnexpectedNullPtr,
 }
 
