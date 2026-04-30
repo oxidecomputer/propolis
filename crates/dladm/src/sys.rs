@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use libc::{c_char, c_int, c_uchar, c_uint, c_void};
+use num_enum::TryFromPrimitive;
 use strum::FromRepr;
 
 #[cfg(target_os = "illumos")]
@@ -15,7 +16,6 @@ extern "C" {
         link: *const c_char,
         linkidp: *mut datalink_id_t,
         flagp: *mut DlAdmOpt,
-        // parse to datalink_class
         classp: *mut datalink_class_t,
         mediap: *mut u32,
     ) -> c_int;
@@ -46,7 +46,6 @@ mod compat {
         link: *const c_char,
         linkidp: *mut datalink_id_t,
         flagp: *mut DlAdmOpt,
-        // parse to datalink_class
         classp: *mut datalink_class_t,
         mediap: *mut u32,
     ) -> c_int {
@@ -92,22 +91,11 @@ const MAXMACADDRLEN: usize = 20;
 const MAXNAMELEN: usize = 256;
 pub(crate) const MAXLINKNAMELEN: usize = 32;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, FromRepr)]
-#[repr(i32)]
-pub enum datalink_class {
-    DATALINK_CLASS_PHYS = 0x01,
-    DATALINK_CLASS_VLAN = 0x02,
-    DATALINK_CLASS_AGGR = 0x04,
-    DATALINK_CLASS_VNIC = 0x08,
-    DATALINK_CLASS_ETHERSTUB = 0x10,
-    DATALINK_CLASS_SIMNET = 0x20,
-    DATALINK_CLASS_BRIDGE = 0x40,
-    DATALINK_CLASS_IPTUN = 0x80,
-    DATALINK_CLASS_PART = 0x100,
-    DATALINK_CLASS_MISC = 0x400,
-}
-
 bitflags::bitflags! {
+    /// Despite being mutually exclusive options,
+    /// values of this type double as a mask in
+    /// certain operations. It is very convenient
+    /// to simply pretend it is a bitflag.
     #[derive(Copy, Clone, Default, Debug)]
     pub struct datalink_class_t: u32 {
         const DATALINK_CLASS_PHYS = 0x01;
@@ -162,6 +150,80 @@ bitflags::bitflags! {
         /// removed when the zone shuts down.
         const TRANSIENT  = 0x00000200;
     }
+}
+
+/// DLPI media types (DL_* constants from `<sys/dlpi.h>`).
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, TryFromPrimitive)]
+#[non_exhaustive]
+pub enum DlMediaType {
+    /// IEEE 802.3 CSMA/CD network.
+    Csmacd = 0x0,
+    /// IEEE 802.4 Token Passing Bus.
+    Tpb = 0x1,
+    /// IEEE 802.5 Token Passing Ring.
+    Tpr = 0x2,
+    /// IEEE 802.6 Metro Net.
+    Metro = 0x3,
+    /// Ethernet Bus.
+    Ether = 0x4,
+    /// ISO HDLC protocol support.
+    Hdlc = 0x05,
+    /// Character Synchronous protocol support.
+    Char = 0x06,
+    /// IBM Channel-to-Channel Adapter.
+    Ctca = 0x07,
+    /// Fiber Distributed Data Interface.
+    Fddi = 0x08,
+    /// Any other medium not listed above.
+    Other = 0x09,
+    /// Frame Relay LAPF.
+    Frame = 0x0a,
+    /// Multi-protocol over Frame Relay.
+    MpFrame = 0x0b,
+    /// Character Asynchronous Protocol.
+    Async = 0x0c,
+    /// X.25 Classical IP interface.
+    IpX25 = 0x0d,
+    /// Software loopback.
+    Loop = 0x0e,
+    /// Fibre Channel interface.
+    Fc = 0x10,
+    /// ATM.
+    Atm = 0x11,
+    /// ATM Classical IP interface.
+    IpAtm = 0x12,
+    /// X.25 LAPB interface.
+    X25 = 0x13,
+    /// ISDN interface.
+    Isdn = 0x14,
+    /// HIPPI interface.
+    Hippi = 0x15,
+    /// 100 Based VG Ethernet.
+    Vg100 = 0x16,
+    /// 100 Based VG Token Ring.
+    Vg100Tpr = 0x17,
+    /// ISO 8802/3 and Ethernet.
+    EthCsma = 0x18,
+    /// 100 Base T.
+    Bt100 = 0x19,
+    /// Infiniband.
+    Ib = 0x1a,
+
+    /// IPv4 Tunnel Link.
+    Ipv4 = 0x8000_0001,
+    /// IPv6 Tunnel Link.
+    Ipv6 = 0x8000_0002,
+    /// Virtual network interface.
+    SunwVni = 0x8000_0003,
+    /// IEEE 802.11.
+    WiFi = 0x8000_0004,
+    /// `ipnet(4D)` link.
+    IpNet = 0x8000_0005,
+    /// IPMP stub interface.
+    SunwIpmp = 0x8000_0006,
+    /// 6to4 Tunnel Link.
+    SixToFour = 0x8000_0007,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, FromRepr)]

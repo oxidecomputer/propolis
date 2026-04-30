@@ -11,8 +11,8 @@ use core::ptr::NonNull;
 use core::slice;
 use libc::c_void;
 use sys::{
-    datalink_class, datalink_class_t, datalink_id_t, dladm_handle,
-    dladm_handle_t, dladm_status, DlAdmOpt, MAXLINKNAMELEN,
+    datalink_class_t, datalink_id_t, dladm_handle, dladm_handle_t,
+    dladm_status, DlAdmOpt, DlMediaType, MAXLINKNAMELEN,
 };
 
 #[allow(non_camel_case_types)]
@@ -23,7 +23,6 @@ pub type Result<T> = core::result::Result<T, DladmError>;
 #[derive(Debug)]
 pub enum DladmError {
     DladmSubsystem(dladm_status),
-    UnexpectedClass(datalink_class),
     InvalidClass,
     Other,
 
@@ -77,6 +76,7 @@ impl Dladm {
         let mut link_id = 0;
         let mut class = datalink_class_t::empty();
         let mut flags = DlAdmOpt::empty();
+        let mut media = 0;
 
         // SAFETY: All pointers we're passing to libdladm are valid
         // for their upcoming accesses.
@@ -89,11 +89,20 @@ impl Dladm {
                 &mut link_id,
                 &mut flags,
                 &mut class,
-                core::ptr::null_mut(),
+                &mut media,
             )
         })?;
 
-        let mut res = LinkInfo { link_id, class, flags, ..Default::default() };
+        let media = DlpiMediaType::new(media);
+
+        let mut res = LinkInfo {
+            link_id,
+            class,
+            flags,
+            media,
+            mtu: Some(0),
+            mac_addr: [0; 6],
+        };
 
         Ok(res)
     }
@@ -180,11 +189,30 @@ impl Drop for Dladm {
 
 const ETHERADDRL: usize = 6;
 
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(Debug, Copy, Clone)]
+pub enum DlpiMediaType {
+    Known(DlMediaType),
+
+    /// Almost certainly this variant will never be constructed.
+    /// We include it for guaranteed forwards-compatibility.
+    Unknown(u32),
+}
+
+impl DlpiMediaType {
+    fn new(value: u32) -> Self {
+        match DlMediaType::try_from(value) {
+            Ok(d) => Self::Known(d),
+            _ => Self::Unknown(value),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
 pub struct LinkInfo {
     pub link_id: u32,
     pub mtu: Option<u16>,
     pub mac_addr: [u8; ETHERADDRL],
     pub class: datalink_class_t,
     pub flags: DlAdmOpt,
+    pub media: DlpiMediaType,
 }

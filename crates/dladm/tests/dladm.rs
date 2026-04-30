@@ -15,6 +15,6 @@ fn empty_link_name() {
 fn query() {
     let hnd = Dladm::new().unwrap();
 
-    let x = hnd.describe_link("vioif0");
+    let x = hnd.describe_link("opte0");
     dbg!(x);
 }
