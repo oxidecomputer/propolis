@@ -90,25 +90,6 @@ impl Dladm {
 
         let mut res = LinkInfo { link_id, class, ..Default::default() };
 
-        /*
-        match datalink_class::from_repr(class) {
-            // acceptable values: this supports both VNICs
-            // and direct use of XDE/OPTE ports.
-            Some(datalink_class::DATALINK_CLASS_VNIC) => {
-                //Self::get_vnic_mac(name, &mut res.mac_addr[..])?;
-            }
-            Some(datalink_class::DATALINK_CLASS_MISC) => {
-                self.get_misc_mac(link_id, &mut res.mac_addr[..])?;
-            }
-            Some(c) => {
-                return Err(DladmError::UnexpectedClass(c));
-            }
-            None => return Err(DladmError::InvalidClass),
-        }
-        */
-
-        //res.mtu = Self::get_mtu(name).ok();
-
         Ok(res)
     }
 
