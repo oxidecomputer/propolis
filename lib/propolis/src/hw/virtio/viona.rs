@@ -357,14 +357,16 @@ impl PciVirtioViona {
         }
 
         // Do in-kernel configuration of device MTU
-        if hdl.api_version().unwrap() >= viona_api::ApiVersion::V4 {
-            hdl.set_mtu(info.mtu)?;
-        } else if info.mtu != 1500 {
-            // Squawk about MTUs not matching the default of 1500
-            return Err(io::Error::new(
-                ErrorKind::Unsupported,
-                "viona device version is inadequate to set MTU",
-            ));
+        if let Some(mtu) = info.mtu {
+            if hdl.api_version().unwrap() >= viona_api::ApiVersion::V4 {
+                hdl.set_mtu(mtu)?;
+            } else if mtu != 1500 {
+                // Squawk about MTUs not matching the default of 1500
+                return Err(io::Error::new(
+                    ErrorKind::Unsupported,
+                    "viona device version is inadequate to set MTU",
+                ));
+            }
         }
 
         let queue_sizes = [rx_queue_size, tx_queue_size]
@@ -398,7 +400,7 @@ impl PciVirtioViona {
             indicator: Default::default(),
             dev_features,
             mac_addr: [0; ETHERADDRL],
-            mtu: Some(info.mtu),
+            mtu: info.mtu,
             hdl,
             inner: Mutex::new(Inner::new(nqueues)),
         };
