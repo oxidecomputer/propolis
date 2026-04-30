@@ -2,7 +2,6 @@
 
 use dladm::Dladm;
 
-#[ignore]
 #[test]
 fn empty_link_name() {
     let hnd = Dladm::new().unwrap();
@@ -11,10 +10,17 @@ fn empty_link_name() {
 }
 
 #[test]
+fn bogus_name() {
+    let hnd = Dladm::new().unwrap();
+
+    assert!(hnd.describe_link("nonsense").is_err());
+}
+
+#[test]
 fn query() {
     let hnd = Dladm::new().unwrap();
 
-    let x = hnd.describe_link("vioif0").unwrap();
-    //let x = hnd.describe_link("opte0");
-    dbg!(x);
+    let opte0 = hnd.describe_link("opte0").unwrap();
+
+    assert_eq!(opte0.mtu.unwrap(), 1500);
 }
