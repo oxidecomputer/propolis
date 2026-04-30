@@ -70,7 +70,19 @@ mod compat {
     ) -> c_int {
         panic!("illumos only");
     }
+
+    pub fn dladm_get_linkprop(
+        handle: dladm_handle_t,
+        linkid: datalink_id_t,
+        prop_type: u32,
+        prop_name: *const c_char,
+        prop_val: *mut *mut c_char,
+        val_cntp: *mut u32,
+    ) -> c_int {
+        panic!("illumos only");
+    }
 }
+
 #[cfg(not(target_os = "illumos"))]
 pub use compat::*;
 
