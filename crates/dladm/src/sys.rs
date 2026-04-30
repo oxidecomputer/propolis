@@ -116,6 +116,7 @@ pub enum boolean_t {
 const MAXMACADDRLEN: usize = 20;
 const MAXNAMELEN: usize = 256;
 pub(crate) const MAXLINKNAMELEN: usize = 32;
+pub(crate) const DLADM_STRSIZE: usize = 256;
 
 bitflags::bitflags! {
     /// Despite being mutually exclusive options,

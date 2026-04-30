@@ -128,7 +128,7 @@ impl Dladm {
 
         self.pick_first_mac(res.link_id, &mut res.mac_addr)?;
 
-        let mut buffer = [0; 256];
+        let mut buffer = [0; sys::DLADM_STRSIZE];
         let mut len = 1u32;
 
         Self::handle_dladm_err(unsafe {
