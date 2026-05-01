@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use zerocopy::FromBytes;
+use zerocopy::{FromBytes, IntoBytes};
 
 use crate::accessors::MemAccessor;
 use crate::common::GuestAddr;
@@ -48,7 +48,7 @@ pub const fn align_up(val: u64, align: u64) -> u64 {
 
 /// 16-byte virtio descriptor, matching the on-wire/in-memory layout.
 #[repr(C)]
-#[derive(Copy, Clone, Default, FromBytes)]
+#[derive(Copy, Clone, Default, FromBytes, IntoBytes)]
 pub struct RawDesc {
     pub addr: u64,
     pub len: u32,

@@ -8,7 +8,7 @@ use std::sync::atomic::{fence, AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bitflags::bitflags;
-use zerocopy::FromBytes;
+use zerocopy::{FromBytes, IntoBytes};
 
 use super::probes;
 use super::{VirtioIntr, VqIntr};
@@ -62,7 +62,7 @@ struct VqdDesc {
     next: u16,
 }
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, IntoBytes)]
 struct VqdUsed {
     id: u32,
     len: u32,
@@ -760,7 +760,11 @@ impl Chain {
         self.bufs.clear();
     }
 
-    pub fn read<T: Copy>(&mut self, item: &mut T, mem: &MemCtx) -> bool {
+    pub fn read<T: Copy + FromBytes>(
+        &mut self,
+        item: &mut T,
+        mem: &MemCtx,
+    ) -> bool {
         let item_sz = mem::size_of::<T>();
         if (self.read_stat.bytes_remain as usize) < item_sz {
             return false;
@@ -808,7 +812,11 @@ impl Chain {
         assert_eq!(remain, 0);
         Some(bufs)
     }
-    pub fn write<T: Copy>(&mut self, item: &T, mem: &MemCtx) -> bool {
+    pub fn write<T: Copy + IntoBytes>(
+        &mut self,
+        item: &T,
+        mem: &MemCtx,
+    ) -> bool {
         let item_sz = mem::size_of::<T>();
         if (self.write_stat.bytes_remain as usize) < item_sz {
             return false;
