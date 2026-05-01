@@ -96,8 +96,8 @@ crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "ae1da83e6
 crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "ae1da83e66c648574827298f4bc444632bf4d047" }
 
 # Attestation
-dice-verifier = { git = "https://github.com/oxidecomputer/dice-util", rev = "1d3084b514389847e8e0f5d966d2be4f18d02d32", features = ["sled-agent"] }
-vm-attest = { git = "https://github.com/oxidecomputer/vm-attest", rev = "2cdd17580a4fc6c871d24797016af8dbaac9421d", default-features = false }
+dice-verifier = { git = "https://github.com/oxidecomputer/dice-util", rev = "d7472bfa91aee859c3fe0bdc1dbb1e320285228e", features = ["sled-agent"] }
+vm-attest = { git = "https://github.com/oxidecomputer/vm-attest", rev = "deaf0203ecfa8cbe8c0c28c9bd16645d5d7be4e8", default-features = false }
 
 # External dependencies
 anyhow = "1.0"
