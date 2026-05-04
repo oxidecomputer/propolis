@@ -25,10 +25,17 @@ use lazy_static::lazy_static;
 use zerocopy::FromBytes;
 
 /// Sizing for virtio-block is specified in 512B sectors
-const SECTOR_SZ: usize = 512;
+const SECTOR_SZ: u64 = 512;
 
-/// Arbitrary limit to sectors permitted per discard request
-const MAX_DISCARD_SECTORS: u32 = ((1024 * 1024) / SECTOR_SZ) as u32;
+/// Arbitrary limit to sectors permitted per discard request.
+///
+/// `u32` because that is the size of the register by which guests read this value.
+const MAX_DISCARD_SECTORS: u32 = const {
+    let sectors: u64 = (1024 * 1024) / SECTOR_SZ;
+    // We can't `try_into` and unwrap in a const context, but we can assert and cast!
+    assert!(sectors <= u32::MAX as u64);
+    sectors as u32
+};
 
 pub struct PciVirtioBlock {
     virtio_state: PciVirtioState,
@@ -69,7 +76,7 @@ impl PciVirtioBlock {
         let total_bytes = info.total_size * u64::from(info.block_size);
         match id {
             BlockReg::Capacity => {
-                ro.write_u64(total_bytes / SECTOR_SZ as u64);
+                ro.write_u64(total_bytes / SECTOR_SZ);
             }
             BlockReg::SegMax => {
                 // XXX: Copy the static limit from qemu for now
@@ -83,7 +90,7 @@ impl PciVirtioBlock {
                 // Arbitrarily limit to 1MiB (or the device size, if smaller)
                 let sz = u32::min(
                     MAX_DISCARD_SECTORS,
-                    (info.total_size / SECTOR_SZ as u64) as u32,
+                    (info.total_size / SECTOR_SZ) as u32,
                 );
                 ro.write_u32(if info.supports_discard { sz } else { 0 });
             }
@@ -141,18 +148,18 @@ impl block::DeviceQueue for BlockVq {
         if !chain.read(&mut breq, &mem) {
             todo!("error handling");
         }
-        let off = breq.sector as usize * SECTOR_SZ;
+        // TODO: handle mul overflow
+        let off = breq.sector * SECTOR_SZ;
         let req = match breq.rtype {
             VIRTIO_BLK_T_IN => {
                 // should be (blocksize * 512) + 1 remaining writable byte for status
                 // TODO: actually enforce block size
-                let blocks = (chain.remain_write_bytes() - 1) / SECTOR_SZ;
+                let blocks =
+                    (chain.remain_write_bytes() - 1) as u64 / SECTOR_SZ;
                 let sz = blocks * SECTOR_SZ;
 
-                if let Some(regions) = chain.writable_bufs(sz) {
-                    probes::vioblk_read_enqueue!(|| (
-                        rid, off as u64, sz as u64
-                    ));
+                if let Some(regions) = chain.writable_bufs(sz as usize) {
+                    probes::vioblk_read_enqueue!(|| (rid, off, sz));
                     Ok((
                         block::Request::new_read(off, sz, regions),
                         CompletionToken { rid, chain },
@@ -164,13 +171,11 @@ impl block::DeviceQueue for BlockVq {
             }
             VIRTIO_BLK_T_OUT => {
                 // should be (blocksize * 512) remaining read bytes
-                let blocks = chain.remain_read_bytes() / SECTOR_SZ;
+                let blocks = chain.remain_read_bytes() as u64 / SECTOR_SZ;
                 let sz = blocks * SECTOR_SZ;
 
-                if let Some(regions) = chain.readable_bufs(sz) {
-                    probes::vioblk_write_enqueue!(|| (
-                        rid, off as u64, sz as u64
-                    ));
+                if let Some(regions) = chain.readable_bufs(sz as usize) {
+                    probes::vioblk_write_enqueue!(|| (rid, off, sz));
                     Ok((
                         block::Request::new_write(off, sz, regions),
                         CompletionToken { rid, chain },
@@ -193,11 +198,9 @@ impl block::DeviceQueue for BlockVq {
                 if !chain.read(&mut detail, &mem) {
                     Err(chain)
                 } else {
-                    let off = detail.sector as usize * SECTOR_SZ;
-                    let sz = detail.num_sectors as usize * SECTOR_SZ;
-                    probes::vioblk_discard_enqueue!(|| (
-                        rid, off as u64, sz as u64,
-                    ));
+                    let off = detail.sector * SECTOR_SZ;
+                    let sz = u64::from(detail.num_sectors) * SECTOR_SZ;
+                    probes::vioblk_discard_enqueue!(|| (rid, off, sz));
                     Ok((
                         block::Request::new_discard(off, sz),
                         CompletionToken { rid, chain },

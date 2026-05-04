@@ -271,22 +271,16 @@ impl QueueMinder {
             let devqid = devq_id(self.device_id, self.queue_id);
             match req.op {
                 Operation::Read(off, len) => {
-                    probes::block_begin_read!(|| {
-                        (devqid, id, off as u64, len as u64)
-                    });
+                    probes::block_begin_read!(|| { (devqid, id, off, len) });
                 }
                 Operation::Write(off, len) => {
-                    probes::block_begin_write!(|| {
-                        (devqid, id, off as u64, len as u64)
-                    });
+                    probes::block_begin_write!(|| { (devqid, id, off, len) });
                 }
                 Operation::Flush => {
                     probes::block_begin_flush!(|| { (devqid, id) });
                 }
                 Operation::Discard(off, len) => {
-                    probes::block_begin_discard!(|| {
-                        (devqid, id, off as u64, len as u64)
-                    });
+                    probes::block_begin_discard!(|| { (devqid, id, off, len) });
                 }
             }
             let when_started = Instant::now();
