@@ -92,8 +92,8 @@ oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 
 # Crucible
-crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "ae1da83e66c648574827298f4bc444632bf4d047" }
-crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "ae1da83e66c648574827298f4bc444632bf4d047" }
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "3c1708d86e10f0370807388a1efe092edd99d431" }
+crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "3c1708d86e10f0370807388a1efe092edd99d431" }
 
 # Attestation
 dice-verifier = { git = "https://github.com/oxidecomputer/dice-util", rev = "1d3084b514389847e8e0f5d966d2be4f18d02d32", features = ["sled-agent"] }

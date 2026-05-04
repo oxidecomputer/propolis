@@ -50,8 +50,8 @@ pub mod disk {
     pub use crate::v1::disk::InstanceVCRReplace;
     pub use crate::v1::disk::SnapshotRequestPathParams;
     pub use crate::v1::disk::VCRRequestPathParams;
-    pub use crate::v1::disk::VolumeStatus;
     pub use crate::v1::disk::VolumeStatusPathParams;
+    pub use crate::v5::disk::VolumeStatus;
 }
 
 pub mod instance {
