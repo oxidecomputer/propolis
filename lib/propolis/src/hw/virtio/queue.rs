@@ -1087,8 +1087,9 @@ impl VirtQueues {
 
     pub fn export(&self) -> migrate::VirtQueuesV1 {
         let len = self.len() as u64;
+        let peak = self.peak() as u64;
         let queues = self.queues.iter().map(|q| q.export()).collect();
-        migrate::VirtQueuesV1 { len, queues }
+        migrate::VirtQueuesV1 { len, peak, queues }
     }
 
     pub fn import(
@@ -1099,6 +1100,14 @@ impl VirtQueues {
         for (vq, vq_input) in self.queues.iter().zip(state.queues.iter()) {
             vq.import(vq_input, mode)?;
         }
+        // Avoid mucking with `peak` directly, since peak implies at some point
+        // the device had been `set_len()` for that many queues and later
+        // `set_len()` down to the actual exported count.
+        self.set_len(state.peak as usize).map_err(|len| {
+            MigrateStateError::ImportFailed(format!(
+                "VirtQueues: could not set len to peak: {len}"
+            ))
+        })?;
         self.set_len(state.len as usize).map_err(|len| {
             MigrateStateError::ImportFailed(format!(
                 "VirtQueues: could not set len to {len}"
@@ -1114,6 +1123,7 @@ pub mod migrate {
     #[derive(Deserialize, Serialize)]
     pub struct VirtQueuesV1 {
         pub len: u64,
+        pub peak: u64,
         pub queues: Vec<VirtQueueV1>,
     }
 
