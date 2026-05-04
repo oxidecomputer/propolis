@@ -651,6 +651,7 @@ impl MachineInitializer<'_> {
                         ..Default::default()
                     },
                     nworkers,
+                    self.log.clone(),
                 )
                 .with_context(|| {
                     format!(

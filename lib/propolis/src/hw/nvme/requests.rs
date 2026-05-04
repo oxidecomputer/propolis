@@ -2,12 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use itertools::Itertools;
 use std::sync::Arc;
 use std::time::Instant;
 
 use super::{cmds::NvmCmd, queue::Permit, PciNvme};
 use crate::accessors::MemAccessor;
 use crate::block::{self, Operation, Request};
+use crate::hw::nvme::cmds::ParseErr;
 use crate::hw::nvme::{bits, cmds::Completion, queue::SubQueue};
 
 #[usdt::provider(provider = "propolis")]
@@ -37,6 +39,9 @@ mod probes {
     ) {
     }
     fn nvme_write_complete(devsq_id: u64, cid: u16, res: u8) {}
+
+    fn nvme_discard_enqueue(devsq_id: u64, idx: u16, cid: u16, nr: u16) {}
+    fn nvme_discard_complete(devsq_id: u64, cid: u16, res: u8) {}
 
     fn nvme_flush_enqueue(devsq_id: u64, idx: u16, cid: u16) {}
     fn nvme_flush_complete(devsq_id: u64, cid: u16, res: u8) {}
@@ -142,10 +147,59 @@ impl block::DeviceQueue for NvmeBlockQueue {
                         Request::new_read(off as usize, size as usize, bufs);
                     return Some((req, permit, None));
                 }
+                Ok(NvmCmd::DatasetManagement(cmd)) => {
+                    // We only support the "deallocate" (discard/trim) operation of Dataset
+                    // Management.
+                    if !cmd.is_deallocate() {
+                        permit.complete(
+                            Completion::generic_err(bits::STS_INVAL_FIELD)
+                                .dnr(),
+                        );
+                        continue;
+                    }
+                    probes::nvme_discard_enqueue!(|| (
+                        sq.devq_id(),
+                        idx,
+                        cid,
+                        cmd.nr,
+                    ));
+                    let Ok(ranges): Result<Vec<_>, _> =
+                        cmd.ranges(&mem).try_collect()
+                    else {
+                        // If we couldn't read the ranges, fail the command
+                        permit.complete(
+                            Completion::generic_err(bits::STS_DATA_XFER_ERR)
+                                .dnr(),
+                        );
+                        continue;
+                    };
+                    let Ok(ranges) = ranges
+                        .into_iter()
+                        .map(|r| r.offset_len(params.lba_data_size))
+                        .try_collect()
+                    else {
+                        // If the ranges were invalid (e.g. arithmetic overflow), fail the command
+                        permit.complete(
+                            Completion::generic_err(bits::STS_INVAL_FIELD)
+                                .dnr(),
+                        );
+                        continue;
+                    };
+
+                    let req = Request::new_discard(ranges);
+                    return Some((req, permit, None));
+                }
                 Ok(NvmCmd::Flush) => {
                     probes::nvme_flush_enqueue!(|| (sq.devq_id(), idx, cid));
                     let req = Request::new_flush();
                     return Some((req, permit, None));
+                }
+                Err(ParseErr::ReservedFuse) | Err(ParseErr::Reserved) => {
+                    // For commands that fail parsing due to reserved fields being set,
+                    // complete with an invalid field error
+                    let comp =
+                        Completion::generic_err(bits::STS_INVAL_FIELD).dnr();
+                    permit.complete(comp);
                 }
                 Ok(NvmCmd::Unknown(_)) | Err(_) => {
                     // For any other unrecognized or malformed command,
@@ -179,8 +233,8 @@ impl block::DeviceQueue for NvmeBlockQueue {
             Operation::Flush => {
                 probes::nvme_flush_complete!(|| (devsq_id, cid, resnum));
             }
-            Operation::Discard(..) => {
-                unreachable!("discard not supported in NVMe for now");
+            Operation::Discard => {
+                probes::nvme_discard_complete!(|| (devsq_id, cid, resnum));
             }
         }
 
