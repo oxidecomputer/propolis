@@ -28,6 +28,7 @@ use super::{VirtioDevice, VqChange, VqIntr};
 
 use bit_field::BitField;
 use lazy_static::lazy_static;
+use serde::{Deserialize, Serialize};
 use tokio::io::unix::AsyncFd;
 use tokio::io::Interest;
 use tokio::sync::watch;
@@ -49,6 +50,13 @@ pub const fn max_num_queues() -> usize {
     PROPOLIS_MAX_MQ_PAIRS as usize * 2
 }
 
+/// The index of the control queue when multiqueue ([`VIRTIO_NET_F_MQ`]) has
+/// not been negotiated.
+///
+/// In this case, the driver will behave as though we have allocated only one
+/// Rx/Tx queue pair, followed by the control queue.
+pub const VIRTIO_NO_MQ_CTRL_Q_INDEX: usize = 2;
+
 const ETHERADDRL: usize = 6;
 
 /// The caller of `set_use_pairs` will probably be inlined into a larger
@@ -64,15 +72,16 @@ enum MqSetPairsCause {
 #[usdt::provider(provider = "propolis")]
 mod probes {
     fn virtio_viona_mq_set_use_pairs(cause: u8, npairs: u16) {}
+    fn virtio_viona_cq_request(class: u8, command: u8) {}
 }
 
 /// Types and so forth for supporting the control queue.
 /// Note that these come from the VirtIO spec, section
 /// 5.1.6.2 in VirtIO 1.2.
 pub mod control {
-    use super::ETHERADDRL;
+    use super::MacAddr;
     use std::convert::TryFrom;
-    use zerocopy::FromBytes;
+    use zerocopy::{FromBytes, IntoBytes};
 
     /// The control message header has two data: a u8 representing the "class"
     /// of control message, which describes what the message applies to, and a
@@ -82,8 +91,8 @@ pub mod control {
     #[derive(Clone, Copy, Debug, Default, FromBytes)]
     #[repr(C)]
     pub struct Header {
-        class: u8,
-        command: u8,
+        pub class: u8,
+        pub command: u8,
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -111,7 +120,8 @@ pub mod control {
         }
     }
 
-    #[derive(Clone, Copy, Debug)]
+    #[derive(Clone, Copy, Debug, IntoBytes)]
+    #[repr(u8)]
     pub enum Ack {
         Ok = 0,
         Err = 1,
@@ -128,18 +138,20 @@ pub mod control {
         NoBroadcast = 5,
     }
 
+    /// The payload accompanying an [`RxCmd`].
+    #[derive(Clone, Copy, Debug, Default, FromBytes)]
+    #[repr(C)]
+    pub struct Rx {
+        /// Whether the flag signalled by the command should be enabled (`1`)
+        /// or disabled (`0`).
+        pub set: u8,
+    }
+
     #[derive(Clone, Copy, Debug, strum::FromRepr)]
     #[repr(u8)]
     pub enum MacCmd {
         TableSet = 0,
         AddrSet = 1,
-    }
-
-    #[derive(Clone, Copy, Debug, Default)]
-    #[repr(C)]
-    pub struct Mac {
-        entries: u32,
-        mac: [u8; ETHERADDRL],
     }
 
     #[derive(Clone, Copy, Debug, Default, FromBytes)]
@@ -176,6 +188,53 @@ pub mod control {
     #[repr(u8)]
     pub enum AnnounceCmd {
         Ack = 0,
+    }
+
+    /// Read a MAC filter table from a control queue.
+    ///
+    /// These are encoded as a `u32` followed by that number of
+    /// 6-byte MAC addresses.
+    pub(super) fn read_mac_list(
+        chain: &mut super::Chain,
+        mem: &super::MemCtx,
+    ) -> Result<Box<[MacAddr]>, ()> {
+        let mut entry_count = 0u32;
+        if !chain.read(&mut entry_count, mem) {
+            return Err(());
+        }
+
+        if entry_count == 0 {
+            return Ok(Box::new([]));
+        }
+
+        let mut space =
+            vec![MacAddr::default(); entry_count as usize].into_boxed_slice();
+        for i in 0..space.len() {
+            if !chain.read(&mut space[i], mem) {
+                return Err(());
+            }
+        }
+
+        Ok(space)
+    }
+}
+
+pub mod migrate {
+    use super::*;
+    use crate::migrate::*;
+
+    #[derive(Deserialize, Serialize)]
+    pub struct VionaStateV1 {
+        pub promisc: PromiscLevel,
+        pub filter: u8,
+        pub unicast_mac_filters: Vec<MacAddr>,
+        pub multicast_mac_filters: Vec<MacAddr>,
+    }
+
+    impl Schema<'_> for VionaStateV1 {
+        fn id() -> SchemaId {
+            ("pci-virtio-viona", 1)
+        }
     }
 }
 
@@ -218,19 +277,79 @@ enum VRingState {
     Fatal,
 }
 
+bitflags! {
+    /// Packet receive filters requested by a virtio NIC driver.
+    #[derive(Copy, Clone, Debug)]
+    struct FilterState: u8 {
+        /// The driver has requested that we enter promiscuous mode, and filter no
+        /// packets based on MAC address. This supersedes all other active flags.
+        ///
+        /// Requires [`VIRTIO_NET_F_CTRL_RX`].
+        const PROMISCUOUS = 1 << 0;
+        /// The driver has requested that we allow it to receive all multicast
+        /// packets, regardless of filter table state.
+        ///
+        /// Requires [`VIRTIO_NET_F_CTRL_RX`].
+        const ALL_MULTICAST = 1 << 1;
+        /// The driver has requested that we allow it to receive all unicast
+        /// packets, regardless of filter table state.
+        ///
+        /// Requires [`VIRTIO_NET_F_CTRL_RX_EXTRA`].
+        const ALL_UNICAST = 1 << 2;
+        /// The driver has requested that we drop all multicast packets, except from
+        /// broadcast frames. This supersedes [`Self::ALL_MULTICAST`].
+        ///
+        /// Requires [`VIRTIO_NET_F_CTRL_RX_EXTRA`].
+        const NO_MULTICAST = 1 << 3;
+        /// The driver has requested that we drop all unicast packets, except from
+        /// broadcast frames. This supersedes [`Self::ALL_UNICAST`].
+        ///
+        /// Requires [`VIRTIO_NET_F_CTRL_RX_EXTRA`].
+        const NO_UNICAST = 1 << 4;
+        /// The driver has requested that we drop all broadcast packets.
+        /// This supersedes [`Self::ALL_MULTICAST`].
+        ///
+        /// Requires [`VIRTIO_NET_F_CTRL_RX_EXTRA`].
+        const NO_BROADCAST = 1 << 5;
+
+        /// All commands exposed by [`VIRTIO_NET_F_CTRL_RX`].
+        const RX_CMDS = Self::PROMISCUOUS.bits() | Self::ALL_MULTICAST.bits();
+
+        /// All commands exposed by [`VIRTIO_NET_F_CTRL_RX_EXTRA`].
+        const RX_EXTRA_CMDS = Self::ALL_UNICAST.bits()
+            | Self::NO_MULTICAST.bits()
+            | Self::NO_UNICAST.bits()
+            | Self::NO_BROADCAST.bits();
+    }
+}
+
 struct Inner {
     poller: Option<PollerHdl>,
     iop_state: Option<NonZeroU16>,
     notify_mmio_addr: Option<u64>,
     vring_state: Vec<VRingState>,
+
+    promisc: PromiscLevel,
+    filter: FilterState,
+    unicast_mac_filters: Box<[MacAddr]>,
+    multicast_mac_filters: Box<[MacAddr]>,
 }
 impl Inner {
-    fn new(max_queues: usize) -> Self {
+    fn new(max_queues: usize, promisc: PromiscLevel) -> Self {
         let vring_state = vec![Default::default(); max_queues];
         let poller = None;
         let iop_state = None;
         let notify_mmio_addr = None;
-        Self { poller, iop_state, notify_mmio_addr, vring_state }
+        Self {
+            poller,
+            iop_state,
+            notify_mmio_addr,
+            vring_state,
+            promisc,
+            filter: FilterState::empty(),
+            unicast_mac_filters: Box::new([]),
+            multicast_mac_filters: Box::new([]),
+        }
     }
 
     /// Get the `VRingState` for a given VirtQueue
@@ -298,6 +417,77 @@ impl Default for DeviceParams {
     }
 }
 
+/// Relaxed levels of packet filtering offered by viona.
+#[derive(
+    Copy, Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize,
+)]
+pub enum PromiscLevel {
+    /// The device should receive only packets for its installed MAC
+    /// filters.
+    ///
+    /// Today this allows solely [`PciVirtioViona::mac_addr`].
+    #[default]
+    None,
+    /// The device should receive all multicast traffic in addition
+    /// to its registered unicast filters.
+    AllMulti,
+    /// The device should receive all packets.
+    All,
+    #[cfg(feature = "falcon")]
+    /// The device should receive all packets, including VLAN tags.
+    ///
+    /// This suggests a bug in viona: when `VIRTIO_NET_F_CTRL_VLAN` is
+    /// not negotiated, the device _should_ accept all VLAN-tagged frames.
+    ///
+    /// This mechanism is only present on the branch
+    /// oxidecomputer/illumos-gate/viona_vlans. If the OS supports this,
+    /// then we must remain in this mode if set to ensure hosts receive
+    /// the correct traffic.
+    AllVlan,
+}
+
+impl From<PromiscLevel> for usize {
+    fn from(value: PromiscLevel) -> Self {
+        (match value {
+            PromiscLevel::None => viona_api::VIONA_PROMISC_NONE,
+            PromiscLevel::AllMulti => viona_api::VIONA_PROMISC_MULTI,
+            PromiscLevel::All => viona_api::VIONA_PROMISC_ALL,
+            #[cfg(feature = "falcon")]
+            PromiscLevel::AllVlan => viona_api::VIONA_PROMISC_ALL_VLAN,
+        }) as usize
+    }
+}
+
+/// A MAC address.
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    FromBytes,
+    IntoBytes,
+    Immutable,
+    Serialize,
+    Deserialize,
+)]
+pub struct MacAddr([u8; ETHERADDRL]);
+
+impl From<[u8; ETHERADDRL]> for MacAddr {
+    fn from(value: [u8; ETHERADDRL]) -> Self {
+        Self(value)
+    }
+}
+
+impl MacAddr {
+    pub const fn is_unicast(&self) -> bool {
+        (self.0[0] & 0b1) == 0
+    }
+}
+
 /// Represents a connection to the kernel's Viona (VirtIO Network Adapter)
 /// driver.
 pub struct PciVirtioViona {
@@ -306,7 +496,7 @@ pub struct PciVirtioViona {
     indicator: lifecycle::Indicator,
 
     dev_features: u64,
-    mac_addr: [u8; ETHERADDRL],
+    mac_addr: MacAddr,
     mtu: Option<u16>,
     hdl: VionaHdl,
     inner: Mutex<Inner>,
@@ -340,13 +530,23 @@ impl PciVirtioViona {
         let info = dlhdl.query_link(vnic_name)?;
         let hdl = VionaHdl::new(info.link_id, vm.fd())?;
 
+        // Viona is configured in all-multicast mode by default. We'll downgrade
+        // this later if the guest supports `VIRTIO_NET_F_CTRL_RX`.
+        #[cfg(not(feature = "falcon"))]
+        let promisc_level = PromiscLevel::AllMulti;
         #[cfg(feature = "falcon")]
-        if let Err(e) = hdl.set_promisc(viona_api::VIONA_PROMISC_ALL_VLAN) {
-            // Until/unless this support is integrated into stlouis/illumos,
-            // this is an expected failure.   This is needed to use vlans,
-            // but shouldn't affect any other use case.
-            eprintln!("failed to enable promisc mode on {vnic_name}: {e:?}");
-        }
+        let promisc_level = match hdl.set_promisc(PromiscLevel::AllVlan) {
+            Ok(()) => PromiscLevel::AllVlan,
+            Err(e) => {
+                // Until/unless this support is integrated into stlouis/illumos,
+                // this is an expected failure.   This is needed to use vlans,
+                // but shouldn't affect any other use case.
+                eprintln!(
+                    "failed to enable promisc mode on {vnic_name}: {e:?}"
+                );
+                PromiscLevel::AllMulti
+            }
+        };
 
         if let Some(vp) = viona_params {
             vp.set(&hdl)?;
@@ -372,13 +572,14 @@ impl PciVirtioViona {
             .chain([ctl_queue_size])
             .collect::<Vec<VqSize>>();
         // The vector is sized with the maximum number of rings/queues, but
-        // until the driver negotiates multiqueue, we only use the first two.
+        // until the driver negotiates multiqueue, we only use the first two
+        // for the datapath. The third will serve as the control queue if
+        // multiqueue is not negotiated, even if it is a little large for that
+        // purpose.
         let queues = VirtQueues::new_with_len(3, &queue_sizes);
-        if let Some(ctlq) = queues.get(2) {
-            ctlq.set_control();
-        }
         let nqueues = queues.max_capacity();
         hdl.set_pairs(1).unwrap();
+
         // Add one for config space.
         let msix_count = Some(1 + nqueues as u16);
         let (virtio_state, pci_state) = PciVirtioState::new(
@@ -390,17 +591,16 @@ impl PciVirtioViona {
         );
 
         let dev_features = hdl.get_avail_features()?;
-        let mut this = PciVirtioViona {
+        let this = PciVirtioViona {
             virtio_state,
             pci_state,
             indicator: Default::default(),
             dev_features,
-            mac_addr: [0; ETHERADDRL],
+            mac_addr: info.mac_addr.into(),
             mtu: info.mtu,
             hdl,
-            inner: Mutex::new(Inner::new(nqueues)),
+            inner: Mutex::new(Inner::new(nqueues, promisc_level)),
         };
-        this.mac_addr.copy_from_slice(&info.mac_addr);
         let this = Arc::new(this);
 
         // Spawn the interrupt poller
@@ -429,17 +629,13 @@ impl PciVirtioViona {
         }
     }
 
-    fn is_ctl_queue(&self, vq: &VirtQueue) -> bool {
-        usize::from(vq.id) + 1 == self.virtio_state.queues.len()
-    }
-
     fn ctl_queue_notify(&self, vq: &VirtQueue) {
         if let Some(mem) = self.pci_state.acc_mem.access() {
             while !vq.avail_is_empty(&mem) {
                 let mut chain = Chain::with_capacity(4);
                 let intrs_en = vq.disable_intr(&mem);
                 while let Some((_idx, _len)) = vq.pop_avail(&mut chain, &mem) {
-                    let res = match self.ctl_msg(vq, &mut chain, &mem) {
+                    let res = match self.ctl_msg(&mut chain, &mem) {
                         Ok(_) => control::Ack::Ok,
                         Err(_) => control::Ack::Err,
                     } as u8;
@@ -453,46 +649,70 @@ impl PciVirtioViona {
         }
     }
 
-    fn ctl_msg(
-        &self,
-        vq: &VirtQueue,
-        chain: &mut Chain,
-        mem: &MemCtx,
-    ) -> Result<(), ()> {
+    fn ctl_msg(&self, chain: &mut Chain, mem: &MemCtx) -> Result<(), ()> {
         let mut header = control::Header::default();
         if !chain.read(&mut header, &mem) {
             return Err(());
         }
+        probes::virtio_viona_cq_request!(|| (header.class, header.command));
+
         use control::Command;
         match Command::try_from(header).map_err(|_| ())? {
-            Command::Rx(cmd) => self.ctl_rx(cmd, vq, chain, mem),
-            Command::Mac(cmd) => self.ctl_mac(cmd, vq, chain, mem),
-            Command::Vlan(_) => Ok(()),
-            Command::Announce(_) => Ok(()),
-            Command::Mq(cmd) => self.ctl_mq(cmd, vq, chain, mem),
+            Command::Rx(cmd) => self.ctl_rx(cmd, chain, mem),
+            Command::Mac(cmd) => self.ctl_mac(cmd, chain, mem),
+            // We do not yet advertise `VIRTIO_NET_F_CTRL_VLAN`.
+            Command::Vlan(_) => Err(()),
+            // We do not yet advertise `VIRTIO_NET_F_GUEST_ANNOUNCE`
+            Command::Announce(_) => Err(()),
+            Command::Mq(cmd) => self.ctl_mq(cmd, chain, mem),
         }
     }
 
     fn ctl_rx(
         &self,
         cmd: control::RxCmd,
-        vq: &VirtQueue,
         chain: &mut Chain,
         mem: &MemCtx,
     ) -> Result<(), ()> {
-        let _todo = (cmd, vq, chain, mem);
-        Err(())
+        use control::RxCmd;
+        let filter = match cmd {
+            RxCmd::Promisc => FilterState::PROMISCUOUS,
+            RxCmd::AllMulticast => FilterState::ALL_MULTICAST,
+            RxCmd::AllUnicast => FilterState::ALL_UNICAST,
+            RxCmd::NoMulticast => FilterState::NO_MULTICAST,
+            RxCmd::NoUnicast => FilterState::NO_UNICAST,
+            RxCmd::NoBroadcast => FilterState::NO_BROADCAST,
+        };
+
+        let mut msg = control::Rx::default();
+        if !chain.read(&mut msg, &mem) {
+            return Err(());
+        }
+        let active = match msg.set {
+            0 => false,
+            1 => true,
+            _ => return Err(()),
+        };
+        self.set_filter_state(filter, active)
     }
 
     fn ctl_mac(
         &self,
         cmd: control::MacCmd,
-        vq: &VirtQueue,
         chain: &mut Chain,
         mem: &MemCtx,
     ) -> Result<(), ()> {
-        let _todo = (cmd, vq, chain, mem);
-        Err(())
+        use control::MacCmd;
+        match cmd {
+            MacCmd::TableSet => {
+                let unicast = control::read_mac_list(chain, mem)?;
+                let multicast = control::read_mac_list(chain, mem)?;
+
+                self.set_mac_filters(unicast, multicast)
+            }
+            // We do not advertise `VIRTIO_NET_F_CTRL_MAC_ADDR`
+            MacCmd::AddrSet => return Err(()),
+        }
     }
 
     fn set_use_pairs(&self, requested: u16) -> Result<(), ()> {
@@ -514,18 +734,17 @@ impl PciVirtioViona {
     fn ctl_mq(
         &self,
         cmd: control::MqCmd,
-        vq: &VirtQueue,
         chain: &mut Chain,
         mem: &MemCtx,
     ) -> Result<(), ()> {
         use control::MqCmd;
-        let _todo = vq;
         match cmd {
             MqCmd::SetPairs => {
                 let mut msg = control::Mq::default();
                 if !chain.read(&mut msg, &mem) {
                     return Err(());
                 }
+
                 let npairs = msg.npairs;
                 probes::virtio_viona_mq_set_use_pairs!(|| (
                     MqSetPairsCause::Commanded as u8,
@@ -540,7 +759,7 @@ impl PciVirtioViona {
 
     fn net_cfg_read(&self, id: &NetReg, ro: &mut ReadOp) {
         match id {
-            NetReg::Mac => ro.write_bytes(&self.mac_addr),
+            NetReg::Mac => ro.write_bytes(&self.mac_addr.0),
             NetReg::Status => {
                 // Always report link up
                 ro.write_u16(VIRTIO_NET_S_LINK_UP);
@@ -712,13 +931,135 @@ impl PciVirtioViona {
             let _ = self.hdl.set_notify_mmio_addr(state.notify_mmio_addr);
         }
     }
+
+    /// Set or unset unicast/multicast class-wide filters on behalf of a driver.
+    fn set_filter_state(
+        &self,
+        filter: FilterState,
+        active: bool,
+    ) -> Result<(), ()> {
+        if (self.virtio_state.negotiated_features() & VIRTIO_NET_F_CTRL_RX) == 0
+            && filter.intersects(FilterState::RX_CMDS)
+        {
+            return Err(());
+        }
+
+        if filter.intersects(FilterState::RX_EXTRA_CMDS) {
+            // We cannot express any of the extra filters within viona yet.
+            return Err(());
+        }
+
+        let mut state = self.inner.lock().unwrap();
+        let old_filter = state.filter;
+        state.filter.set(filter, active);
+
+        match self.set_promisc(self.needed_promisc(&state), &mut state) {
+            Ok(()) => Ok(()),
+            Err(()) => {
+                state.filter = old_filter;
+                Err(())
+            }
+        }
+    }
+
+    /// Replace the requested set of explicit MAC address filters on a device
+    /// with a new table provided by the driver.
+    fn set_mac_filters(
+        &self,
+        mut unicast: Box<[MacAddr]>,
+        mut multicast: Box<[MacAddr]>,
+    ) -> Result<(), ()> {
+        if (self.virtio_state.negotiated_features() & VIRTIO_NET_F_CTRL_RX) == 0
+        {
+            return Err(());
+        }
+
+        if unicast.iter().any(|v| !v.is_unicast())
+            || multicast.iter().any(|v| v.is_unicast())
+        {
+            return Err(());
+        }
+
+        let mut state = self.inner.lock().unwrap();
+
+        std::mem::swap(&mut unicast, &mut state.unicast_mac_filters);
+        std::mem::swap(&mut multicast, &mut state.multicast_mac_filters);
+
+        match self.set_promisc(self.needed_promisc(&state), &mut state) {
+            Ok(()) => Ok(()),
+            Err(()) => {
+                state.unicast_mac_filters = unicast;
+                state.multicast_mac_filters = multicast;
+                Err(())
+            }
+        }
+    }
+
+    /// Update the promisc level of the device.
+    fn set_promisc(
+        &self,
+        level: PromiscLevel,
+        state: &mut Inner,
+    ) -> Result<(), ()> {
+        if level == state.promisc {
+            return Ok(());
+        }
+
+        match self.hdl.set_promisc(level) {
+            Ok(_) => {
+                state.promisc = level;
+                Ok(())
+            }
+            Err(_) => Err(()),
+        }
+    }
+
+    /// Compute whether the driver requires us to move into promiscuous mode
+    /// based on its MAC filters and explicit filter mode.
+    fn needed_promisc(&self, state: &Inner) -> PromiscLevel {
+        // The VLAN tag workaround, if requested, always wins and cannot
+        // be downgraded.
+        #[cfg(feature = "falcon")]
+        if state.promisc == PromiscLevel::AllVlan {
+            return PromiscLevel::AllVlan;
+        }
+
+        // We don't have an ioctl yet for viona to explicitly install a set of
+        // filters. For now, we need to apply some level of promiscuous mode
+        // to give the guest what it asks for.
+        let need_mcast = state.filter.contains(FilterState::ALL_MULTICAST)
+            || !state.multicast_mac_filters.is_empty();
+
+        // Don't inflict promiscuous mode on drivers which request only their
+        // own MAC address.
+        let filter_is_self = state
+            .unicast_mac_filters
+            .get(0)
+            .map(|mac| mac == &self.mac_addr)
+            .unwrap_or_default();
+        let need_promisc = state.filter.contains(FilterState::PROMISCUOUS)
+            || !(filter_is_self || state.unicast_mac_filters.is_empty());
+
+        if need_promisc {
+            PromiscLevel::All
+        } else if need_mcast {
+            PromiscLevel::AllMulti
+        } else {
+            PromiscLevel::None
+        }
+    }
 }
 impl VirtioDevice for PciVirtioViona {
     fn rw_dev_config(&self, mut rwo: RWOp) {
         NET_DEV_REGS.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => self.net_cfg_read(id, ro),
             RWOp::Write(_) => {
-                //ignore writes
+                // Ignore writes.
+                //
+                // Technically while we are in either `Mode::Transitional`
+                // or `Mode::Legacy` the driver may write to `NetReg::Mac`
+                // in lieu of sending a `MacCmd::AddrSet`. We don't support
+                // changing the MAC address today.
             }
         });
     }
@@ -730,6 +1071,7 @@ impl VirtioDevice for PciVirtioViona {
         let mut feat = VIRTIO_NET_F_MAC
             | VIRTIO_NET_F_STATUS
             | VIRTIO_NET_F_CTRL_VQ
+            | VIRTIO_NET_F_CTRL_RX
             | VIRTIO_NET_F_MQ;
         // We drop the "VIRTIO_NET_F_MTU" flag from feat if we are unable to
         // query it. This can happen when executing within a non-global Zone.
@@ -745,19 +1087,47 @@ impl VirtioDevice for PciVirtioViona {
 
     fn set_features(&self, feat: u64) -> Result<(), ()> {
         self.hdl.set_features(feat).map_err(|_| ())?;
-        if (feat & VIRTIO_NET_F_MQ) != 0 {
+
+        // Any remaining setup is for control-queue based features.
+        if (feat & VIRTIO_NET_F_CTRL_VQ) == 0 {
+            return Ok(());
+        }
+
+        if self.virtio_state.queues.max_capacity() < 3 {
+            // Since we're advertising control queue support, we need
+            // one Rx, Tx, and CtlQ at the minimum.
+            return Err(());
+        }
+
+        let ctl_q_idx = if (feat & VIRTIO_NET_F_MQ) != 0 {
             self.hdl.set_pairs(PROPOLIS_MAX_MQ_PAIRS).map_err(|_| ())?;
             probes::virtio_viona_mq_set_use_pairs!(|| (
                 MqSetPairsCause::MqEnabled as u8,
                 PROPOLIS_MAX_MQ_PAIRS
             ));
             self.set_use_pairs(PROPOLIS_MAX_MQ_PAIRS)?;
+            self.virtio_state.queues.max_capacity() - 1
+        } else {
+            VIRTIO_NO_MQ_CTRL_Q_INDEX
+        };
+
+        ctl_q_idx
+            .try_into()
+            .ok()
+            .and_then(|i| self.virtio_state.queues.get(i))
+            .map(|v| v.set_control())
+            .ok_or_else(|| ())?;
+
+        if (feat & VIRTIO_NET_F_CTRL_RX) != 0 {
+            let mut state = self.inner.lock().unwrap();
+            self.set_promisc(PromiscLevel::None, &mut state)?;
         }
+
         Ok(())
     }
 
     fn queue_notify(&self, vq: &VirtQueue) {
-        if self.is_ctl_queue(vq) {
+        if vq.is_control() {
             self.ctl_queue_notify(vq);
             return;
         }
@@ -849,6 +1219,13 @@ impl Lifecycle for PciVirtioViona {
         self.set_use_pairs(1).expect("can set viona back to one queue pair");
         self.hdl.set_pairs(1).expect("can set viona back to one queue pair");
         self.virtio_state.queues.reset_peak();
+
+        let mut state = self.inner.lock().unwrap();
+        state.unicast_mac_filters = Box::new([]);
+        state.multicast_mac_filters = Box::new([]);
+        if let Err(_) = self.set_promisc(PromiscLevel::AllMulti, &mut state) {
+            eprintln!("failed to reset viona promiscuous state")
+        }
     }
     fn start(&self) -> anyhow::Result<()> {
         self.run();
@@ -921,7 +1298,20 @@ impl MigrateMulti for PciVirtioViona {
         output: &mut PayloadOutputs,
         ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        <dyn PciVirtio>::export(self, output, ctx)
+        <dyn PciVirtio>::export(self, output, ctx)?;
+
+        let viona_state = {
+            let state = self.inner.lock().unwrap();
+
+            migrate::VionaStateV1 {
+                promisc: state.promisc,
+                filter: state.filter.bits(),
+                unicast_mac_filters: state.unicast_mac_filters.to_vec(),
+                multicast_mac_filters: state.multicast_mac_filters.to_vec(),
+            }
+        };
+
+        output.push(viona_state.into())
     }
 
     fn import(
@@ -938,7 +1328,18 @@ impl MigrateMulti for PciVirtioViona {
             ))
         })?;
 
-        Ok(())
+        let input: migrate::VionaStateV1 = offer.take()?;
+
+        let mut state = self.inner.lock().unwrap();
+        state.filter = FilterState::from_bits_retain(input.filter);
+        state.unicast_mac_filters = input.unicast_mac_filters.into();
+        state.unicast_mac_filters = input.multicast_mac_filters.into();
+        self.set_promisc(input.promisc, &mut state).map_err(|_| {
+            MigrateStateError::ImportFailed(format!(
+                "Could not move device promisc level to {:?}.",
+                input.promisc
+            ))
+        })
     }
 }
 
@@ -1211,11 +1612,9 @@ impl VionaHdl {
         Ok(())
     }
 
-    ///
     /// Set the desired promiscuity level on this interface.
-    #[cfg(feature = "falcon")]
-    fn set_promisc(&self, p: i32) -> io::Result<()> {
-        self.0.ioctl_usize(viona_api::VNA_IOC_SET_PROMISC, p as usize)?;
+    fn set_promisc(&self, p: PromiscLevel) -> io::Result<()> {
+        self.0.ioctl_usize(viona_api::VNA_IOC_SET_PROMISC, usize::from(p))?;
         Ok(())
     }
 }
@@ -1422,6 +1821,7 @@ pub(crate) mod bits {
     pub const VIRTIO_NET_CFG_SIZE: usize = 6 + 2 + 2 + 2 + 4 + 1 + 1 + 2 + 4;
 }
 use bits::*;
+use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 /// Check that available viona API matches expectations of propolis crate
 pub(crate) fn check_api_version() -> Result<(), crate::api_version::Error> {
