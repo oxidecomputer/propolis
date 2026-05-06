@@ -945,7 +945,7 @@ impl MigrateMulti for PciVirtioViona {
         // Queue count is a NonZeroU16; hence `get` and -1 will not underflow.
         let io_queues = self.virtio_state.queues.count().get() - 1;
         let pairs = io_queues / 2;
-        if io_queues % 2 != 0 {
+        if !io_queues.is_multiple_of(2) {
             return Err(MigrateStateError::ImportFailed(format!(
                 "source IO queue count was not even: {io_queues}"
             )));
