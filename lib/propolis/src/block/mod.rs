@@ -35,8 +35,8 @@ pub use attachment::{
 };
 pub use minder::{DeviceQueue, DeviceRequest};
 
-pub type ByteOffset = usize;
-pub type ByteLen = usize;
+pub type ByteOffset = u64;
+pub type ByteLen = u64;
 
 /// When `block_size` is not specified in [BackendOpts], and the backend itself
 /// is not choosing a block size, a default of 512B is used.

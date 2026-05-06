@@ -94,7 +94,7 @@ impl SharedState {
                 let nbytes = maps
                     .preadv(self.fp.as_raw_fd(), off as i64)
                     .map_err(|_| "io error")?;
-                if nbytes != len {
+                if nbytes as u64 != len {
                     return Err("bad read length");
                 }
             }
@@ -104,7 +104,7 @@ impl SharedState {
                 let nbytes = maps
                     .pwritev(self.fp.as_raw_fd(), off as i64)
                     .map_err(|_| "io error")?;
-                if nbytes != len {
+                if nbytes as u64 != len {
                     return Err("bad write length");
                 }
             }
@@ -115,10 +115,9 @@ impl SharedState {
             }
             block::Operation::Discard(off, len) => {
                 if let Some(mech) = self.discard_mech {
-                    dkioc::do_discard(&self.fp, mech, off as u64, len as u64)
-                        .map_err(|_| {
-                        "io error while attempting to free block(s)"
-                    })?;
+                    dkioc::do_discard(&self.fp, mech, off, len).map_err(
+                        |_| "io error while attempting to free block(s)",
+                    )?;
                 } else {
                     unreachable!("handled above in processing_loop()");
                 }

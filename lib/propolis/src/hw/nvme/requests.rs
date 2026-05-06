@@ -113,8 +113,7 @@ impl block::DeviceQueue for NvmeBlockQueue {
                     ));
 
                     let bufs = cmd.data(size, &mem).collect();
-                    let req =
-                        Request::new_write(off as usize, size as usize, bufs);
+                    let req = Request::new_write(off, size, bufs);
                     return Some((req, permit, None));
                 }
                 Ok(NvmCmd::Read(cmd)) => {
@@ -138,8 +137,7 @@ impl block::DeviceQueue for NvmeBlockQueue {
                     ));
 
                     let bufs = cmd.data(size, &mem).collect();
-                    let req =
-                        Request::new_read(off as usize, size as usize, bufs);
+                    let req = Request::new_read(off, size, bufs);
                     return Some((req, permit, None));
                 }
                 Ok(NvmCmd::Flush) => {

@@ -83,7 +83,7 @@ impl WorkerState {
         readbuf: &mut Buffer,
         mem: &MemCtx,
     ) -> Result<(), Error> {
-        let block_size = self.info.block_size as usize;
+        let block_size = self.info.block_size as u64;
 
         match req.op {
             block::Operation::Read(off, len) => {
@@ -95,7 +95,7 @@ impl WorkerState {
 
                 // Perform one large read from crucible, and write from data into
                 // mappings
-                readbuf.reset(len_blocks, block_size);
+                readbuf.reset(len_blocks as usize, block_size as usize);
                 let _ = block.read(off_blocks, readbuf).await?;
 
                 let mut nwritten = 0;
@@ -105,8 +105,8 @@ impl WorkerState {
                     )?;
                 }
 
-                if nwritten != len {
-                    return Err(Error::CopyError(nwritten, len));
+                if nwritten as u64 != len {
+                    return Err(Error::CopyError(nwritten as u64, len));
                 }
             }
             block::Operation::Write(off, len) => {
@@ -121,7 +121,7 @@ impl WorkerState {
                 // to crucible
                 let maps =
                     req.mappings(mem).ok_or_else(|| Error::BadGuestRegion)?;
-                let mut data = crucible::BytesMut::with_capacity(len);
+                let mut data = crucible::BytesMut::with_capacity(len as usize);
                 let mut nread = 0;
                 for mapping in maps {
                     let n = mapping.read_bytes_uninit(
@@ -134,8 +134,8 @@ impl WorkerState {
                     }
                     nread += n;
                 }
-                if nread != len {
-                    return Err(Error::CopyError(nread, len));
+                if nread as u64 != len {
+                    return Err(Error::CopyError(nread as u64, len));
                 }
 
                 let _ = block.write(off_blocks, data).await?;
@@ -411,7 +411,7 @@ pub enum Error {
     BlocksizeMismatch,
 
     #[error("copied length {0} did not match expectation {1}")]
-    CopyError(usize, usize),
+    CopyError(u64, u64),
 
     #[error("IO Error")]
     Io(#[from] io::Error),
@@ -431,15 +431,15 @@ impl From<Error> for block::Result {
 
 /// Calculate offset (in crucible::Block form) and length in blocksize
 fn block_offset_count(
-    off_bytes: usize,
-    len_bytes: usize,
-    block_size: usize,
-) -> Result<(crucible::BlockIndex, usize), Error> {
+    off_bytes: u64,
+    len_bytes: u64,
+    block_size: u64,
+) -> Result<(crucible::BlockIndex, u64), Error> {
     if off_bytes.is_multiple_of(block_size)
         && len_bytes.is_multiple_of(block_size)
     {
         Ok((
-            crucible::BlockIndex((off_bytes / block_size) as u64),
+            crucible::BlockIndex(off_bytes / block_size),
             len_bytes / block_size,
         ))
     } else {

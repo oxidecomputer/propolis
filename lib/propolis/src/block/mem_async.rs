@@ -66,7 +66,7 @@ impl SharedState {
                         unsafe {
                             let read_ptr = map.raw_writable()?;
                             let len = map.len();
-                            seg.read(off + nread, read_ptr, len)
+                            seg.read(off as usize + nread, read_ptr, len)
                                 .then_some(nread + len)
                         }
                     })
@@ -80,7 +80,7 @@ impl SharedState {
                         unsafe {
                             let write_ptr = map.raw_readable()?;
                             let len = map.len();
-                            seg.write(off + nwritten, write_ptr, len)
+                            seg.write(off as usize + nwritten, write_ptr, len)
                                 .then_some(nwritten + len)
                         }
                     })
