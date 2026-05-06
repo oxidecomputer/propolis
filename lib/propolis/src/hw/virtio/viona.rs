@@ -59,6 +59,7 @@ enum MqSetPairsCause {
     Reset = 0,
     MqEnabled = 1,
     Commanded = 2,
+    Import = 3,
 }
 
 #[usdt::provider(provider = "propolis")]
@@ -72,13 +73,14 @@ mod probes {
 pub mod control {
     use super::ETHERADDRL;
     use std::convert::TryFrom;
+    use zerocopy::FromBytes;
 
     /// The control message header has two data: a u8 representing the "class"
     /// of control message, which describes what the message applies to, and a
     /// "command", which describes what action we should take in response to the
     /// command. So for example, class Mq and command Set means to set the
     /// number of multiqueue queue pairs.
-    #[derive(Clone, Copy, Debug, Default)]
+    #[derive(Clone, Copy, Debug, Default, FromBytes)]
     #[repr(C)]
     pub struct Header {
         class: u8,
@@ -141,7 +143,7 @@ pub mod control {
         mac: [u8; ETHERADDRL],
     }
 
-    #[derive(Clone, Copy, Debug, Default)]
+    #[derive(Clone, Copy, Debug, Default, FromBytes)]
     #[repr(C)]
     pub struct Mq {
         pub npairs: u16,
@@ -668,7 +670,15 @@ impl PciVirtioViona {
     fn poller_start(&self) {
         let mut inner = self.inner.lock().unwrap();
         let poller = inner.poller.as_mut().expect("poller should be spawned");
+        let wait_state = poller.state.clone();
         let _ = poller.sender.send(TargetState::Run);
+        drop(inner);
+        // wait_running() will wait on a condition variable, but the signaller
+        // of that condition variable is the Poller task that we've also spawned
+        // on this runtime. `block_in_place` to avoid blocking this runtime
+        // thread and help make sure the Poller we've asked to start actually
+        // can.
+        tokio::task::block_in_place(|| wait_state.wait_running());
     }
     fn poller_stop(&self, should_exit: bool) {
         let mut inner = self.inner.lock().unwrap();
@@ -683,7 +693,8 @@ impl PciVirtioViona {
             poller.state.clone()
         };
         drop(inner);
-        wait_state.wait_stopped();
+        // Same general problem as `wait_running` in `poller_start` above.
+        tokio::task::block_in_place(|| wait_state.wait_stopped());
     }
 
     // Transition the emulation to a "running" state, either at initial start-up
@@ -928,6 +939,27 @@ impl MigrateMulti for PciVirtioViona {
             ))
         })?;
 
+        if (feat & VIRTIO_NET_F_MQ) != 0 {
+            self.hdl.set_pairs(PROPOLIS_MAX_MQ_PAIRS).unwrap();
+        }
+        // Queue count is a NonZeroU16; hence `get` and -1 will not underflow.
+        let io_queues = self.virtio_state.queues.count().get() - 1;
+        let pairs = io_queues / 2;
+        if !io_queues.is_multiple_of(2) {
+            return Err(MigrateStateError::ImportFailed(format!(
+                "source IO queue count was not even: {io_queues}"
+            )));
+        }
+        probes::virtio_viona_mq_set_use_pairs!(|| (
+            MqSetPairsCause::Import as u8,
+            pairs
+        ));
+        self.hdl.set_usepairs(pairs).map_err(|e| {
+            MigrateStateError::ImportFailed(format!(
+                "error while restoring use pairs ({pairs}): {e:?}"
+            ))
+        })?;
+
         Ok(())
     }
 }
@@ -990,13 +1022,16 @@ impl From<&VirtQueue> for viona_api::vioc_ring_state {
         let desc_addr = state.mapping.desc_addr;
         let avail_addr = state.mapping.avail_addr;
         let used_addr = state.mapping.used_addr;
+        let avail_idx = state.avail_idx;
+        let used_idx = state.used_idx;
         viona_api::vioc_ring_state {
             vrs_index: id,
             vrs_qsize: size,
             vrs_qaddr_desc: desc_addr,
             vrs_qaddr_avail: avail_addr,
             vrs_qaddr_used: used_addr,
-            ..Default::default()
+            vrs_used_idx: used_idx,
+            vrs_avail_idx: avail_idx,
         }
     }
 }
@@ -1247,6 +1282,10 @@ impl PollerState {
         let guard = self.running.lock().unwrap();
         let _res = self.cv.wait_while(guard, |g| *g).unwrap();
     }
+    fn wait_running(&self) {
+        let guard = self.running.lock().unwrap();
+        let _res = self.cv.wait_while(guard, |g| !*g).unwrap();
+    }
     fn set_stopped(&self) {
         let mut guard = self.running.lock().unwrap();
         if *guard {
@@ -1256,7 +1295,10 @@ impl PollerState {
     }
     fn set_running(&self) {
         let mut guard = self.running.lock().unwrap();
-        *guard = true;
+        if !*guard {
+            *guard = true;
+            self.cv.notify_all();
+        }
     }
 }
 
@@ -1444,20 +1486,27 @@ mod test {
         VIRTIO_NET_F_STATUS,
     };
     use crate::hw::virtio::PciVirtioViona;
+    use crate::lifecycle::Lifecycle;
+    use crate::migrate::{
+        MigrateCtx, MigrateMulti, PayloadOffer, PayloadOffers, PayloadOutputs,
+    };
     use crate::Machine;
     use std::env::VarError;
+    use std::process::Command;
     use std::sync::Arc;
-    use tokio::process::Command;
 
     struct TestCtx {
+        test_name: &'static str,
+        underlying_nic: String,
+        vnic_name: String,
         machine: Machine,
         dev: Arc<PciVirtioViona>,
     }
 
     impl Drop for TestCtx {
         fn drop(&mut self) {
-            crate::lifecycle::Lifecycle::pause(self.dev.as_ref());
-            crate::lifecycle::Lifecycle::halt(self.dev.as_ref());
+            Lifecycle::pause(self.dev.as_ref());
+            Lifecycle::halt(self.dev.as_ref());
         }
     }
 
@@ -1465,9 +1514,74 @@ mod test {
         fn create_driver(&self) -> VirtioNetDriver<'_, '_> {
             VirtioNetDriver::for_hardware(&self.machine, &self.dev)
         }
+
+        fn migrate(self) -> TestCtx {
+            let mut dev_payloads = PayloadOutputs::new();
+            let acc_mem =
+                self.machine.acc_mem.access().expect("machine has memory");
+            let ctx = MigrateCtx { mem: &acc_mem };
+            <PciVirtioViona>::export(&self.dev, &mut dev_payloads, &ctx)
+                .expect("can export PciVirtioViona");
+            let mut payloads = Vec::new();
+            for output in dev_payloads.into_iter() {
+                let bytes = serde_json::to_string(&output.payload)
+                    .expect("serializing payload output");
+                let serialized = (output.kind, output.version, bytes);
+                payloads.push(serialized);
+            }
+
+            // Loosely follow the structure of `import_device` as `propolis-server` would; the
+            // combination of type erasure and borrows make this somewhat more complicated than it
+            // would ideally be..
+            let mut desers = Vec::new();
+            for (_, _, bytes) in payloads.iter() {
+                desers.push(serde_json::Deserializer::from_str(&bytes));
+            }
+            let mut offers = Vec::new();
+            for ((kind, version, _bytes), deser) in
+                payloads.iter().zip(desers.iter_mut())
+            {
+                let deserialized =
+                    Box::new(<dyn erased_serde::Deserializer>::erase(deser));
+                offers.push(PayloadOffer {
+                    kind,
+                    version: *version,
+                    payload: deserialized,
+                });
+            }
+            let mut offers = PayloadOffers::new(offers);
+
+            let vnic_name = self.vnic_name.clone();
+            let underlying_nic = self.underlying_nic.clone();
+            let test_name = self.test_name;
+
+            std::mem::drop(acc_mem);
+            std::mem::drop(self);
+
+            delete_vnic(&vnic_name);
+            create_vnic(&underlying_nic, &vnic_name);
+
+            let new_ctx =
+                create_test_ctx(test_name, &underlying_nic, &vnic_name);
+            let acc_mem = new_ctx
+                .machine
+                .acc_mem
+                .access()
+                .expect("new machine has memory");
+            let new_migrate = MigrateCtx { mem: &acc_mem };
+            <PciVirtioViona>::import(&new_ctx.dev, &mut offers, &new_migrate)
+                .expect("can import PciVirtioViona");
+            Lifecycle::start(new_ctx.dev.as_ref())
+                .expect("can start viona device");
+            new_ctx
+        }
     }
 
-    fn create_test_ctx(test_name: &str, vnic_name: &str) -> TestCtx {
+    fn create_test_ctx(
+        test_name: &'static str,
+        underlying_nic: &str,
+        vnic_name: &str,
+    ) -> TestCtx {
         // Create the VM with `force: true`: if we're running tests concurrently
         // this will trample an existing test (which should then fail!). We do
         // this so that if a test misconfiguration left a stray old VM hanging
@@ -1513,7 +1627,13 @@ mod test {
             None,
         );
 
-        TestCtx { machine, dev: viona_dev }
+        TestCtx {
+            machine,
+            dev: viona_dev,
+            test_name,
+            underlying_nic: underlying_nic.to_owned(),
+            vnic_name: vnic_name.to_owned(),
+        }
     }
 
     /// Glue for a nicer test interface to read/write a specific structure in a
@@ -1653,13 +1773,48 @@ mod test {
         dev: &'nic PciVirtioViona,
         common_config: BarAccessor<'nic>,
         device_config: BarAccessor<'nic>,
+        state: DriverState,
+    }
+
+    /// The "volatile" part of `VirtioNetDriver`: whatever "guest-side" part
+    /// should remain constant when tests migrate the corresponding
+    /// `PciVirtioViona`.
+    //
+    // Theoretically this state could live in the test VM, but that would
+    // require "migrating" guest memory, which is more work than is strictly
+    // necessary to test the de vice. On top of that it's a bit annoying to
+    // fulfill "driver memory" as reads/writes into the test VM, so we don't.
+    struct DriverState {
+        max_pairs: Option<u16>,
         next_queue_gpa: u64,
+    }
+
+    impl DriverState {
+        fn new() -> Self {
+            Self {
+                max_pairs: None,
+                // Start virtio-nic queues somewhere other than address 0.
+                next_queue_gpa: 2 * MB as u64,
+            }
+        }
     }
 
     impl<'mach, 'nic> VirtioNetDriver<'mach, 'nic> {
         fn for_hardware(
             machine: &'mach Machine,
             dev: &'nic PciVirtioViona,
+        ) -> Self {
+            Self::import(machine, dev, DriverState::new())
+        }
+
+        fn set_max_pairs(&mut self, pairs: Option<u16>) {
+            self.state.max_pairs = pairs;
+        }
+
+        fn import(
+            machine: &'mach Machine,
+            dev: &'nic PciVirtioViona,
+            state: DriverState,
         ) -> Self {
             // We place virtio_pci_common_cfg at BAR 2, offset 0, so hardcode this
             // in the test for now.
@@ -1675,13 +1830,11 @@ mod test {
             let device_config =
                 BarAccessor::at(dev, pci::BarN::BAR2, PAGE_SIZE);
 
-            Self {
-                machine,
-                dev,
-                common_config,
-                device_config,
-                next_queue_gpa: 2 * MB as u64,
-            }
+            Self { machine, dev, common_config, device_config, state }
+        }
+
+        fn export(self) -> DriverState {
+            self.state
         }
 
         fn read_status(&self) -> Status {
@@ -1710,6 +1863,15 @@ mod test {
         // meaningful way! These queues are not actually usable!
         fn init_queue(&mut self, queue: u16) {
             self.common_config.write_le16(common_cfg::queue_select, queue);
+
+            // We don't strictly *need* to check if the queue was already
+            // active, but Linux does (setup_vq()->vp_modern_get_queue_enable())
+            // and it is true that we should not be initializing already-enabled
+            // queues. So we check here too.
+            let already_enabled =
+                self.common_config.read_le16(common_cfg::queue_enable) == 1;
+            assert!(!already_enabled);
+
             let queue_size =
                 self.common_config.read_le16(common_cfg::queue_size);
             assert_ne!(queue_size, 0);
@@ -1738,7 +1900,7 @@ mod test {
             let acc_mem =
                 self.machine.acc_mem.access().expect("can access memory");
 
-            let descriptor_table_gpa = self.next_queue_gpa;
+            let descriptor_table_gpa = self.state.next_queue_gpa;
             self.common_config
                 .write_le64(common_cfg::queue_desc, descriptor_table_gpa);
 
@@ -1763,7 +1925,7 @@ mod test {
 
             // Finally, round up so the next queue (if there is one) starts
             // page-aligned like it should.
-            self.next_queue_gpa = used_gpa.next_multiple_of(page_u64);
+            self.state.next_queue_gpa = used_gpa.next_multiple_of(page_u64);
 
             let msi_vector = 0x100 + queue;
             self.common_config
@@ -1857,6 +2019,10 @@ mod test {
             let n_qpairs = if features & VIRTIO_NET_F_MQ == 0 {
                 1
             } else {
+                // We'll configure all of the device's queues here. This is what
+                // we've seen both Linux and Windows do with virtio devices (in
+                // Linux, virtnet_probe()->init_vqs()). The number of
+                // actually-used queues is only configured later.
                 let max_pairs = self
                     .device_config
                     .read_le16(net_config::max_virtqueue_pairs);
@@ -1876,6 +2042,19 @@ mod test {
                 eprintln!("initializing queue {}", queue);
                 self.init_queue(queue);
                 assert!(self.status_ok());
+            }
+
+            if n_qpairs > 1 {
+                // Again following in the footsteps of observed Windows/Linux
+                // virtio drivers: now that queues are all initialized, set the
+                // number of queue pairs we'll actually use. The test (playing
+                // the role of the guest OS) may have selected less than the
+                // maximum queue pairs.
+                let wanted_pairs = self.state.max_pairs.unwrap_or(n_qpairs);
+                assert!(wanted_pairs <= n_qpairs);
+                self.dev
+                    .set_use_pairs(wanted_pairs)
+                    .expect("can set_use_pairs(wanted_pairs)");
             }
 
             if features & VIRTIO_NET_F_CTRL_VQ != 0 {
@@ -1906,7 +2085,7 @@ mod test {
         }
     }
 
-    fn test_device_status_writes(test_ctx: &TestCtx) {
+    fn test_device_status_writes(test_ctx: TestCtx) -> TestCtx {
         // The device and driver collaborate via `device_status` to get the
         // device turned on. There's a subtlety here though, in VirtIO 1.2
         // section 2.1.2:
@@ -1971,9 +2150,11 @@ mod test {
         // We should not be able to clear NEEDS_RESET without .. a reset.
         let real_status = driver.read_status();
         assert!(real_status.contains(Status::NEEDS_RESET));
+
+        test_ctx
     }
 
-    fn basic_operation_modern(test_ctx: &TestCtx) {
+    fn basic_operation_modern(test_ctx: TestCtx) -> TestCtx {
         let expected_feats =
             VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_CTRL_VQ;
 
@@ -1987,7 +2168,7 @@ mod test {
         driver.modern_device_init(expected_feats);
 
         // Say we've done nothing with the device, but we've booted into
-        // whatever next stage with its own driver that wants to operat the
+        // whatever next stage with its own driver that wants to operate the
         // device. It will go through 3.1.1 again.
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats);
@@ -1995,7 +2176,7 @@ mod test {
         // `Lifecycle::reset` is the kind of reset that occurs when a VM is
         // restarted. Do that now, as if the guest rebooted, triple faulted,
         // etc.
-        crate::lifecycle::Lifecycle::reset(test_ctx.dev.as_ref());
+        Lifecycle::reset(test_ctx.dev.as_ref());
 
         // After a reset, reinit the device as if through OVMF->bootloader->OS
         // again..
@@ -2005,9 +2186,11 @@ mod test {
         driver.modern_device_init(expected_feats);
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats);
+
+        test_ctx
     }
 
-    fn basic_operation_multiqueue(test_ctx: &TestCtx) {
+    fn basic_operation_multiqueue(test_ctx: TestCtx) -> TestCtx {
         // All the same operation as `basic_operation_modern`, but with
         // `VIRTIO_NET_F_MQ`.
         let expected_feats = VIRTIO_NET_F_MAC
@@ -2016,21 +2199,30 @@ mod test {
             | VIRTIO_NET_F_MQ;
 
         let mut driver = test_ctx.create_driver();
+        // OVMF just initializes all queues. Linux (at least 6.6.49/Alpine
+        // 3.20.3) initializes all queues, then turns down the number of used
+        // queues based on available CPUs, if this would be a limiter. Do
+        // similar here to keep up the act.
+        driver.set_max_pairs(Some(4));
         driver.modern_device_init(expected_feats);
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats);
-        crate::lifecycle::Lifecycle::reset(test_ctx.dev.as_ref());
+        Lifecycle::reset(test_ctx.dev.as_ref());
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats);
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats);
+        // Pretending to be Linux, like above set_max_pairs().
+        driver.set_max_pairs(Some(4));
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats);
+
+        test_ctx
     }
 
     /// Roughly approximation of a MQ-capable OS restarting, booting through
     /// with a simple single-queue driver, then booting back to a MQ-capable OS.
-    fn multiqueue_to_singlequeue_to_multiqueue(test_ctx: &TestCtx) {
+    fn multiqueue_to_singlequeue_to_multiqueue(test_ctx: TestCtx) -> TestCtx {
         // All the same operation as `basic_operation_modern`, but with
         // `VIRTIO_NET_F_MQ`.
         let expected_feats =
@@ -2038,20 +2230,124 @@ mod test {
 
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
-        crate::lifecycle::Lifecycle::reset(test_ctx.dev.as_ref());
+        Lifecycle::reset(test_ctx.dev.as_ref());
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats);
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
+
+        test_ctx
+    }
+
+    /// The same operations as `multiqueue_to_singlequeue_to_multiqueue`, above,
+    /// but migrate the device between each operation.
+    fn multiqueue_migration(test_ctx: TestCtx) -> TestCtx {
+        // All the same operation as `basic_operation_modern`, but with
+        // `VIRTIO_NET_F_MQ`.
+        let expected_feats =
+            VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_CTRL_VQ;
+
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
+
+        let drv_state = driver.export();
+        let test_ctx = test_ctx.migrate();
+        let driver = VirtioNetDriver::import(
+            &test_ctx.machine,
+            &test_ctx.dev,
+            drv_state,
+        );
+        assert!(driver.status_ok());
+
+        let mut driver = test_ctx.create_driver();
+        // `basic_operation_multiqueue()` talks about why it's an interesting
+        // test to shink max pairs.
+        driver.set_max_pairs(Some(4));
+        driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
+
+        let drv_state = driver.export();
+        let test_ctx = test_ctx.migrate();
+        let driver = VirtioNetDriver::import(
+            &test_ctx.machine,
+            &test_ctx.dev,
+            drv_state,
+        );
+        assert!(driver.status_ok());
+        Lifecycle::reset(test_ctx.dev.as_ref());
+        assert!(driver.status_ok());
+
+        let drv_state = driver.export();
+        let test_ctx = test_ctx.migrate();
+        let mut driver = VirtioNetDriver::import(
+            &test_ctx.machine,
+            &test_ctx.dev,
+            drv_state,
+        );
+        assert!(driver.status_ok());
+        driver.modern_device_init(expected_feats);
+
+        let drv_state = driver.export();
+        let test_ctx = test_ctx.migrate();
+        let mut driver = VirtioNetDriver::import(
+            &test_ctx.machine,
+            &test_ctx.dev,
+            drv_state,
+        );
+        assert!(driver.status_ok());
+        driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
+
+        test_ctx
+    }
+
+    /// Go through the steps like an OVMF->Linux boot as described in tests
+    /// above, but only migrate once we've reinitialized the NIC after enabling
+    /// more queues than actually used at migration time.
+    ///
+    /// We once had a subtle bug here where the excess queues exported as
+    /// enabled, but were below the `queues.len()` number of currently-enabled
+    /// queues. Such queues imported (correctly!) on the other end as enabled,
+    /// but were still "enabled" because reset did not cover them, and would
+    /// make guests determine the device was simply broken. They were right!
+    fn multiqueue_migration_after_boot(test_ctx: TestCtx) -> TestCtx {
+        let expected_feats =
+            VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_CTRL_VQ;
+
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
+        let mut driver = test_ctx.create_driver();
+        // `basic_operation_multiqueue()` talks about why it's an interesting
+        // test to shink max pairs.
+        driver.set_max_pairs(Some(4));
+        driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
+
+        let drv_state = driver.export();
+        let test_ctx = test_ctx.migrate();
+        let driver = VirtioNetDriver::import(
+            &test_ctx.machine,
+            &test_ctx.dev,
+            drv_state,
+        );
+        assert!(driver.status_ok());
+        Lifecycle::reset(test_ctx.dev.as_ref());
+        assert!(driver.status_ok());
+
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
+        let mut driver = test_ctx.create_driver();
+        // Same as `set_max_pairs()` above.
+        driver.set_max_pairs(Some(4));
+        driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
+
+        test_ctx
     }
 
     // Bears an uncanny resemblance to `phd-test`...
     struct TestCase {
         name: &'static str,
-        test_fn: fn(&TestCtx),
+        test_fn: fn(TestCtx) -> TestCtx,
     }
 
-    async fn create_vnic(phys_nic: &str, vnic_name: &str) {
+    fn create_vnic(phys_nic: &str, vnic_name: &str) {
         let res = Command::new("pfexec")
             .arg("dladm")
             .arg("create-vnic")
@@ -2062,18 +2358,16 @@ mod test {
             .arg("2:8:20:ac:70:0")
             .arg(vnic_name)
             .status()
-            .await
             .expect("can create vnic");
         assert!(res.success());
     }
 
-    async fn delete_vnic(vnic_name: &str) {
+    fn delete_vnic(vnic_name: &str) {
         let res = Command::new("pfexec")
             .arg("dladm")
             .arg("delete-vnic")
             .arg(vnic_name)
             .status()
-            .await
             .expect("can delete vnic");
         assert!(res.success());
     }
@@ -2084,7 +2378,7 @@ mod test {
     #[test]
     #[cfg_attr(not(target_os = "illumos"), ignore)]
     fn run_viona_tests() {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap();
@@ -2100,6 +2394,8 @@ mod test {
             testcase!(basic_operation_modern),
             testcase!(basic_operation_multiqueue),
             testcase!(multiqueue_to_singlequeue_to_multiqueue),
+            testcase!(multiqueue_migration),
+            testcase!(multiqueue_migration_after_boot),
         ];
 
         let underlying_nic = match std::env::var("VIONA_TEST_NIC") {
@@ -2109,6 +2405,20 @@ mod test {
                     "Skipping viona tests as env does not have VIONA_TEST_NIC. \
                     Set this environment variable to an existing link that \
                     Propolis viona tests should create test vnics on.");
+                let uname = nix::sys::utsname::uname().unwrap();
+                if uname.machine() != std::ffi::OsStr::new("i86pc") {
+                    // Since the tests are running on i86pc, this might be a dev
+                    // host that does not actually want us messing with devices
+                    // for tests.
+                    //
+                    // If the *tests* are running on a different architecture
+                    // (say, "oxide"), assume that this is a misconfiguration
+                    // instead and fail tests rather than "skip".
+                    panic!(
+                        "host ({}) is not i86pc, refusing to skip viona tests",
+                        uname.machine().display()
+                    );
+                }
                 return;
             }
             Err(VarError::NotUnicode(e)) => {
@@ -2120,13 +2430,16 @@ mod test {
         for test in tests {
             let underlying_nic = underlying_nic.clone();
             rt.block_on(async move {
-                create_vnic(&underlying_nic, TEST_VNIC).await;
+                create_vnic(&underlying_nic, TEST_VNIC);
 
-                let test_ctx = create_test_ctx(test.name, TEST_VNIC);
-                (test.test_fn)(&test_ctx);
+                let test_ctx =
+                    create_test_ctx(test.name, &underlying_nic, TEST_VNIC);
+                Lifecycle::start(test_ctx.dev.as_ref())
+                    .expect("can start viona device");
+                let test_ctx = (test.test_fn)(test_ctx);
                 drop(test_ctx);
 
-                delete_vnic(TEST_VNIC).await;
+                delete_vnic(TEST_VNIC);
             });
         }
     }

@@ -390,6 +390,7 @@ pub(super) struct StateDriverOutput {
 /// [`StateDriverOutput`] contains appropriate state for a failed VM.
 pub(super) async fn ensure_vm_and_launch_driver(
     log: slog::Logger,
+    base_log: slog::Logger,
     vm: Arc<super::Vm>,
     mut state_publisher: StatePublisher,
     ensure_request: VmEnsureRequest,
@@ -398,7 +399,7 @@ pub(super) async fn ensure_vm_and_launch_driver(
 ) -> StateDriverOutput {
     let ensure_options = Arc::new(ensure_options);
     let activated_vm = match ensure_active_vm(
-        &log,
+        &base_log,
         &vm,
         &mut state_publisher,
         &ensure_request,

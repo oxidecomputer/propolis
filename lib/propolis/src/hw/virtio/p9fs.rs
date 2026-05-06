@@ -32,6 +32,7 @@ use p9ds::proto::{
     Tgetattr, Tlopen, Tread, Treaddir, Tstatfs, Twalk, Version,
 };
 use slog::{warn, Logger};
+use zerocopy::IntoBytes;
 
 /// This const is to add headroom into serialized P9 data packets. These packets
 /// go through a virtio transport. It's been observed with Linux guests that we
@@ -46,7 +47,7 @@ const P9FS_VIRTIO_READ_HEADROOM: usize = 20;
 // to the length of the vector and filling that vector is what we're
 // explicitly trying to avoid here.
 #[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, IntoBytes)]
 struct RreadHeader {
     size: u32,
     typ: u8,

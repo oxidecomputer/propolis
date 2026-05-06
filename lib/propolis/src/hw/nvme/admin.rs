@@ -16,6 +16,8 @@ use super::{
     cmds, NvmeCtrl, NvmeError, PciNvme, MAX_NUM_IO_QUEUES, MAX_NUM_QUEUES,
 };
 
+use zerocopy::IntoBytes;
+
 #[usdt::provider(provider = "propolis")]
 mod probes {
     fn nvme_abort(cid: u16, devsq_id: u64) {}
@@ -511,7 +513,7 @@ impl NvmeCtrl {
     /// The `data` type must be `repr(packed(1))`
     ///
     /// Returns `Some(())` if successful, else None
-    fn write_admin_result<T: Copy>(
+    fn write_admin_result<T: Copy + IntoBytes>(
         prp: cmds::PrpIter,
         data: &T,
         mem: &MemCtx,

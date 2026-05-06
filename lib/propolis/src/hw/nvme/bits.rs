@@ -5,7 +5,7 @@
 #![allow(dead_code)]
 
 use bitstruct::bitstruct;
-use zerocopy::FromBytes;
+use zerocopy::{FromBytes, IntoBytes};
 
 /// A Submission Queue Entry as represented in memory.
 ///
@@ -105,7 +105,7 @@ impl SubmissionQueueEntry {
 /// A Completion Queue Entry as represented in memory.
 ///
 /// See NVMe 1.0e Section 4.5 Completion Queue Entry
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone, IntoBytes)]
 #[repr(C, packed(1))]
 pub struct CompletionQueueEntry {
     /// Dword 0 (DW0)
@@ -739,7 +739,7 @@ pub enum StatusCodeType {
 /// Describes the characteristics of a specific power state.
 ///
 /// See NVMe 1.0e Section 5.11, Figure 67 Identify - Power State Descriptor Data Structure
-#[derive(Default, Copy, Clone)]
+#[derive(Default, Copy, Clone, IntoBytes)]
 #[repr(C, packed(1))]
 pub struct PowerStateDescriptor {
     /// Maximum Power
@@ -797,7 +797,7 @@ bitstruct! {
     /// Queue Entry Size Required & Maximum (both Completion & Submission)
     ///
     /// Defines the required and maximum Queue entry sizes when using the NVM Command Set.
-    #[derive(Copy, Clone)]
+    #[derive(Copy, Clone, IntoBytes)]
     pub struct NvmQueueEntrySize(pub u8) {
         /// The required (minimum) Queue Entry Size.
         ///
@@ -818,7 +818,7 @@ bitstruct! {
 /// Describes the characteristics of the controller.
 ///
 /// See NVMe 1.0e Section 5.11, Figure 66 Identify - Identify Controller Data Structure
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, IntoBytes)]
 #[repr(C, packed(1))]
 pub struct IdentifyController {
     // bytes 0-255 - Controller Capabilities and Features
@@ -1050,7 +1050,7 @@ impl Default for IdentifyController {
 ///
 /// Describes a specific Logical Block Address (LBA) format.
 /// See NVMe 1.0e Section 5.11, Figure 69 Identify - LBA Format Data Structure, NVM Command Set Specific
-#[derive(Default, Copy, Clone)]
+#[derive(Default, Copy, Clone, IntoBytes)]
 #[repr(C, packed(1))]
 pub struct LbaFormat {
     /// Metadata Size (MS)
@@ -1079,7 +1079,7 @@ pub struct LbaFormat {
 /// Describes the characteristics of a namespace.
 ///
 /// See NVMe 1.0e Section 5.11, Figure 68 Identify - Identify Namespace Data Structure, NVM Command Set Specific
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, IntoBytes)]
 #[repr(C, packed(1))]
 pub struct IdentifyNamespace {
     /// Namespace Size (NSZE)

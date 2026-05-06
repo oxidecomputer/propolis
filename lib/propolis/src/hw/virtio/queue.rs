@@ -8,12 +8,13 @@ use std::sync::atomic::{fence, AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bitflags::bitflags;
-use zerocopy::FromBytes;
+use zerocopy::{FromBytes, IntoBytes};
 
 use super::probes;
 use super::{VirtioIntr, VqIntr};
 use crate::accessors::MemAccessor;
 use crate::common::*;
+use crate::hw::virtio;
 use crate::migrate::MigrateStateError;
 use crate::vmm::MemCtx;
 
@@ -61,7 +62,7 @@ struct VqdDesc {
     next: u16,
 }
 #[repr(C)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, IntoBytes)]
 struct VqdUsed {
     id: u32,
     len: u32,
@@ -614,6 +615,7 @@ impl VirtQueue {
     pub fn import(
         &self,
         state: &migrate::VirtQueueV1,
+        mode: virtio::Mode,
     ) -> Result<(), MigrateStateError> {
         let mut avail = self.avail.lock().unwrap();
         let mut used = self.used.lock().unwrap();
@@ -624,18 +626,48 @@ impl VirtQueue {
                 self.id, state.id,
             )));
         }
-        if self.size() != state.size {
-            return Err(MigrateStateError::ImportFailed(format!(
-                "VirtQueue: mismatched size {} vs {}",
-                self.size(),
-                state.size,
-            )));
+        if mode == virtio::Mode::Legacy {
+            // As VirtIO 1.0 notes, for a device operated as legacy,
+            //
+            // > There was no mechanism to negotiate the queue size.
+            //
+            // so if these sizes don't match, the payload is truly incompatible
+            // with this device.
+            if self.size() != state.size {
+                return Err(MigrateStateError::ImportFailed(format!(
+                    "VirtQueue: mismatched size {} vs {}",
+                    self.size(),
+                    state.size,
+                )));
+            }
+        } else {
+            // Otherwise, we expect to import into a freshly-created VirtIO PCI
+            // device, with queues all set to their maximum sizes. The sizes to
+            // import may be smaller if the guest OS's driver configured them
+            // down.
+            let mut queue_size = self.size.lock().unwrap();
+            if queue_size.0.get() < state.size {
+                return Err(MigrateStateError::ImportFailed(format!(
+                    "VirtQueue: larger than supported {} > {}",
+                    queue_size.0.get(),
+                    state.size,
+                )));
+            }
+            let new_size = match VqSize::try_from(state.size) {
+                Ok(size) => size,
+                Err(e) => {
+                    return Err(MigrateStateError::ImportFailed(format!(
+                        "VirtQueue: unacceptable queue size: {}",
+                        e
+                    )));
+                }
+            };
+            *queue_size = new_size;
         }
         if self.notify_data != state.notify_data {
             return Err(MigrateStateError::ImportFailed(format!(
                 "VirtQueue: mismatched notify data {} vs {}",
-                self.size(),
-                state.size,
+                self.notify_data, state.notify_data,
             )));
         }
 
@@ -724,7 +756,11 @@ impl Chain {
         self.bufs.clear();
     }
 
-    pub fn read<T: Copy>(&mut self, item: &mut T, mem: &MemCtx) -> bool {
+    pub fn read<T: Copy + FromBytes>(
+        &mut self,
+        item: &mut T,
+        mem: &MemCtx,
+    ) -> bool {
         let item_sz = mem::size_of::<T>();
         if (self.read_stat.bytes_remain as usize) < item_sz {
             return false;
@@ -772,7 +808,11 @@ impl Chain {
         assert_eq!(remain, 0);
         Some(bufs)
     }
-    pub fn write<T: Copy>(&mut self, item: &T, mem: &MemCtx) -> bool {
+    pub fn write<T: Copy + IntoBytes>(
+        &mut self,
+        item: &T,
+        mem: &MemCtx,
+    ) -> bool {
         let item_sz = mem::size_of::<T>();
         if (self.write_stat.bytes_remain as usize) < item_sz {
             return false;
@@ -1047,17 +1087,27 @@ impl VirtQueues {
 
     pub fn export(&self) -> migrate::VirtQueuesV1 {
         let len = self.len() as u64;
+        let peak = self.peak() as u64;
         let queues = self.queues.iter().map(|q| q.export()).collect();
-        migrate::VirtQueuesV1 { len, queues }
+        migrate::VirtQueuesV1 { len, peak, queues }
     }
 
     pub fn import(
         &self,
         state: &migrate::VirtQueuesV1,
+        mode: virtio::Mode,
     ) -> Result<(), MigrateStateError> {
         for (vq, vq_input) in self.queues.iter().zip(state.queues.iter()) {
-            vq.import(vq_input)?;
+            vq.import(vq_input, mode)?;
         }
+        // Avoid mucking with `peak` directly, since peak implies at some point
+        // the device had been `set_len()` for that many queues and later
+        // `set_len()` down to the actual exported count.
+        self.set_len(state.peak as usize).map_err(|len| {
+            MigrateStateError::ImportFailed(format!(
+                "VirtQueues: could not set len to peak: {len}"
+            ))
+        })?;
         self.set_len(state.len as usize).map_err(|len| {
             MigrateStateError::ImportFailed(format!(
                 "VirtQueues: could not set len to {len}"
@@ -1073,6 +1123,7 @@ pub mod migrate {
     #[derive(Deserialize, Serialize)]
     pub struct VirtQueuesV1 {
         pub len: u64,
+        pub peak: u64,
         pub queues: Vec<VirtQueueV1>,
     }
 

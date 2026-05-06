@@ -21,7 +21,7 @@ use crate::common::{
 use crate::util::aspace::ASpace;
 use crate::vmm::VmmHdl;
 
-use zerocopy::FromBytes;
+use zerocopy::{FromBytes, IntoBytes};
 
 bitflags! {
     /// Bitflags representing memory protections.
@@ -643,7 +643,7 @@ impl SubMapping<'_> {
     }
 
     /// Writes `value` into the mapping.
-    pub fn write<T: Copy>(&self, value: &T) -> Result<()> {
+    pub fn write<T: Copy + IntoBytes>(&self, value: &T) -> Result<()> {
         self.check_write_access()?;
         let typed = self.ptr.as_ptr() as *mut T;
         unsafe {
@@ -653,7 +653,7 @@ impl SubMapping<'_> {
     }
 
     /// Writes `values` into the mapping.
-    pub fn write_many<T: Copy>(&self, values: &[T]) -> Result<()> {
+    pub fn write_many<T: Copy + IntoBytes>(&self, values: &[T]) -> Result<()> {
         self.check_write_access()?;
         let copy_len = size_of_val(values);
         if self.len < copy_len {
@@ -1045,7 +1045,7 @@ impl MemCtx {
         )
     }
     /// Writes a value to guest memory.
-    pub fn write<T: Copy>(&self, addr: GuestAddr, val: &T) -> bool {
+    pub fn write<T: Copy + IntoBytes>(&self, addr: GuestAddr, val: &T) -> bool {
         if let Some(mapping) =
             self.region_covered(addr, size_of::<T>(), Prot::WRITE)
         {
@@ -1082,7 +1082,11 @@ impl MemCtx {
     ///
     /// If the memory offset and value(s) size would result in the copy crossing
     /// vmm memory segments, this will fail.
-    pub fn write_many<T: Copy>(&self, addr: GuestAddr, val: &[T]) -> bool {
+    pub fn write_many<T: Copy + IntoBytes>(
+        &self,
+        addr: GuestAddr,
+        val: &[T],
+    ) -> bool {
         if let Some(mapping) =
             self.region_covered(addr, size_of_val(val), Prot::WRITE)
         {

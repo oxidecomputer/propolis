@@ -92,8 +92,8 @@ oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
 
 # Crucible
-crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "ae1da83e66c648574827298f4bc444632bf4d047" }
-crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "ae1da83e66c648574827298f4bc444632bf4d047" }
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "3c1708d86e10f0370807388a1efe092edd99d431" }
+crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "3c1708d86e10f0370807388a1efe092edd99d431" }
 
 # Attestation
 dice-verifier = { git = "https://github.com/oxidecomputer/dice-util", rev = "1d3084b514389847e8e0f5d966d2be4f18d02d32", features = ["sled-agent"] }
@@ -122,8 +122,8 @@ const_format = "0.2"
 crossbeam-channel = "0.5"
 ctrlc = "3.2"
 dropshot = "0.17.0"
-dropshot-api-manager = "0.7.0"
-dropshot-api-manager-types = "0.7.0"
+dropshot-api-manager = "0.7.1"
+dropshot-api-manager-types = "0.7.1"
 erased-serde = "0.4"
 errno = "0.2.8"
 escargot = "0.5.8"
@@ -145,15 +145,16 @@ libc = "0.2"
 mockall = "0.12"
 newtype_derive = "0.1.6"
 newtype-uuid = { version = "1.0.1", features = [ "v4" ] }
-nix = { version = "0.31", features = [ "poll" ] }
+# "feature" for `utsname`, "poll" for `PollFlags`
+nix = { version = "0.31", features = [ "feature", "poll" ] }
 owo-colors = "4"
 oxide-tokio-rt = "0.1.4"
 paste = "1.0.15"
 pin-project-lite = "0.2.13"
 proc-macro2 = "1.0"
 proc-macro-error = "1"
-progenitor = "0.13.0"
-progenitor-client = "0.13.0"
+progenitor = "0.14.0"
+progenitor-client = "0.14.0"
 proptest = "1.5.0"
 quote = "1.0"
 rand = "0.9.1"

@@ -18,6 +18,7 @@ use crucible::{
     VolumeBuilder,
 };
 use crucible_client_types::VolumeConstructionRequest;
+use crucible_client_types::VolumeInfo;
 use oximeter::types::ProducerRegistry;
 use slog::{error, info};
 use thiserror::Error;
@@ -370,6 +371,10 @@ impl CrucibleBackend {
 
     pub fn is_read_only(&self) -> bool {
         self.state.info.read_only
+    }
+
+    pub async fn query_volume_info(&self) -> Result<VolumeInfo, CrucibleError> {
+        self.state.volume.query_volume_info().await
     }
 }
 
