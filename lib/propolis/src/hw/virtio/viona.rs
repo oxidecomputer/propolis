@@ -942,12 +942,14 @@ impl MigrateMulti for PciVirtioViona {
         if (feat & VIRTIO_NET_F_MQ) != 0 {
             self.hdl.set_pairs(PROPOLIS_MAX_MQ_PAIRS).unwrap();
         }
-        let queues = self.virtio_state.queues.count().get();
-        let Some(pairs) = (queues - 1).checked_div(2) else {
+        // Queue count is a NonZeroU16; hence `get` and -1 will not underflow.
+        let io_queues = self.virtio_state.queues.count().get() - 1;
+        let pairs = io_queues / 2;
+        if io_queues % 2 != 0 {
             return Err(MigrateStateError::ImportFailed(format!(
-                "source queue count was not a number of pairs + 1: {queues}"
+                "source IO queue count was not even: {io_queues}"
             )));
-        };
+        }
         probes::virtio_viona_mq_set_use_pairs!(|| (
             MqSetPairsCause::Import as u8,
             pairs
