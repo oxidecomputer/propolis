@@ -557,6 +557,28 @@ impl SubMapping<'_> {
         Ok(unsafe { typed.read_unaligned() })
     }
 
+    /// Read the entire mapping as an array of `T` objects.
+    /// The size of the mapping must be aligned to `size_of::<T>()`.
+    pub fn read_many_owned<T: Copy + FromBytes>(&self) -> Result<Vec<T>> {
+        self.check_read_access()?;
+        if !self.len.is_multiple_of(size_of::<T>()) {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "Mapping size not aligned to value type",
+            ));
+        }
+        let count = self.len / size_of::<T>();
+        let mut vec = Vec::with_capacity(count);
+
+        self.read_many(&mut vec.spare_capacity_mut()[..count])?;
+        // Safety: read_many() was successful and just initialized the first `count` elements of
+        // the vector.
+        unsafe {
+            vec.set_len(count);
+        }
+        Ok(vec)
+    }
+
     /// Read `values` from the mapping.
     pub fn read_many<T: Copy + FromBytes>(
         &self,
