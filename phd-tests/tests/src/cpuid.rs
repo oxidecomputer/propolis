@@ -318,8 +318,7 @@ impl<'a> LinuxGuestTopo<'a> {
                 break;
             }
 
-            let level: u8 =
-                level_out.parse().expect("cache level parses");
+            let level: u8 = level_out.parse().expect("cache level parses");
 
             let shared_cpu_list = self
                 .vm
