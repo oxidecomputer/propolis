@@ -37,3 +37,5 @@ pub mod v1;
 pub mod v2;
 #[path = "add_vsock/mod.rs"]
 pub mod v3;
+#[path = "crucible_volume_info/mod.rs"]
+pub mod v5;

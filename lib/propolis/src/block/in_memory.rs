@@ -86,7 +86,7 @@ impl SharedState {
             block::Operation::Flush => {
                 // nothing to do
             }
-            block::Operation::Discard(..) => {
+            block::Operation::Discard => {
                 unreachable!("handled in processing_loop()");
             }
         }

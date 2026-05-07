@@ -50,7 +50,7 @@ mod probes {
     fn block_begin_read(devq_id: u64, req_id: u64, offset: u64, len: u64) {}
     fn block_begin_write(devq_id: u64, req_id: u64, offset: u64, len: u64) {}
     fn block_begin_flush(devq_id: u64, req_id: u64) {}
-    fn block_begin_discard(devq_id: u64, req_id: u64, offset: u64, len: u64) {}
+    fn block_begin_discard(devq_id: u64, req_id: u64, nr: u64) {}
 
     fn block_complete_read(
         devq_id: u64,
@@ -106,8 +106,8 @@ pub enum Operation {
     Write(ByteOffset, ByteLen),
     /// Flush buffer(s)
     Flush,
-    /// Discard/UNMAP/deallocate region
-    Discard(ByteOffset, ByteLen),
+    /// Discard/UNMAP/deallocate some ranges, which are specified in Request::ranges
+    Discard,
 }
 impl Operation {
     pub const fn is_read(&self) -> bool {
@@ -120,7 +120,7 @@ impl Operation {
         matches!(self, Operation::Flush)
     }
     pub const fn is_discard(&self) -> bool {
-        matches!(self, Operation::Discard(..))
+        matches!(self, Operation::Discard)
     }
 }
 
@@ -203,6 +203,10 @@ pub struct Request {
     /// A list of regions of guest memory to read/write into as part of the I/O
     /// request
     pub regions: Vec<GuestRegion>,
+
+    /// A list of byte ranges to discard as part of the I/O request.  This is only
+    /// relevant for discard operations, and is expected to be empty otherwise.
+    pub ranges: Vec<(ByteOffset, ByteLen)>,
 }
 impl Request {
     pub fn new_read(
@@ -210,7 +214,7 @@ impl Request {
         len: ByteLen,
         regions: Vec<GuestRegion>,
     ) -> Self {
-        Self { op: Operation::Read(off, len), regions }
+        Self { op: Operation::Read(off, len), regions, ranges: Vec::new() }
     }
 
     pub fn new_write(
@@ -218,17 +222,17 @@ impl Request {
         len: ByteLen,
         regions: Vec<GuestRegion>,
     ) -> Self {
-        Self { op: Operation::Write(off, len), regions }
+        Self { op: Operation::Write(off, len), regions, ranges: Vec::new() }
     }
 
     pub fn new_flush() -> Self {
         let op = Operation::Flush;
-        Self { op, regions: Vec::new() }
+        Self { op, regions: Vec::new(), ranges: Vec::new() }
     }
 
-    pub fn new_discard(off: ByteOffset, len: ByteLen) -> Self {
-        let op = Operation::Discard(off, len);
-        Self { op, regions: Vec::new() }
+    pub fn new_discard(ranges: Vec<(ByteOffset, ByteLen)>) -> Self {
+        let op = Operation::Discard;
+        Self { op, regions: Vec::new(), ranges }
     }
 
     pub fn mappings<'a>(&self, mem: &'a MemCtx) -> Option<Vec<SubMapping<'a>>> {
@@ -239,7 +243,7 @@ impl Request {
             Operation::Write(..) => {
                 self.regions.iter().map(|r| mem.readable_region(r)).collect()
             }
-            Operation::Flush | Operation::Discard(..) => None,
+            Operation::Flush | Operation::Discard => None,
         }
     }
 }

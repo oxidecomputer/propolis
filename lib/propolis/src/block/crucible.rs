@@ -18,6 +18,7 @@ use crucible::{
     VolumeBuilder,
 };
 use crucible_client_types::VolumeConstructionRequest;
+use crucible_client_types::VolumeInfo;
 use oximeter::types::ProducerRegistry;
 use slog::{error, info};
 use thiserror::Error;
@@ -145,9 +146,11 @@ impl WorkerState {
                     let _ = block.flush(None).await?;
                 }
             }
-            block::Operation::Discard(..) => {
-                // Crucible does not support discard operations for now
-                return Err(Error::Unsupported);
+            block::Operation::Discard => {
+                // Crucible does not support discard operations for now, so we implement this as
+                // a no-op (which technically is a valid implementation of discard, just one that
+                // doesn't actually free any space).
+                return Ok(());
             }
         }
         Ok(())
@@ -370,6 +373,10 @@ impl CrucibleBackend {
 
     pub fn is_read_only(&self) -> bool {
         self.state.info.read_only
+    }
+
+    pub async fn query_volume_info(&self) -> Result<VolumeInfo, CrucibleError> {
+        self.state.volume.query_volume_info().await
     }
 }
 

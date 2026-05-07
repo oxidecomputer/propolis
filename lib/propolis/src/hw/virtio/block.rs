@@ -199,7 +199,7 @@ impl block::DeviceQueue for BlockVq {
                         rid, off as u64, sz as u64,
                     ));
                     Ok((
-                        block::Request::new_discard(off, sz),
+                        block::Request::new_discard(vec![(off, sz)]),
                         CompletionToken { rid, chain },
                         None,
                     ))
@@ -246,7 +246,7 @@ impl block::DeviceQueue for BlockVq {
                 block::Operation::Flush => {
                     probes::vioblk_flush_complete!(|| (rid, resnum));
                 }
-                block::Operation::Discard(..) => {
+                block::Operation::Discard => {
                     probes::vioblk_discard_complete!(|| (rid, resnum));
                 }
             }

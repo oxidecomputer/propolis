@@ -248,7 +248,8 @@ pub fn block_backend(
                 }
                 None => NonZeroUsize::new(DEFAULT_WORKER_COUNT).unwrap(),
             };
-            block::FileBackend::create(&parsed.path, opts, workers).unwrap()
+            block::FileBackend::create(&parsed.path, opts, workers, log.clone())
+                .unwrap()
         }
         "crucible" => create_crucible_backend(be, opts, log),
         "crucible-mem" => create_crucible_mem_backend(be, opts, log),
