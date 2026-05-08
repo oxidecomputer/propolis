@@ -971,10 +971,18 @@ pub mod migrate {
 
         fn write(self, vcpu: &Vcpu) -> Result<()> {
             vcpu.set_run_state(self.run_state, Some(self.sipi_vector))?;
-            vcpu.set_reg(
+
+            // Intel VMX rejects setting intr_shadow to non-zero (AMD is fine).
+            // This state is transient anyway, cleared after one instruction.
+            if let Err(e) = vcpu.set_reg(
                 vm_reg_name::VM_REG_GUEST_INTR_SHADOW,
                 u64::from(self.intr_shadow),
-            )?;
+            ) {
+                if !(self.intr_shadow && e.raw_os_error() == Some(libc::EINVAL))
+                {
+                    return Err(e);
+                }
+            }
 
             let ents = [
                 vdi_field_entry_v1::new(
