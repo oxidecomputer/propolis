@@ -117,7 +117,7 @@ impl SharedState {
                     self.fp.sync_data().map_err(|_| "io error")?;
                 }
             }
-            block::Operation::Discard => {
+            block::Operation::Discard(_bytes) => {
                 if let Some(mech) = self.discard_mech {
                     for &(off, len) in &req.ranges {
                         // There might be some performance benefits to combining the ranges into

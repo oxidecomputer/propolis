@@ -50,7 +50,7 @@ mod probes {
     fn block_begin_read(devq_id: u64, req_id: u64, offset: u64, len: u64) {}
     fn block_begin_write(devq_id: u64, req_id: u64, offset: u64, len: u64) {}
     fn block_begin_flush(devq_id: u64, req_id: u64) {}
-    fn block_begin_discard(devq_id: u64, req_id: u64, nr: u64) {}
+    fn block_begin_discard(devq_id: u64, req_id: u64, nr: u64, bytes: u64) {}
 
     fn block_complete_read(
         devq_id: u64,
@@ -106,8 +106,9 @@ pub enum Operation {
     Write(ByteOffset, ByteLen),
     /// Flush buffer(s)
     Flush,
-    /// Discard/UNMAP/deallocate some ranges, which are specified in Request::ranges
-    Discard,
+    /// Discard/UNMAP/deallocate some ranges, which are specified in Request::ranges.
+    /// The ByteLen is the sum of the lengths of the ranges to be discarded, and is used for metrics.
+    Discard(ByteLen),
 }
 impl Operation {
     pub const fn is_read(&self) -> bool {
@@ -120,7 +121,7 @@ impl Operation {
         matches!(self, Operation::Flush)
     }
     pub const fn is_discard(&self) -> bool {
-        matches!(self, Operation::Discard)
+        matches!(self, Operation::Discard(..))
     }
 }
 
@@ -231,7 +232,7 @@ impl Request {
     }
 
     pub fn new_discard(ranges: Vec<(ByteOffset, ByteLen)>) -> Self {
-        let op = Operation::Discard;
+        let op = Operation::Discard(ranges.iter().map(|(_, len)| *len).sum());
         Self { op, regions: Vec::new(), ranges }
     }
 
@@ -243,7 +244,7 @@ impl Request {
             Operation::Write(..) => {
                 self.regions.iter().map(|r| mem.readable_region(r)).collect()
             }
-            Operation::Flush | Operation::Discard => None,
+            Operation::Flush | Operation::Discard(..) => None,
         }
     }
 }

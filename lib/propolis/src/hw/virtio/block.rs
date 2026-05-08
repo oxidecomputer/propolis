@@ -246,7 +246,7 @@ impl block::DeviceQueue for BlockVq {
                 block::Operation::Flush => {
                     probes::vioblk_flush_complete!(|| (rid, resnum));
                 }
-                block::Operation::Discard => {
+                block::Operation::Discard(..) => {
                     probes::vioblk_discard_complete!(|| (rid, resnum));
                 }
             }
