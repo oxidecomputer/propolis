@@ -26,8 +26,9 @@ use propolis::block::{self, Operation};
 
 pub use self::virtual_disk::VirtualDisk;
 use self::virtual_disk::{
-    BytesRead, BytesWritten, FailedFlushes, FailedReads, FailedWrites, Flushes,
-    IoLatency, IoSize, Reads, Writes,
+    BytesDiscarded, BytesRead, BytesWritten, Discards, FailedDiscards,
+    FailedFlushes, FailedReads, FailedWrites, Flushes, IoLatency, IoSize,
+    Reads, Writes,
 };
 
 /// Type for tracking virtual disk stats.
@@ -52,6 +53,12 @@ struct VirtualDiskStats {
     bytes_written: BytesWritten,
     /// Cumulative number of failed writes, by failure reason.
     failed_writes: [FailedWrites; N_FAILURE_KINDS],
+    /// Cumulative number of discards.
+    discards: Discards,
+    /// Cumulative number of bytes discarded.
+    bytes_discarded: BytesDiscarded,
+    /// Cumulative number of failed discards, by failure reason.
+    failed_discards: [FailedDiscards; N_FAILURE_KINDS],
     /// Cumulative number of flushes.
     flushes: Flushes,
     /// Cumulative number of failed flushes, by failure reason.
@@ -77,9 +84,8 @@ impl VirtualDiskStats {
                 self.on_write_completion(result, len, duration)
             }
             Operation::Flush => self.on_flush_completion(result, duration),
-            Operation::Discard => {
-                // Discard is now wired up for local disks. We need to add support for it to the
-                // schema in Omicron before we can report stats for it. For now, just ignore it.
+            Operation::Discard(bytes) => {
+                self.on_discard_completion(result, bytes, duration)
             }
         }
     }
@@ -130,6 +136,29 @@ impl VirtualDiskStats {
         self.failed_writes[index].datum.increment();
     }
 
+    fn on_discard_completion(
+        &mut self,
+        result: block::Result,
+        bytes: usize,
+        duration: Duration,
+    ) {
+        let index = match result {
+            block::Result::Success => {
+                let _ = self.io_latency[DISCARD_INDEX]
+                    .datum
+                    .sample(duration.as_nanos() as u64);
+                let _ = self.io_size[DISCARD_INDEX].datum.sample(bytes as u64);
+                self.discards.datum += 1;
+                self.bytes_discarded.datum += bytes as u64;
+                return;
+            }
+            block::Result::Failure => FAILURE_INDEX,
+            block::Result::ReadOnly => READONLY_INDEX,
+            block::Result::Unsupported => UNSUPPORTED_INDEX,
+        };
+        self.failed_discards[index].datum.increment();
+    }
+
     fn on_flush_completion(
         &mut self,
         result: block::Result,
@@ -152,16 +181,18 @@ impl VirtualDiskStats {
 }
 
 /// Number of I/O kinds we track.
-const N_IO_KINDS: usize = 3;
+const N_IO_KINDS: usize = 4;
 
 /// Indices into arrays tracking operations broken out by I/O kind.
 const READ_INDEX: usize = 0;
 const WRITE_INDEX: usize = 1;
-const FLUSH_INDEX: usize = 2;
+const DISCARD_INDEX: usize = 2;
+const FLUSH_INDEX: usize = 3; // Note that flush must be last since it does not have a size histogram (io_size)
 
 /// String representations of I/O kinds we report to Oximeter.
 const READ_KIND: &str = "read";
 const WRITE_KIND: &str = "write";
+const DISCARD_KIND: &str = "discard";
 const FLUSH_KIND: &str = "flush";
 
 /// Number of failure kinds we track.
@@ -229,6 +260,16 @@ impl BlockMetrics {
                 FailedWrites { failure_reason: READONLY_KIND.into(), datum },
                 FailedWrites { failure_reason: UNSUPPORTED_KIND.into(), datum },
             ],
+            discards: Discards { datum },
+            bytes_discarded: BytesDiscarded { datum },
+            failed_discards: [
+                FailedDiscards { failure_reason: FAILURE_KIND.into(), datum },
+                FailedDiscards { failure_reason: READONLY_KIND.into(), datum },
+                FailedDiscards {
+                    failure_reason: UNSUPPORTED_KIND.into(),
+                    datum,
+                },
+            ],
             flushes: Flushes { datum },
             failed_flushes: [
                 FailedFlushes { failure_reason: FAILURE_KIND.into(), datum },
@@ -248,6 +289,10 @@ impl BlockMetrics {
                     datum: latency_histogram.clone(),
                 },
                 IoLatency {
+                    io_kind: DISCARD_KIND.into(),
+                    datum: latency_histogram.clone(),
+                },
+                IoLatency {
                     io_kind: FLUSH_KIND.into(),
                     datum: latency_histogram.clone(),
                 },
@@ -259,6 +304,10 @@ impl BlockMetrics {
                 },
                 IoSize {
                     io_kind: WRITE_KIND.into(),
+                    datum: size_histogram.clone(),
+                },
+                IoSize {
+                    io_kind: DISCARD_KIND.into(),
                     datum: size_histogram.clone(),
                 },
             ],
@@ -354,10 +403,10 @@ impl Producer for VirtualDiskProducer {
         // Consolidate any buffer samples first
         self.0.consolidate_all();
 
-        // 5 scalar samples (reads, writes, flushes, bytes read / written)
-        // 3 scalars broken out by failure kind
+        // 7 scalar samples (reads, writes, discards, flushes, bytes read / written / discarded)
+        // 4 scalars broken out by failure kind (reads, writes, discards, flushes)
         // 2 histograms broken out by I/O kind
-        const N_SAMPLES: usize = 5 + 3 * N_FAILURE_KINDS + 2 * N_IO_KINDS;
+        const N_SAMPLES: usize = 7 + 4 * N_FAILURE_KINDS + 2 * N_IO_KINDS;
         let mut out = Vec::with_capacity(N_SAMPLES);
         let stats = self.0.stats.lock().unwrap();
 
@@ -372,6 +421,13 @@ impl Producer for VirtualDiskProducer {
         out.push(Sample::new(&stats.disk, &stats.writes)?);
         out.push(Sample::new(&stats.disk, &stats.bytes_written)?);
         for failed in stats.failed_writes.iter() {
+            out.push(Sample::new(&stats.disk, failed)?);
+        }
+
+        // Discard statistics.
+        out.push(Sample::new(&stats.disk, &stats.discards)?);
+        out.push(Sample::new(&stats.disk, &stats.bytes_discarded)?);
+        for failed in stats.failed_discards.iter() {
             out.push(Sample::new(&stats.disk, failed)?);
         }
 
