@@ -78,7 +78,7 @@ dlpi = { git = "https://github.com/oxidecomputer/dlpi-sys", branch = "main" }
 ispf = { git = "https://github.com/oxidecomputer/ispf" }
 libloading = "0.7"
 p9ds = { git = "https://github.com/oxidecomputer/p9fs" }
-softnpu = { git = "https://github.com/oxidecomputer/softnpu" }
+softnpu = { git = "https://github.com/oxidecomputer/softnpu", branch = "zl/multicast" }
 
 # Omicron-related
 internal-dns-resolver = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
@@ -148,7 +148,7 @@ newtype-uuid = { version = "1.0.1", features = [ "v4" ] }
 # "feature" for `utsname`, "poll" for `PollFlags`
 nix = { version = "0.31", features = [ "feature", "poll" ] }
 owo-colors = "4"
-oxide-tokio-rt = "0.1.2"
+oxide-tokio-rt = "0.1.4"
 paste = "1.0.15"
 pin-project-lite = "0.2.13"
 proc-macro2 = "1.0"
