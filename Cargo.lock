@@ -2335,12 +2335,11 @@ dependencies = [
 
 [[package]]
 name = "escargot"
-version = "0.5.10"
+version = "0.5.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f474c6844cbd04e783d0f25757583db4f491770ca618bedf2fb01815fc79939"
+checksum = "11c3aea32bc97b500c9ca6a72b768a26e558264303d101d3409cf6d57a9ed0cf"
 dependencies = [
  "log",
- "once_cell",
  "serde",
  "serde_json",
 ]
