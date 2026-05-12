@@ -273,7 +273,7 @@ impl AttestationSock {
         Ok(())
     }
 
-    pub fn prepare_init_state(
+    pub fn measure_instance(
         &mut self,
         vm_instance_conf: vm_attest::VmInstanceConf,
         boot_backend_ref: Option<boot_digest::Backend>,
@@ -286,7 +286,7 @@ impl AttestationSock {
             AttestationInitState::Preparing { vm_conf_send } => vm_conf_send,
             other => {
                 panic!(
-                    "VM RoT used incorrectly: prepare_instance_conf called \
+                    "VM RoT used incorrectly: measure_instance called \
                         more than once. current state {other:?}"
                 );
             }
