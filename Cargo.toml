@@ -197,21 +197,21 @@ zerocopy = "0.8.25"
 # It's common during development to use a local copy of various complex
 # dependencies.  If you want to use those, uncomment one of these blocks.
 #
-# [patch."https://github.com/oxidecomputer/omicron"]
-# bootstore = { path = "../omicron/bootstore" }
-# illumos-utils = { path = "../omicron/illumos-utils" }
-# internal-dns-resolver = { path = "../omicron/internal-dns/resolver" }
-# internal-dns-types = { path = "../omicron/internal-dns/types" }
-# internal-dns-types-versions = { path = "../omicron/internal-dns/types/versions" }
-# nexus-client = { path = "../omicron/clients/nexus-client" }
-# omicron-common = { path = "../omicron/common" }
-# omicron-uuid-kinds = { path = "../omicron/uuid-kinds" }
-# oximeter = { path = "../omicron/oximeter/oximeter" }
-# oximeter-instruments = { path = "../omicron/oximeter/instruments" }
-# oximeter-producer = { path = "../omicron/oximeter/producer" }
-# sled-agent-client = { path = "../omicron/clients/sled-agent-client" }
-# sled-agent-types = { path = "../omicron/sled-agent/types" }
-# sled-agent-types-versions = { path = "../omicron/sled-agent/types/versions" }
+[patch."https://github.com/oxidecomputer/omicron"]
+bootstore = { path = "../omicron/bootstore" }
+illumos-utils = { path = "../omicron/illumos-utils" }
+internal-dns-resolver = { path = "../omicron/internal-dns/resolver" }
+internal-dns-types = { path = "../omicron/internal-dns/types" }
+internal-dns-types-versions = { path = "../omicron/internal-dns/types/versions" }
+nexus-client = { path = "../omicron/clients/nexus-client" }
+omicron-common = { path = "../omicron/common" }
+omicron-uuid-kinds = { path = "../omicron/uuid-kinds" }
+oximeter = { path = "../omicron/oximeter/oximeter" }
+oximeter-instruments = { path = "../omicron/oximeter/instruments" }
+oximeter-producer = { path = "../omicron/oximeter/producer" }
+sled-agent-client = { path = "../omicron/clients/sled-agent-client" }
+sled-agent-types = { path = "../omicron/sled-agent/types" }
+sled-agent-types-versions = { path = "../omicron/sled-agent/types/versions" }
 # [patch."https://github.com/oxidecomputer/crucible"]
 # crucible = { path = "../crucible/upstairs" }
 # crucible-client-types = { path = "../crucible/crucible-client-types" }
