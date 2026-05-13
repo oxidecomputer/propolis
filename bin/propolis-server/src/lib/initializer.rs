@@ -790,7 +790,7 @@ impl MachineInitializer<'_> {
             None
         };
 
-        vm_rot.prepare_init_state(vm_attestation_conf, boot_backend);
+        vm_rot.measure_instance(vm_attestation_conf, boot_backend);
 
         Ok(())
     }
