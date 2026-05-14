@@ -81,19 +81,19 @@ p9ds = { git = "https://github.com/oxidecomputer/p9fs" }
 softnpu = { git = "https://github.com/oxidecomputer/softnpu" }
 
 # Omicron-related
-internal-dns-resolver = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
-internal-dns-types = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
-nexus-client = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
-omicron-common = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+internal-dns-resolver = { git = "https://github.com/oxidecomputer/omicron", rev = "fa779b29af7a8656657ccca6ec531446188d916c" }
+internal-dns-types = { git = "https://github.com/oxidecomputer/omicron", rev = "fa779b29af7a8656657ccca6ec531446188d916c" }
+nexus-client = { git = "https://github.com/oxidecomputer/omicron", rev = "fa779b29af7a8656657ccca6ec531446188d916c" }
+omicron-common = { git = "https://github.com/oxidecomputer/omicron", rev = "fa779b29af7a8656657ccca6ec531446188d916c" }
 omicron-zone-package = "0.12.2"
-oximeter-instruments = { git = "https://github.com/oxidecomputer/omicron", branch = "main", default-features = false, features = ["kstat"] }
-oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
-oximeter = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
-sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", branch = "main" }
+oximeter-instruments = { git = "https://github.com/oxidecomputer/omicron", rev = "fa779b29af7a8656657ccca6ec531446188d916c", default-features = false, features = ["kstat"] }
+oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", rev = "fa779b29af7a8656657ccca6ec531446188d916c" }
+oximeter = { git = "https://github.com/oxidecomputer/omicron", rev = "fa779b29af7a8656657ccca6ec531446188d916c" }
+sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", rev = "fa779b29af7a8656657ccca6ec531446188d916c" }
 
 # Crucible
-crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "3c1708d86e10f0370807388a1efe092edd99d431" }
-crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "3c1708d86e10f0370807388a1efe092edd99d431" }
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "bd9a0e2abe6b6b89aec8c85f4ee57474144ed150" }
+crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "bd9a0e2abe6b6b89aec8c85f4ee57474144ed150" }
 
 # Attestation
 dice-verifier = { git = "https://github.com/oxidecomputer/dice-util", rev = "d7472bfa91aee859c3fe0bdc1dbb1e320285228e", features = ["sled-agent"] }
@@ -180,7 +180,7 @@ tar = "0.4"
 tempfile = "3.2"
 termwiz = "0.20"
 thiserror = "1.0"
-tokio = "1"
+tokio = "1.52"
 tokio-tungstenite = "0.21"
 tokio-util = "0.7"
 toml = "0.7.8"
