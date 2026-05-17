@@ -8,6 +8,7 @@ test = false
 doctest = false
 
 [dependencies]
+acpi_tables.workspace = true
 anyhow.workspace = true
 backoff.workspace = true
 byteorder.workspace = true

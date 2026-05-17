@@ -24,6 +24,7 @@ tokio = { workspace = true, features = ["full"] }
 futures.workspace = true
 paste.workspace = true
 pin-project-lite.workspace = true
+acpi_tables.workspace = true
 anyhow.workspace = true
 rgb_frame.workspace = true
 rfb.workspace = true

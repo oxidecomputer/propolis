@@ -1055,7 +1055,9 @@ mod test {
 
 pub mod formats {
     use super::Entry;
+    use crate::firmware::acpi;
     use crate::hw::pci;
+    use acpi_tables::Aml;
     use zerocopy::{Immutable, IntoBytes};
 
     /// A type for a range described in an E820 map entry.
@@ -1299,6 +1301,512 @@ pub mod formats {
                 .split('\n')
                 .collect::<Vec<_>>();
             assert_eq!(&expected[..], &entries[..]);
+        }
+    }
+
+    #[derive(thiserror::Error, Debug)]
+    pub enum AcpiTablesError {
+        #[error(
+            "invalid PCI window range, base address ({0:#04x}) must be lower than end ({1:#04x})"
+        )]
+        InvalidPCIWindowRange(u64, u64),
+    }
+
+    /// Instance configuration that are relevant when building the ACPI tables.
+    pub struct AcpiConfig<'a> {
+        pub num_cpus: u8,
+        pub pci_window_32: PciWindow,
+        pub pci_window_64: PciWindow,
+        pub dsdt_generators: &'a [&'a dyn acpi::DsdtGenerator],
+    }
+
+    /// A range of address to be used for PCI MMIO.
+    #[derive(PartialEq)]
+    pub struct PciWindow {
+        base: u64,
+        end: u64,
+    }
+    impl PciWindow {
+        pub fn new(base: u64, end: u64) -> Result<Self, AcpiTablesError> {
+            if base >= end {
+                return Err(AcpiTablesError::InvalidPCIWindowRange(base, end));
+            }
+            Ok(Self { base, end })
+        }
+
+        pub fn empty() -> Self {
+            Self { base: 0, end: 0 }
+        }
+
+        pub fn len(&self) -> u64 {
+            if *self == PciWindow::empty() {
+                return 0;
+            }
+            // Values are checked on creation to ensure the subtraction doesn't
+            // underflow.
+            self.end - self.base + 1
+        }
+    }
+
+    /// The resulting values to be loaded into QEMU fw_cfg data.
+    pub struct AcpiTables {
+        pub tables: Entry,
+        pub rsdp: Entry,
+        pub table_loader: Entry,
+    }
+
+    const FW_CFG_ACPI_TABLES_PATH: &str = "etc/acpi/tables";
+    const FW_CFG_ACPI_RSDP_PATH: &str = "etc/acpi/rsdp";
+
+    /// Builds ACPI tables for an instance and provide three blobs of data that
+    /// can be loaded into the instance as QEMU firmware configuration: the
+    /// tables themselves, the RSDP table, and a [`TableLoader`] with commands
+    /// to run when the instance boots.
+    ///
+    /// The ACPI tables are organized in a hierarchy, with some tables having
+    /// fields that hold the address of another table.
+    ///
+    /// ```text
+    /// ┌─────────┐    ┌─────────┐      ┌─────────────┐                
+    /// │  RSDP   │ ┌─▶│  XSDT   │  ┌──▶│    FADT     │                
+    /// ├─────────┤ │  ├─────────┤  │   ├─────────────┤    ┌──────────┐
+    /// │ Pointer │ │  │  Entry  │──┘   │ ........... │ ┌─▶│   FACS   │
+    /// ├─────────┤ │  ├─────────┤      │FIRMWARE_CTRL│─┘  └──────────┘
+    /// │ Pointer │─┘  │  Entry  │      │ ........... │    ┌──────────┐
+    /// └─────────┘    ├─────────┤      │     DSDT    │─┬─▶│   DSDT   │
+    ///                │   ...   │      │ ........... │ │  ├──────────┤
+    ///                ├─────────┤      │    X_DSDT   │─┘  │Definition│
+    ///                │  Entry  │───┐  │ ........... │    │  Blocks  │
+    ///                ├─────────┤   │  └─────────────┘    └──────────┘
+    ///                │  Entry  │─┐ │  ┌──────────┐                   
+    ///                └─────────┘ │ └─▶│   SSDT   │                   
+    ///                            │    ├──────────┤                   
+    ///                            │    │Definition│                   
+    ///                            │    │  Blocks  │                   
+    ///                            │    └──────────┘                   
+    ///                            │    ┌────────────────────┐         
+    ///                            └───▶│        MADT        │         
+    ///                                 ├────────────────────┤         
+    ///                                 │Interrupt Controller│         
+    ///                                 │     Structures     │         
+    ///                                 └────────────────────┘         
+    /// ```
+    /// Adapted from <https://docs.kernel.org/firmware-guide/acpi/namespace.html>
+    ///
+    /// These addresses are only know at boot time, so each reference has a
+    /// corresponding [`AddPointerCommand`] that the firmware executes on boot.
+    /// And since the table has been modified, they also need a
+    /// [`AddChecksumCommand`] to recalculate the final table checksum.
+    pub struct AcpiTablesBuilder<'a> {
+        config: &'a AcpiConfig<'a>,
+        tables: Vec<u8>,
+        rsdp: Vec<u8>,
+        loader: TableLoader,
+    }
+
+    impl<'a> AcpiTablesBuilder<'a> {
+        pub fn new(config: &'a AcpiConfig) -> Self {
+            Self {
+                config,
+                tables: Vec::new(),
+                rsdp: Vec::new(),
+                loader: TableLoader::new(),
+            }
+        }
+
+        pub fn build(mut self) -> AcpiTables {
+            self.loader.add_allocate(
+                FW_CFG_ACPI_TABLES_PATH,
+                64,
+                AllocZone::High,
+            );
+            self.loader.add_allocate(
+                FW_CFG_ACPI_RSDP_PATH,
+                16,
+                AllocZone::FSeg,
+            );
+
+            let facs_offset = self.add_facs();
+            let dsdt_offset = self.add_dsdt();
+            let fadt_offset = self.add_fadt(facs_offset, dsdt_offset);
+
+            let madt_offset = self.add_madt();
+            let ssdt_offset = self.add_ssdt();
+
+            // OVMF actually ignores the XSDT and RSDP tables provided via
+            // fw_cfg and always generates its own versions, but include them
+            // here regardless for completeness.
+            //
+            // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/QemuFwCfgAcpi.c#L891-L899
+            let xsdt_entries = vec![fadt_offset, madt_offset, ssdt_offset];
+            let xsdt_offset = self.add_xsdt(xsdt_entries);
+
+            self.add_rsdp(xsdt_offset);
+
+            AcpiTables {
+                tables: Entry::Bytes(self.tables),
+                rsdp: Entry::Bytes(self.rsdp),
+                table_loader: self.loader.finish(),
+            }
+        }
+
+        fn add_facs(&mut self) -> usize {
+            let facs = acpi::Facs::new();
+            let facs_offset = self.tables.len();
+            facs.to_aml_bytes(&mut self.tables);
+
+            facs_offset
+        }
+
+        fn add_dsdt(&mut self) -> usize {
+            let dsdt_config =
+                acpi::DsdtConfig { generators: self.config.dsdt_generators };
+            let dsdt = acpi::Dsdt::new(dsdt_config);
+            let dsdt_offset = self.tables.len();
+            dsdt.to_aml_bytes(&mut self.tables);
+
+            dsdt_offset
+        }
+
+        fn add_ssdt(&mut self) -> usize {
+            // Add data for the FWDT OperationRegion declared in the SSDT
+            // table.
+            let fwdt_data_offset = self.tables.len();
+            [
+                self.config.pci_window_32.base,
+                self.config.pci_window_32.end,
+                self.config.pci_window_32.len(),
+                self.config.pci_window_64.base,
+                self.config.pci_window_64.end,
+                self.config.pci_window_64.len(),
+            ]
+            .iter()
+            .for_each(|data| {
+                self.tables.extend_from_slice(&data.to_le_bytes());
+            });
+
+            let ssdt = acpi::Ssdt::new(fwdt_data_offset);
+            let ssdt_offset = self.tables.len();
+            ssdt.to_aml_bytes(&mut self.tables);
+
+            // Mark the FWDT OperationRegion offset field as a pointer to the
+            // FWDT data.
+            self.loader.add_pointer(
+                FW_CFG_ACPI_TABLES_PATH,
+                FW_CFG_ACPI_TABLES_PATH,
+                (ssdt_offset + acpi::SSDT_FWDT_ADDR_OFFSET) as u32,
+                acpi::SSDT_FWDT_ADDR_LEN as u8,
+            );
+
+            // Recalculate checksum after changes.
+            self.reset_checksum(ssdt_offset);
+
+            ssdt_offset
+        }
+
+        fn add_fadt(
+            &mut self,
+            facs_offset: usize,
+            dsdt_offset: usize,
+        ) -> usize {
+            let fadt = acpi::Fadt::new(facs_offset as u32, dsdt_offset as u32);
+            let fadt_offset = self.tables.len();
+            fadt.to_aml_bytes(&mut self.tables);
+
+            // Mark the fields that reference other tables as pointers.
+            [
+                (acpi::FADT_FACS_OFFSET, acpi::FADT_FACS_LEN), // FADT -> FACS
+                (acpi::FADT_DSDT_OFFSET, acpi::FADT_DSDT_LEN), // FADT -> DSDT
+                (acpi::FADT_X_DSDT_OFFSET, acpi::FADT_X_DSDT_LEN), // FADT -> X_DSDT
+            ]
+            .iter()
+            .for_each(|&(offset, size)| {
+                self.loader.add_pointer(
+                    FW_CFG_ACPI_TABLES_PATH,
+                    FW_CFG_ACPI_TABLES_PATH,
+                    (fadt_offset + offset) as u32,
+                    size as u8,
+                );
+            });
+
+            // Recalculate checksum after changes.
+            self.reset_checksum(fadt_offset);
+
+            fadt_offset
+        }
+
+        fn add_madt(&mut self) -> usize {
+            let madt_config =
+                &acpi::MadtConfig { num_cpus: self.config.num_cpus };
+            let madt = acpi::Madt::new(madt_config);
+            let madt_offset = self.tables.len();
+            madt.to_aml_bytes(&mut self.tables);
+
+            madt_offset
+        }
+
+        fn add_xsdt(&mut self, entries: Vec<usize>) -> usize {
+            let xsdt =
+                acpi::Xsdt::new(entries.iter().map(|e| *e as u64).collect());
+            let xsdt_offset = self.tables.len();
+            xsdt.to_aml_bytes(&mut self.tables);
+
+            // Mark the table entry fields as pointers.
+            for i in 0..entries.len() {
+                // Each entry offset in the overall tables data is:
+                // XSDT offset + XSDT header length +
+                //   8 * the number of entries before it.
+                let offset = xsdt_offset + acpi::XSDT_HEADER_LEN + 8 * i;
+
+                self.loader.add_pointer(
+                    FW_CFG_ACPI_TABLES_PATH,
+                    FW_CFG_ACPI_TABLES_PATH,
+                    offset as u32,
+                    size_of::<u64>() as u8,
+                );
+            }
+
+            // Recalculate checksum after changes.
+            self.reset_checksum(xsdt_offset);
+
+            xsdt_offset
+        }
+
+        fn add_rsdp(&mut self, xsdt_offset: usize) {
+            let rsdp = acpi::Rsdp::new(xsdt_offset as u64);
+            rsdp.to_aml_bytes(&mut self.rsdp);
+
+            // Mark the field with the XSDT address as pointer.
+            self.loader.add_pointer(
+                FW_CFG_ACPI_RSDP_PATH,
+                FW_CFG_ACPI_TABLES_PATH,
+                acpi::RSDP_XSDT_ADDR_OFFSET as u32,
+                acpi::RSDP_XSDT_ADDR_LEN as u8,
+            );
+
+            // Recalculate checksums after changes.
+            self.reset_rsdp_checksum(
+                acpi::RSDP_V1_CHECKSUM_OFFSET,
+                acpi::RSDP_V1_TABLE_LEN,
+            );
+            self.reset_rsdp_checksum(
+                acpi::RSDP_EXTENDED_CHECKSUM_OFFSET,
+                acpi::RSDP_EXTENDED_TABLE_LEN,
+            );
+        }
+
+        /// Add a command to recompute a RSDP table checksum on boot.
+        ///
+        /// It is used when the table is modified during generation or it has
+        /// commands that will modify them on boot.
+        ///
+        /// Must be called after all modifications have been done.
+        fn reset_rsdp_checksum(
+            &mut self,
+            checksum_offset: usize,
+            table_len: usize,
+        ) {
+            let checksum_end =
+                checksum_offset + acpi::TABLE_HEADER_CHECKSUM_LEN;
+
+            // Zero existing checksum so it doesn't affect the new value.
+            self.rsdp[checksum_offset..checksum_end].copy_from_slice(&[0_u8]);
+            self.loader.add_checksum(
+                FW_CFG_ACPI_RSDP_PATH,
+                checksum_offset as u32,
+                0,
+                table_len as u32,
+            );
+        }
+
+        /// Add a command to recompute a table's checksum on boot.
+        ///
+        /// It is used when the table is modified during generation or it has
+        /// commands that will modify them on boot.
+        ///
+        /// Must be called after all modifications have been done.
+        fn reset_checksum(&mut self, table_offset: usize) {
+            let checksum_start =
+                table_offset + acpi::TABLE_HEADER_CHECKSUM_OFFSET;
+            let checksum_end = table_offset
+                + acpi::TABLE_HEADER_CHECKSUM_OFFSET
+                + acpi::TABLE_HEADER_CHECKSUM_LEN;
+
+            // Zero existing checksum so it doesn't affect the new value.
+            self.tables[checksum_start..checksum_end].copy_from_slice(&[0u8]);
+            self.loader.add_checksum(
+                FW_CFG_ACPI_TABLES_PATH,
+                checksum_start as u32,
+                table_offset as u32,
+                (self.tables.len() - table_offset) as u32,
+            );
+        }
+    }
+
+    const TABLE_LOADER_FILESZ: usize = 56;
+    const TABLE_LOADER_COMMAND_SIZE: usize = 128;
+
+    /// Stores commands that will be executed by the EDK2 firmware when the
+    /// ACPI tables are loaded.
+    ///
+    /// Refer to the EDK2 source code for more information on the commands.
+    ///
+    /// <https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/QemuLoader.h>
+    pub struct TableLoader {
+        commands: Vec<u8>,
+    }
+
+    impl TableLoader {
+        pub fn new() -> Self {
+            Self { commands: Vec::new() }
+        }
+
+        pub fn add_allocate(
+            &mut self,
+            file: &str,
+            align: u32,
+            zone: AllocZone,
+        ) {
+            assert!(align.is_power_of_two());
+
+            let cmd = AllocateCommand {
+                file: LoaderFileName::new(file),
+                align,
+                zone,
+            };
+            self.write_command(CommandType::Allocate, cmd.as_bytes());
+        }
+
+        pub fn add_pointer(
+            &mut self,
+            dest_file: &str,
+            src_file: &str,
+            offset: u32,
+            size: u8,
+        ) {
+            assert!(matches!(size, 1 | 2 | 4 | 8));
+
+            let cmd = AddPointerCommand {
+                dest_file: LoaderFileName::new(dest_file),
+                src_file: LoaderFileName::new(src_file),
+                offset,
+                size,
+            };
+            self.write_command(CommandType::AddPointer, cmd.as_bytes());
+        }
+
+        pub fn add_checksum(
+            &mut self,
+            file: &str,
+            result_offset: u32,
+            start: u32,
+            length: u32,
+        ) {
+            let cmd = AddChecksumCommand {
+                file: LoaderFileName::new(file),
+                result_offset,
+                start,
+                length,
+            };
+            self.write_command(CommandType::AddChecksum, cmd.as_bytes());
+        }
+
+        pub fn finish(self) -> Entry {
+            Entry::Bytes(self.commands)
+        }
+
+        fn write_command(&mut self, cmd_type: CommandType, payload: &[u8]) {
+            let start = self.commands.len();
+            self.commands.resize(start + TABLE_LOADER_COMMAND_SIZE, 0);
+
+            let cmd_bytes = (cmd_type as u32).to_le_bytes();
+            self.commands[start..start + 4].copy_from_slice(&cmd_bytes);
+
+            let payload_start = start + 4;
+            let payload_end = payload_start + payload.len();
+            assert!(payload_end <= start + TABLE_LOADER_COMMAND_SIZE);
+            self.commands[payload_start..payload_end].copy_from_slice(payload);
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, IntoBytes, Immutable)]
+    #[repr(u8)]
+    pub enum AllocZone {
+        High = 0x1,
+        FSeg = 0x2,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, IntoBytes, Immutable)]
+    #[repr(u32)]
+    enum CommandType {
+        Allocate = 1,
+        AddPointer = 2,
+        AddChecksum = 3,
+        #[allow(dead_code)]
+        WritePointer = 4,
+    }
+
+    #[derive(Clone, IntoBytes, Immutable)]
+    #[repr(C)]
+    struct LoaderFileName([u8; TABLE_LOADER_FILESZ]);
+    impl LoaderFileName {
+        fn new(name: &str) -> Self {
+            let bytes = name.as_bytes();
+            assert!(bytes.len() < TABLE_LOADER_FILESZ);
+
+            let mut buf = [0u8; TABLE_LOADER_FILESZ];
+            buf[..bytes.len()].copy_from_slice(bytes);
+            Self(buf)
+        }
+    }
+
+    #[derive(IntoBytes, Immutable)]
+    #[repr(C, packed)]
+    struct AllocateCommand {
+        file: LoaderFileName,
+        align: u32,
+        zone: AllocZone,
+    }
+
+    #[derive(IntoBytes, Immutable)]
+    #[repr(C, packed)]
+    struct AddPointerCommand {
+        dest_file: LoaderFileName,
+        src_file: LoaderFileName,
+        offset: u32,
+        size: u8,
+    }
+
+    #[derive(IntoBytes, Immutable)]
+    #[repr(C, packed)]
+    struct AddChecksumCommand {
+        file: LoaderFileName,
+        result_offset: u32,
+        start: u32,
+        length: u32,
+    }
+
+    #[cfg(test)]
+    mod test_table_loader {
+        use super::*;
+
+        #[test]
+        fn basic() {
+            let mut loader = TableLoader::new();
+            loader.add_allocate("rsdp", 16, AllocZone::FSeg);
+            loader.add_allocate("tables", 64, AllocZone::High);
+            loader.add_pointer("rsdp", "tables", 16, 4);
+            loader.add_checksum("rsdp", 8, 0, 20);
+
+            let Entry::Bytes(bytes) = loader.finish() else {
+                panic!("expected Bytes entry");
+            };
+
+            assert_eq!(bytes.len(), TABLE_LOADER_COMMAND_SIZE * 4);
+            assert_eq!(bytes[0], CommandType::Allocate as u8);
+            assert_eq!(bytes[128], CommandType::Allocate as u8);
+            assert_eq!(bytes[256], CommandType::AddPointer as u8);
+            assert_eq!(bytes[384], CommandType::AddChecksum as u8);
         }
     }
 }
