@@ -57,6 +57,7 @@ use propolis_types::{CpuidIdent, CpuidVendor};
 use slog::info;
 use strum::IntoEnumIterator;
 use thiserror::Error;
+use uuid::Uuid;
 
 // XXX: completely arb for now
 const MAX_FILE_WORKERS: usize = 32;
@@ -951,6 +952,42 @@ impl MachineInitializer<'_> {
                             metrics will not be produced";
                             "disk_id" => %backend_id,
                             "volume_id" => %volume_id,
+                            "error" => ?e,
+                        );
+                        continue;
+                    };
+
+                    block_dev.attachment().set_metric_consumer(block_metrics);
+                };
+            } else {
+                // not Crucible, e.g. local disk.  Fake up the block_size and disk_id.
+                let disk_id = Uuid::new_v4();
+                info!(
+                    self.log,
+                    "Storage backend is not Crucible";
+                    "disk_id" => %backend_id,
+                    "fake_disk_id" => %disk_id,
+                );
+                if let Some(registry) = &self.producer_registry {
+                    let block_metrics = BlockMetrics::new(
+                        VirtualDisk {
+                            attached_instance_id: self.properties.id,
+                            block_size: 512,
+                            disk_id,
+                            project_id: self.properties.metadata.project_id,
+                            silo_id: self.properties.metadata.silo_id,
+                        },
+                        block_dev.attachment().max_queues(),
+                    );
+
+                    if let Err(e) =
+                        registry.register_producer(block_metrics.producer())
+                    {
+                        slog::error!(
+                            self.log,
+                            "Could not register virtual disk producer, \
+                            metrics will not be produced";
+                            "disk_id" => %backend_id,
                             "error" => ?e,
                         );
                         continue;
