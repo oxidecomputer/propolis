@@ -896,6 +896,8 @@ impl MachineInitializer<'_> {
                 }
             };
 
+            let block_size;
+            let volume_id;
             if let Some(crucible) = crucible {
                 let crucible =
                     match self.crucible_backends.entry(backend_id.clone()) {
@@ -911,26 +913,26 @@ impl MachineInitializer<'_> {
                         }
                     };
 
-                let Some(block_size) = crucible.block_size().await else {
-                    slog::error!(
-                        self.log,
-                        "Could not get Crucible backend block size, \
-                        virtual disk metrics can't be reported for it";
-                        "disk_id" => %backend_id,
-                    );
-                    continue;
+                block_size = crucible.block_size().await;
+                volume_id = crucible.get_uuid().await.ok();
+            } else {
+                // Not a Crucible backend; fake up a volume ID.
+                // XXX we should get this from Nexus.
+                block_size = match &disk.backend_spec {
+                    StorageBackend::File(fsb) => Some(fsb.block_size),
+                    _ => Some(512),
                 };
-
-                let Ok(volume_id) = crucible.get_uuid().await else {
-                    slog::error!(
-                        self.log,
-                        "Could not get Crucible volume ID, \
-                        virtual disk metrics can't be reported for it";
-                        "disk_id" => %backend_id,
-                    );
-                    continue;
-                };
-
+                let temp_id = Uuid::new_v4();
+                volume_id = Some(temp_id);
+                info!(
+                    self.log,
+                    "Storage backend is not Crucible; temporary volume ID will be used for metrics";
+                    "disk_id" => %backend_id,
+                    "temp_id" => %temp_id,
+                );
+            }
+            if let (Some(block_size), Some(volume_id)) = (block_size, volume_id)
+            {
                 if let Some(registry) = &self.producer_registry {
                     let block_metrics = BlockMetrics::new(
                         VirtualDisk {
@@ -958,43 +960,15 @@ impl MachineInitializer<'_> {
                     };
 
                     block_dev.attachment().set_metric_consumer(block_metrics);
-                };
-            } else {
-                // not Crucible, e.g. local disk.  Fake up the block_size and disk_id.
-                let disk_id = Uuid::new_v4();
-                info!(
-                    self.log,
-                    "Storage backend is not Crucible";
-                    "disk_id" => %backend_id,
-                    "fake_disk_id" => %disk_id,
-                );
-                if let Some(registry) = &self.producer_registry {
-                    let block_metrics = BlockMetrics::new(
-                        VirtualDisk {
-                            attached_instance_id: self.properties.id,
-                            block_size: 512,
-                            disk_id,
-                            project_id: self.properties.metadata.project_id,
-                            silo_id: self.properties.metadata.silo_id,
-                        },
-                        block_dev.attachment().max_queues(),
+                } else {
+                    slog::error!(
+                        self.log,
+                        "Could not get Crucible backend block size or volume ID, \
+                        virtual disk metrics can't be reported for it";
+                        "disk_id" => %backend_id,
                     );
-
-                    if let Err(e) =
-                        registry.register_producer(block_metrics.producer())
-                    {
-                        slog::error!(
-                            self.log,
-                            "Could not register virtual disk producer, \
-                            metrics will not be produced";
-                            "disk_id" => %backend_id,
-                            "error" => ?e,
-                        );
-                        continue;
-                    };
-
-                    block_dev.attachment().set_metric_consumer(block_metrics);
-                };
+                    continue;
+                }
             }
         }
         Ok(wanted_heap)
