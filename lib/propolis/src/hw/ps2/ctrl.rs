@@ -1106,26 +1106,27 @@ impl Aml for PS2Ctrl {
         aml::Device::new(
             "PS2K".into(),
             vec![
-                &aml::Name::new("_HID".into(), &aml::EISAName::new("PNP0303")),
-                &aml::Name::new("_CID".into(), &aml::EISAName::new("PNP030B")),
-                &aml::Name::new(
-                    "_CRS".into(),
-                    &aml::ResourceTemplate::new(vec![
-                        &aml::IO::new(
-                            ibmpc::PORT_PS2_DATA,
-                            ibmpc::PORT_PS2_DATA,
-                            0x00,
-                            0x01,
-                        ),
-                        &aml::IO::new(
-                            ibmpc::PORT_PS2_CMD_STATUS,
-                            ibmpc::PORT_PS2_CMD_STATUS,
-                            0x00,
-                            0x01,
-                        ),
-                        &aml::IrqNoFlags::new(ibmpc::IRQ_PS2_PRI),
-                    ]),
-                ),
+                &acpi::names::hid(&aml::EISAName::new(
+                    acpi::devids::IBM_ENHANCED_KEYBOARD,
+                )),
+                &acpi::names::cid(&aml::EISAName::new(
+                    acpi::devids::MICROSOFT_RESERVED_KEYBOARD,
+                )),
+                &acpi::names::crs(&aml::ResourceTemplate::new(vec![
+                    &aml::IO::new(
+                        ibmpc::PORT_PS2_DATA,
+                        ibmpc::PORT_PS2_DATA,
+                        0x00,
+                        0x01,
+                    ),
+                    &aml::IO::new(
+                        ibmpc::PORT_PS2_CMD_STATUS,
+                        ibmpc::PORT_PS2_CMD_STATUS,
+                        0x00,
+                        0x01,
+                    ),
+                    &aml::IrqNoFlags::new(ibmpc::IRQ_PS2_PRI),
+                ])),
             ],
         )
         .to_aml_bytes(sink);
