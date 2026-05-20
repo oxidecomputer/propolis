@@ -23,6 +23,7 @@
 //            for some devices when possible.
 // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiTables/Dsdt.asl
 
+use super::{devids, methods, names, paths};
 use super::{
     GPE0_BLK_ADDR, GPE0_BLK_LEN, IO_APIC_ADDR, LOCAL_APIC_ADDR, PCI_LINK_IRQS,
     PM1A_EVT_BLK_ADDR, SCI_IRQ,
@@ -174,10 +175,10 @@ impl<'a> Aml for PciRootBridge<'a> {
         aml::Device::new(
             "PCI0".into(),
             vec![
-                &aml::Name::new("_HID".into(), &aml::EISAName::new("PNP0A03")),
-                &aml::Name::new("_ADR".into(), &aml::ZERO),
-                &aml::Name::new("_BBN".into(), &aml::ZERO),
-                &aml::Name::new("_UID".into(), &aml::ZERO),
+                &names::hid(&aml::EISAName::new(devids::PCI_BUS)),
+                &names::adr(&aml::ZERO),
+                &names::bbn(&aml::ZERO),
+                &names::uid(&aml::ZERO),
                 &PciRootBridgeCrs {},
                 &PciRootBridgePrt {},
                 &PciRootBridgeLpc { generators: self.generators },
@@ -320,8 +321,7 @@ impl Aml for PciRootBridgeCrs {
         // region is populated by Propolis in lib/propolis/src/hw/qemu/fwcfg.rs
         // and it stores the 32-bit and 64-bit MMIO regions reserved for PCI
         // devices.
-        aml::Method::new(
-            "_CRS".into(),
+        methods::crs(
             0,
             true,
             vec![
@@ -507,8 +507,7 @@ impl Aml for PciRootBridgePrt {
         }
         let ptr = ptr_entries.iter().map(|p| p as &dyn Aml).collect();
 
-        aml::Method::new(
-            "_PRT".into(),
+        methods::prt(
             0,
             false,
             vec![&aml::Return::new(&aml::Package::new(ptr))],
@@ -561,7 +560,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
         aml::Device::new(
             "LPC_".into(),
             vec![
-                &aml::Name::new("_ADR".into(), &0x0001_0000_u64),
+                &names::adr(&0x0001_0000_u64),
                 &Lnk::new("LNKS", 0),
                 // PCI Interrupt Routing Configuration Registers, PIRQRC[A:D].
                 &aml::OpRegion::new(
@@ -655,113 +654,87 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                 &aml::Device::new(
                     "PIC_".into(),
                     vec![
-                        &aml::Name::new(
-                            "_HID".into(),
-                            &aml::EISAName::new("PNP0000"),
-                        ),
-                        &aml::Name::new(
-                            "_CRS".into(),
-                            &aml::ResourceTemplate::new(vec![
-                                &aml::IO::new(0x0020, 0x0020, 0x00, 0x02),
-                                &aml::IO::new(0x00A0, 0x00A0, 0x00, 0x02),
-                                &aml::IO::new(0x04d0, 0x04d0, 0x00, 0x02),
-                                &aml::IrqNoFlags::new(2),
-                            ]),
-                        ),
+                        &names::hid(&aml::EISAName::new(
+                            devids::AT_INT_CONTROLLER,
+                        )),
+                        &names::crs(&aml::ResourceTemplate::new(vec![
+                            &aml::IO::new(0x0020, 0x0020, 0x00, 0x02),
+                            &aml::IO::new(0x00A0, 0x00A0, 0x00, 0x02),
+                            &aml::IO::new(0x04d0, 0x04d0, 0x00, 0x02),
+                            &aml::IrqNoFlags::new(2),
+                        ])),
                     ],
                 ),
                 // ISA DMA.
                 &aml::Device::new(
                     "DMAC".into(),
                     vec![
-                        &aml::Name::new(
-                            "_HID".into(),
-                            &aml::EISAName::new("PNP0200"),
-                        ),
-                        &aml::Name::new(
-                            "_CRS".into(),
-                            &aml::ResourceTemplate::new(vec![
-                                &aml::IO::new(0x0000, 0x0000, 0x00, 0x10),
-                                &aml::IO::new(0x0081, 0x0081, 0x00, 0x03),
-                                &aml::IO::new(0x0087, 0x0087, 0x00, 0x01),
-                                &aml::IO::new(0x0089, 0x0089, 0x00, 0x03),
-                                &aml::IO::new(0x008f, 0x008f, 0x00, 0x01),
-                                &aml::IO::new(0x00c0, 0x00c0, 0x00, 0x20),
-                                &aml::Dma::new(
-                                    aml::DmaChannelSpeed::Compatibility,
-                                    aml::DmaMasterStatus::NotMaster,
-                                    aml::DmaTransferType::Transfer8,
-                                    vec![4],
-                                ),
-                            ]),
-                        ),
+                        &names::hid(&aml::EISAName::new(
+                            devids::AT_DMA_CONTROLLER,
+                        )),
+                        &names::crs(&aml::ResourceTemplate::new(vec![
+                            &aml::IO::new(0x0000, 0x0000, 0x00, 0x10),
+                            &aml::IO::new(0x0081, 0x0081, 0x00, 0x03),
+                            &aml::IO::new(0x0087, 0x0087, 0x00, 0x01),
+                            &aml::IO::new(0x0089, 0x0089, 0x00, 0x03),
+                            &aml::IO::new(0x008f, 0x008f, 0x00, 0x01),
+                            &aml::IO::new(0x00c0, 0x00c0, 0x00, 0x20),
+                            &aml::Dma::new(
+                                aml::DmaChannelSpeed::Compatibility,
+                                aml::DmaMasterStatus::NotMaster,
+                                aml::DmaTransferType::Transfer8,
+                                vec![4],
+                            ),
+                        ])),
                     ],
                 ),
                 // 8254 Timer.
                 &aml::Device::new(
                     "TMR_".into(),
                     vec![
-                        &aml::Name::new(
-                            "_HID".into(),
-                            &aml::EISAName::new("PNP0100"),
-                        ),
-                        &aml::Name::new(
-                            "_CRS".into(),
-                            &aml::ResourceTemplate::new(vec![
-                                &aml::IO::new(0x0040, 0x0040, 0x00, 0x04),
-                                &aml::IrqNoFlags::new(0),
-                            ]),
-                        ),
+                        &names::hid(&aml::EISAName::new(devids::AT_TIMER)),
+                        &names::crs(&aml::ResourceTemplate::new(vec![
+                            &aml::IO::new(0x0040, 0x0040, 0x00, 0x04),
+                            &aml::IrqNoFlags::new(0),
+                        ])),
                     ],
                 ),
                 // Real Time Clock.
                 &aml::Device::new(
                     "RTC_".into(),
                     vec![
-                        &aml::Name::new(
-                            "_HID".into(),
-                            &aml::EISAName::new("PNP0B00"),
-                        ),
-                        &aml::Name::new(
-                            "_CRS".into(),
-                            &aml::ResourceTemplate::new(vec![
-                                &aml::IO::new(0x0070, 0x0070, 0x00, 0x02),
-                                &aml::IrqNoFlags::new(8),
-                            ]),
-                        ),
+                        &names::hid(&aml::EISAName::new(
+                            devids::AT_REAL_TIME_CLOCK,
+                        )),
+                        &names::crs(&aml::ResourceTemplate::new(vec![
+                            &aml::IO::new(0x0070, 0x0070, 0x00, 0x02),
+                            &aml::IrqNoFlags::new(8),
+                        ])),
                     ],
                 ),
                 // PCAT Speaker.
                 &aml::Device::new(
                     "SPKR".into(),
                     vec![
-                        &aml::Name::new(
-                            "_HID".into(),
-                            &aml::EISAName::new("PNP0800"),
-                        ),
-                        &aml::Name::new(
-                            "_CRS".into(),
-                            &aml::ResourceTemplate::new(vec![&aml::IO::new(
-                                0x0061, 0x0061, 0x01, 0x01,
-                            )]),
-                        ),
+                        &names::hid(&aml::EISAName::new(
+                            devids::AT_SPEAKER_SOUND,
+                        )),
+                        &names::crs(&aml::ResourceTemplate::new(vec![
+                            &aml::IO::new(0x0061, 0x0061, 0x01, 0x01),
+                        ])),
                     ],
                 ),
                 // Floating Point Coprocessor.
                 &aml::Device::new(
                     "FPU_".into(),
                     vec![
-                        &aml::Name::new(
-                            "_HID".into(),
-                            &aml::EISAName::new("PNP0C04"),
-                        ),
-                        &aml::Name::new(
-                            "_CRS".into(),
-                            &aml::ResourceTemplate::new(vec![
-                                &aml::IO::new(0x00f0, 0x00f0, 0x00, 0x10),
-                                &aml::IrqNoFlags::new(13),
-                            ]),
-                        ),
+                        &names::hid(&aml::EISAName::new(
+                            devids::MATH_COPROCESSOR,
+                        )),
+                        &names::crs(&aml::ResourceTemplate::new(vec![
+                            &aml::IO::new(0x00f0, 0x00f0, 0x00, 0x10),
+                            &aml::IrqNoFlags::new(13),
+                        ])),
                     ],
                 ),
                 // Generic motherboard devices and pieces that don't fit
@@ -769,60 +742,54 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                 &aml::Device::new(
                     "XTRA".into(),
                     vec![
-                        &aml::Name::new(
-                            "_HID".into(),
-                            &aml::EISAName::new("PNP0C02"),
-                        ),
-                        &aml::Name::new("_UID".into(), &aml::ONE),
-                        &aml::Name::new(
-                            "_CRS".into(),
-                            &aml::ResourceTemplate::new(vec![
-                                &aml::IO::new(0x0010, 0x0010, 0x00, 0x10),
-                                &aml::IO::new(0x0022, 0x0022, 0x00, 0x1e),
-                                &aml::IO::new(0x0044, 0x0044, 0x00, 0x1c),
-                                &aml::IO::new(0x0062, 0x0062, 0x00, 0x02),
-                                &aml::IO::new(0x0065, 0x0065, 0x00, 0x0b),
-                                &aml::IO::new(0x0072, 0x0072, 0x00, 0x0e),
-                                &aml::IO::new(0x0080, 0x0080, 0x00, 0x01),
-                                &aml::IO::new(0x0084, 0x0084, 0x00, 0x03),
-                                &aml::IO::new(0x0088, 0x0088, 0x00, 0x01),
-                                &aml::IO::new(0x008c, 0x008c, 0x00, 0x03),
-                                &aml::IO::new(0x0090, 0x0090, 0x00, 0x10),
-                                &aml::IO::new(0x00a2, 0x00a2, 0x00, 0x1e),
-                                &aml::IO::new(0x00e0, 0x00e0, 0x00, 0x10),
-                                &aml::IO::new(0x01e0, 0x01e0, 0x00, 0x10),
-                                &aml::IO::new(0x0160, 0x0160, 0x00, 0x10),
-                                &aml::IO::new(0x0370, 0x0370, 0x00, 0x02),
-                                &aml::IO::new(0x0402, 0x0402, 0x00, 0x01),
-                                &aml::IO::new(0x0440, 0x0440, 0x00, 0x10),
-                                // QEMU GPE0 BLK.
-                                &aml::IO::new(
-                                    GPE0_BLK_ADDR,
-                                    GPE0_BLK_ADDR,
-                                    0x00,
-                                    GPE0_BLK_LEN,
-                                ),
-                                // PMBLK1.
-                                &aml::IO::new(
-                                    PM1A_EVT_BLK_ADDR,
-                                    PM1A_EVT_BLK_ADDR,
-                                    0x00,
-                                    0x40,
-                                ),
-                                // IO APIC.
-                                &aml::Memory32Fixed::new(
-                                    false,
-                                    IO_APIC_ADDR,
-                                    0x0000_1000,
-                                ),
-                                // LAPIC.
-                                &aml::Memory32Fixed::new(
-                                    false,
-                                    LOCAL_APIC_ADDR,
-                                    0x0010_0000,
-                                ),
-                            ]),
-                        ),
+                        &names::hid(&aml::EISAName::new(devids::GENERAL_ID)),
+                        &names::uid(&aml::ONE),
+                        &names::crs(&aml::ResourceTemplate::new(vec![
+                            &aml::IO::new(0x0010, 0x0010, 0x00, 0x10),
+                            &aml::IO::new(0x0022, 0x0022, 0x00, 0x1e),
+                            &aml::IO::new(0x0044, 0x0044, 0x00, 0x1c),
+                            &aml::IO::new(0x0062, 0x0062, 0x00, 0x02),
+                            &aml::IO::new(0x0065, 0x0065, 0x00, 0x0b),
+                            &aml::IO::new(0x0072, 0x0072, 0x00, 0x0e),
+                            &aml::IO::new(0x0080, 0x0080, 0x00, 0x01),
+                            &aml::IO::new(0x0084, 0x0084, 0x00, 0x03),
+                            &aml::IO::new(0x0088, 0x0088, 0x00, 0x01),
+                            &aml::IO::new(0x008c, 0x008c, 0x00, 0x03),
+                            &aml::IO::new(0x0090, 0x0090, 0x00, 0x10),
+                            &aml::IO::new(0x00a2, 0x00a2, 0x00, 0x1e),
+                            &aml::IO::new(0x00e0, 0x00e0, 0x00, 0x10),
+                            &aml::IO::new(0x01e0, 0x01e0, 0x00, 0x10),
+                            &aml::IO::new(0x0160, 0x0160, 0x00, 0x10),
+                            &aml::IO::new(0x0370, 0x0370, 0x00, 0x02),
+                            &aml::IO::new(0x0402, 0x0402, 0x00, 0x01),
+                            &aml::IO::new(0x0440, 0x0440, 0x00, 0x10),
+                            // QEMU GPE0 BLK.
+                            &aml::IO::new(
+                                GPE0_BLK_ADDR,
+                                GPE0_BLK_ADDR,
+                                0x00,
+                                GPE0_BLK_LEN,
+                            ),
+                            // PMBLK1.
+                            &aml::IO::new(
+                                PM1A_EVT_BLK_ADDR,
+                                PM1A_EVT_BLK_ADDR,
+                                0x00,
+                                0x40,
+                            ),
+                            // IO APIC.
+                            &aml::Memory32Fixed::new(
+                                false,
+                                IO_APIC_ADDR,
+                                0x0000_1000,
+                            ),
+                            // LAPIC.
+                            &aml::Memory32Fixed::new(
+                                false,
+                                LOCAL_APIC_ADDR,
+                                0x0010_0000,
+                            ),
+                        ])),
                     ],
                 ),
                 &DsdtGeneratorAml::new(self.generators, DsdtScope::Lpc),
@@ -837,13 +804,10 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                 &aml::Device::new(
                     "PEVT".into(),
                     vec![
-                        &aml::Name::new("_HID".into(), &"QEMU0001"),
-                        &aml::Name::new(
-                            "_CRS".into(),
-                            &aml::ResourceTemplate::new(vec![&aml::IO::new(
-                                0x0505, 0x0505, 0x01, 0x01,
-                            )]),
-                        ),
+                        &names::hid(&devids::QEMU_PVPANIC),
+                        &names::crs(&aml::ResourceTemplate::new(vec![
+                            &aml::IO::new(0x0505, 0x0505, 0x01, 0x01),
+                        ])),
                         &aml::OpRegion::new(
                             "PEOR".into(),
                             aml::OpRegionSpace::SystemIO,
@@ -857,7 +821,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                             aml::FieldUpdateRule::Preserve,
                             vec![aml::FieldEntry::Named(*b"PEPT", 8)],
                         ),
-                        &aml::Name::new("_STA".into(), &0x0f_u64),
+                        &names::sta(&0x0f_u64),
                         &aml::Method::new(
                             "RDPT".into(),
                             0,
@@ -906,27 +870,15 @@ impl<'a> Lnk<'a> {
         aml::Device::new(
             "LNKS".into(),
             vec![
-                &aml::Name::new("_HID".into(), &aml::EISAName::new("PNP0C0F")),
-                &aml::Name::new("_UID".into(), &aml::ZERO),
-                &aml::Name::new("_STA".into(), &0x0b_u64),
-                &aml::Method::new("_SRS".into(), 1, false, vec![]),
-                &aml::Method::new("_DIS".into(), 0, false, vec![]),
-                &aml::Name::new(
-                    "_PRS".into(),
-                    &aml::ResourceTemplate::new(vec![&aml::Interrupt::new(
-                        true,
-                        false,
-                        false,
-                        true,
-                        vec![0x09],
-                    )]),
-                ),
-                &aml::Method::new(
-                    "_CRS".into(),
-                    0,
-                    false,
-                    vec![&aml::Return::new(&aml::Path::new("_PRS"))],
-                ),
+                &names::hid(&aml::EISAName::new(devids::PCI_INT_LINK)),
+                &names::uid(&aml::ZERO),
+                &names::sta(&0x0b_u64),
+                &methods::srs(1, false, vec![]),
+                &methods::dis(0, false, vec![]),
+                &names::prs(&aml::ResourceTemplate::new(vec![
+                    &aml::Interrupt::new(true, false, false, true, vec![0x09]),
+                ])),
+                &methods::crs(0, false, vec![&aml::Return::new(&paths::prs())]),
             ],
         )
         .to_aml_bytes(sink);
@@ -948,10 +900,9 @@ impl<'a> Aml for Lnk<'a> {
         aml::Device::new(
             aml::Path::new(self.name),
             vec![
-                &aml::Name::new("_HID".into(), &aml::EISAName::new("PNP0C0F")),
-                &aml::Name::new("_UID".into(), &self.uid),
-                &aml::Method::new(
-                    "_STA".into(),
+                &names::hid(&aml::EISAName::new(devids::PCI_INT_LINK)),
+                &names::uid(&self.uid),
+                &methods::sta(
                     0,
                     false,
                     vec![&aml::Return::new(&aml::MethodCall::new(
@@ -959,14 +910,12 @@ impl<'a> Aml for Lnk<'a> {
                         vec![&pir],
                     ))],
                 ),
-                &aml::Method::new(
-                    "_DIS".into(),
+                &methods::dis(
                     0,
                     false,
                     vec![&aml::Or::new(&pir, &pir, &0x80_u64)],
                 ),
-                &aml::Method::new(
-                    "_CRS".into(),
+                &methods::crs(
                     0,
                     false,
                     vec![&aml::Return::new(&aml::MethodCall::new(
@@ -974,8 +923,7 @@ impl<'a> Aml for Lnk<'a> {
                         vec![&pir],
                     ))],
                 ),
-                &aml::Method::new(
-                    "_PRS".into(),
+                &methods::prs(
                     0,
                     false,
                     vec![&aml::Return::new(&aml::MethodCall::new(
@@ -983,8 +931,7 @@ impl<'a> Aml for Lnk<'a> {
                         vec![],
                     ))],
                 ),
-                &aml::Method::new(
-                    "_SRS".into(),
+                &methods::srs(
                     1,
                     false,
                     vec![

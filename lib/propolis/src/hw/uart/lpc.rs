@@ -242,16 +242,15 @@ impl Aml for LpcUart {
         aml::Device::new(
             aml::Path::new(&format!("UAR{}", uid)),
             vec![
-                &aml::Name::new("_HID".into(), &aml::EISAName::new("PNP0501")),
-                &aml::Name::new("_DDN".into(), &self.name),
-                &aml::Name::new("_UID".into(), &uid),
-                &aml::Name::new(
-                    "_CRS".into(),
-                    &aml::ResourceTemplate::new(vec![
-                        &aml::IO::new(port, port, 1, REGISTER_LEN as u8),
-                        &aml::Irq::new(true, false, false, self.irq),
-                    ]),
-                ),
+                &acpi::names::hid(&aml::EISAName::new(
+                    acpi::devids::COM_PORT_16550A,
+                )),
+                &acpi::names::ddn(&self.name),
+                &acpi::names::uid(&uid),
+                &acpi::names::crs(&aml::ResourceTemplate::new(vec![
+                    &aml::IO::new(port, port, 1, REGISTER_LEN as u8),
+                    &aml::Irq::new(true, false, false, self.irq),
+                ])),
             ],
         )
         .to_aml_bytes(sink);
