@@ -24,6 +24,7 @@ oximeter-producer.workspace = true
 oximeter.workspace = true
 phd-testcase.workspace = true
 propolis-client.workspace = true
+propolis.workspace = true
 reqwest.workspace = true
 slog-term.workspace = true
 slog.workspace = true

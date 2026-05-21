@@ -357,11 +357,19 @@ impl<'dr> VmConfig<'dr> {
             assert!(_old.is_none());
         }
 
-        let _old = spec.components.insert(
-            "com1".into(),
-            Component::SerialPort(SerialPort { num: SerialPortNumber::Com1 }),
-        );
-        assert!(_old.is_none());
+        // Create the same serial ports as Omicron and propolis-cli to generate
+        // consistent ACPI tables.
+        for (name, port) in [
+            ("com1", SerialPortNumber::Com1),
+            ("com2", SerialPortNumber::Com2),
+            ("com3", SerialPortNumber::Com3),
+            ("com4", SerialPortNumber::Com4),
+        ] {
+            let _old = spec.components.insert(
+                name.into(),
+                Component::SerialPort(SerialPort { num: port }),
+            );
+        }
 
         if let Some(boot_order) = boot_order.as_ref() {
             let _old = spec.components.insert(

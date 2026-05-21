@@ -6089,6 +6089,7 @@ dependencies = [
  "oximeter",
  "oximeter-producer",
  "phd-testcase",
+ "propolis",
  "propolis-client 0.1.0",
  "reqwest 0.13.2",
  "slog",
