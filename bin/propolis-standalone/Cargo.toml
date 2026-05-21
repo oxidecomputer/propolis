@@ -44,3 +44,4 @@ pbind.workspace = true
 [features]
 default = []
 crucible = ["propolis/crucible-full", "propolis/oximeter", "crucible-client-types"]
+acpi-debug = ["propolis/acpi-debug"]

@@ -1455,6 +1455,9 @@ pub mod formats {
             let facs_offset = self.tables.len();
             facs.to_aml_bytes(&mut self.tables);
 
+            #[cfg(feature = "acpi-debug")]
+            facs.to_aml_bytes(&mut acpi::FileSink::new("./acpi/facs.dat"));
+
             facs_offset
         }
 
@@ -1464,6 +1467,9 @@ pub mod formats {
             let dsdt = acpi::Dsdt::new(dsdt_config);
             let dsdt_offset = self.tables.len();
             dsdt.to_aml_bytes(&mut self.tables);
+
+            #[cfg(feature = "acpi-debug")]
+            dsdt.to_aml_bytes(&mut acpi::FileSink::new("./acpi/dsdt.dat"));
 
             dsdt_offset
         }
@@ -1489,6 +1495,9 @@ pub mod formats {
             let ssdt_offset = self.tables.len();
             ssdt.to_aml_bytes(&mut self.tables);
 
+            #[cfg(feature = "acpi-debug")]
+            ssdt.to_aml_bytes(&mut acpi::FileSink::new("./acpi/ssdt.dat"));
+
             // Mark the FWDT OperationRegion offset field as a pointer to the
             // FWDT data.
             self.loader.add_pointer(
@@ -1512,6 +1521,9 @@ pub mod formats {
             let fadt = acpi::Fadt::new(facs_offset as u32, dsdt_offset as u32);
             let fadt_offset = self.tables.len();
             fadt.to_aml_bytes(&mut self.tables);
+
+            #[cfg(feature = "acpi-debug")]
+            fadt.to_aml_bytes(&mut acpi::FileSink::new("./acpi/fadt.dat"));
 
             // Mark the fields that reference other tables as pointers.
             [
@@ -1542,6 +1554,9 @@ pub mod formats {
             let madt_offset = self.tables.len();
             madt.to_aml_bytes(&mut self.tables);
 
+            #[cfg(feature = "acpi-debug")]
+            madt.to_aml_bytes(&mut acpi::FileSink::new("./acpi/madt.dat"));
+
             madt_offset
         }
 
@@ -1550,6 +1565,9 @@ pub mod formats {
                 acpi::Xsdt::new(entries.iter().map(|e| *e as u64).collect());
             let xsdt_offset = self.tables.len();
             xsdt.to_aml_bytes(&mut self.tables);
+
+            #[cfg(feature = "acpi-debug")]
+            xsdt.to_aml_bytes(&mut acpi::FileSink::new("./acpi/xsdt.dat"));
 
             // Mark the table entry fields as pointers.
             for i in 0..entries.len() {
@@ -1575,6 +1593,9 @@ pub mod formats {
         fn add_rsdp(&mut self, xsdt_offset: usize) {
             let rsdp = acpi::Rsdp::new(xsdt_offset as u64);
             rsdp.to_aml_bytes(&mut self.rsdp);
+
+            #[cfg(feature = "acpi-debug")]
+            rsdp.to_aml_bytes(&mut acpi::FileSink::new("./acpi/rsdp.dat"));
 
             // Mark the field with the XSDT address as pointer.
             self.loader.add_pointer(

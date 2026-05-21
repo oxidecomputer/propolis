@@ -7,6 +7,7 @@
 pub mod dsdt;
 pub mod facs;
 pub mod fadt;
+pub mod file_sink;
 pub mod madt;
 pub mod rsdp;
 pub mod xsdt;
@@ -20,6 +21,7 @@ pub use fadt::{
     Fadt, FADT_DSDT_LEN, FADT_DSDT_OFFSET, FADT_FACS_LEN, FADT_FACS_OFFSET,
     FADT_X_DSDT_LEN, FADT_X_DSDT_OFFSET,
 };
+pub use file_sink::FileSink;
 pub use madt::{Madt, MadtConfig};
 pub use rsdp::{
     Rsdp, RSDP_EXTENDED_CHECKSUM_OFFSET, RSDP_EXTENDED_TABLE_LEN,
