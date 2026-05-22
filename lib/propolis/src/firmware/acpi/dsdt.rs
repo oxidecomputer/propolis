@@ -352,7 +352,7 @@ impl Aml for PciRootBridgeCrs {
         // devices.
         methods::crs(
             0,
-            true,
+            SERIALIZED,
             vec![
                 // Create references to values in the FWDT OperationRegion.
                 &aml::Field::new(
@@ -541,7 +541,7 @@ impl Aml for PciRootBridgePrt {
 
         methods::prt(
             0,
-            false,
+            NOT_SERIALIZED,
             vec![&aml::Return::new(&aml::Package::new(ptr))],
         )
         .to_aml_bytes(sink);
@@ -625,7 +625,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                 &aml::Method::new(
                     "PSTA".into(),
                     1,
-                    false,
+                    NOT_SERIALIZED,
                     vec![
                         &aml::If::new(
                             &aml::And::new(&aml::ZERO, &aml::Arg(0), &0x80_u64),
@@ -638,7 +638,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                 &aml::Method::new(
                     "PCRS".into(),
                     1,
-                    true,
+                    SERIALIZED,
                     vec![
                         &aml::Name::new(
                             "BUF0".into(),
@@ -872,7 +872,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                         &aml::Method::new(
                             "RDPT".into(),
                             0,
-                            false,
+                            NOT_SERIALIZED,
                             vec![
                                 &aml::Store::new(
                                     &aml::Local(0),
@@ -884,7 +884,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                         &aml::Method::new(
                             "WRPT".into(),
                             1,
-                            false,
+                            NOT_SERIALIZED,
                             vec![&aml::Store::new(
                                 &aml::Path::new("PEPT"),
                                 &aml::Arg(0),
@@ -920,12 +920,16 @@ impl<'a> Lnk<'a> {
                 &names::hid(&aml::EISAName::new(devids::PCI_INT_LINK)),
                 &names::uid(&aml::ZERO),
                 &names::sta(&0x0b_u64),
-                &methods::srs(1, false, vec![]),
-                &methods::dis(0, false, vec![]),
+                &methods::srs(1, NOT_SERIALIZED, vec![]),
+                &methods::dis(0, NOT_SERIALIZED, vec![]),
                 &names::prs(&aml::ResourceTemplate::new(vec![
                     &aml::Interrupt::new(true, false, false, true, vec![0x09]),
                 ])),
-                &methods::crs(0, false, vec![&aml::Return::new(&paths::prs())]),
+                &methods::crs(
+                    0,
+                    NOT_SERIALIZED,
+                    vec![&aml::Return::new(&paths::prs())],
+                ),
             ],
         )
         .to_aml_bytes(sink);
@@ -951,7 +955,7 @@ impl<'a> Aml for Lnk<'a> {
                 &names::uid(&self.uid),
                 &methods::sta(
                     0,
-                    false,
+                    NOT_SERIALIZED,
                     vec![&aml::Return::new(&aml::MethodCall::new(
                         "PSTA".into(),
                         vec![&pir],
@@ -959,12 +963,12 @@ impl<'a> Aml for Lnk<'a> {
                 ),
                 &methods::dis(
                     0,
-                    false,
+                    NOT_SERIALIZED,
                     vec![&aml::Or::new(&pir, &pir, &0x80_u64)],
                 ),
                 &methods::crs(
                     0,
-                    false,
+                    NOT_SERIALIZED,
                     vec![&aml::Return::new(&aml::MethodCall::new(
                         "PCRS".into(),
                         vec![&pir],
@@ -972,7 +976,7 @@ impl<'a> Aml for Lnk<'a> {
                 ),
                 &methods::prs(
                     0,
-                    false,
+                    NOT_SERIALIZED,
                     vec![&aml::Return::new(&aml::MethodCall::new(
                         "PPRS".into(),
                         vec![],
@@ -980,7 +984,7 @@ impl<'a> Aml for Lnk<'a> {
                 ),
                 &methods::srs(
                     1,
-                    false,
+                    NOT_SERIALIZED,
                     vec![
                         &aml::CreateDWordField::new(
                             &aml::Path::new("IRQW"),
