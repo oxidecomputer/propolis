@@ -14,14 +14,17 @@
 //! Structs that implement the [`DsdtGenerator`] trait can be passed to
 //! [`DsdtConfig`] and their AML code will be added to the scope they selected.
 
-// XXX(acpi): Most of the DSDT and SSDT tables are generated here to keep them
-//            consistent with the original EDK2 static tables. In the future
-//            they could be created by the devices they represent. For example,
-//            the _SB scope can be created by the I440FxHostBridge struct, the
-//            LPC by Piix3Lpc etc., but they currently lack all the information
-//            necessary to generate the tables. This pattern is already used
-//            for some devices when possible.
+// The DSDT and SSDT tables generated here are kept consistent with the
+// original EDK2 static tables.
+//
 // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiTables/Dsdt.asl
+//
+// It may be better in the future to move the AML code generation logic closer
+// to the devices they represent. For example, the _SB scope could be created
+// by the I440FxHostBridge struct, the LPC by Piix3Lpc etc., but they currently
+// lack all the information necessary to generate their portion of the tables.
+//
+// This pattern is already used for some devices when possible.
 
 use super::{devids, methods, names, paths};
 use super::{
@@ -29,6 +32,21 @@ use super::{
     PM1A_EVT_BLK_ADDR, SCI_IRQ,
 };
 use acpi_tables::{aml, sdt::Sdt, Aml, AmlSink};
+
+// The DSDT and SSDT OEM ID, OEM table ID, and OEM table revision are
+// currently kept the same as the ones used by the original tables from EDK2.
+// They could be updated to Propolis-specific values in the future.
+//
+// For SSDTs, the OEM table ID needs to be different for each table. Refer to
+// ACPI rev. 6.6 section 5.2.11.2 "Secondary System Description Table (SSDT)"
+// for more information.
+const DSDT_OEM_ID: [u8; 6] = *b"INTEL ";
+const DSDT_OEM_TABLE_ID: [u8; 8] = *b"OVMF    ";
+const DSDT_OEM_TABLE_REV: u32 = 0x4;
+
+const SSDT_OEM_ID: [u8; 6] = *b"REDHAT";
+const SSDT_OEM_TABLE_ID: [u8; 8] = *b"OVMF    ";
+const SSDT_OEM_TABLE_REV: u32 = 0x1;
 
 /// The ACPI scope in which DsdtGenerators are placed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,9 +116,9 @@ impl<'a> Aml for Dsdt<'a> {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
         let mut dsdt = Vec::new();
 
-        // XXX(acpi): This is an artifact inserted into the AML code to keep
-        //            the DSDT table exactly the same as the static EDK2 tables
-        //            used previously. It's not functionally necessary.
+        // This is an artifact inserted into the AML code to keep the DSDT
+        // table exactly the same as the static EDK2 tables used previously.
+        // It's not functionally necessary and can be removed in the future.
         aml::If::new(
             &aml::ZERO,
             vec![&aml::External::new(
@@ -129,10 +147,14 @@ impl<'a> Aml for Dsdt<'a> {
         .to_aml_bytes(&mut dsdt);
 
         // DSDT table.
-        // XXX(acpi): OEM ID, table ID, and revision are kept the same as the
-        //            original static EDK2 tables for consistency. They could
-        //            be set to Propolis-specific values in the future.
-        let mut sdt = Sdt::new(*b"DSDT", 36, 1, *b"INTEL ", *b"OVMF    ", 0x4);
+        let mut sdt = Sdt::new(
+            *b"DSDT",
+            36,
+            1,
+            DSDT_OEM_ID,
+            DSDT_OEM_TABLE_ID,
+            DSDT_OEM_TABLE_REV,
+        );
         sdt.append_slice(dsdt.as_slice());
         sdt.to_aml_bytes(sink);
     }
@@ -222,10 +244,10 @@ const INTERRUPT_LIST_OFFSET: usize = 0x05;
 /// information.
 struct PciRootBridgeCrs {}
 
-// XXX(acpi): This implementation currently follows the original static EDK2
-//            tables. It can be simplified to return a single ResourceTemplate
-//            with all final values already populated instead of dynamically
-//            updating them based on the values from FWDT.
+// This implementation currently follows the original static EDK2 tables. It
+// can be simplified to return a single ResourceTemplate with all the final
+// values already populated instead of dynamically updating them based on the
+// values read from FWDT.
 impl Aml for PciRootBridgeCrs {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
         // \_SB.PCI0.CRES
@@ -457,15 +479,18 @@ fn aml_len(vec: &[&dyn Aml]) -> usize {
     sink.len()
 }
 
-/// Number of devices in the PCI0 root bridge.
-// XXX(acpi): Value inherited from the original EDK2 static tables. It should
-//            be updated to match Propolis's expectations.
+/// Number of devices in the PCI0 root bridge to link to the interrupt
+/// controller.
+///
+/// Value inherited from the original EDK2 static tables. Future work may
+/// update them to match Propolis's expectations, or replace legacy PCI PIC
+/// interrupt routing for APIC.
 const PCI_DEVICES: u8 = 16;
 const PCI_INT_PINS: u8 = 4;
 
 /// _PRT method for the PCI0 device (\_SB.PCI0._PRT)
 ///
-/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/06_Device_Configuration/Device_Configuration.html?highlight=_prt#prt-pci-routing-table>
+/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/06_Device_Configuration/Device_Configuration.html#prt-pci-routing-table>
 struct PciRootBridgePrt {}
 
 impl Aml for PciRootBridgePrt {
@@ -552,9 +577,8 @@ struct PciRootBridgeLpc<'a> {
     generators: &'a [&'a dyn DsdtGenerator],
 }
 
-// XXX(acpi): This table is currently kept the same as the original EDK2 static
-//            table, but it could be modernized to remove devices that are not
-//            used in a virtual machine environment.
+// This table is currently kept the same as the original EDK2 static table, but
+// it could be modernized to remove devices that are not used by Propolis.
 impl<'a> Aml for PciRootBridgeLpc<'a> {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
         aml::Device::new(
@@ -795,12 +819,12 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                 &DsdtGeneratorAml::new(self.generators, DsdtScope::Lpc),
                 // QEMU panic device.
                 //
-                // XXX(acpi): This code could be generated by the QemuPvpanic
-                //            struct and passed as a DsdtGenerator, but it's
-                //            only present if the enable_isa configuration is
-                //            enabled for the instance. So it's always
-                //            generated here for now to maintain consistency
-                //            with the original EDK2 static tables.
+                // This device could be generated by the QemuPvpanic struct and
+                // passed as a DsdtGenerator, but it's currently only present
+                // if the enable_isa configuration is enabled for the VM.
+                //
+                // For now, it is always generated here to maintain consistency
+                // with the original EDK2 static tables.
                 &aml::Device::new(
                     "PEVT".into(),
                     vec![
@@ -985,9 +1009,11 @@ impl Ssdt {
     }
 }
 
-// XXX(acpi): This implementation follows the original static EDK2 tables. It
-//            can probably be further simplified or eliminated entirely.
+// This implementation follows the original static EDK2 tables.
+//
 // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/Qemu.c#L426-L466
+//
+// It can probably be further simplified or eliminated entirely in the future.
 impl Aml for Ssdt {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
         let mut ssdt = Vec::new();
@@ -999,9 +1025,9 @@ impl Aml for Ssdt {
         // On boot, the \_SB.PCI0._CRS method reads FWDT and adjusts the PCI
         // bus configuration based on the data it holds.
         //
-        // XXX(acpi): This process can be removed if \_SB.PCI0._CRS returns a
-        //            static ResourceTemplate that is generated with the right
-        //            instance data.
+        // This process can be removed if \_SB.PCI0._CRS is modified to return
+        // a static ResourceTemplate that is already populated with the right
+        // VM data.
         aml::OpRegion::new(
             "FWDT".into(),
             aml::OpRegionSpace::SystemMemory,
@@ -1011,13 +1037,13 @@ impl Aml for Ssdt {
         .to_aml_bytes(&mut ssdt);
 
         // Sleep states.
-        // XXX(acpi): These sleep states are kept to keep the SSDT consistent
-        //            with the original static EDK2 tables. Propolis doesn't
-        //            handle these state properly, so they should be removed in
-        //            the future.
         //
-        //            These values don't use the SleepState struct to keep the
-        //            generated AML code consistent with original EDK tables.
+        // These sleep states are kept for consistency with the original static
+        // EDK2 tables. Propolis doesn't handle these state properly, so they
+        // should be removed in the future.
+        //
+        // These values don't use the SleepState struct to keep the generated
+        // AML code the same as the original EDK tables.
         aml::Name::new(
             "\\_S3_".into(),
             &aml::Package::new(vec![
@@ -1040,20 +1066,26 @@ impl Aml for Ssdt {
         )
         .to_aml_bytes(&mut ssdt);
 
-        // XXX(acpi): OEM ID, table ID, and revision are kept the same as the
-        //            original static EDK2 tables for consistency. They could
-        //            be set to Propolis-specific values in the future.
-        let mut sdt = Sdt::new(*b"SSDT", 36, 1, *b"REDHAT", *b"OVMF    ", 0x1);
+        let mut sdt = Sdt::new(
+            *b"SSDT",
+            36,
+            1,
+            SSDT_OEM_ID,
+            SSDT_OEM_TABLE_ID,
+            SSDT_OEM_TABLE_REV,
+        );
         sdt.append_slice(ssdt.as_slice());
         sdt.to_aml_bytes(sink);
     }
 }
 
 // Provides consistent DWord AML values. The acpi_tables crate minimizes
-// integers to the smallest word size that the number fits.
+// integers to the smallest word size that the number fits, but the original
+// EDK2-defined ACPI tables used wider-than-necessary integers in some places.
 //
-// XXX(acpi): Created just to keep tables consistent with the original EDK2
-//            tables.
+// We retained this quirk to avoid unnecessary differences in ACPI tables when
+// having Propolis generate them, but future ACPI table versions have no
+// particular need to keep this.
 struct DWord {
     value: u32,
 }
@@ -1072,10 +1104,12 @@ impl Aml for DWord {
 }
 
 // Provides consistent Byte AML values. The acpi_tables crate minimizes
-// integers to the smallest word size that the number fits.
+// integers to the smallest word size that the number fits, but the original
+// EDK2-defined ACPI tables used wider-than-necessary integers in some places.
 //
-// XXX(acpi): Created just to keep tables consistent with the original EDK2
-//            tables.
+// We retained this quirk to avoid unnecessary differences in ACPI tables when
+// having Propolis generate them, but future ACPI table versions have no
+// particular need to keep this.
 struct Byte {
     value: u8,
 }
