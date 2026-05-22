@@ -1106,25 +1106,15 @@ impl Aml for PS2Ctrl {
         aml::Device::new(
             "PS2K".into(),
             vec![
-                &acpi::names::hid(&aml::EISAName::new(
-                    acpi::devids::IBM_ENHANCED_KEYBOARD,
+                &acpi::aml::names::hid(&aml::EISAName::new(
+                    acpi::aml::devids::IBM_ENHANCED_KEYBOARD,
                 )),
-                &acpi::names::cid(&aml::EISAName::new(
-                    acpi::devids::MICROSOFT_RESERVED_KEYBOARD,
+                &acpi::aml::names::cid(&aml::EISAName::new(
+                    acpi::aml::devids::MICROSOFT_RESERVED_KEYBOARD,
                 )),
-                &acpi::names::crs(&aml::ResourceTemplate::new(vec![
-                    &aml::IO::new(
-                        ibmpc::PORT_PS2_DATA,
-                        ibmpc::PORT_PS2_DATA,
-                        0x00,
-                        0x01,
-                    ),
-                    &aml::IO::new(
-                        ibmpc::PORT_PS2_CMD_STATUS,
-                        ibmpc::PORT_PS2_CMD_STATUS,
-                        0x00,
-                        0x01,
-                    ),
+                &acpi::aml::names::crs(&aml::ResourceTemplate::new(vec![
+                    &acpi::aml::io_port(ibmpc::PORT_PS2_DATA, 0x00, 0x01),
+                    &acpi::aml::io_port(ibmpc::PORT_PS2_CMD_STATUS, 0x00, 0x01),
                     &aml::IrqNoFlags::new(ibmpc::IRQ_PS2_PRI),
                 ])),
             ],
