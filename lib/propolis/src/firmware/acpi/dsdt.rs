@@ -31,6 +31,7 @@ use super::{
     GPE0_BLK_ADDR, GPE0_BLK_LEN, IO_APIC_ADDR, LOCAL_APIC_ADDR, PCI_LINK_IRQS,
     PM1A_EVT_BLK_ADDR, SCI_IRQ,
 };
+use crate::hw::{pci, qemu};
 use acpi_tables::{aml, sdt::Sdt, Aml, AmlSink};
 
 // The DSDT and SSDT OEM ID, OEM table ID, and OEM table revision are
@@ -218,12 +219,6 @@ impl<'a> Aml for PciRootBridge<'a> {
     }
 }
 
-/// I/O port range for PCI configuration.
-///
-/// <https://wiki.osdev.org/PCI#Configuration_Space_Access_Mechanism_#1>
-const PCI_CONFIG_IO_BASE: u16 = 0x0cf8;
-const PCI_CONFIG_IO_SIZE: u8 = 8;
-
 /// Bus number range for the PCI0 root bridge.
 const PCI_BUS_START: u16 = 0x00;
 const PCI_BUS_END: u16 = 0xff;
@@ -269,18 +264,27 @@ impl Aml for PciRootBridgeCrs {
         cres.push(&bus_number);
 
         // Legacy PCI configuration I/O ports.
-        let pci_config_io_ports =
-            io_port(PCI_CONFIG_IO_BASE, 1, PCI_CONFIG_IO_SIZE);
+        let pci_config_io_ports = io_port(
+            pci::bits::PORT_PCI_CONFIG_ADDR,
+            1,
+            (pci::bits::LEN_PCI_CONFIG_ADDR + pci::bits::LEN_PCI_CONFIG_DATA)
+                as u8,
+        );
         cres.push(&pci_config_io_ports);
 
         // I/O ports below the PCI config ports (0x0000-0x0cf7).
-        let pci_io_ports_low =
-            aml::AddressSpace::new_io(0x0000, PCI_CONFIG_IO_BASE - 1, None);
+        let pci_io_ports_low = aml::AddressSpace::new_io(
+            0x0000,
+            pci::bits::PORT_PCI_CONFIG_ADDR - 1,
+            None,
+        );
         cres.push(&pci_io_ports_low);
 
         // IO ports above the PCI config ports (0x0d00-0xffff).
         let pci_io_ports_high = aml::AddressSpace::new_io(
-            PCI_CONFIG_IO_BASE + PCI_CONFIG_IO_SIZE as u16,
+            pci::bits::PORT_PCI_CONFIG_ADDR
+                + pci::bits::LEN_PCI_CONFIG_ADDR
+                + pci::bits::LEN_PCI_CONFIG_DATA,
             0xffff,
             None,
         );
@@ -810,7 +814,11 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                             &io_port(0x01e0, 0x00, 0x10),
                             &io_port(0x0160, 0x00, 0x10),
                             &io_port(0x0370, 0x00, 0x02),
-                            &io_port(0x0402, 0x00, 0x01),
+                            &io_port(
+                                qemu::debug::QEMU_DEBUG_IOPORT,
+                                0x00,
+                                0x01,
+                            ),
                             &io_port(0x0440, 0x00, 0x10),
                             // QEMU GPE0 BLK.
                             &io_port(GPE0_BLK_ADDR, 0x00, GPE0_BLK_LEN),
@@ -845,12 +853,12 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                     vec![
                         &names::hid(&devids::QEMU_PVPANIC),
                         &names::crs(&aml::ResourceTemplate::new(vec![
-                            &io_port(0x0505, 0x01, 0x01),
+                            &io_port(qemu::pvpanic::IOPORT, 0x01, 0x01),
                         ])),
                         &aml::OpRegion::new(
                             "PEOR".into(),
                             aml::OpRegionSpace::SystemIO,
-                            &0x0505_u64,
+                            &qemu::pvpanic::IOPORT,
                             &aml::ONE,
                         ),
                         &aml::Field::new(
