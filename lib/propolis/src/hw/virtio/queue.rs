@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::io::Error as IoError;
 use std::mem;
 use std::num::{NonZeroU16, Wrapping};
 use std::sync::atomic::{fence, AtomicBool, AtomicUsize, Ordering};
@@ -350,8 +351,8 @@ impl VirtQueue {
         self.is_control.load(Ordering::Acquire)
     }
 
-    pub(super) fn set_control(&self) {
-        self.is_control.store(true, Ordering::Release);
+    fn set_control(&self, val: bool) {
+        self.is_control.store(val, Ordering::Release);
     }
 
     #[inline(always)]
@@ -790,6 +791,66 @@ impl Chain {
         });
         total == item_sz
     }
+
+    pub fn read_many_owned<T: Copy + FromBytes>(
+        &mut self,
+        mem: &MemCtx,
+        n_elements: usize,
+    ) -> Result<Vec<T>, IoError> {
+        let required_sz = mem::size_of::<T>() * n_elements;
+        if (self.read_stat.bytes_remain as usize) < required_sz {
+            return Err(IoError::new(
+                std::io::ErrorKind::InvalidData,
+                "Buffer too small",
+            ));
+        }
+
+        let mut vec = Vec::with_capacity(n_elements);
+
+        if n_elements == 0 {
+            return Ok(vec);
+        }
+
+        // SAFETY: a `u8` has no alignment requirement so it is safe to
+        // construct a byte slice from another Vec. These bytes will not be read
+        // before initialisation.
+        let raw = unsafe {
+            std::slice::from_raw_parts_mut(
+                vec.spare_capacity_mut().as_ptr() as *mut u8,
+                required_sz,
+            )
+        };
+
+        let mut done = 0;
+        let total = self.for_remaining_type(true, |addr, len| {
+            let mut remain = GuestData::from(&mut raw[done..]);
+            if let Some(copied) = mem.read_into(addr, &mut remain, len) {
+                let need_more = copied != remain.len();
+
+                done += copied;
+                (copied, need_more)
+            } else {
+                // Copy failed, so do not attempt anything else
+                (0, false)
+            }
+        });
+
+        if total == required_sz {
+            // SAFETY: read_many() was successful and just initialized all
+            // `n_elements` of the vector.
+            unsafe {
+                vec.set_len(n_elements);
+            }
+
+            Ok(vec)
+        } else {
+            Err(IoError::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "Insufficient bytes to complete read",
+            ))
+        }
+    }
+
     /// Fetch a string of readable guest regions from the chain, provided there
     /// are enough to cover a specified length.
     pub fn readable_bufs(&mut self, len: usize) -> Option<Vec<GuestRegion>> {
@@ -812,6 +873,7 @@ impl Chain {
         assert_eq!(remain, 0);
         Some(bufs)
     }
+
     pub fn write<T: Copy + IntoBytes>(
         &mut self,
         item: &T,
@@ -1034,6 +1096,17 @@ impl VirtQueues {
         Ok(())
     }
 
+    pub fn set_ctl_queues(&self, indices: &[u16]) -> Result<(), ()> {
+        for vq in &self.queues {
+            vq.set_control(false);
+        }
+        for i in indices {
+            let vq = self.queues.get(usize::from(*i)).ok_or(())?;
+            vq.set_control(true);
+        }
+        Ok(())
+    }
+
     pub fn count(&self) -> NonZeroU16 {
         NonZeroU16::try_from(self.len() as u16)
             .expect("queue count already validated")
@@ -1059,25 +1132,19 @@ impl VirtQueues {
     pub fn get(&self, qid: u16) -> Option<&Arc<VirtQueue>> {
         let len = self.len();
         let qid = usize::from(qid);
-        // XXX: This special case is for the virtio network device, which always
-        // puts the control queue at the end of queue vector (see VirtIO 1.2
-        // section 5.1.2).  None of the other devices currently handle queues
-        // specially in this way, but we should come up with some better
-        // mechanism here.
-        if qid + 1 == self.max_capacity() {
-            Some(self.get_control())
-        } else {
-            self.queues[..len].get(qid)
-        }
-    }
 
-    fn get_control(&self) -> &Arc<VirtQueue> {
-        &self.queues[self.max_capacity() - 1]
+        // Control queues may be placed almost arbitrarily depending on the
+        // device type -- they may be mixed in with other queues, or placed at
+        // the very end after preallocated but unused queues.
+        self.queues.get(qid).filter(|v| v.is_control() || qid < len)
     }
 
     pub fn iter(&self) -> impl std::iter::Iterator<Item = &Arc<VirtQueue>> {
-        let len = self.len() - 1;
-        self.queues[..len].iter().chain([self.get_control()])
+        let len = self.len();
+        self.queues
+            .iter()
+            .enumerate()
+            .filter_map(move |(i, v)| (i < len || v.is_control()).then_some(v))
     }
 
     /// Iterate all queues the device may have used; the current number of
@@ -1085,8 +1152,11 @@ impl VirtQueues {
     /// like device reset and teardown we must manage all viona rings
     /// corresponding to ever-active VirtQueues.
     pub fn iter_all(&self) -> impl std::iter::Iterator<Item = &Arc<VirtQueue>> {
-        let peak = self.peak() - 1;
-        self.queues[..peak].iter().chain([self.get_control()])
+        let peak = self.peak();
+        self.queues
+            .iter()
+            .enumerate()
+            .filter_map(move |(i, v)| (i < peak || v.is_control()).then_some(v))
     }
 
     pub fn export(&self) -> migrate::VirtQueuesV1 {
