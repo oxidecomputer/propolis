@@ -88,7 +88,14 @@ impl<'a> Aml for DsdtGeneratorAml<'a> {
 
 /// Values for the PM1a_CNT.SLP_TYP register to enter different sleep states.
 ///
-/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/07_Power_and_Performance_Mgmt/oem-supplied-system-level-control-methods.html?highlight=_sx#sx-system-states>
+/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/07_Power_and_Performance_Mgmt/oem-supplied-system-level-control-methods.html#sx-system-states>
+///
+/// These states are handled in `Piix3PM` via the `pmreg_write` method.
+/// Currently, only the S0->S5 transition is handled explicitly, but S0->S0 is
+/// also handled properly as a no-op.
+///
+/// Transitions to S3 and S4 are inherited from the original EDK2 tables and
+/// should probably be removed in the future.
 const PM1A_CNT_SLP_TYP_S0: u8 = 5;
 const PM1A_CNT_SLP_TYP_S3: u8 = 1;
 const PM1A_CNT_SLP_TYP_S4: u8 = 2;
@@ -998,7 +1005,7 @@ impl<'a> Aml for Lnk<'a> {
 /// Length in bytes of the SSDT header. Used to calculate the offset of other
 /// fields.
 ///
-/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html?highlight=ssdt#secondary-system-description-table-fields-ssdt>
+/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#secondary-system-description-table-fields-ssdt>
 const SSDT_HEADER_LEN: usize = 36;
 
 /// Byte offset of the FWDT OperationRegion offset address field in the SSDT
