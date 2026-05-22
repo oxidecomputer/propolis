@@ -242,13 +242,13 @@ impl Aml for LpcUart {
         aml::Device::new(
             aml::Path::new(&format!("UAR{}", uid)),
             vec![
-                &acpi::names::hid(&aml::EISAName::new(
-                    acpi::devids::COM_PORT_16550A,
+                &acpi::aml::names::hid(&aml::EISAName::new(
+                    acpi::aml::devids::COM_PORT_16550A,
                 )),
-                &acpi::names::ddn(&self.name),
-                &acpi::names::uid(&uid),
-                &acpi::names::crs(&aml::ResourceTemplate::new(vec![
-                    &aml::IO::new(port, port, 1, REGISTER_LEN as u8),
+                &acpi::aml::names::ddn(&self.name),
+                &acpi::aml::names::uid(&uid),
+                &acpi::aml::names::crs(&aml::ResourceTemplate::new(vec![
+                    &acpi::aml::io_port(port, 1, REGISTER_LEN as u8),
                     &aml::Irq::new(true, false, false, self.irq),
                 ])),
             ],

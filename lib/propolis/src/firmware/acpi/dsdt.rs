@@ -26,7 +26,7 @@
 //
 // This pattern is already used for some devices when possible.
 
-use super::{devids, methods, names, paths};
+use super::aml::{devids, methods, names, paths, *};
 use super::{
     GPE0_BLK_ADDR, GPE0_BLK_LEN, IO_APIC_ADDR, LOCAL_APIC_ADDR, PCI_LINK_IRQS,
     PM1A_EVT_BLK_ADDR, SCI_IRQ,
@@ -269,12 +269,8 @@ impl Aml for PciRootBridgeCrs {
         cres.push(&bus_number);
 
         // Legacy PCI configuration I/O ports.
-        let pci_config_io_ports = aml::IO::new(
-            PCI_CONFIG_IO_BASE,
-            PCI_CONFIG_IO_BASE,
-            1,
-            PCI_CONFIG_IO_SIZE,
-        );
+        let pci_config_io_ports =
+            io_port(PCI_CONFIG_IO_BASE, 1, PCI_CONFIG_IO_SIZE);
         cres.push(&pci_config_io_ports);
 
         // I/O ports below the PCI config ports (0x0000-0x0cf7).
@@ -698,9 +694,9 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                             devids::AT_INT_CONTROLLER,
                         )),
                         &names::crs(&aml::ResourceTemplate::new(vec![
-                            &aml::IO::new(IO_ICU1, IO_ICU1, 0x00, 0x02),
-                            &aml::IO::new(IO_ICU2, IO_ICU2, 0x00, 0x02),
-                            &aml::IO::new(IO_ELCR1, IO_ELCR1, 0x00, 0x02),
+                            &io_port(IO_ICU1, 0x00, 0x02),
+                            &io_port(IO_ICU2, 0x00, 0x02),
+                            &io_port(IO_ELCR1, 0x00, 0x02),
                             &aml::IrqNoFlags::new(2),
                         ])),
                     ],
@@ -717,12 +713,12 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                             devids::AT_DMA_CONTROLLER,
                         )),
                         &names::crs(&aml::ResourceTemplate::new(vec![
-                            &aml::IO::new(0x0000, 0x0000, 0x00, 0x10),
-                            &aml::IO::new(0x0081, 0x0081, 0x00, 0x03),
-                            &aml::IO::new(0x0087, 0x0087, 0x00, 0x01),
-                            &aml::IO::new(0x0089, 0x0089, 0x00, 0x03),
-                            &aml::IO::new(0x008f, 0x008f, 0x00, 0x01),
-                            &aml::IO::new(0x00c0, 0x00c0, 0x00, 0x20),
+                            &io_port(0x0000, 0x00, 0x10),
+                            &io_port(0x0081, 0x00, 0x03),
+                            &io_port(0x0087, 0x00, 0x01),
+                            &io_port(0x0089, 0x00, 0x03),
+                            &io_port(0x008f, 0x00, 0x01),
+                            &io_port(0x00c0, 0x00, 0x20),
                             &aml::Dma::new(
                                 aml::DmaChannelSpeed::Compatibility,
                                 aml::DmaMasterStatus::NotMaster,
@@ -738,7 +734,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                     vec![
                         &names::hid(&aml::EISAName::new(devids::AT_TIMER)),
                         &names::crs(&aml::ResourceTemplate::new(vec![
-                            &aml::IO::new(IO_TIMER1, IO_TIMER1, 0x00, 0x04),
+                            &io_port(IO_TIMER1, 0x00, 0x04),
                             &aml::IrqNoFlags::new(0),
                         ])),
                     ],
@@ -751,7 +747,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                             devids::AT_REAL_TIME_CLOCK,
                         )),
                         &names::crs(&aml::ResourceTemplate::new(vec![
-                            &aml::IO::new(IO_RTC, IO_RTC, 0x00, 0x02),
+                            &io_port(IO_RTC, 0x00, 0x02),
                             &aml::IrqNoFlags::new(8),
                         ])),
                     ],
@@ -764,7 +760,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                             devids::AT_SPEAKER_SOUND,
                         )),
                         &names::crs(&aml::ResourceTemplate::new(vec![
-                            &aml::IO::new(NMISC_PORT, NMISC_PORT, 0x01, 0x01),
+                            &io_port(NMISC_PORT, 0x01, 0x01),
                         ])),
                     ],
                 ),
@@ -780,7 +776,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                             devids::MATH_COPROCESSOR,
                         )),
                         &names::crs(&aml::ResourceTemplate::new(vec![
-                            &aml::IO::new(0x00f0, 0x00f0, 0x00, 0x10),
+                            &io_port(0x00f0, 0x00, 0x10),
                             &aml::IrqNoFlags::new(13),
                         ])),
                     ],
@@ -798,38 +794,28 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                         &names::hid(&aml::EISAName::new(devids::GENERAL_ID)),
                         &names::uid(&aml::ONE),
                         &names::crs(&aml::ResourceTemplate::new(vec![
-                            &aml::IO::new(0x0010, 0x0010, 0x00, 0x10),
-                            &aml::IO::new(0x0022, 0x0022, 0x00, 0x1e),
-                            &aml::IO::new(0x0044, 0x0044, 0x00, 0x1c),
-                            &aml::IO::new(0x0062, 0x0062, 0x00, 0x02),
-                            &aml::IO::new(0x0065, 0x0065, 0x00, 0x0b),
-                            &aml::IO::new(0x0072, 0x0072, 0x00, 0x0e),
-                            &aml::IO::new(0x0080, 0x0080, 0x00, 0x01),
-                            &aml::IO::new(0x0084, 0x0084, 0x00, 0x03),
-                            &aml::IO::new(0x0088, 0x0088, 0x00, 0x01),
-                            &aml::IO::new(0x008c, 0x008c, 0x00, 0x03),
-                            &aml::IO::new(0x0090, 0x0090, 0x00, 0x10),
-                            &aml::IO::new(0x00a2, 0x00a2, 0x00, 0x1e),
-                            &aml::IO::new(0x00e0, 0x00e0, 0x00, 0x10),
-                            &aml::IO::new(0x01e0, 0x01e0, 0x00, 0x10),
-                            &aml::IO::new(0x0160, 0x0160, 0x00, 0x10),
-                            &aml::IO::new(0x0370, 0x0370, 0x00, 0x02),
-                            &aml::IO::new(0x0402, 0x0402, 0x00, 0x01),
-                            &aml::IO::new(0x0440, 0x0440, 0x00, 0x10),
+                            &io_port(0x0010, 0x00, 0x10),
+                            &io_port(0x0022, 0x00, 0x1e),
+                            &io_port(0x0044, 0x00, 0x1c),
+                            &io_port(0x0062, 0x00, 0x02),
+                            &io_port(0x0065, 0x00, 0x0b),
+                            &io_port(0x0072, 0x00, 0x0e),
+                            &io_port(0x0080, 0x00, 0x01),
+                            &io_port(0x0084, 0x00, 0x03),
+                            &io_port(0x0088, 0x00, 0x01),
+                            &io_port(0x008c, 0x00, 0x03),
+                            &io_port(0x0090, 0x00, 0x10),
+                            &io_port(0x00a2, 0x00, 0x1e),
+                            &io_port(0x00e0, 0x00, 0x10),
+                            &io_port(0x01e0, 0x00, 0x10),
+                            &io_port(0x0160, 0x00, 0x10),
+                            &io_port(0x0370, 0x00, 0x02),
+                            &io_port(0x0402, 0x00, 0x01),
+                            &io_port(0x0440, 0x00, 0x10),
                             // QEMU GPE0 BLK.
-                            &aml::IO::new(
-                                GPE0_BLK_ADDR,
-                                GPE0_BLK_ADDR,
-                                0x00,
-                                GPE0_BLK_LEN,
-                            ),
+                            &io_port(GPE0_BLK_ADDR, 0x00, GPE0_BLK_LEN),
                             // PMBLK1.
-                            &aml::IO::new(
-                                PM1A_EVT_BLK_ADDR,
-                                PM1A_EVT_BLK_ADDR,
-                                0x00,
-                                0x40,
-                            ),
+                            &io_port(PM1A_EVT_BLK_ADDR, 0x00, 0x40),
                             // IO APIC.
                             &aml::Memory32Fixed::new(
                                 false,
@@ -859,7 +845,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                     vec![
                         &names::hid(&devids::QEMU_PVPANIC),
                         &names::crs(&aml::ResourceTemplate::new(vec![
-                            &aml::IO::new(0x0505, 0x0505, 0x01, 0x01),
+                            &io_port(0x0505, 0x01, 0x01),
                         ])),
                         &aml::OpRegion::new(
                             "PEOR".into(),
