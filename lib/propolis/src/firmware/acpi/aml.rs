@@ -17,6 +17,19 @@ pub fn io_port(port: u16, alignment: u8, length: u8) -> aml::IO {
     aml::IO::new(port, port, alignment, length)
 }
 
+// Flags used to defined ACPI methods concurrency control.
+//
+// See ACPI section 19.6.84 "Method (Declare Control Method)" for authoritative
+// information about these flags.
+
+/// Declare the ASL method marked as "Serialized", meaning it is not safe for
+/// use by multiple concurrent threads.
+pub const SERIALIZED: bool = true;
+
+/// Declare the ASL method marked as "NotSerialized", meaning it is safe for
+/// concurrent access (does not declare objects internally, etc)
+pub const NOT_SERIALIZED: bool = false;
+
 /// Constructors for ACPI paths defined in the ACPI specification.
 ///
 /// ACPI rev. 6.6 section 5.3 "ACPI Namespace" describes the (limited) syntax
