@@ -567,6 +567,15 @@ impl<'a> Aml for PrtEntry<'a> {
     }
 }
 
+// These IO ports are handled in-kernel by bhyve.
+// https://github.com/freebsd/freebsd-src/blob/d66fec481bfd65cbabb6c12a410d76843e76083e/sys/amd64/vmm/vmm_ioport.c#L46-L61
+const IO_ICU1: u16 = 0x20;
+const IO_ICU2: u16 = 0xa0;
+const IO_ELCR1: u16 = 0x4d0;
+const IO_TIMER1: u16 = 0x40;
+const IO_RTC: u16 = 0x70;
+const NMISC_PORT: u16 = 0x61;
+
 /// PCI to ISA bridge for the PCI0 device (\_SB.PCI0.LPC).
 ///
 /// Refer to the original _PRT table from EDK2 for more details on what is being
@@ -682,14 +691,18 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                             devids::AT_INT_CONTROLLER,
                         )),
                         &names::crs(&aml::ResourceTemplate::new(vec![
-                            &aml::IO::new(0x0020, 0x0020, 0x00, 0x02),
-                            &aml::IO::new(0x00A0, 0x00A0, 0x00, 0x02),
-                            &aml::IO::new(0x04d0, 0x04d0, 0x00, 0x02),
+                            &aml::IO::new(IO_ICU1, IO_ICU1, 0x00, 0x02),
+                            &aml::IO::new(IO_ICU2, IO_ICU2, 0x00, 0x02),
+                            &aml::IO::new(IO_ELCR1, IO_ELCR1, 0x00, 0x02),
                             &aml::IrqNoFlags::new(2),
                         ])),
                     ],
                 ),
                 // ISA DMA.
+                //
+                // This is a legacy device inherited from the original EDK2
+                // table. Its IO ports are not actually handled anywhere.
+                // It can be removed in the future .
                 &aml::Device::new(
                     "DMAC".into(),
                     vec![
@@ -718,7 +731,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                     vec![
                         &names::hid(&aml::EISAName::new(devids::AT_TIMER)),
                         &names::crs(&aml::ResourceTemplate::new(vec![
-                            &aml::IO::new(0x0040, 0x0040, 0x00, 0x04),
+                            &aml::IO::new(IO_TIMER1, IO_TIMER1, 0x00, 0x04),
                             &aml::IrqNoFlags::new(0),
                         ])),
                     ],
@@ -731,7 +744,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                             devids::AT_REAL_TIME_CLOCK,
                         )),
                         &names::crs(&aml::ResourceTemplate::new(vec![
-                            &aml::IO::new(0x0070, 0x0070, 0x00, 0x02),
+                            &aml::IO::new(IO_RTC, IO_RTC, 0x00, 0x02),
                             &aml::IrqNoFlags::new(8),
                         ])),
                     ],
@@ -744,11 +757,15 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                             devids::AT_SPEAKER_SOUND,
                         )),
                         &names::crs(&aml::ResourceTemplate::new(vec![
-                            &aml::IO::new(0x0061, 0x0061, 0x01, 0x01),
+                            &aml::IO::new(NMISC_PORT, NMISC_PORT, 0x01, 0x01),
                         ])),
                     ],
                 ),
                 // Floating Point Coprocessor.
+                //
+                // This is a legacy device inherited from the original EDK2
+                // table. Its IO ports are not actually handled anywhere.
+                // It can be removed in the future .
                 &aml::Device::new(
                     "FPU_".into(),
                     vec![
@@ -763,6 +780,11 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                 ),
                 // Generic motherboard devices and pieces that don't fit
                 // anywhere else.
+                //
+                // This device and the remark above were inherited from the
+                // original EDK2 table. Most IO ports declared here are not
+                // actually handled anywhere and are probably just being
+                // reserved to force the guest OS to use upper addresses.
                 &aml::Device::new(
                     "XTRA".into(),
                     vec![
