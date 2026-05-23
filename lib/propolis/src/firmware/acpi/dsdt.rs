@@ -308,8 +308,11 @@ impl Aml for PciRootBridgeCrs {
         let mmio32 = aml::AddressSpace::new_memory(
             aml::AddressSpaceCacheable::NotCacheable,
             true,
-            0xf800_0000_u32, // Value overwritten by _CRS.
-            0xfffb_ffff_u32, // Value overwritten by _CRS.
+            // These values are inherited from the original EDK2 static tables
+            // and they are only placeholders. On boot, the actual address
+            // range is read from FWDT and _CRS overwrites this address space.
+            0xf800_0000_u32,
+            0xfffb_ffff_u32,
             None,
         );
         cres.push(&mmio32);
@@ -332,8 +335,11 @@ impl Aml for PciRootBridgeCrs {
         let mmio64 = aml::AddressSpace::new_memory(
             aml::AddressSpaceCacheable::Cacheable,
             true,
-            0x0080_0000_0000_u64, // Value overwritten by _CRS.
-            0x0fff_ffff_ffff_u64, // Value overwritten by _CRS.
+            // These values are inherited from the original EDK2 static tables
+            // and they are only placeholders. On boot, the actual address
+            // range is read from FWDT and _CRS overwrites this address space.
+            0x0080_0000_0000_u64,
+            0x0fff_ffff_ffff_u64,
             None,
         );
         cr64.push(&mmio64);
