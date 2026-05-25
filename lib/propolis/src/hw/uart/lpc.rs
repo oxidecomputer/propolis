@@ -222,10 +222,14 @@ impl acpi::DsdtGenerator for LpcUart {
 }
 
 impl Aml for LpcUart {
+    // This AML code is inherited from the original EDK2 static tables.
+    //
+    // The original tables only defined COM1 and COM2, even though VMs often
+    // have 4 serial ports.
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
         let port = match *self.port.lock().unwrap() {
             Some(p) => p,
-            None => return, // Device is not attached to any port.
+            None => panic!("expected UART device to be connected"),
         };
 
         #[allow(clippy::wildcard_in_or_patterns)]
@@ -233,8 +237,6 @@ impl Aml for LpcUart {
             "COM1" => 1,
             "COM2" => 2,
             "COM3" | "COM4" | _ => {
-                // XXX(acpi): COM3 and COM4 are also attached to the instance
-                // but the original EDK2 static tables didn't include them.
                 return;
             }
         };
