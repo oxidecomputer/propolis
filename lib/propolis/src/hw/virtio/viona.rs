@@ -1014,7 +1014,7 @@ impl PciVirtioViona {
                     self.virtio_state.set_needs_reset(self);
                 }
                 Err(())
-            },
+            }
         }
     }
 
