@@ -1320,7 +1320,7 @@ pub mod formats {
         pub dsdt_generators: &'a [&'a dyn acpi::DsdtGenerator],
     }
 
-    /// A range of address to be used for PCI MMIO.
+    /// An inclusive range of address to be used for PCI MMIO.
     #[derive(PartialEq)]
     pub struct PciWindow {
         base: u64,
@@ -1328,7 +1328,7 @@ pub mod formats {
     }
     impl PciWindow {
         pub fn new(base: u64, end: u64) -> Result<Self, AcpiTablesError> {
-            if base >= end {
+            if base > end {
                 return Err(AcpiTablesError::InvalidPCIWindowRange(base, end));
             }
             Ok(Self { base, end })
@@ -1345,6 +1345,26 @@ pub mod formats {
             // Values are checked on creation to ensure the subtraction doesn't
             // underflow.
             self.end - self.base + 1
+        }
+    }
+
+    #[cfg(test)]
+    mod test_pci_window {
+        use super::*;
+
+        #[test]
+        fn basic() {
+            let w = PciWindow::new(0, 0).unwrap();
+            assert_eq!(w.len(), 0);
+
+            let w = PciWindow::empty();
+            assert_eq!(w.len(), 0);
+
+            let w = PciWindow::new(0, 100).unwrap();
+            assert_eq!(w.len(), 101);
+
+            let w = PciWindow::new(100, 100).unwrap();
+            assert_eq!(w.len(), 1);
         }
     }
 
@@ -1631,7 +1651,7 @@ pub mod formats {
                 checksum_offset + acpi::TABLE_HEADER_CHECKSUM_LEN;
 
             // Zero existing checksum so it doesn't affect the new value.
-            self.rsdp[checksum_offset..checksum_end].copy_from_slice(&[0_u8]);
+            self.rsdp[checksum_offset..checksum_end].fill(0);
             self.loader.add_checksum(
                 FW_CFG_ACPI_RSDP_PATH,
                 checksum_offset as u32,
@@ -1654,7 +1674,7 @@ pub mod formats {
                 + acpi::TABLE_HEADER_CHECKSUM_LEN;
 
             // Zero existing checksum so it doesn't affect the new value.
-            self.tables[checksum_start..checksum_end].copy_from_slice(&[0u8]);
+            self.tables[checksum_start..checksum_end].fill(0);
             self.loader.add_checksum(
                 FW_CFG_ACPI_TABLES_PATH,
                 checksum_start as u32,
