@@ -18,6 +18,8 @@
 //!
 //! https://github.com/oxidecomputer/edk2/tree/propolis/edk2-stable202105/OvmfPkg/AcpiTables
 
+use crate::hw::chipset::i440fx;
+
 pub mod aml;
 pub mod dsdt;
 pub mod facs;
@@ -52,19 +54,29 @@ pub const TABLE_HEADER_CHECKSUM_LEN: usize = 1;
 
 // Internal values shared across tables.
 
-// XXX(acpi): Values inherited from the original EDK2 static tables. They could
-//            be set to Propolis-specific values in the future.
+// Values inherited from the original EDK2 static tables. They could be set to
+// Propolis-specific values in the future.
 const OEM_ID: &[u8; 6] = b"OVMF  ";
 const OEM_TABLE_ID: &[u8; 8] = b"OVMFEDK2";
 const OEM_REVISION: u32 = 0x20130221;
 
-const SCI_IRQ: u8 = 0x09;
-const PCI_LINK_IRQS: [u8; 4] = [0x05, SCI_IRQ, 0x0a, 0x0b];
+// IRQs used to handle PCI interrupts.
+const PCI_LINK_IRQS: [u8; 4] = [0x05, i440fx::SCI_IRQ, 0x0a, 0x0b];
 
+// VIOAPIC_BASE in bhyve.
 const IO_APIC_ADDR: u32 = 0xfec0_0000;
+// VIOAPIC_SIZE in bhyve.
+const IO_APIC_LEN: u32 = 0x1000;
+
+// DEFAULT_APIC_BASE in bhyve source code.
 const LOCAL_APIC_ADDR: u32 = 0xfee0_0000;
+// PAGE_SIZE (4096) in bhyve, but this value was inherited from EDK2.
+const LOCAL_APIC_LEN: u32 = 0x10_0000;
 
-const PM1A_EVT_BLK_ADDR: u16 = 0xb000;
-
+// Register used for PCI hotplug. This value was chosen to match QEMU and the
+// original EDK2 ACPI tables.
+//
+// Refer to the `piix4_acpi_system_hot_add_init` function in QEMU for more
+// information.
 const GPE0_BLK_ADDR: u16 = 0xafe0;
 const GPE0_BLK_LEN: u8 = 4;

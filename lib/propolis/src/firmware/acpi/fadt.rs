@@ -7,11 +7,8 @@
 //! The [`Fadt`] struct implements the `Aml` trait of the `acpi_tables` crate
 //! and can write the AML bytecode to any AmlSink, like a `Vec<u8>`.
 
-use super::{
-    GPE0_BLK_ADDR, GPE0_BLK_LEN, OEM_ID, OEM_REVISION, OEM_TABLE_ID,
-    PM1A_EVT_BLK_ADDR, SCI_IRQ,
-};
-use crate::hw::pci;
+use super::{GPE0_BLK_ADDR, GPE0_BLK_LEN, OEM_ID, OEM_REVISION, OEM_TABLE_ID};
+use crate::hw::{chipset::i440fx, pci};
 use acpi_tables::{
     // Use version 3 to keep FADT table consistent with the original EDK2
     // static tables. The acpi_tables crate also generates the MADT table using
@@ -36,8 +33,8 @@ pub const FADT_X_DSDT_OFFSET: usize = 140;
 pub const FADT_X_DSDT_LEN: usize = 8;
 
 // Values used to populate the FADT table.
-const PM1A_CNT_BLK_ADDR: u32 = 0xb004;
-const PM_TMR_BLK_ADDR: u32 = 0xb008;
+const PM1A_CNT_BLK_ADDR: u16 = i440fx::PMBASE_DEFAULT + 0x04;
+const PM_TMR_BLK_ADDR: u16 = i440fx::PMBASE_DEFAULT + 0x08;
 
 const PM1A_EVT_BLK_LEN: u8 = 4;
 const PM1A_CNT_BLK_LEN: u8 = 2;
@@ -93,7 +90,7 @@ impl Aml for Fadt {
             .flag(Flags::TmrValExt)
             .flag(Flags::ResetRegSup);
 
-        fadt.sci_int = (SCI_IRQ as u16).into();
+        fadt.sci_int = (i440fx::SCI_IRQ as u16).into();
         // Propolis doesn't currently handle this I/O port, but its value is
         // retained from the original EDK2 tables for consistency. It should be
         // set to zero in the future to disable System Management mode.
@@ -101,9 +98,9 @@ impl Aml for Fadt {
         fadt.acpi_enable = 0xf1;
         fadt.acpi_disable = 0xf0;
 
-        fadt.pm1a_evt_blk = (PM1A_EVT_BLK_ADDR as u32).into();
-        fadt.pm1a_cnt_blk = PM1A_CNT_BLK_ADDR.into();
-        fadt.pm_tmr_blk = PM_TMR_BLK_ADDR.into();
+        fadt.pm1a_evt_blk = (i440fx::PMBASE_DEFAULT as u32).into();
+        fadt.pm1a_cnt_blk = (PM1A_CNT_BLK_ADDR as u32).into();
+        fadt.pm_tmr_blk = (PM_TMR_BLK_ADDR as u32).into();
         fadt.gpe0_blk = (GPE0_BLK_ADDR as u32).into();
 
         fadt.pm1_evt_len = PM1A_EVT_BLK_LEN;
@@ -136,7 +133,7 @@ impl Aml for Fadt {
             PM1A_EVT_BLK_LEN * 8,
             0,
             AccessSize::Undefined,
-            PM1A_EVT_BLK_ADDR as u64,
+            i440fx::PMBASE_DEFAULT as u64,
         );
         fadt.x_pm1a_cnt_blk = GAS::new(
             AddressSpace::SystemIo,
