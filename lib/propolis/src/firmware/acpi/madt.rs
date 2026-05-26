@@ -91,6 +91,9 @@ impl<'a> Aml for Madt<'a> {
 
         // Local APIC NMI.
         // https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#local-apic-nmi-structure
+        //
+        // Supporting more than 255 vCPUs will require additional work.
+        // Refer to propolis#956 for more information.
         table.add_structure(madt::ProcessorLocalApicNmi::new(
             0xff, // Apply to all processors.
             LOCAL_APIC_INT_NUMBER,
