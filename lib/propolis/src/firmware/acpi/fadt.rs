@@ -11,11 +11,11 @@ use super::{
     GPE0_BLK_ADDR, GPE0_BLK_LEN, OEM_ID, OEM_REVISION, OEM_TABLE_ID,
     PM1A_EVT_BLK_ADDR, SCI_IRQ,
 };
+use crate::hw::pci;
 use acpi_tables::{
-    // XXX(acpi): Use version 3 to keep FADT table consistent with the original
-    //            EDK2 static tables. The acpi_tables crate also generates the
-    //            MADT table using revision 1, which is only compatible with
-    //            FADT up to version 3.
+    // Use version 3 to keep FADT table consistent with the original EDK2
+    // static tables. The acpi_tables crate also generates the MADT table using
+    // revision 1, which is only compatible with FADT up to version 3.
     //
     // https://github.com/fwts/fwts/blob/3e05ba9c2640a85cac1f408a423d25e712677fa1/src/acpi/madt/madt.c#L30
     fadt_3::{FADTBuilder, Flags},
@@ -71,12 +71,16 @@ impl Fadt {
     }
 }
 
-// XXX(acpi): Values retained from the original EDK2 static tables.
-//            fwts reports 1 high failure for this table:
-//              - fadt: FADT X_GPE0_BLK Access width 0x00 but it should be 1 (byte access).
-//
-// https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiTables/Platform.h#L25-L56
 impl Aml for Fadt {
+    /// Generates AML code for the FADT table. Refer to ACPI specification sec.
+    /// 5.2.9 "Fixed ACPI Description Table (FADT)" for more information about
+    /// the individual fields.
+    ///
+    /// The current values are retained from the original EDK2 static tables.
+    /// https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiTables/Platform.h#L25-L56
+    ///
+    /// fwts reports 1 high failure for this table:
+    ///   - fadt: FADT X_GPE0_BLK Access width 0x00 but it should be 1 (byte access).
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
         let mut fadt = FADTBuilder::new(*OEM_ID, *OEM_TABLE_ID, OEM_REVISION)
             .firmware_ctrl_32(self.facs_offset)
@@ -90,6 +94,9 @@ impl Aml for Fadt {
             .flag(Flags::ResetRegSup);
 
         fadt.sci_int = (SCI_IRQ as u16).into();
+        // Propolis doesn't currently handle this I/O port, but its value is
+        // retained from the original EDK2 tables for consistency. It should be
+        // set to zero in the future to disable System Management mode.
         fadt.smi_cmd = 0xb2.into();
         fadt.acpi_enable = 0xf1;
         fadt.acpi_disable = 0xf0;
@@ -104,8 +111,12 @@ impl Aml for Fadt {
         fadt.pm_tmr_len = PM_TMR_BLK_LEN;
         fadt.gpe0_blk_len = GPE0_BLK_LEN;
 
-        // Disable C2 and C3 state support.
+        // Disable C2 support. From the ACPI spec.:
+        // "A value > 100 indicates the system does not support a C2 state."
         fadt.p_lvl2_lat = 101.into();
+
+        // Disable C3 support. From the ACPI spec.:
+        // "A value > 1000 indicates the system does not support a C3 state."
         fadt.p_lvl3_lat = 1001.into();
 
         let iapc_boot_arch = FadtIaPcBootArchFlags::empty();
@@ -116,9 +127,9 @@ impl Aml for Fadt {
             u8::BITS as u8,
             0,
             AccessSize::Undefined,
-            0x0cf9,
+            pci::bits::PORT_ACPI_RESET_ADDR,
         );
-        fadt.reset_value = 0x06;
+        fadt.reset_value = pci::bits::PORT_ACPI_RESET_VALUE;
 
         fadt.x_pm1a_evt_blk = GAS::new(
             AddressSpace::SystemIo,
