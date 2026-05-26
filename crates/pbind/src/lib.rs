@@ -63,8 +63,13 @@ pub fn online_cpus() -> Result<i32, Error> {
 }
 
 #[cfg(target_os = "illumos")]
-/// Bind the current LWP to the specified processor.
-pub fn bind_lwp(bind_cpu: processorid_t) -> Result<(), Error> {
+/// Bind this LWP to the specified processor.
+///
+/// Returns the previous processor binding for this LWP, if any was set,
+/// otherwise `None`
+pub fn bind_lwp(
+    bind_cpu: Option<processorid_t>,
+) -> Result<Option<processorid_t>, Error> {
     extern "C" {
         fn processor_bind(
             idtype: idtype_t,
@@ -77,12 +82,19 @@ pub fn bind_lwp(bind_cpu: processorid_t) -> Result<(), Error> {
     // From `<sys/types.h>`.
     const P_MYID: id_t = -1;
 
+    // From `common/sys/processor.h`: sentinel indicating
+    // > "LWP/thread is not bound"
+    const PBIND_NONE: processorid_t = -1;
+
+    let newbind: processorid_t = bind_cpu.unwrap_or(PBIND_NONE);
+    let mut obind: processorid_t = PBIND_NONE;
+
     let res = unsafe {
         processor_bind(
             IdType::P_LWPID as i32,
             P_MYID,
-            bind_cpu,
-            std::ptr::null_mut(),
+            newbind,
+            &mut obind as *mut processorid_t,
         )
     };
 
@@ -90,7 +102,9 @@ pub fn bind_lwp(bind_cpu: processorid_t) -> Result<(), Error> {
         return Err(Error::last_os_error());
     }
 
-    Ok(())
+    let oldproc = if obind != PBIND_NONE { Some(obind) } else { None };
+
+    Ok(oldproc)
 }
 
 #[cfg(not(target_os = "illumos"))]
@@ -99,4 +113,20 @@ pub fn bind_lwp(bind_cpu: processorid_t) -> Result<(), Error> {
 /// platforms. So a no-op function will do.
 pub fn bind_lwp(_bind_cpu: processorid_t) -> Result<(), Error> {
     Ok(())
+}
+
+/// Run the provided function without any processor binding active on the
+/// current LWP. The LWP's original processor binding is restored after the
+/// function returns.
+///
+/// If the function panics, the LWP's original processor binding will not be
+/// restored.
+pub fn with_unbound_lwp<T: Sized>(f: impl Fn() -> T) -> T {
+    let oldbind = bind_lwp(None).expect("can unbind this LWP");
+
+    let res = f();
+
+    bind_lwp(oldbind).expect("can re-bind this LWP as it was");
+
+    res
 }
