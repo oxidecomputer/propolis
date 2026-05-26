@@ -28,10 +28,10 @@
 
 use super::aml::{devids, methods, names, paths, *};
 use super::{
-    GPE0_BLK_ADDR, GPE0_BLK_LEN, IO_APIC_ADDR, LOCAL_APIC_ADDR, PCI_LINK_IRQS,
-    PM1A_EVT_BLK_ADDR, SCI_IRQ,
+    GPE0_BLK_ADDR, GPE0_BLK_LEN, IO_APIC_ADDR, IO_APIC_LEN, LOCAL_APIC_ADDR,
+    LOCAL_APIC_LEN, PCI_LINK_IRQS,
 };
-use crate::hw::{pci, qemu};
+use crate::hw::{chipset::i440fx, pci, qemu};
 use acpi_tables::{aml, sdt::Sdt, Aml, AmlSink};
 
 // The DSDT and SSDT OEM ID, OEM table ID, and OEM table revision are
@@ -612,8 +612,8 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                 &aml::OpRegion::new(
                     "PRR0".into(),
                     aml::OpRegionSpace::PCIConfig,
-                    &0x60_u64,
-                    &0x04_u64,
+                    &i440fx::PIR_OFFSET,
+                    &i440fx::PIR_LEN,
                 ),
                 &aml::Field::new(
                     "PRR0".into(),
@@ -634,7 +634,11 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                     NOT_SERIALIZED,
                     vec![
                         &aml::If::new(
-                            &aml::And::new(&aml::ZERO, &aml::Arg(0), &0x80_u64),
+                            &aml::And::new(
+                                &aml::ZERO,
+                                &aml::Arg(0),
+                                &i440fx::PIR_MASK_DISABLE,
+                            ),
                             vec![&aml::Return::new(&0x09_u64)],
                         ),
                         &aml::Else::new(vec![&aml::Return::new(&0x0B_u64)]),
@@ -667,7 +671,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                             &aml::LogicalNot::new(&aml::And::new(
                                 &aml::ZERO,
                                 &aml::Arg(0),
-                                &0x80_u64,
+                                &i440fx::PIR_MASK_DISABLE,
                             )),
                             vec![&aml::Store::new(
                                 &aml::Path::new("IRQW"),
@@ -687,7 +691,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                         true,
                         PCI_LINK_IRQS
                             .iter()
-                            .filter(|i| **i != SCI_IRQ) // The SCI has special handling LNKS.
+                            .filter(|i| **i != i440fx::SCI_IRQ) // The SCI has special handling LNKS.
                             .map(|i| *i as u32)
                             .collect(),
                     )]),
@@ -829,18 +833,22 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                             // QEMU GPE0 BLK.
                             &io_port(GPE0_BLK_ADDR, 0x00, GPE0_BLK_LEN),
                             // PMBLK1.
-                            &io_port(PM1A_EVT_BLK_ADDR, 0x00, 0x40),
+                            &io_port(
+                                i440fx::PMBASE_DEFAULT,
+                                0x00,
+                                i440fx::PMBASE_LEN as u8,
+                            ),
                             // IO APIC.
                             &aml::Memory32Fixed::new(
                                 false,
                                 IO_APIC_ADDR,
-                                0x0000_1000,
+                                IO_APIC_LEN,
                             ),
                             // LAPIC.
                             &aml::Memory32Fixed::new(
                                 false,
                                 LOCAL_APIC_ADDR,
-                                0x0010_0000,
+                                LOCAL_APIC_LEN,
                             ),
                         ])),
                     ],
@@ -970,7 +978,7 @@ impl<'a> Aml for Lnk<'a> {
                 &methods::dis(
                     0,
                     NOT_SERIALIZED,
-                    vec![&aml::Or::new(&pir, &pir, &0x80_u64)],
+                    vec![&aml::Or::new(&pir, &pir, &i440fx::PIR_MASK_DISABLE)],
                 ),
                 &methods::crs(
                     0,

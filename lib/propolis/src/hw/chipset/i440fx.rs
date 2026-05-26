@@ -133,14 +133,14 @@ impl IrqConfig {
     }
 }
 
-const PIR_OFFSET: usize = 0x60;
-const PIR_LEN: usize = 4;
-const PIR_END: usize = PIR_OFFSET + PIR_LEN;
+pub const PIR_OFFSET: usize = 0x60;
+pub const PIR_LEN: usize = 4;
+pub const PIR_END: usize = PIR_OFFSET + PIR_LEN;
 
-const PIR_MASK_DISABLE: u8 = 0x80;
+pub const PIR_MASK_DISABLE: u8 = 0x80;
 const PIR_MASK_IRQ: u8 = 0x0f;
 
-const SCI_IRQ: u8 = 0x9;
+pub const SCI_IRQ: u8 = 0x9;
 
 fn valid_pir_irq(irq: u8) -> bool {
     // Existing ACPI tables allow 3-7, 9-12, 14-15
@@ -553,8 +553,8 @@ impl MigrateMulti for Piix3Lpc {
 const PMCFG_OFFSET: usize = 0x40;
 const PMCFG_LEN: usize = 0x98;
 
-const PMBASE_DEFAULT: u16 = 0xb000;
-const PMBASE_LEN: u16 = 0x40;
+pub const PMBASE_DEFAULT: u16 = 0xb000;
+pub const PMBASE_LEN: u16 = 0x40;
 const SMBBASE_DEFAULT: u16 = 0xb100;
 // const SMBBASE_LEN: u16 = 0x40;
 
