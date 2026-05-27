@@ -34,20 +34,23 @@ use super::{
 use crate::hw::{chipset::i440fx, pci, qemu};
 use acpi_tables::{aml, sdt::Sdt, Aml, AmlSink};
 
-// The DSDT and SSDT OEM ID, OEM table ID, and OEM table revision are
-// currently kept the same as the ones used by the original tables from EDK2.
-// They could be updated to Propolis-specific values in the future.
-//
-// For SSDTs, the OEM table ID needs to be different for each table. Refer to
-// ACPI rev. 6.6 section 5.2.11.2 "Secondary System Description Table (SSDT)"
-// for more information.
-const DSDT_OEM_ID: [u8; 6] = *b"INTEL ";
-const DSDT_OEM_TABLE_ID: [u8; 8] = *b"OVMF    ";
-const DSDT_OEM_TABLE_REV: u32 = 0x4;
+// The DSDT and SSDT table headers are currently kept the same as the ones
+// used in the original tables from EDK2. They can be update to Propolis values
+// in the future.
+fn dsdt_sdt_edk2_style() -> Sdt {
+    Sdt::new(*b"DSDT", 36, 1, *b"INTEL ", *b"OVMF    ", 0x4)
+}
 
-const SSDT_OEM_ID: [u8; 6] = *b"REDHAT";
-const SSDT_OEM_TABLE_ID: [u8; 8] = *b"OVMF    ";
-const SSDT_OEM_TABLE_REV: u32 = 0x1;
+fn ssdt_sdt_edk2_style() -> Sdt {
+    // For SSDTs, the OEM table ID needs to be different for each table. Refer
+    // to ACPI rev. 6.6 section 5.2.11.2 "Secondary System Description Table
+    // (SSDT)" for more information.
+    //
+    // The SSDT provided by EDK2 can also be removed entirely in the future
+    // because it only holds unsupported sleep states (S2 and S3) and FWDT
+    // memory region.
+    Sdt::new(*b"SSDT", 36, 1, *b"REDHAT", *b"OVMF    ", 0x1)
+}
 
 /// The ACPI scope in which DsdtGenerators are placed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,7 +96,8 @@ impl<'a> Aml for DsdtGeneratorAml<'a> {
 ///
 /// These states are handled in `Piix3PM` via the `pmreg_write` method.
 /// Currently, only the S0->S5 transition is handled explicitly, but S0->S0 is
-/// also handled properly as a no-op.
+/// also handled properly as a no-op, and so the value of 5 is never checked
+/// directly.
 ///
 /// Transitions to S3 and S4 are inherited from the original EDK2 tables and
 /// should probably be removed in the future.
@@ -155,14 +159,7 @@ impl<'a> Aml for Dsdt<'a> {
         .to_aml_bytes(&mut dsdt);
 
         // DSDT table.
-        let mut sdt = Sdt::new(
-            *b"DSDT",
-            36,
-            1,
-            DSDT_OEM_ID,
-            DSDT_OEM_TABLE_ID,
-            DSDT_OEM_TABLE_REV,
-        );
+        let mut sdt = dsdt_sdt_edk2_style();
         sdt.append_slice(dsdt.as_slice());
         sdt.to_aml_bytes(sink);
     }
@@ -1107,14 +1104,7 @@ impl Aml for Ssdt {
         )
         .to_aml_bytes(&mut ssdt);
 
-        let mut sdt = Sdt::new(
-            *b"SSDT",
-            36,
-            1,
-            SSDT_OEM_ID,
-            SSDT_OEM_TABLE_ID,
-            SSDT_OEM_TABLE_REV,
-        );
+        let mut sdt = ssdt_sdt_edk2_style();
         sdt.append_slice(ssdt.as_slice());
         sdt.to_aml_bytes(sink);
     }

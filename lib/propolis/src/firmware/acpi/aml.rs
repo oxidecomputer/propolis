@@ -12,6 +12,11 @@ use acpi_tables::aml;
 /// To create a fixed IO port allocation, min and max must be set to the same
 /// value, which can look confusing.
 ///
+/// Relocatable IO ports should be created using a similar wrapper.
+///
+/// The value for alignment is irrelevant when min and max are the same, but is
+/// kept here to keep the ACPI tables consistent with the original EDK2 values.
+///
 /// ACPI rev. 6.6 section 6.4.2.5 "I/O Port Descriptor"
 pub fn io_port(port: u16, alignment: u8, length: u8) -> aml::IO {
     aml::IO::new(port, port, alignment, length)

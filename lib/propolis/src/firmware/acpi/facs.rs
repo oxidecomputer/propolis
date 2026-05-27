@@ -20,10 +20,10 @@ impl Facs {
     }
 }
 
-// XXX(acpi): The acpi_tables crate generates version 1 of the FACS table while
-//            the original static EDK2 table was version 0. The only difference
-//            is the addition of the X_Firmware_Waking_Vector field, which is
-//            not used by Propolis.
+// The acpi_tables crate generates version 1 of the FACS table while the
+// original static EDK2 table was version 0. The only difference is the
+// addition of the X_Firmware_Waking_Vector field, which is not used by
+// Propolis.
 impl Aml for Facs {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
         facs::FACS::new().to_aml_bytes(sink);

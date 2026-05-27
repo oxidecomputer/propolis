@@ -38,14 +38,15 @@ impl<'a> Madt<'a> {
     }
 }
 
-// XXX(acpi): Values retained from the original EDK2 static tables.
-//            fwts reports 3 medium failures for this table:
-//              - madt: LAPIC has no matching processor UID 0
-//              - madt: LAPIC has no matching processor UID 1
-//              - madt: LAPICNMI has no matching processor UID 255
+// Values retained from the original EDK2 static tables.
 //
 // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiTables/Madt.aslc
 // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/Qemu.c#L58
+//
+// fwts reports 3 medium failures for this table:
+//   - madt: LAPIC has no matching processor UID 0
+//   - madt: LAPIC has no matching processor UID 1
+//   - madt: LAPICNMI has no matching processor UID 255
 impl<'a> Aml for Madt<'a> {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
         let mut table = madt::MADT::new(

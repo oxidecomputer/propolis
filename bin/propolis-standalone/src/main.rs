@@ -45,9 +45,12 @@ const PAGE_OFFSET: u64 = 0xfff;
 const MAX_ROM_SIZE: usize = 0x20_0000;
 
 /// End address of the 32-bit PCI MMIO window.
-// XXX(acpi): Value inherited from the original EDK2 static tables. It should
-//            match the actual memory regions registered in the instance.
+///
+// Value inherited from the original EDK2 static tables.
 // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/PlatformPei/Platform.c#L180-L192
+//
+// It should be updated to match the actual memory regions registered in the
+// instance.
 const PCI_MMIO32_END: usize = 0xfeef_ffff;
 
 const MIN_RT_THREADS: usize = 8;
@@ -1088,6 +1091,14 @@ fn generate_acpi_tables(
         .filter_map(|dev| dev.as_dsdt_generator())
         .collect();
 
+    // The values for pci_window_32 and pci_window_64 are set based on the
+    // original EDK2 ACPI tables, and currently don't exactly match the
+    // ranges defined in build_machined().
+    //
+    // Propolis doesn't verify if an MMIO operation happens in an address
+    // reserved for MMIO, so this doesn't cause problems for now, but the
+    // PCI windows should be updated to match what's reserved in
+    // build_machine().
     let pci_window_32 =
         fwcfg::formats::PciWindow::new(lowmem as u64, PCI_MMIO32_END as u64)
             .context("invalid PCI window range")?;
@@ -1095,11 +1106,6 @@ fn generate_acpi_tables(
     let config = &fwcfg::formats::AcpiConfig {
         num_cpus: cpus,
         pci_window_32,
-        // XXX(acpi): Value inherited from the original EDK2 static tables,
-        //            where the 64-bit PCI MMIO region was never set. It
-        //            should match the actual memory regions registered in
-        //            the instance.
-        // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/Qemu.c#L284-L286
         pci_window_64: fwcfg::formats::PciWindow::empty(),
         dsdt_generators: &generators,
     };
