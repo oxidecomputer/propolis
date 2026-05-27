@@ -1101,38 +1101,36 @@ impl VirtioDevice for PciVirtioViona {
         self.hdl.set_features(feat).map_err(|_| ())?;
 
         // Any remaining setup is for control-queue based features.
-        if (feat & VIRTIO_NET_F_CTRL_VQ) == 0 {
-            return Ok(());
-        }
-
-        if self.virtio_state.queues.max_capacity() < 3 {
-            // Since we're advertising control queue support, we need
-            // one Rx, Tx, and CtlQ at the minimum.
-            return Err(());
-        }
-
-        let ctl_q_idx = if (feat & VIRTIO_NET_F_MQ) != 0 {
-            self.hdl.set_pairs(PROPOLIS_MAX_MQ_PAIRS).map_err(|_| ())?;
-            probes::virtio_viona_mq_set_use_pairs!(|| (
-                MqSetPairsCause::MqEnabled as u8,
-                PROPOLIS_MAX_MQ_PAIRS
-            ));
-            self.set_use_pairs(PROPOLIS_MAX_MQ_PAIRS)?;
-            self.virtio_state.queues.max_capacity() - 1
+        let control_queue = if (feat & VIRTIO_NET_F_CTRL_VQ) == 0 {
+            None
         } else {
-            VIRTIO_NO_MQ_CTRL_Q_INDEX
+            if self.virtio_state.queues.max_capacity() < 3 {
+                // Since we're advertising control queue support, we need
+                // one Rx, Tx, and CtlQ at the minimum.
+                return Err(());
+            }
+
+            let ctl_q_idx = if (feat & VIRTIO_NET_F_MQ) != 0 {
+                self.hdl.set_pairs(PROPOLIS_MAX_MQ_PAIRS).map_err(|_| ())?;
+                probes::virtio_viona_mq_set_use_pairs!(|| (
+                    MqSetPairsCause::MqEnabled as u8,
+                    PROPOLIS_MAX_MQ_PAIRS
+                ));
+                self.set_use_pairs(PROPOLIS_MAX_MQ_PAIRS)?;
+                self.virtio_state.queues.max_capacity() - 1
+            } else {
+                VIRTIO_NO_MQ_CTRL_Q_INDEX
+            };
+
+            if (feat & VIRTIO_NET_F_CTRL_RX) != 0 {
+                let mut state = self.inner.lock().unwrap();
+                self.set_promisc(PromiscLevel::None, &mut state)?;
+            }
+
+            Some(ctl_q_idx.try_into().expect("queue index must be a valid u16"))
         };
 
-        self.virtio_state.queues.set_ctl_queues(&[ctl_q_idx
-            .try_into()
-            .expect("queue index must be a valid u16")])?;
-
-        if (feat & VIRTIO_NET_F_CTRL_RX) != 0 {
-            let mut state = self.inner.lock().unwrap();
-            self.set_promisc(PromiscLevel::None, &mut state)?;
-        }
-
-        Ok(())
+        self.virtio_state.queues.set_ctl_queues(control_queue.as_slice())
     }
 
     fn queue_notify(&self, vq: &VirtQueue) {
