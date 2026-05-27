@@ -1328,7 +1328,11 @@ pub mod formats {
     }
     impl PciWindow {
         pub fn new(base: u64, end: u64) -> Result<Self, AcpiTablesError> {
-            if base > end {
+            // Prevent the creation of zero and one-byte length windows.
+            // In theory they are valid windows (except for the empty window),
+            // but in practice they are not windows we expect to create with
+            // this constructor..
+            if base >= end {
                 return Err(AcpiTablesError::InvalidPCIWindowRange(base, end));
             }
             Ok(Self { base, end })
@@ -1354,17 +1358,17 @@ pub mod formats {
 
         #[test]
         fn basic() {
-            let w = PciWindow::new(0, 0).unwrap();
-            assert_eq!(w.len(), 0);
+            let w = PciWindow::new(0, 0);
+            assert!(w.is_err());
+
+            let w = PciWindow::new(100, 100);
+            assert!(w.is_err());
 
             let w = PciWindow::empty();
             assert_eq!(w.len(), 0);
 
             let w = PciWindow::new(0, 100).unwrap();
             assert_eq!(w.len(), 101);
-
-            let w = PciWindow::new(100, 100).unwrap();
-            assert_eq!(w.len(), 1);
         }
     }
 
