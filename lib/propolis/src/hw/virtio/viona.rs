@@ -235,7 +235,7 @@ pub mod migrate {
 /// are calls "vrings". Since the userspace portion of the Viona emulation is
 /// tasked with keeping the vring state in sync with the VirtQueue it
 /// represents, we must track its perceived state.
-#[derive(Copy, Clone, Default, Eq, PartialEq)]
+#[derive(Copy, Clone, Default, Eq, PartialEq, Debug)]
 enum VRingState {
     /// Initial state of the vring as it comes out of reset
     ///
@@ -1340,7 +1340,7 @@ impl MigrateMulti for PciVirtioViona {
             self.hdl.set_pairs(PROPOLIS_MAX_MQ_PAIRS).unwrap();
         }
         // Queue count is a NonZeroU16; hence `get` and -1 will not underflow.
-        let io_queues = self.virtio_state.queues.count().get() - 1;
+        let io_queues = self.virtio_state.queues.count().get();
         let pairs = io_queues / 2;
         if !io_queues.is_multiple_of(2) {
             return Err(MigrateStateError::ImportFailed(format!(
@@ -2646,6 +2646,7 @@ mod test {
         Lifecycle::reset(test_ctx.dev.as_ref());
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats);
+        Lifecycle::reset(test_ctx.dev.as_ref());
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
 
