@@ -123,7 +123,7 @@ pub fn bind_lwp(
 ///
 /// If the function panics, the LWP's original processor binding will not be
 /// restored.
-pub fn with_unbound_lwp<T: Sized>(f: impl Fn() -> T) -> T {
+pub fn with_unbound_lwp<T: Sized>(f: impl FnOnce() -> T) -> T {
     let oldbind = bind_lwp(None).expect("can unbind this LWP");
 
     let res = f();
