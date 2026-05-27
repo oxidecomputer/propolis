@@ -114,7 +114,7 @@ pub fn bind_lwp(
 pub fn bind_lwp(
     _bind_cpu: Option<processorid_t>,
 ) -> Result<Option<processorid_t>, Error> {
-    Ok(())
+    Ok(None)
 }
 
 /// Run the provided function without any processor binding active on the
