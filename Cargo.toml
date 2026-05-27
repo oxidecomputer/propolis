@@ -81,15 +81,15 @@ p9ds = { git = "https://github.com/oxidecomputer/p9fs" }
 softnpu = { git = "https://github.com/oxidecomputer/softnpu" }
 
 # Omicron-related
-internal-dns-resolver = { git = "https://github.com/oxidecomputer/omicron", rev = "fa779b29af7a8656657ccca6ec531446188d916c" }
-internal-dns-types = { git = "https://github.com/oxidecomputer/omicron", rev = "fa779b29af7a8656657ccca6ec531446188d916c" }
-nexus-client = { git = "https://github.com/oxidecomputer/omicron", rev = "fa779b29af7a8656657ccca6ec531446188d916c" }
-omicron-common = { git = "https://github.com/oxidecomputer/omicron", rev = "fa779b29af7a8656657ccca6ec531446188d916c" }
+internal-dns-resolver = { git = "https://github.com/oxidecomputer/omicron", rev = "5fd53a9c9ff2b0e47bfef3fe842b7516877b0162" }
+internal-dns-types = { git = "https://github.com/oxidecomputer/omicron", rev = "5fd53a9c9ff2b0e47bfef3fe842b7516877b0162" }
+nexus-client = { git = "https://github.com/oxidecomputer/omicron", rev = "5fd53a9c9ff2b0e47bfef3fe842b7516877b0162" }
+omicron-common = { git = "https://github.com/oxidecomputer/omicron", rev = "5fd53a9c9ff2b0e47bfef3fe842b7516877b0162" }
 omicron-zone-package = "0.12.2"
-oximeter-instruments = { git = "https://github.com/oxidecomputer/omicron", rev = "fa779b29af7a8656657ccca6ec531446188d916c", default-features = false, features = ["kstat"] }
-oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", rev = "fa779b29af7a8656657ccca6ec531446188d916c" }
-oximeter = { git = "https://github.com/oxidecomputer/omicron", rev = "fa779b29af7a8656657ccca6ec531446188d916c" }
-sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", rev = "fa779b29af7a8656657ccca6ec531446188d916c" }
+oximeter-instruments = { git = "https://github.com/oxidecomputer/omicron", rev = "5fd53a9c9ff2b0e47bfef3fe842b7516877b0162", default-features = false, features = ["kstat"] }
+oximeter-producer = { git = "https://github.com/oxidecomputer/omicron", rev = "5fd53a9c9ff2b0e47bfef3fe842b7516877b0162" }
+oximeter = { git = "https://github.com/oxidecomputer/omicron", rev = "5fd53a9c9ff2b0e47bfef3fe842b7516877b0162" }
+sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", rev = "5fd53a9c9ff2b0e47bfef3fe842b7516877b0162" }
 
 # Crucible
 crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "bd9a0e2abe6b6b89aec8c85f4ee57474144ed150" }
