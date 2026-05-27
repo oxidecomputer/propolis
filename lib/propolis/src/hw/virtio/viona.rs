@@ -2333,6 +2333,7 @@ mod test {
 
             self.common_config.write_le64(common_cfg::queue_device, used_gpa);
 
+            // TODO(ky): why are we failing on this step?
             self.common_config.write_le16(common_cfg::queue_enable, 1);
 
             // Finally, round up so the next queue (if there is one) starts
@@ -2841,17 +2842,24 @@ mod test {
         const TEST_VNIC: &'static str = "vnic_prop_test0";
         for test in tests {
             let underlying_nic = underlying_nic.clone();
+            eprintln!("running viona test '{}'", test.name);
             rt.block_on(async move {
                 create_vnic(&underlying_nic, TEST_VNIC);
 
-                let test_ctx =
-                    create_test_ctx(test.name, &underlying_nic, TEST_VNIC);
-                Lifecycle::start(test_ctx.dev.as_ref())
-                    .expect("can start viona device");
-                let test_ctx = (test.test_fn)(test_ctx);
-                drop(test_ctx);
-
+                let res = std::panic::catch_unwind(move || {
+                    let test_ctx =
+                        create_test_ctx(test.name, &underlying_nic, TEST_VNIC);
+                    Lifecycle::start(test_ctx.dev.as_ref())
+                        .expect("can start viona device");
+                    let test_ctx = (test.test_fn)(test_ctx);
+                    drop(test_ctx);
+                });
                 delete_vnic(TEST_VNIC);
+                if let Err(_) = res {
+                    panic!("viona test '{}' was unsuccessful\n", test.name);
+                } else {
+                    eprintln!("viona test '{}' was successful\n", test.name);
+                }
             });
         }
     }
