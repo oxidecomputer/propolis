@@ -111,7 +111,9 @@ pub fn bind_lwp(
 /// On non-illumos targets, we're not actually running a VM. We do need the
 /// crate to compile to be nicer for blanket `cargo test` invocations on other
 /// platforms. So a no-op function will do.
-pub fn bind_lwp(_bind_cpu: processorid_t) -> Result<(), Error> {
+pub fn bind_lwp(
+    _bind_cpu: Option<processorid_t>,
+) -> Result<Option<processorid_t>, Error> {
     Ok(())
 }
 
