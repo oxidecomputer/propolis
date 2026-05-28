@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use super::uart16550::{migrate, Uart};
 use crate::chardev::*;
 use crate::common::*;
+use crate::common::{DeviceMetadata, DeviceMetadataMap};
 use crate::firmware::acpi;
 use crate::intr_pins::IntrPin;
 use crate::migrate::*;
@@ -39,30 +40,20 @@ impl UartState {
 }
 
 pub struct LpcUart {
-    name: &'static str,
-    irq: u8,
     state: Mutex<UartState>,
-    port: Mutex<Option<u16>>,
     notify_readable: NotifierCell<dyn Source>,
     notify_writable: NotifierCell<dyn Sink>,
 }
 
 impl LpcUart {
-    pub fn new(
-        name: &'static str,
-        irq: u8,
-        irq_pin: Box<dyn IntrPin>,
-    ) -> Arc<Self> {
+    pub fn new(irq_pin: Box<dyn IntrPin>) -> Arc<Self> {
         Arc::new(Self {
-            name,
-            irq,
             state: Mutex::new(UartState {
                 uart: Uart::new(),
                 irq_pin,
                 auto_discard: true,
                 paused: false,
             }),
-            port: Mutex::new(None),
             notify_readable: NotifierCell::new(),
             notify_writable: NotifierCell::new(),
         })
@@ -72,9 +63,6 @@ impl LpcUart {
         let piofn = Arc::new(move |_port: u16, rwo: RWOp| this.pio_rw(rwo))
             as Arc<PioFn>;
         bus.register(port, REGISTER_LEN as u16, piofn).unwrap();
-
-        let mut current_port = self.port.lock().unwrap();
-        *current_port = Some(port);
     }
     fn pio_rw(&self, rwo: RWOp) {
         assert!(rwo.offset() < REGISTER_LEN);
@@ -219,42 +207,50 @@ impl acpi::DsdtGenerator for LpcUart {
     fn dsdt_scope(&self) -> acpi::DsdtScope {
         acpi::DsdtScope::Lpc
     }
-}
 
-impl Aml for LpcUart {
     // This AML code is inherited from the original EDK2 static tables.
-    //
-    // The original tables only defined COM1 and COM2, even though VMs often
-    // have 4 serial ports.
-    fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
-        let port = match *self.port.lock().unwrap() {
-            Some(p) => p,
-            None => panic!("expected UART device to be connected"),
-        };
+    fn to_aml_bytes(
+        &self,
+        device_metadata: &DeviceMetadataMap,
+        sink: &mut dyn AmlSink,
+    ) {
+        let metadata = device_metadata.get(self).unwrap();
 
-        #[allow(clippy::wildcard_in_or_patterns)]
-        let uid: u32 = match self.name {
-            "COM1" => 1,
-            "COM2" => 2,
-            "COM3" | "COM4" | _ => {
-                return;
-            }
-        };
+        if metadata.num > 2 {
+            // The original tables only defined COM1 and COM2, even though VMs
+            // often have 4 serial ports.
+            return;
+        }
 
         aml::Device::new(
-            aml::Path::new(&format!("UAR{}", uid)),
+            aml::Path::new(&format!("UAR{}", metadata.num)),
             vec![
                 &acpi::aml::names::hid(&aml::EISAName::new(
                     acpi::aml::devids::COM_PORT_16550A,
                 )),
-                &acpi::aml::names::ddn(&self.name),
-                &acpi::aml::names::uid(&uid),
+                &acpi::aml::names::ddn(&format!("COM{}", metadata.num)),
+                &acpi::aml::names::uid(&metadata.num),
                 &acpi::aml::names::crs(&aml::ResourceTemplate::new(vec![
-                    &acpi::aml::io_port(port, 1, REGISTER_LEN as u8),
-                    &aml::Irq::new(true, false, false, self.irq),
+                    &acpi::aml::io_port(metadata.port, 1, REGISTER_LEN as u8),
+                    &aml::Irq::new(true, false, false, metadata.irq),
                 ])),
             ],
         )
         .to_aml_bytes(sink);
+    }
+}
+
+impl DeviceMetadata for LpcUart {
+    type Metadata = LpcUartMetadata;
+}
+
+pub struct LpcUartMetadata {
+    num: u8,
+    port: u16,
+    irq: u8,
+}
+impl LpcUartMetadata {
+    pub fn new(num: u8, port: u16, irq: u8) -> Self {
+        Self { num, port, irq }
     }
 }

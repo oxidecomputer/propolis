@@ -1055,6 +1055,7 @@ mod test {
 
 pub mod formats {
     use super::Entry;
+    use crate::common::DeviceMetadataMap;
     use crate::firmware::acpi;
     use crate::hw::pci;
     use acpi_tables::Aml;
@@ -1318,6 +1319,7 @@ pub mod formats {
         pub pci_window_32: PciWindow,
         pub pci_window_64: PciWindow,
         pub dsdt_generators: &'a [&'a dyn acpi::DsdtGenerator],
+        pub device_metadata: &'a DeviceMetadataMap,
     }
 
     /// An inclusive range of address to be used for PCI MMIO.
@@ -1486,8 +1488,10 @@ pub mod formats {
         }
 
         fn add_dsdt(&mut self) -> usize {
-            let dsdt_config =
-                acpi::DsdtConfig { generators: self.config.dsdt_generators };
+            let dsdt_config = acpi::DsdtConfig {
+                generators: self.config.dsdt_generators,
+                device_metadata: self.config.device_metadata,
+            };
             let dsdt = acpi::Dsdt::new(dsdt_config);
             let dsdt_offset = self.tables.len();
             dsdt.to_aml_bytes(&mut self.tables);
