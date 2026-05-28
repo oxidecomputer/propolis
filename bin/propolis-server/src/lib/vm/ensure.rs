@@ -93,6 +93,7 @@ use std::sync::Arc;
 
 use oximeter::types::ProducerRegistry;
 use oximeter_instruments::kstat::KstatSampler;
+use propolis::common::DeviceMetadataMap;
 use propolis::enlightenment::{
     bhyve::BhyveGuestInterface,
     hyperv::{Features as HyperVFeatures, HyperV},
@@ -532,6 +533,7 @@ async fn initialize_vm_objects(
         log: log.clone(),
         machine: &machine,
         devices: Default::default(),
+        device_metadata: DeviceMetadataMap::new(),
         block_backends: Default::default(),
         crucible_backends: Default::default(),
         spec: &spec,

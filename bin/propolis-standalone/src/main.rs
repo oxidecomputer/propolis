@@ -23,12 +23,12 @@ use strum::IntoEnumIterator;
 use tokio::runtime;
 
 use propolis::chardev::{BlockingSource, Sink, Source, UDSock};
-use propolis::common::{GB, MB};
+use propolis::common::{DeviceMetadataMap, GB, MB};
 use propolis::firmware::smbios;
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ps2::ctrl::PS2Ctrl;
 use propolis::hw::qemu::fwcfg;
-use propolis::hw::uart::LpcUart;
+use propolis::hw::uart::{LpcUart, LpcUartMetadata};
 use propolis::hw::{ibmpc, qemu};
 use propolis::intr_pins::FuncPin;
 use propolis::usdt::register_probes;
@@ -1084,6 +1084,7 @@ fn generate_acpi_tables(
     cpus: u8,
     lowmem: usize,
     inventory: &Inventory,
+    device_metadata: &DeviceMetadataMap,
 ) -> anyhow::Result<fwcfg::formats::AcpiTables> {
     let generators: Vec<_> = inventory
         .devs
@@ -1108,6 +1109,7 @@ fn generate_acpi_tables(
         pci_window_32,
         pci_window_64: fwcfg::formats::PciWindow::empty(),
         dsdt_generators: &generators,
+        device_metadata,
     };
     let acpi_tables = fwcfg::formats::AcpiTablesBuilder::new(config);
 
@@ -1157,6 +1159,7 @@ fn setup_instance(
         log.clone(),
         com1_sock.clone(),
     );
+    let mut device_metadata = DeviceMetadataMap::new();
     slog::info!(log, "VM created"; "name" => vm_name);
 
     let (romfp, rom_len) =
@@ -1226,26 +1229,10 @@ fn setup_instance(
     guard.inventory.register(&hpet);
 
     // UARTs
-    let com1 = LpcUart::new(
-        "COM1",
-        ibmpc::IRQ_COM1,
-        chipset_lpc.irq_pin(ibmpc::IRQ_COM1).unwrap(),
-    );
-    let com2 = LpcUart::new(
-        "COM2",
-        ibmpc::IRQ_COM2,
-        chipset_lpc.irq_pin(ibmpc::IRQ_COM2).unwrap(),
-    );
-    let com3 = LpcUart::new(
-        "COM3",
-        ibmpc::IRQ_COM3,
-        chipset_lpc.irq_pin(ibmpc::IRQ_COM3).unwrap(),
-    );
-    let com4 = LpcUart::new(
-        "COM4",
-        ibmpc::IRQ_COM4,
-        chipset_lpc.irq_pin(ibmpc::IRQ_COM4).unwrap(),
-    );
+    let com1 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM1).unwrap());
+    let com2 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM2).unwrap());
+    let com3 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM3).unwrap());
+    let com4 = LpcUart::new(chipset_lpc.irq_pin(ibmpc::IRQ_COM4).unwrap());
 
     com1_sock.spawn(
         Arc::clone(&com1) as Arc<dyn Sink>,
@@ -1264,9 +1251,25 @@ fn setup_instance(
     com3.attach(pio, ibmpc::PORT_COM3);
     com4.attach(pio, ibmpc::PORT_COM4);
     guard.inventory.register_instance(&com1, "com1");
+    device_metadata.insert(
+        &com1,
+        Box::new(LpcUartMetadata::new(1, ibmpc::PORT_COM1, ibmpc::IRQ_COM1)),
+    );
     guard.inventory.register_instance(&com2, "com2");
+    device_metadata.insert(
+        &com2,
+        Box::new(LpcUartMetadata::new(2, ibmpc::PORT_COM2, ibmpc::IRQ_COM2)),
+    );
     guard.inventory.register_instance(&com3, "com3");
+    device_metadata.insert(
+        &com3,
+        Box::new(LpcUartMetadata::new(3, ibmpc::PORT_COM3, ibmpc::IRQ_COM3)),
+    );
     guard.inventory.register_instance(&com4, "com4");
+    device_metadata.insert(
+        &com4,
+        Box::new(LpcUartMetadata::new(4, ibmpc::PORT_COM4, ibmpc::IRQ_COM4)),
+    );
 
     // PS/2
     let ps2_ctrl = PS2Ctrl::create();
@@ -1484,8 +1487,9 @@ fn setup_instance(
     let e820_entry = generate_e820(machine, log).expect("can build E820 table");
     fwcfg.insert_named("etc/e820", e820_entry).unwrap();
 
-    let acpi_entries = generate_acpi_tables(cpus, lowmem, &guard.inventory)
-        .expect("can build ACPI tables");
+    let acpi_entries =
+        generate_acpi_tables(cpus, lowmem, &guard.inventory, &device_metadata)
+            .expect("can build ACPI tables");
     fwcfg
         .insert_named("etc/acpi/tables", acpi_entries.tables)
         .context("Failed to insert ACPI tables")?;

@@ -2,10 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::any::Any;
+use std::collections::BTreeMap;
 use std::ops::{Add, BitAnd};
 use std::ops::{Bound::*, RangeBounds};
 use std::slice::SliceIndex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::vmm::SubMapping;
 
@@ -496,6 +499,115 @@ impl BitAnd<usize> for GuestAddr {
 }
 
 pub use crate::lifecycle::Lifecycle;
+
+/// Trait that devices can implement to store metadata into a
+/// [DeviceMetadataMap].
+pub trait DeviceMetadata: Lifecycle {
+    type Metadata;
+}
+
+/// Storage for arbitrary information about devices attached to a machine.
+/// Devices must implement [DeviceMetadata].
+pub struct DeviceMetadataMap {
+    map: BTreeMap<*const (), Box<dyn Any>>,
+}
+impl DeviceMetadataMap {
+    pub fn new() -> Self {
+        Self { map: BTreeMap::new() }
+    }
+
+    /// Inserts a device and its metadata into storage.
+    ///
+    /// Returns `None` if the device was not previously in storage or the old
+    /// metadata otherwise.
+    pub fn insert<T: 'static + DeviceMetadata>(
+        &mut self,
+        k: &Arc<T>,
+        v: Box<T::Metadata>,
+    ) -> Option<T::Metadata> {
+        let old = self.map.insert(Arc::as_ptr(k) as *const (), v)?;
+
+        // Value type was enforced on previous insert, so the downcasting is
+        // not expected to fail.
+        Some(*old.downcast().unwrap())
+    }
+
+    /// Retrieves metadata for a device.
+    ///
+    /// The device is referenced by its address and so the exact same device
+    /// needs to be used to access the metadata.
+    ///
+    /// Returns `None` if the device is not present in storage.
+    pub fn get<T: 'static + DeviceMetadata>(
+        &self,
+        k: &T,
+    ) -> Option<&T::Metadata> {
+        // Double cast key to ensure the raw pointer is the same as the one
+        // used on inert. A pointer to Lifecycle includes additional metadata
+        // that can be different, even if they point to the same address. A
+        // pointer to T requires knowing the type for T::Metadata.
+        let k_ptr = (k as *const dyn Lifecycle) as *const ();
+
+        // Value type is enforced on insert, so the downcasting is not expected
+        // to fail.
+        self.map.get(&k_ptr)?.as_ref().downcast_ref()
+    }
+}
+
+#[cfg(test)]
+mod device_metadata_test {
+    use super::*;
+
+    struct MockDevice {}
+    impl<'a> MockDevice {
+        fn metadata(
+            &'a self,
+            device_metadata: &'a DeviceMetadataMap,
+        ) -> Option<&'a MockDeviceMetadata> {
+            device_metadata.get(self)
+        }
+    }
+    impl Lifecycle for MockDevice {
+        fn type_name(&self) -> &'static str {
+            "mock"
+        }
+    }
+    impl DeviceMetadata for MockDevice {
+        type Metadata = MockDeviceMetadata;
+    }
+
+    struct MockDeviceMetadata {
+        data: u8,
+    }
+
+    #[test]
+    fn device_metadata_test() {
+        let mut map = DeviceMetadataMap::new();
+
+        // Insert and retrieve metadata.
+        let d1 = Arc::new(MockDevice {});
+        let got = map.insert(&d1, Box::new(MockDeviceMetadata { data: 1 }));
+        assert!(got.is_none());
+
+        // Retrieve metadata from the device.
+        let metadata = d1.metadata(&map).unwrap();
+        assert_eq!(metadata.data, 1);
+
+        // Retrieve metadata from the Arc.
+        let metadata = map.get(&*d1).unwrap();
+        assert_eq!(metadata.data, 1);
+
+        // Replace metadata.
+        let got =
+            map.insert(&d1, Box::new(MockDeviceMetadata { data: 2 })).unwrap();
+        assert_eq!(got.data, 1);
+
+        // Try to read non-existing metadata.
+        let d2 = Arc::new(MockDevice {});
+        let metadata = d2.metadata(&map);
+        assert!(metadata.is_none());
+    }
+}
 
 pub const PAGE_SIZE: usize = 0x1000;
 pub const PAGE_OFFSET: usize = 0xfff;

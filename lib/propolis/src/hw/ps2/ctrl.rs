@@ -7,6 +7,7 @@ use std::convert::TryFrom;
 use std::mem::replace;
 use std::sync::{Arc, Mutex};
 
+use crate::common::DeviceMetadataMap;
 use crate::common::*;
 use crate::firmware::acpi;
 use crate::hw::ibmpc;
@@ -1099,10 +1100,8 @@ impl acpi::DsdtGenerator for PS2Ctrl {
     fn dsdt_scope(&self) -> acpi::DsdtScope {
         acpi::DsdtScope::Lpc
     }
-}
 
-impl Aml for PS2Ctrl {
-    fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
+    fn to_aml_bytes(&self, _: &DeviceMetadataMap, sink: &mut dyn AmlSink) {
         aml::Device::new(
             "PS2K".into(),
             vec![

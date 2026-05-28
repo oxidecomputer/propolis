@@ -29,7 +29,7 @@ use propolis::attestation::server::AttestationServerConfig;
 use propolis::attestation::server::AttestationSock;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
-use propolis::common::{Lifecycle, GB, MB, PAGE_SIZE};
+use propolis::common::{DeviceMetadataMap, Lifecycle, GB, MB, PAGE_SIZE};
 use propolis::cpuid::TopoKind;
 use propolis::enlightenment::Enlightenment;
 use propolis::firmware::smbios;
@@ -45,7 +45,7 @@ use propolis::hw::qemu::{
     fwcfg::{self, Entry},
     ramfb,
 };
-use propolis::hw::uart::LpcUart;
+use propolis::hw::uart::{LpcUart, LpcUartMetadata};
 use propolis::hw::{nvme, virtio};
 use propolis::intr_pins;
 use propolis::vmm::{self, Builder, Machine};
@@ -216,6 +216,7 @@ pub struct MachineInitializer<'a> {
     pub(crate) log: slog::Logger,
     pub(crate) machine: &'a Machine,
     pub(crate) devices: DeviceMap,
+    pub(crate) device_metadata: DeviceMetadataMap,
     pub(crate) block_backends: BlockBackendMap,
     pub(crate) crucible_backends: CrucibleBackendMap,
     pub(crate) spec: &'a Spec,
@@ -418,26 +419,28 @@ impl MachineInitializer<'_> {
                 continue;
             }
 
-            let (uart_name, irq, port) = match desc.num {
+            let (num, irq, port) = match desc.num {
                 SerialPortNumber::Com1 => {
-                    ("COM1", ibmpc::IRQ_COM1, ibmpc::PORT_COM1)
+                    (1, ibmpc::IRQ_COM1, ibmpc::PORT_COM1)
                 }
                 SerialPortNumber::Com2 => {
-                    ("COM2", ibmpc::IRQ_COM2, ibmpc::PORT_COM2)
+                    (2, ibmpc::IRQ_COM2, ibmpc::PORT_COM2)
                 }
                 SerialPortNumber::Com3 => {
-                    ("COM3", ibmpc::IRQ_COM3, ibmpc::PORT_COM3)
+                    (3, ibmpc::IRQ_COM3, ibmpc::PORT_COM3)
                 }
                 SerialPortNumber::Com4 => {
-                    ("COM4", ibmpc::IRQ_COM4, ibmpc::PORT_COM4)
+                    (4, ibmpc::IRQ_COM4, ibmpc::PORT_COM4)
                 }
             };
 
-            let dev =
-                LpcUart::new(uart_name, irq, chipset.irq_pin(irq).unwrap());
+            let dev = LpcUart::new(chipset.irq_pin(irq).unwrap());
             dev.set_autodiscard(true);
-            dev.attach(&self.machine.bus_pio, port);
+            LpcUart::attach(&dev, &self.machine.bus_pio, port);
             self.devices.insert(name.to_owned(), dev.clone());
+            self.device_metadata
+                .insert(&dev, Box::new(LpcUartMetadata::new(num, port, irq)));
+
             if desc.num == SerialPortNumber::Com1 {
                 assert!(com1.is_none());
                 com1 = Some(dev);
@@ -1129,15 +1132,19 @@ impl MachineInitializer<'_> {
         // Set up an LPC uart for ASIC management comms from the guest.
         //
         // NOTE: SoftNpu squats on com4.
-        let uart = LpcUart::new(
-            "COM4",
-            ibmpc::IRQ_COM4,
-            chipset.irq_pin(ibmpc::IRQ_COM4).unwrap(),
-        );
+        let uart = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM4).unwrap());
         uart.set_autodiscard(true);
         uart.attach(&self.machine.bus_pio, ibmpc::PORT_COM4);
         self.devices
             .insert(SpecKey::Name("softnpu-uart".to_string()), uart.clone());
+        self.device_metadata.insert(
+            &uart,
+            Box::new(LpcUartMetadata::new(
+                4,
+                ibmpc::PORT_COM4,
+                ibmpc::IRQ_COM4,
+            )),
+        );
 
         // Start with no pipeline. The guest must load the initial P4 program.
         let pipeline = Arc::new(std::sync::Mutex::new(None));
@@ -1487,6 +1494,7 @@ impl MachineInitializer<'_> {
             pci_window_32,
             pci_window_64: fwcfg::formats::PciWindow::empty(),
             dsdt_generators: &generators,
+            device_metadata: &self.device_metadata,
         };
         let acpi_tables = fwcfg::formats::AcpiTablesBuilder::new(config);
         Ok(acpi_tables.build())
