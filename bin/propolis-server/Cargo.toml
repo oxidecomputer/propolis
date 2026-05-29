@@ -70,6 +70,7 @@ rfb = { workspace = true, features = ["tungstenite"] }
 uuid.workspace = true
 usdt.workspace = true
 vm-attest.workspace = true
+dice-verifier.workspace = true
 base64.workspace = true
 schemars = { workspace = true, features = ["chrono", "uuid1"] }
 

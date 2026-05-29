@@ -207,3 +207,9 @@ zerocopy = "0.8.25"
 # [patch."https://github.com/oxidecomputer/crucible"]
 # crucible = { path = "../crucible/upstairs" }
 # crucible-client-types = { path = "../crucible/crucible-client-types" }
+
+# POC: use the local vm-attest branch that adds Request::GetToken /
+# Response::Token. For a real PR, replace this path patch with a pushed git rev
+# on the workspace `vm-attest` dependency above.
+[patch."https://github.com/oxidecomputer/vm-attest"]
+vm-attest = { path = "/Users/joshcarp/code/vm-attest" }
