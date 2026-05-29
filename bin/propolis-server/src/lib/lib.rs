@@ -4,6 +4,7 @@
 
 pub mod config;
 mod initializer;
+mod instance_identity;
 mod migrate;
 mod serial;
 pub mod server;

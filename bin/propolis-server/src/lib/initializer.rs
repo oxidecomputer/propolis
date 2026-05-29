@@ -522,15 +522,28 @@ impl MachineInitializer<'_> {
             self.devices.insert(vsock.id.clone(), device.clone());
             chipset.pci_attach(bdf, device);
 
-            // Spawn attestation server that will go over the vsock device
+            // Spawn the unified instance-identity server (attest + gettoken),
+            // which supersedes the standalone attestation server. It listens on
+            // ATTESTATION_ADDR -- the vsock proxy forwards ATTESTATION_PORT to
+            // it -- and routes `vm_attest::Request` {Attest, GetToken}.
             if let Some(cfg) = attest_cfg {
-                let attest = AttestationSock::new(
-                    self.log.new(slog::o!("component" => "attestation-server")),
-                    cfg.sled_agent_addr,
+                let listener = tokio::net::TcpListener::bind(
+                    attestation::ATTESTATION_ADDR,
                 )
                 .await
                 .map_err(MachineInitError::AttestationServer)?;
-                return Ok(Some(attest));
+                let server =
+                    crate::instance_identity::InstanceIdentityServer::new(
+                        self.log.new(
+                            slog::o!("component" => "instance-identity-server"),
+                        ),
+                        cfg.sled_agent_addr,
+                        self.properties.id,
+                    );
+                tokio::spawn(server.run(listener));
+                // No AttestationSock handle to finalize: the unified server does
+                // not use the two-phase boot-digest init.
+                return Ok(None);
             }
         } else {
             info!(self.log, "no vsock device in instance spec");

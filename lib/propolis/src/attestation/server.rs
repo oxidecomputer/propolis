@@ -259,6 +259,14 @@ impl AttestationSock {
                         }
                     }
                 }
+                vm_attest::Request::GetToken => {
+                    // GetToken is handled by the unified instance-identity
+                    // server (in propolis-server); this attestation server does
+                    // not implement it.
+                    vm_attest::Response::Error(
+                        "GetToken is not supported by this server".to_string(),
+                    )
+                }
             };
 
             let mut response = serde_json::to_string(&response)?;

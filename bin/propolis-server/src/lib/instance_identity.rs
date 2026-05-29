@@ -16,17 +16,18 @@
 //!
 //! Collapsing both into one server (one vsock port, message-routed) avoids a
 //! second port and the previous draft's internal `localhost:605` hop. It lives
-//! in propolis-server (not `lib/propolis`) because `GetToken` calls Nexus over
-//! HTTP (`reqwest`), while still holding a `VmInstanceRot` for attestation
-//! production. The endpoints are on Nexus's *lockstep* API, resolvable via
-//! `ServiceName::NexusLockstep`.
+//! in propolis-server (which has `reqwest`) and holds a `VmInstanceRot` for
+//! attestation production.
+//!
+//! The Nexus *lockstep* server isn't at a computable subnet offset (unlike
+//! sled-agent), so we **resolve** it from internal DNS via
+//! `ServiceName::NexusLockstep` -- the same mechanism `server.rs` uses for
+//! `ServiceName::Nexus`, seeded from the sled-agent address's IP (same AZ).
 //!
 //! !!! NOT YET WIRED INTO initializer.rs / NOT BUILD-VALIDATED. Remaining:
-//!   - initializer: resolve `ServiceName::NexusLockstep`, construct this server,
-//!     add a single `VsockPortMapping`, and spawn it *instead of* the
-//!     `lib/propolis` `AttestationSock` (which this supersedes);
-//!   - the POC omits the boot-disk digest (`VmInstanceConf.boot_digest = None`),
-//!     which the old `AttestationSock` computed -- re-add if needed;
+//!   - initializer: construct this server, add a single `VsockPortMapping`, and
+//!     spawn it *instead of* the `lib/propolis` `AttestationSock` it supersedes;
+//!   - the POC omits the boot-disk digest (`VmInstanceConf.boot_digest = None`);
 //!   - build + test.
 
 use std::net::SocketAddrV6;
@@ -34,8 +35,10 @@ use std::sync::Arc;
 
 use dice_verifier::sled_agent::AttestSledAgent;
 use dice_verifier::Attest;
+use internal_dns_resolver::Resolver;
+use internal_dns_types::names::ServiceName;
 use slog::{error, info, Logger};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex as TokioMutex;
 
@@ -51,9 +54,9 @@ pub struct InstanceIdentityServer {
     rot: TokioMutex<VmInstanceRot>,
     vm_conf: VmInstanceConf,
     http: reqwest::Client,
-    /// Base URL of the Nexus **lockstep** API (e.g. `http://[::1]:port`),
-    /// resolved from `ServiceName::NexusLockstep`.
-    nexus_lockstep_url: String,
+    /// Sled-agent address; its IP also seeds the internal-DNS resolver used to
+    /// find the Nexus lockstep server (same AZ).
+    sled_agent_addr: SocketAddrV6,
 }
 
 impl InstanceIdentityServer {
@@ -61,7 +64,6 @@ impl InstanceIdentityServer {
         log: Logger,
         sled_agent_addr: SocketAddrV6,
         instance_id: uuid::Uuid,
-        nexus_lockstep_url: String,
     ) -> Self {
         // Attestation requests reach the RoT via sled-agent (same path the old
         // attestation server used).
@@ -76,7 +78,7 @@ impl InstanceIdentityServer {
             rot,
             vm_conf,
             http: reqwest::Client::new(),
-            nexus_lockstep_url,
+            sled_agent_addr,
         }
     }
 
@@ -146,9 +148,11 @@ impl InstanceIdentityServer {
     }
 
     async fn get_token_inner(&self) -> Result<String, String> {
+        let base = self.lockstep_url().await?;
+
         // 1. Nexus-issued challenge nonce.
         let nonce_hex =
-            self.fetch_nonce().await.map_err(|e| e.to_string())?;
+            self.fetch_nonce(&base).await.map_err(|e| e.to_string())?;
         let nonce: [u8; 32] = hex::decode(&nonce_hex)
             .map_err(|e| e.to_string())?
             .try_into()
@@ -163,14 +167,28 @@ impl InstanceIdentityServer {
         };
 
         // 3. Exchange for a token.
-        self.mint_token(&nonce_hex, &attestation)
+        self.mint_token(&base, &nonce_hex, &attestation)
             .await
             .map_err(|e| e.to_string())
     }
 
-    async fn fetch_nonce(&self) -> Result<String, reqwest::Error> {
-        let url =
-            format!("{}/instance-identity/nonce", self.nexus_lockstep_url);
+    /// Resolve the Nexus lockstep API base URL from internal DNS.
+    async fn lockstep_url(&self) -> Result<String, String> {
+        let resolver =
+            Resolver::new_from_ip(self.log.clone(), *self.sled_agent_addr.ip())
+                .map_err(|e| format!("failed to build resolver: {e}"))?;
+        let addr = resolver
+            .lookup_socket_v6(ServiceName::NexusLockstep)
+            .await
+            .map_err(|e| format!("failed to resolve NexusLockstep: {e}"))?;
+        Ok(format!("http://{addr}"))
+    }
+
+    async fn fetch_nonce(
+        &self,
+        base: &str,
+    ) -> Result<String, reqwest::Error> {
+        let url = format!("{base}/instance-identity/nonce");
         let body: serde_json::Value =
             self.http.post(url).send().await?.error_for_status()?.json().await?;
         Ok(body
@@ -182,13 +200,12 @@ impl InstanceIdentityServer {
 
     async fn mint_token(
         &self,
+        base: &str,
         nonce: &str,
         attestation: &VmInstanceAttestation,
     ) -> Result<String, reqwest::Error> {
-        let url = format!(
-            "{}/instances/{}/identity-token",
-            self.nexus_lockstep_url, self.vm_conf.uuid
-        );
+        let url =
+            format!("{base}/instances/{}/identity-token", self.vm_conf.uuid);
         let body: serde_json::Value = self
             .http
             .post(url)
