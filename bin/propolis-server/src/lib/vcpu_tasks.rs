@@ -75,7 +75,7 @@ impl VcpuTasks {
             let thread = std::thread::Builder::new()
                 .name(format!("vcpu-{}", vcpu.id))
                 .spawn(move || {
-                    if let Some(bind_cpu) = bind_cpu {
+                    if bind_cpu.is_some() {
                         pbind::bind_lwp(bind_cpu)
                             .expect("can bind to specified CPU");
                     }

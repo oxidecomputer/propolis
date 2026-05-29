@@ -1071,12 +1071,30 @@ impl VionaHdl {
     fn ring_init(&self, vq: &VirtQueue) -> io::Result<()> {
         if !vq.is_control() {
             let mut vna_ring_init = viona_api::vioc_ring_init_modern::from(vq);
-            unsafe {
+
+            // Gross: `VNA_IOC_RING_INIT*` will have viona go and create an LWP
+            // in our process for the vring worker. It will inherit the current
+            // LWP's processor binding. ring_init is typically called from a
+            // vCPU LWP in service of an MMIO to activate the ring. These facts
+            // collaborate to get the worker LWP bound to the same host CPU as
+            // happens to be running the vCPU that set the NIC running.
+            //
+            // Because the guest probably goes and enables all the rings on one
+            // CPU as part of some driver operation, if we don't intervene here
+            // it's likely all the worker threads for the vNIC will be bound to
+            // the same core. We don't actually know, from the device side, if
+            // the guest will go and set up the rest of the rings right now, so
+            // we have to do the unbind/bind dance for each ring.
+            //
+            // Arguably one might not want to do such operations directly on a
+            // vCPU thread. Device setup isn't exactly on anyone's hot path so
+            // we'll live.
+            pbind::with_unbound_lwp(|| unsafe {
                 self.0.ioctl(
                     viona_api::VNA_IOC_RING_INIT_MODERN,
                     &mut vna_ring_init,
-                )?;
-            }
+                )
+            })?;
         }
         Ok(())
     }

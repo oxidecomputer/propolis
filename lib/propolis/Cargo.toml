@@ -19,6 +19,7 @@ cpuid_utils.workspace = true
 dladm.workspace = true
 viona_api.workspace = true
 propolis_types.workspace = true
+pbind.workspace = true
 usdt = { workspace = true, features = ["asm"] }
 tokio = { workspace = true, features = ["full"] }
 futures.workspace = true

@@ -328,7 +328,7 @@ impl Instance {
             let _ = std::thread::Builder::new()
                 .name(format!("vcpu-{}", vcpu.id))
                 .spawn(move || {
-                    if let Some(bind_cpu) = bind_cpu {
+                    if bind_cpu.is_some() {
                         pbind::bind_lwp(bind_cpu).expect("can bind vcpu");
                     }
                     Instance::vcpu_loop(inner, vcpu.as_ref(), &task, task_log)
