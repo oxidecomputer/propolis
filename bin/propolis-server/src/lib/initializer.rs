@@ -539,6 +539,8 @@ impl MachineInitializer<'_> {
                         ),
                         cfg.sled_agent_addr,
                         self.properties.id,
+                        self.properties.metadata.project_id,
+                        self.properties.metadata.silo_id,
                     );
                 tokio::spawn(server.run(listener));
                 // No AttestationSock handle to finalize: the unified server does

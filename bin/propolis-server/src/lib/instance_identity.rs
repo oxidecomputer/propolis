@@ -64,15 +64,23 @@ impl InstanceIdentityServer {
         log: Logger,
         sled_agent_addr: SocketAddrV6,
         instance_id: uuid::Uuid,
+        project: uuid::Uuid,
+        silo: uuid::Uuid,
     ) -> Self {
         // Attestation requests reach the RoT via sled-agent (same path the old
         // attestation server used).
         let attest: Box<dyn Attest + Send + Sync> =
             Box::new(AttestSledAgent::new(sled_agent_addr, &log));
         let rot = TokioMutex::new(VmInstanceRot::new(attest));
+        // Attested instance identity: uuid + the control-plane-assigned
+        // project/silo (from the instance metadata sled-agent provides).
         // POC: boot digest omitted.
-        let vm_conf =
-            VmInstanceConf { uuid: instance_id, boot_digest: None };
+        let vm_conf = VmInstanceConf {
+            uuid: instance_id,
+            project,
+            silo,
+            boot_digest: None,
+        };
         Self {
             log,
             rot,
