@@ -42,6 +42,7 @@ use thiserror::Error;
 #[cfg(feature = "failure-injection")]
 use propolis_api_types::instance_spec::components::devices::MigrationFailureInjector;
 
+use propolis::firmware::acpi::AcpiVariant;
 #[cfg(feature = "falcon")]
 use propolis_api_types::instance_spec::components::{
     backends::DlpiNetworkBackend,
@@ -160,6 +161,9 @@ pub(crate) struct Board {
     pub memory_mb: u64,
     pub chipset: Chipset,
     pub guest_hv_interface: GuestHypervisorInterface,
+
+    // XXX: expose via the API once more variants are implemented.
+    pub acpi_variant: AcpiVariant,
 }
 
 impl Default for Board {
@@ -169,6 +173,7 @@ impl Default for Board {
             memory_mb: 0,
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
             guest_hv_interface: GuestHypervisorInterface::Bhyve,
+            acpi_variant: AcpiVariant::V0,
         }
     }
 }

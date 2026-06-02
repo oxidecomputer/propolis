@@ -18,6 +18,8 @@
 //!
 //! https://github.com/oxidecomputer/edk2/tree/propolis/edk2-stable202105/OvmfPkg/AcpiTables
 
+use serde::{Deserialize, Serialize};
+
 use crate::hw::chipset::i440fx;
 
 pub mod aml;
@@ -31,25 +33,33 @@ pub mod ssdt_edk2;
 pub mod xsdt;
 
 pub use dsdt::{Dsdt, DsdtConfig, DsdtGenerator, DsdtScope};
-pub use facs::Facs;
+pub use facs::{Facs, FacsConfig};
 pub use fadt::{
-    Fadt, FADT_DSDT_LEN, FADT_DSDT_OFFSET, FADT_FACS_LEN, FADT_FACS_OFFSET,
-    FADT_X_DSDT_LEN, FADT_X_DSDT_OFFSET,
+    Fadt, FadtConfig, FADT_DSDT_LEN, FADT_DSDT_OFFSET, FADT_FACS_LEN,
+    FADT_FACS_OFFSET, FADT_X_DSDT_LEN, FADT_X_DSDT_OFFSET,
 };
 pub use file_sink::FileSink;
 pub use madt::{Madt, MadtConfig};
 pub use rsdp::{
-    Rsdp, RSDP_EXTENDED_CHECKSUM_OFFSET, RSDP_EXTENDED_TABLE_LEN,
+    Rsdp, RsdpConfig, RSDP_EXTENDED_CHECKSUM_OFFSET, RSDP_EXTENDED_TABLE_LEN,
     RSDP_V1_CHECKSUM_OFFSET, RSDP_V1_TABLE_LEN, RSDP_XSDT_ADDR_LEN,
     RSDP_XSDT_ADDR_OFFSET,
 };
-pub use ssdt_edk2::SsdtEdk2;
-pub use xsdt::{Xsdt, XSDT_HEADER_LEN};
+pub use ssdt_edk2::{SsdtEdk2, SsdtEdk2Config};
+pub use xsdt::{Xsdt, XsdtConfig, XSDT_HEADER_LEN};
 
 // Values used to reference table checksums to recompute them after values are
 // changed during table generation.
 pub const TABLE_HEADER_CHECKSUM_OFFSET: usize = 9;
 pub const TABLE_HEADER_CHECKSUM_LEN: usize = 1;
+
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Hash, Serialize, Deserialize,
+)]
+pub enum AcpiVariant {
+    #[default]
+    V0,
+}
 
 // Internal values shared across tables.
 

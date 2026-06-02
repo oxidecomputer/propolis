@@ -32,7 +32,7 @@ use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::{DeviceMetadataMap, Lifecycle, GB, MB, PAGE_SIZE};
 use propolis::cpuid::TopoKind;
 use propolis::enlightenment::Enlightenment;
-use propolis::firmware::smbios;
+use propolis::firmware::{acpi, smbios};
 use propolis::hw::bhyve::BhyveHpet;
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ibmpc;
@@ -1467,6 +1467,7 @@ impl MachineInitializer<'_> {
 
     fn generate_acpi_tables(
         &self,
+        acpi_variant: acpi::AcpiVariant,
         cpus: u8,
     ) -> Result<fwcfg::formats::AcpiTables, MachineInitError> {
         let (lowmem, _) = get_spec_guest_ram_limits(self.spec);
@@ -1490,6 +1491,7 @@ impl MachineInitializer<'_> {
         )?;
 
         let config = &fwcfg::formats::AcpiConfig {
+            acpi_variant,
             num_cpus: cpus,
             pci_window_32,
             pci_window_64: fwcfg::formats::PciWindow::empty(),
@@ -1508,6 +1510,7 @@ impl MachineInitializer<'_> {
         &mut self,
         cpus: u8,
         bootrom_version: &Option<String>,
+        acpi_variant: acpi::AcpiVariant,
     ) -> Result<Arc<ramfb::RamFb>, MachineInitError> {
         let fwcfg = fwcfg::FwCfg::new();
         fwcfg
@@ -1546,7 +1549,7 @@ impl MachineInitializer<'_> {
             .insert_named("etc/e820", e820_entry)
             .map_err(|e| MachineInitError::FwcfgInsertFailed("e820", e))?;
 
-        let acpi_entries = self.generate_acpi_tables(cpus)?;
+        let acpi_entries = self.generate_acpi_tables(acpi_variant, cpus)?;
         fwcfg.insert_named("etc/acpi/tables", acpi_entries.tables).map_err(
             |e| MachineInitError::FwcfgInsertFailed("acpi/tables", e),
         )?;

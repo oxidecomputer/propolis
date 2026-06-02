@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use cpuid_profile_config::*;
 use propolis::block;
+use propolis::firmware::acpi::AcpiVariant;
 use propolis::hw::pci::Bdf;
 
 use crate::cidata::build_cidata_be;
@@ -71,6 +72,12 @@ pub struct Main {
 
     /// Request bootrom override boot order using the devices specified
     pub boot_order: Option<Vec<String>>,
+
+    /// ACPI table variant to use for the VM
+    ///
+    /// Default: V0
+    #[serde(default)]
+    pub acpi_variant: AcpiVariant,
 }
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]

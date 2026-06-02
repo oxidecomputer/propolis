@@ -7,25 +7,38 @@
 //! The [`Facs`] struct implements the `Aml` trait of the `acpi_tables` crate
 //! and can write the AML bytecode to any AmlSink, like a `Vec<u8>`.
 
+use super::AcpiVariant;
 use acpi_tables::{facs, Aml, AmlSink};
+
+/// Configuration for generating a FACS table.
+pub struct FacsConfig {
+    /// The ACPI table variant to use.
+    pub acpi_variant: AcpiVariant,
+}
 
 /// The FACS table stores information about the firmware.
 ///
-/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#firmware-acpi-control-structure-facs>
-pub struct Facs {}
+/// ACPI rev. 6.6 section 5.2.10 "Firmware ACPI Control Structure (FACS)"
+pub struct Facs {
+    config: FacsConfig,
+}
 
 impl Facs {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(config: FacsConfig) -> Self {
+        Self { config }
     }
 }
 
-// The acpi_tables crate generates version 1 of the FACS table while the
-// original static EDK2 table was version 0. The only difference is the
-// addition of the X_Firmware_Waking_Vector field, which is not used by
-// Propolis.
 impl Aml for Facs {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
-        facs::FACS::new().to_aml_bytes(sink);
+        match self.config.acpi_variant {
+            AcpiVariant::V0 => {
+                // The acpi_tables crate generates version 1 of the FACS table
+                // while the original static EDK2 table was version 0. The only
+                // difference is the addition of the X_Firmware_Waking_Vector
+                // field, which is not used by Propolis.
+                facs::FACS::new().to_aml_bytes(sink);
+            }
+        }
     }
 }

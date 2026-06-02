@@ -7,7 +7,7 @@
 //! The [`Rsdp`] struct implements the `Aml` trait of the `acpi_tables` crate
 //! and can write the AML bytecode to any AmlSink, like a `Vec<u8>`.
 
-use super::OEM_ID;
+use super::{AcpiVariant, OEM_ID};
 use acpi_tables::{rsdp, Aml, AmlSink};
 
 // Byte offset and length of fields that need to be referenced during table
@@ -28,17 +28,28 @@ pub const RSDP_V1_TABLE_LEN: usize = 20;
 pub const RSDP_EXTENDED_CHECKSUM_OFFSET: usize = 32;
 pub const RSDP_EXTENDED_TABLE_LEN: usize = 36;
 
+/// Configuration for generating a RSDP table.
+pub struct RsdpConfig {
+    /// The ACPI table variant to use.
+    pub acpi_variant: AcpiVariant,
+
+    /// 64-bit address for the XSDT table.
+    ///
+    /// ACPI rev. 6.6 table 5.3 "RSDP Structure" XsdtAddress
+    pub xsdt_addr: u64,
+}
+
 /// The RSDP table is the root table the operating system loads first to
 /// discover the other tables.
 ///
-/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#root-system-description-pointer-rsdp>
+/// ACPI rev. 6.6 section 5.2.5 "Root System Description Pointer (RSDP)"
 pub struct Rsdp {
-    xsdt_addr: u64,
+    config: RsdpConfig,
 }
 
 impl Rsdp {
-    pub fn new(xsdt_addr: u64) -> Self {
-        Self { xsdt_addr }
+    pub fn new(config: RsdpConfig) -> Self {
+        Self { config }
     }
 }
 
@@ -48,7 +59,7 @@ impl Aml for Rsdp {
     //
     // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/QemuFwCfgAcpi.c#L891-L899
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
-        rsdp::Rsdp::new(*OEM_ID, self.xsdt_addr).to_aml_bytes(sink);
+        rsdp::Rsdp::new(*OEM_ID, self.config.xsdt_addr).to_aml_bytes(sink);
     }
 }
 
@@ -59,7 +70,11 @@ mod test {
     #[test]
     fn field_references() {
         let mut sink = Vec::new();
-        Rsdp::new(0x0abc_def0).to_aml_bytes(&mut sink);
+        let config = RsdpConfig {
+            acpi_variant: AcpiVariant::V0,
+            xsdt_addr: 0x0abc_def0,
+        };
+        Rsdp::new(config).to_aml_bytes(&mut sink);
         assert_eq!(
             sink[RSDP_XSDT_ADDR_OFFSET
                 ..(RSDP_XSDT_ADDR_OFFSET + RSDP_XSDT_ADDR_LEN)],

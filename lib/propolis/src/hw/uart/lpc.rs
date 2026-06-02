@@ -211,15 +211,18 @@ impl acpi::DsdtGenerator for LpcUart {
     // This AML code is inherited from the original EDK2 static tables.
     fn to_aml_bytes(
         &self,
+        acpi_variant: acpi::AcpiVariant,
         device_metadata: &DeviceMetadataMap,
         sink: &mut dyn AmlSink,
     ) {
         let metadata = device_metadata.get(self).unwrap();
 
-        if metadata.num > 2 {
-            // The original tables only defined COM1 and COM2, even though VMs
-            // often have 4 serial ports.
-            return;
+        if acpi_variant == acpi::AcpiVariant::V0 {
+            // The original EDK2-based tables only defined COM1 and COM2, even
+            // though VMs usually have 4 serial ports.
+            if metadata.num > 2 {
+                return;
+            }
         }
 
         aml::Device::new(

@@ -709,6 +709,36 @@ impl MigrateSingle for PS2Ctrl {
         Ok(())
     }
 }
+impl acpi::DsdtGenerator for PS2Ctrl {
+    fn dsdt_scope(&self) -> acpi::DsdtScope {
+        acpi::DsdtScope::Lpc
+    }
+
+    fn to_aml_bytes(
+        &self,
+        _: acpi::AcpiVariant,
+        _: &DeviceMetadataMap,
+        sink: &mut dyn AmlSink,
+    ) {
+        aml::Device::new(
+            "PS2K".into(),
+            vec![
+                &acpi::aml::names::hid(&aml::EISAName::new(
+                    acpi::aml::devids::IBM_ENHANCED_KEYBOARD,
+                )),
+                &acpi::aml::names::cid(&aml::EISAName::new(
+                    acpi::aml::devids::MICROSOFT_RESERVED_KEYBOARD,
+                )),
+                &acpi::aml::names::crs(&aml::ResourceTemplate::new(vec![
+                    &acpi::aml::io_port(ibmpc::PORT_PS2_DATA, 0x00, 0x01),
+                    &acpi::aml::io_port(ibmpc::PORT_PS2_CMD_STATUS, 0x00, 0x01),
+                    &aml::IrqNoFlags::new(ibmpc::IRQ_PS2_PRI),
+                ])),
+            ],
+        )
+        .to_aml_bytes(sink);
+    }
+}
 
 // Keyboard-specific commands
 
@@ -1093,32 +1123,6 @@ impl PS2Mouse {
 impl Default for PS2Mouse {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl acpi::DsdtGenerator for PS2Ctrl {
-    fn dsdt_scope(&self) -> acpi::DsdtScope {
-        acpi::DsdtScope::Lpc
-    }
-
-    fn to_aml_bytes(&self, _: &DeviceMetadataMap, sink: &mut dyn AmlSink) {
-        aml::Device::new(
-            "PS2K".into(),
-            vec![
-                &acpi::aml::names::hid(&aml::EISAName::new(
-                    acpi::aml::devids::IBM_ENHANCED_KEYBOARD,
-                )),
-                &acpi::aml::names::cid(&aml::EISAName::new(
-                    acpi::aml::devids::MICROSOFT_RESERVED_KEYBOARD,
-                )),
-                &acpi::aml::names::crs(&aml::ResourceTemplate::new(vec![
-                    &acpi::aml::io_port(ibmpc::PORT_PS2_DATA, 0x00, 0x01),
-                    &acpi::aml::io_port(ibmpc::PORT_PS2_CMD_STATUS, 0x00, 0x01),
-                    &aml::IrqNoFlags::new(ibmpc::IRQ_PS2_PRI),
-                ])),
-            ],
-        )
-        .to_aml_bytes(sink);
     }
 }
 

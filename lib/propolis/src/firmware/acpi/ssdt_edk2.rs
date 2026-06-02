@@ -14,6 +14,7 @@
 // This table can probably be removed in the future if the DSDT PCI0._CRS
 // method is simplified.
 
+use super::AcpiVariant;
 use acpi_tables::{aml, sdt::Sdt, Aml, AmlSink};
 
 fn ssdt_sdt_edk2_style() -> Sdt {
@@ -30,7 +31,7 @@ fn ssdt_sdt_edk2_style() -> Sdt {
 /// Length in bytes of the SSDT header. Used to calculate the offset of other
 /// fields.
 ///
-/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#secondary-system-description-table-fields-ssdt>
+/// ACPI rev. 6.6 table 5.18 "Secondary System Description Table Fields (SSDT)" "Length"
 const SSDT_HEADER_LEN: usize = 36;
 
 /// Byte offset of the FWDT OperationRegion offset address field in the SSDT
@@ -40,7 +41,7 @@ const SSDT_HEADER_LEN: usize = 36;
 /// OperationRegion prefix (1 byte) + OperationRegion name (4 bytes) +
 /// OperationRegion space (1 byte) + DWordPrefix (1 byte)
 ///
-/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/20_AML_Specification/AML_Specification.html#defopregion>
+/// ACPI rev. 6.6 section 20.2.5.2 "Named Objects Encoding" "DefOpRegion"
 pub const FWDT_ADDR_OFFSET: usize = SSDT_HEADER_LEN + 8;
 
 /// Number of bytes used to store the offset address value in the FWDT
@@ -55,19 +56,27 @@ pub const FWDT_ADDR_LEN: usize = 4;
 const PM1A_CNT_SLP_TYP_S3: u8 = 1;
 const PM1A_CNT_SLP_TYP_S4: u8 = 2;
 
+/// Configuration for generating an EDK2 SSDT table.
+pub struct SsdtEdk2Config {
+    /// The ACPI table variant to use.
+    pub acpi_variant: AcpiVariant,
+
+    /// Offset of the area reserved for the FWDT OperationRegion data in the
+    /// overall ACPI tables storage.
+    pub fwdt_offset: usize,
+}
+
 /// The SSDT table is an extension to DSDT table and can be used to extend
 /// resources defined in the DSDT.
 ///
-/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#secondary-system-description-table-ssdt>
+/// ACPI rev. 6.6 section 5.2.11.2 "Secondary System Description Table (SSDT)"
 pub struct SsdtEdk2 {
-    /// Offset of the area reserved for the FWDT OperationRegion data in the
-    /// overall ACPI tables storage.
-    fwdt_offset: usize,
+    config: SsdtEdk2Config,
 }
 
 impl SsdtEdk2 {
-    pub fn new(fwdt_offset: usize) -> Self {
-        Self { fwdt_offset }
+    pub fn new(config: SsdtEdk2Config) -> Self {
+        Self { config }
     }
 }
 
@@ -88,7 +97,7 @@ impl Aml for SsdtEdk2 {
         aml::OpRegion::new(
             "FWDT".into(),
             aml::OpRegionSpace::SystemMemory,
-            &DWord::new(self.fwdt_offset as u32),
+            &DWord::new(self.config.fwdt_offset as u32),
             &DWord::new(0x30),
         )
         .to_aml_bytes(&mut ssdt);
@@ -186,7 +195,11 @@ mod test {
         let mut sink = Vec::new();
 
         // Validate FWDT offset address field offset.
-        SsdtEdk2::new(0xabc).to_aml_bytes(&mut sink);
+        let config = SsdtEdk2Config {
+            acpi_variant: AcpiVariant::V0,
+            fwdt_offset: 0xabc,
+        };
+        SsdtEdk2::new(config).to_aml_bytes(&mut sink);
         assert_eq!(
             sink[FWDT_ADDR_OFFSET..(FWDT_ADDR_OFFSET + FWDT_ADDR_LEN)],
             0xabc_u32.to_le_bytes()

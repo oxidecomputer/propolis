@@ -8,8 +8,8 @@
 //! and can write the AML bytecode to any AmlSink, like a `Vec<u8>`.
 
 use super::{
-    IO_APIC_ADDR, LOCAL_APIC_ADDR, OEM_ID, OEM_REVISION, OEM_TABLE_ID,
-    PCI_LINK_IRQS,
+    AcpiVariant, IO_APIC_ADDR, LOCAL_APIC_ADDR, OEM_ID, OEM_REVISION,
+    OEM_TABLE_ID, PCI_LINK_IRQS,
 };
 use acpi_tables::{madt, Aml, AmlSink};
 
@@ -21,19 +21,24 @@ const TIMER_GSI: u32 = 2;
 
 const LOCAL_APIC_INT_NUMBER: u8 = 1;
 
+/// Configuration for generating a MADT table.
 pub struct MadtConfig {
+    /// The ACPI table variant to use.
+    pub acpi_variant: AcpiVariant,
+
+    /// Number of vCPUs in the VM.
     pub num_cpus: u8,
 }
 
 /// The MADT/APIC table describes the interrupts for the entire system.
 ///
-/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#multiple-apic-description-table-madt>
-pub struct Madt<'a> {
-    config: &'a MadtConfig,
+/// ACPI rev. 6.6 section 5.2.12 "Multiple APIC Description Table (MADT)"
+pub struct Madt {
+    config: MadtConfig,
 }
 
-impl<'a> Madt<'a> {
-    pub fn new(config: &'a MadtConfig) -> Self {
+impl Madt {
+    pub fn new(config: MadtConfig) -> Self {
         Self { config }
     }
 }
@@ -43,11 +48,11 @@ impl<'a> Madt<'a> {
 // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiTables/Madt.aslc
 // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/Qemu.c#L58
 //
-// fwts reports 3 medium failures for this table:
+// fwts currently reports 3 medium failures for this table:
 //   - madt: LAPIC has no matching processor UID 0
 //   - madt: LAPIC has no matching processor UID 1
 //   - madt: LAPICNMI has no matching processor UID 255
-impl<'a> Aml for Madt<'a> {
+impl Aml for Madt {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
         let mut table = madt::MADT::new(
             *OEM_ID,
@@ -58,7 +63,7 @@ impl<'a> Aml for Madt<'a> {
         .pc_at_compat();
 
         // Processor Local APIC.
-        // https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#processor-local-apic-structure
+        // ACPI rev. 6.6 section 5.2.12.2 "Processor Local APIC Structure"
         for i in 0..self.config.num_cpus {
             table.add_structure(madt::ProcessorLocalApic::new(
                 i,
@@ -68,7 +73,7 @@ impl<'a> Aml for Madt<'a> {
         }
 
         // I/O APIC.
-        // https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#i-o-apic-structure
+        // ACPI rev. 6.6 section 5.2.12.3 "I/O APIC Structure"
         table.add_structure(madt::IoApic::new(
             IO_APIC_ID,
             IO_APIC_ADDR,
@@ -76,7 +81,7 @@ impl<'a> Aml for Madt<'a> {
         ));
 
         // Interrupt Source Overrides.
-        // https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#interrupt-source-override-structure
+        // ACPI rev. 6.6 section 5.2.12.5 "Interrupt Source Override Structure"
         table.add_structure(madt::InterruptSourceOverride::new(
             TIMER_IRQ, TIMER_GSI,
         ));
@@ -91,7 +96,7 @@ impl<'a> Aml for Madt<'a> {
         });
 
         // Local APIC NMI.
-        // https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#local-apic-nmi-structure
+        // ACPI rev. 6.6 section 5.2.12.7 "Local APIC NMI Structure"
         //
         // Supporting more than 255 vCPUs will require additional work.
         // Refer to propolis#956 for more information.
