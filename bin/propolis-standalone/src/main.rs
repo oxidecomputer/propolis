@@ -24,7 +24,7 @@ use tokio::runtime;
 
 use propolis::chardev::{BlockingSource, Sink, Source, UDSock};
 use propolis::common::{DeviceMetadataMap, GB, MB};
-use propolis::firmware::smbios;
+use propolis::firmware::{acpi, smbios};
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ps2::ctrl::PS2Ctrl;
 use propolis::hw::qemu::fwcfg;
@@ -1081,11 +1081,15 @@ fn generate_bootorder(
 }
 
 fn generate_acpi_tables(
-    cpus: u8,
+    acpi_variant: acpi::AcpiVariant,
+    num_cpus: u8,
     lowmem: usize,
     inventory: &Inventory,
     device_metadata: &DeviceMetadataMap,
+    log: &slog::Logger,
 ) -> anyhow::Result<fwcfg::formats::AcpiTables> {
+    slog::info!(log, "Generating ACPI tables with variant {:?}", acpi_variant);
+
     let generators: Vec<_> = inventory
         .devs
         .values()
@@ -1105,7 +1109,8 @@ fn generate_acpi_tables(
             .context("invalid PCI window range")?;
 
     let config = &fwcfg::formats::AcpiConfig {
-        num_cpus: cpus,
+        acpi_variant,
+        num_cpus,
         pci_window_32,
         pci_window_64: fwcfg::formats::PciWindow::empty(),
         dsdt_generators: &generators,
@@ -1487,9 +1492,15 @@ fn setup_instance(
     let e820_entry = generate_e820(machine, log).expect("can build E820 table");
     fwcfg.insert_named("etc/e820", e820_entry).unwrap();
 
-    let acpi_entries =
-        generate_acpi_tables(cpus, lowmem, &guard.inventory, &device_metadata)
-            .expect("can build ACPI tables");
+    let acpi_entries = generate_acpi_tables(
+        config.main.acpi_variant,
+        cpus,
+        lowmem,
+        &guard.inventory,
+        &device_metadata,
+        log,
+    )
+    .expect("can build ACPI tables");
     fwcfg
         .insert_named("etc/acpi/tables", acpi_entries.tables)
         .context("Failed to insert ACPI tables")?;

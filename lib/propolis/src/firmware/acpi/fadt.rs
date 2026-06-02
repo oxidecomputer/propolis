@@ -7,7 +7,10 @@
 //! The [`Fadt`] struct implements the `Aml` trait of the `acpi_tables` crate
 //! and can write the AML bytecode to any AmlSink, like a `Vec<u8>`.
 
-use super::{GPE0_BLK_ADDR, GPE0_BLK_LEN, OEM_ID, OEM_REVISION, OEM_TABLE_ID};
+use super::{
+    AcpiVariant, GPE0_BLK_ADDR, GPE0_BLK_LEN, OEM_ID, OEM_REVISION,
+    OEM_TABLE_ID,
+};
 use crate::hw::{chipset::i440fx, pci};
 use acpi_tables::{
     // Use version 3 to keep FADT table consistent with the original EDK2
@@ -42,7 +45,7 @@ const PM_TMR_BLK_LEN: u8 = 4;
 
 // Represents a bit flag for the FADT IA-PC boot architecture flags.
 //
-// https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#ia-pc-boot-architecture-flags
+// ACPI rev. 6.6 section 5.2.9.3 "IA-PC Boot Architecture Flags"
 bitflags! {
     pub struct FadtIaPcBootArchFlags: u16 {
         const LEGACY_DEVICES = 1 << 0;
@@ -54,17 +57,37 @@ bitflags! {
     }
 }
 
+/// Configuration for generating a FADT table.
+pub struct FadtConfig {
+    /// The ACPI table variant to use.
+    pub acpi_variant: AcpiVariant,
+
+    /// Memory address for the FACS table.
+    ///
+    /// ACPI rev. 6.6 table 5.9 "FADT Format" "FIRMWARE_CTRL"
+    pub fwctrl_addr: u32,
+
+    /// 32-bit memory address for the DSDT table.
+    ///
+    /// ACPI rev. 6.6 table 5.9 "FADT Format" "DSDT"
+    pub dsdt_addr: u32,
+
+    /// 64-bit memory address for the DSDT table.
+    ///
+    /// ACPI rev. 6.6 table 5.9 "FADT Format" "X_DSDT"
+    pub x_dsdt_addr: u64,
+}
+
 /// The FADT table stores fixed hardware ACPI information.
 ///
-/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#fixed-acpi-description-table-fadt>
+/// ACPI rev. 6.6 section 5.2.9 "Fixed ACPI Description Table (FADT)"
 pub struct Fadt {
-    facs_offset: u32,
-    dsdt_offset: u32,
+    config: FadtConfig,
 }
 
 impl Fadt {
-    pub fn new(facs_offset: u32, dsdt_offset: u32) -> Self {
-        Self { facs_offset, dsdt_offset }
+    pub fn new(config: FadtConfig) -> Self {
+        Self { config }
     }
 }
 
@@ -80,9 +103,9 @@ impl Aml for Fadt {
     ///   - fadt: FADT X_GPE0_BLK Access width 0x00 but it should be 1 (byte access).
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
         let mut fadt = FADTBuilder::new(*OEM_ID, *OEM_TABLE_ID, OEM_REVISION)
-            .firmware_ctrl_32(self.facs_offset)
-            .dsdt_32(self.dsdt_offset)
-            .dsdt_64(self.dsdt_offset as u64)
+            .firmware_ctrl_32(self.config.fwctrl_addr)
+            .dsdt_32(self.config.dsdt_addr)
+            .dsdt_64(self.config.x_dsdt_addr)
             .flag(Flags::Wbinvd)
             .flag(Flags::ProcC1)
             .flag(Flags::SlpButton)
@@ -91,10 +114,13 @@ impl Aml for Fadt {
             .flag(Flags::ResetRegSup);
 
         fadt.sci_int = (i440fx::SCI_IRQ as u16).into();
-        // Propolis doesn't currently handle this I/O port, but its value is
-        // retained from the original EDK2 tables for consistency. It should be
-        // set to zero in the future to disable System Management mode.
-        fadt.smi_cmd = 0xb2.into();
+        if self.config.acpi_variant == AcpiVariant::V0 {
+            // Propolis doesn't currently handle this I/O port, but its value
+            // is retained from the original EDK2 tables for consistency. It
+            // should be set to zero in the future to disable System Management
+            // mode.
+            fadt.smi_cmd = 0xb2.into();
+        }
         fadt.acpi_enable = 0xf1;
         fadt.acpi_disable = 0xf0;
 
@@ -170,7 +196,12 @@ mod test {
     #[test]
     fn field_references() {
         let mut sink = Vec::new();
-        Fadt::new(0x0abc, 0x0def).to_aml_bytes(&mut sink);
+        let config = FadtConfig {
+            acpi_variant: AcpiVariant::V0,
+            facs_offset: 0x0abc,
+            dsdt_offset: 0x0def,
+        };
+        Fadt::new(config).to_aml_bytes(&mut sink);
         assert_eq!(
             sink[FADT_FACS_OFFSET..(FADT_FACS_OFFSET + FADT_FACS_LEN)],
             0x0abc_u32.to_le_bytes()

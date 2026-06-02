@@ -28,8 +28,8 @@
 
 use super::aml::{devids, methods, names, paths, *};
 use super::{
-    GPE0_BLK_ADDR, GPE0_BLK_LEN, IO_APIC_ADDR, IO_APIC_LEN, LOCAL_APIC_ADDR,
-    LOCAL_APIC_LEN, PCI_LINK_IRQS,
+    AcpiVariant, GPE0_BLK_ADDR, GPE0_BLK_LEN, IO_APIC_ADDR, IO_APIC_LEN,
+    LOCAL_APIC_ADDR, LOCAL_APIC_LEN, PCI_LINK_IRQS,
 };
 use crate::common::DeviceMetadataMap;
 use crate::hw::{chipset::i440fx, pci, qemu};
@@ -59,6 +59,7 @@ pub trait DsdtGenerator {
 
     fn to_aml_bytes(
         &self,
+        acpi_variant: AcpiVariant,
         device_metadata: &DeviceMetadataMap,
         sink: &mut dyn AmlSink,
     );
@@ -67,33 +68,28 @@ pub trait DsdtGenerator {
 /// Wraps a list of DsdtGenerators to help generate their AML code in places
 /// where a `&dyn Aml` is needed.
 struct DsdtGeneratorAml<'a> {
-    generators: &'a [&'a dyn DsdtGenerator],
-    device_metadata: &'a DeviceMetadataMap,
     scope: DsdtScope,
+    config: &'a DsdtConfig<'a>,
 }
-
-impl<'a> DsdtGeneratorAml<'a> {
-    fn new(
-        generators: &'a [&'a dyn DsdtGenerator],
-        device_metadata: &'a DeviceMetadataMap,
-        scope: DsdtScope,
-    ) -> Self {
-        Self { generators, device_metadata, scope }
-    }
-}
-
 impl<'a> Aml for DsdtGeneratorAml<'a> {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
-        self.generators
+        self.config
+            .generators
             .iter()
             .filter(|&&g| g.dsdt_scope() == self.scope)
-            .for_each(|&g| g.to_aml_bytes(self.device_metadata, sink));
+            .for_each(|&g| {
+                g.to_aml_bytes(
+                    self.config.acpi_variant,
+                    self.config.device_metadata,
+                    sink,
+                )
+            });
     }
 }
 
 /// Values for the PM1a_CNT.SLP_TYP register to enter different sleep states.
 ///
-/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/07_Power_and_Performance_Mgmt/oem-supplied-system-level-control-methods.html#sx-system-states>
+/// ACPI rev. 6.6 sec. 7.4.2 "\_Sx (System States)"
 ///
 /// These states are handled in `Piix3PM` via the `pmreg_write` method.
 /// Currently, only the S0->S5 transition is handled explicitly, but S0->S0 is
@@ -102,15 +98,22 @@ impl<'a> Aml for DsdtGeneratorAml<'a> {
 const PM1A_CNT_SLP_TYP_S0: u8 = 5;
 const PM1A_CNT_SLP_TYP_S5: u8 = 0;
 
+/// Configuration for generating a DSDT table.
 pub struct DsdtConfig<'a> {
+    /// The ACPI table variant to use.
+    pub acpi_variant: AcpiVariant,
+
+    /// Devices that generate their own ACPI code.
     pub generators: &'a [&'a dyn DsdtGenerator],
+
+    /// Storage for device metadata.
     pub device_metadata: &'a DeviceMetadataMap,
 }
 
 /// The DSDT table is part of the fixed ACPI tables and is used to describe
 /// system resources.
 ///
-/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/05_ACPI_Software_Programming_Model/ACPI_Software_Programming_Model.html#differentiated-system-description-table-dsdt>
+/// ACPI rev. 6.6 section 5.2.11.1 "Differentiated System Description Table (DSDT)"
 pub struct Dsdt<'a> {
     config: DsdtConfig<'a>,
 }
@@ -125,18 +128,21 @@ impl<'a> Aml for Dsdt<'a> {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
         let mut dsdt = Vec::new();
 
-        // This is an artifact inserted into the AML code to keep the DSDT
-        // table exactly the same as the static EDK2 tables used previously.
-        // It's not functionally necessary and can be removed in the future.
-        aml::If::new(
-            &aml::ZERO,
-            vec![&aml::External::new(
-                "\\_SB_.PCI0._CRS.FWDT".into(),
-                aml::ExternalObjectType::OperationRegion,
-                None,
-            )],
-        )
-        .to_aml_bytes(&mut dsdt);
+        if self.config.acpi_variant == AcpiVariant::V0 {
+            // This is an artifact inserted into the AML code to keep the DSDT
+            // table exactly the same as the static EDK2 tables used
+            // previously. It's not functionally necessary and can be removed
+            // in the future.
+            aml::If::new(
+                &aml::ZERO,
+                vec![&aml::External::new(
+                    "\\_SB_.PCI0._CRS.FWDT".into(),
+                    aml::ExternalObjectType::OperationRegion,
+                    None,
+                )],
+            )
+            .to_aml_bytes(&mut dsdt);
+        }
 
         // Sleep states.
         SleepState::new("_S0_", PM1A_CNT_SLP_TYP_S0).to_aml_bytes(&mut dsdt);
@@ -147,11 +153,10 @@ impl<'a> Aml for Dsdt<'a> {
             "_SB_".into(),
             vec![
                 &PciRootBridge { config: &self.config },
-                &DsdtGeneratorAml::new(
-                    self.config.generators,
-                    self.config.device_metadata,
-                    DsdtScope::SystemBus,
-                ),
+                &DsdtGeneratorAml {
+                    scope: DsdtScope::SystemBus,
+                    config: &self.config,
+                },
             ],
         )
         .to_aml_bytes(&mut dsdt);
@@ -180,11 +185,10 @@ impl<'a> Aml for PciRootBridge<'a> {
                 &PciRootBridgeCrs {},
                 &PciRootBridgePrt {},
                 &PciRootBridgeLpc { config: self.config },
-                &DsdtGeneratorAml::new(
-                    self.config.generators,
-                    self.config.device_metadata,
-                    DsdtScope::PciRoot,
-                ),
+                &DsdtGeneratorAml {
+                    scope: DsdtScope::PciRoot,
+                    config: self.config,
+                },
             ],
         )
         .to_aml_bytes(sink);
@@ -467,7 +471,7 @@ const PCI_INT_PINS: u8 = 4;
 
 /// _PRT method for the PCI0 device (\_SB.PCI0._PRT)
 ///
-/// <https://uefi.org/htmlspecs/ACPI_Spec_6_4_html/06_Device_Configuration/Device_Configuration.html#prt-pci-routing-table>
+/// ACPI rev. 6.6 section 6.2.14 "_PRT (PCI Routing Table)"
 struct PciRootBridgePrt {}
 
 impl Aml for PciRootBridgePrt {
@@ -658,27 +662,31 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                 // This is a legacy device inherited from the original EDK2
                 // table. Its IO ports are not actually handled anywhere.
                 // It can be removed in the future .
-                &aml::Device::new(
-                    "DMAC".into(),
-                    vec![
-                        &names::hid(&aml::EISAName::new(
-                            devids::AT_DMA_CONTROLLER,
-                        )),
-                        &names::crs(&aml::ResourceTemplate::new(vec![
-                            &io_port(0x0000, 0x00, 0x10),
-                            &io_port(0x0081, 0x00, 0x03),
-                            &io_port(0x0087, 0x00, 0x01),
-                            &io_port(0x0089, 0x00, 0x03),
-                            &io_port(0x008f, 0x00, 0x01),
-                            &io_port(0x00c0, 0x00, 0x20),
-                            &aml::Dma::new(
-                                aml::DmaChannelSpeed::Compatibility,
-                                aml::DmaMasterStatus::NotMaster,
-                                aml::DmaTransferType::Transfer8,
-                                vec![4],
-                            ),
-                        ])),
-                    ],
+                &AcpiVariantFilter::new(
+                    self.config.acpi_variant,
+                    vec![AcpiVariant::V0],
+                    &aml::Device::new(
+                        "DMAC".into(),
+                        vec![
+                            &names::hid(&aml::EISAName::new(
+                                devids::AT_DMA_CONTROLLER,
+                            )),
+                            &names::crs(&aml::ResourceTemplate::new(vec![
+                                &io_port(0x0000, 0x00, 0x10),
+                                &io_port(0x0081, 0x00, 0x03),
+                                &io_port(0x0087, 0x00, 0x01),
+                                &io_port(0x0089, 0x00, 0x03),
+                                &io_port(0x008f, 0x00, 0x01),
+                                &io_port(0x00c0, 0x00, 0x20),
+                                &aml::Dma::new(
+                                    aml::DmaChannelSpeed::Compatibility,
+                                    aml::DmaMasterStatus::NotMaster,
+                                    aml::DmaTransferType::Transfer8,
+                                    vec![4],
+                                ),
+                            ])),
+                        ],
+                    ),
                 ),
                 // 8254 Timer.
                 &aml::Device::new(
@@ -721,17 +729,21 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                 // This is a legacy device inherited from the original EDK2
                 // table. Its IO ports are not actually handled anywhere.
                 // It can be removed in the future .
-                &aml::Device::new(
-                    "FPU_".into(),
-                    vec![
-                        &names::hid(&aml::EISAName::new(
-                            devids::MATH_COPROCESSOR,
-                        )),
-                        &names::crs(&aml::ResourceTemplate::new(vec![
-                            &io_port(0x00f0, 0x00, 0x10),
-                            &aml::IrqNoFlags::new(13),
-                        ])),
-                    ],
+                &AcpiVariantFilter::new(
+                    self.config.acpi_variant,
+                    vec![AcpiVariant::V0],
+                    &aml::Device::new(
+                        "FPU_".into(),
+                        vec![
+                            &names::hid(&aml::EISAName::new(
+                                devids::MATH_COPROCESSOR,
+                            )),
+                            &names::crs(&aml::ResourceTemplate::new(vec![
+                                &io_port(0x00f0, 0x00, 0x10),
+                                &aml::IrqNoFlags::new(13),
+                            ])),
+                        ],
+                    ),
                 ),
                 // Generic motherboard devices and pieces that don't fit
                 // anywhere else.
@@ -791,11 +803,10 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                         ])),
                     ],
                 ),
-                &DsdtGeneratorAml::new(
-                    self.config.generators,
-                    self.config.device_metadata,
-                    DsdtScope::Lpc,
-                ),
+                &DsdtGeneratorAml {
+                    scope: DsdtScope::Lpc,
+                    config: self.config,
+                },
                 // QEMU panic device.
                 //
                 // This device could be generated by the QemuPvpanic struct and
@@ -1040,6 +1051,7 @@ mod test {
 
         fn to_aml_bytes(
             &self,
+            acpi_variant: AcpiVariant,
             device_metadata: &DeviceMetadataMap,
             sink: &mut dyn AmlSink,
         ) {
@@ -1054,6 +1066,10 @@ mod test {
                 metadata_aml = aml::Name::new("META".into(), &metadata.data);
                 tmpl.push(&metadata_aml);
             }
+
+            let variant_aml =
+                aml::Name::new("VARI".into(), &format!("{:?}", acpi_variant));
+            tmpl.push(&variant_aml);
 
             aml::ResourceTemplate::new(tmpl).to_aml_bytes(sink);
         }
@@ -1090,17 +1106,20 @@ mod test {
         device_metadata
             .insert(&lpc, Box::new(MockDsdtGeneratorMetadata { data: 3 }));
 
+        let config = DsdtConfig {
+            acpi_variant: AcpiVariant::V0,
+            generators: &generators,
+            device_metadata: &device_metadata,
+        };
+
         // Filter by SystemBus.
-        DsdtGeneratorAml::new(
-            &generators,
-            &device_metadata,
-            DsdtScope::SystemBus,
-        )
-        .to_aml_bytes(&mut got);
+        DsdtGeneratorAml { scope: DsdtScope::SystemBus, config: &config }
+            .to_aml_bytes(&mut got);
 
         aml::ResourceTemplate::new(vec![
             &aml::Name::new("SCOP".into(), &"SystemBus"),
             &aml::Name::new("META".into(), &1_u8),
+            &aml::Name::new("VARI".into(), &"V0"),
         ])
         .to_aml_bytes(&mut expected);
 
@@ -1110,16 +1129,13 @@ mod test {
         got.clear();
         expected.clear();
 
-        DsdtGeneratorAml::new(
-            &generators,
-            &device_metadata,
-            DsdtScope::PciRoot,
-        )
-        .to_aml_bytes(&mut got);
+        DsdtGeneratorAml { scope: DsdtScope::PciRoot, config: &config }
+            .to_aml_bytes(&mut got);
 
         aml::ResourceTemplate::new(vec![
             &aml::Name::new("SCOP".into(), &"PciRoot"),
             &aml::Name::new("META".into(), &2_u8),
+            &aml::Name::new("VARI".into(), &"V0"),
         ])
         .to_aml_bytes(&mut expected);
 
@@ -1129,12 +1145,13 @@ mod test {
         got.clear();
         expected.clear();
 
-        DsdtGeneratorAml::new(&generators, &device_metadata, DsdtScope::Lpc)
+        DsdtGeneratorAml { scope: DsdtScope::Lpc, config: &config }
             .to_aml_bytes(&mut got);
 
         aml::ResourceTemplate::new(vec![
             &aml::Name::new("SCOP".into(), &"Lpc"),
             &aml::Name::new("META".into(), &3_u8),
+            &aml::Name::new("VARI".into(), &"V0"),
         ])
         .to_aml_bytes(&mut expected);
 
@@ -1144,6 +1161,7 @@ mod test {
     #[test]
     fn dsdt_valid_aml() {
         let config = DsdtConfig {
+            acpi_variant: AcpiVariant::V0,
             generators: &[
                 &MockDsdtGenerator { scope: DsdtScope::SystemBus },
                 &MockDsdtGenerator { scope: DsdtScope::PciRoot },

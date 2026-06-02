@@ -581,8 +581,11 @@ async fn initialize_vm_objects(
         .initialize_storage_devices(&chipset, options.nexus_client.clone())
         .await?;
 
-    let ramfb =
-        init.initialize_fwcfg(spec.board.cpus, &options.bootrom_version)?;
+    let ramfb = init.initialize_fwcfg(
+        spec.board.cpus,
+        &options.bootrom_version,
+        spec.board.acpi_variant,
+    )?;
 
     // If we have a VM RoT, that RoT needs to be able to collect some
     // information about the guest before it can be actually usable. It will do

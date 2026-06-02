@@ -1315,6 +1315,7 @@ pub mod formats {
 
     /// Instance configuration that are relevant when building the ACPI tables.
     pub struct AcpiConfig<'a> {
+        pub acpi_variant: acpi::AcpiVariant,
         pub num_cpus: u8,
         pub pci_window_32: PciWindow,
         pub pci_window_64: PciWindow,
@@ -1477,7 +1478,9 @@ pub mod formats {
         }
 
         fn add_facs(&mut self) -> usize {
-            let facs = acpi::Facs::new();
+            let facs_config =
+                acpi::FacsConfig { acpi_variant: self.config.acpi_variant };
+            let facs = acpi::Facs::new(facs_config);
             let facs_offset = self.tables.len();
             facs.to_aml_bytes(&mut self.tables);
 
@@ -1489,6 +1492,7 @@ pub mod formats {
 
         fn add_dsdt(&mut self) -> usize {
             let dsdt_config = acpi::DsdtConfig {
+                acpi_variant: self.config.acpi_variant,
                 generators: self.config.dsdt_generators,
                 device_metadata: self.config.device_metadata,
             };
@@ -1519,7 +1523,11 @@ pub mod formats {
                 self.tables.extend_from_slice(&data.to_le_bytes());
             });
 
-            let ssdt = acpi::SsdtEdk2::new(fwdt_data_offset);
+            let ssdt_config = acpi::SsdtEdk2Config {
+                acpi_variant: self.config.acpi_variant,
+                fwdt_offset: fwdt_data_offset,
+            };
+            let ssdt = acpi::SsdtEdk2::new(ssdt_config);
             let ssdt_offset = self.tables.len();
             ssdt.to_aml_bytes(&mut self.tables);
 
@@ -1546,7 +1554,13 @@ pub mod formats {
             facs_offset: usize,
             dsdt_offset: usize,
         ) -> usize {
-            let fadt = acpi::Fadt::new(facs_offset as u32, dsdt_offset as u32);
+            let fadt_config = acpi::FadtConfig {
+                acpi_variant: self.config.acpi_variant,
+                fwctrl_addr: facs_offset as u32,
+                dsdt_addr: dsdt_offset as u32,
+                x_dsdt_addr: dsdt_offset as u64,
+            };
+            let fadt = acpi::Fadt::new(fadt_config);
             let fadt_offset = self.tables.len();
             fadt.to_aml_bytes(&mut self.tables);
 
@@ -1576,8 +1590,10 @@ pub mod formats {
         }
 
         fn add_madt(&mut self) -> usize {
-            let madt_config =
-                &acpi::MadtConfig { num_cpus: self.config.num_cpus };
+            let madt_config = acpi::MadtConfig {
+                acpi_variant: self.config.acpi_variant,
+                num_cpus: self.config.num_cpus,
+            };
             let madt = acpi::Madt::new(madt_config);
             let madt_offset = self.tables.len();
             madt.to_aml_bytes(&mut self.tables);
@@ -1589,8 +1605,11 @@ pub mod formats {
         }
 
         fn add_xsdt(&mut self, entries: Vec<usize>) -> usize {
-            let xsdt =
-                acpi::Xsdt::new(entries.iter().map(|e| *e as u64).collect());
+            let xsdt_config = acpi::XsdtConfig {
+                acpi_variant: self.config.acpi_variant,
+                entries: entries.iter().map(|e| *e as u64).collect(),
+            };
+            let xsdt = acpi::Xsdt::new(xsdt_config);
             let xsdt_offset = self.tables.len();
             xsdt.to_aml_bytes(&mut self.tables);
 
@@ -1619,7 +1638,11 @@ pub mod formats {
         }
 
         fn add_rsdp(&mut self, xsdt_offset: usize) {
-            let rsdp = acpi::Rsdp::new(xsdt_offset as u64);
+            let rsdp_config = acpi::RsdpConfig {
+                acpi_variant: self.config.acpi_variant,
+                xsdt_addr: xsdt_offset as u64,
+            };
+            let rsdp = acpi::Rsdp::new(rsdp_config);
             rsdp.to_aml_bytes(&mut self.rsdp);
 
             #[cfg(feature = "acpi-debug")]

@@ -4,7 +4,22 @@
 
 //! Collection of AML helpers and wrappers.
 
-use acpi_tables::aml;
+use super::AcpiVariant;
+use acpi_tables::{aml, Aml, AmlSink};
+use std::collections::HashSet;
+
+// Flags used to defined ACPI methods concurrency control.
+//
+// See ACPI section 19.6.84 "Method (Declare Control Method)" for authoritative
+// information about these flags.
+
+/// Declare the ASL method marked as "Serialized", meaning it is not safe for
+/// use by multiple concurrent threads.
+pub const SERIALIZED: bool = true;
+
+/// Declare the ASL method marked as "NotSerialized", meaning it is safe for
+/// concurrent access (does not declare objects internally, etc)
+pub const NOT_SERIALIZED: bool = false;
 
 /// Creates an IO port with a fixed port number.
 ///
@@ -22,18 +37,30 @@ pub fn io_port(port: u16, alignment: u8, length: u8) -> aml::IO {
     aml::IO::new(port, port, alignment, length)
 }
 
-// Flags used to defined ACPI methods concurrency control.
-//
-// See ACPI section 19.6.84 "Method (Declare Control Method)" for authoritative
-// information about these flags.
-
-/// Declare the ASL method marked as "Serialized", meaning it is not safe for
-/// use by multiple concurrent threads.
-pub const SERIALIZED: bool = true;
-
-/// Declare the ASL method marked as "NotSerialized", meaning it is safe for
-/// concurrent access (does not declare objects internally, etc)
-pub const NOT_SERIALIZED: bool = false;
+/// Wrapper for an `Aml` that only writes the AML bytecode to the sink if the
+/// target [`AcpiVariant`] is present in the filter.
+pub struct AcpiVariantFilter<'a> {
+    target: AcpiVariant,
+    filter: HashSet<AcpiVariant>,
+    inner: &'a dyn Aml,
+}
+impl<'a> AcpiVariantFilter<'a> {
+    pub fn new(
+        target: AcpiVariant,
+        filter: Vec<AcpiVariant>,
+        inner: &'a dyn Aml,
+    ) -> Self {
+        Self { target, filter: HashSet::from_iter(filter), inner }
+    }
+}
+impl<'a> Aml for AcpiVariantFilter<'a> {
+    fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
+        if !self.filter.contains(&self.target) {
+            return;
+        }
+        self.inner.to_aml_bytes(sink);
+    }
+}
 
 /// Constructors for ACPI paths defined in the ACPI specification.
 ///
