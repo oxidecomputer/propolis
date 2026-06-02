@@ -120,8 +120,8 @@ async fn acpi_tables_generation(ctx: &TestCtx) {
                     length: acpi::TABLE_HEADER_CHECKSUM_LEN,
                 },
                 TablePatch {
-                    offset: acpi::SSDT_FWDT_ADDR_OFFSET,
-                    length: acpi::SSDT_FWDT_ADDR_LEN,
+                    offset: acpi::ssdt_edk2::FWDT_ADDR_OFFSET,
+                    length: acpi::ssdt_edk2::FWDT_ADDR_LEN,
                 },
             ],
         },

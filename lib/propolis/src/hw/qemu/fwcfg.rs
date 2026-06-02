@@ -1457,7 +1457,7 @@ pub mod formats {
             let fadt_offset = self.add_fadt(facs_offset, dsdt_offset);
 
             let madt_offset = self.add_madt();
-            let ssdt_offset = self.add_ssdt();
+            let ssdt_offset = self.add_ssdt_edk2();
 
             // OVMF actually ignores the XSDT and RSDP tables provided via
             // fw_cfg and always generates its own versions, but include them
@@ -1502,7 +1502,7 @@ pub mod formats {
             dsdt_offset
         }
 
-        fn add_ssdt(&mut self) -> usize {
+        fn add_ssdt_edk2(&mut self) -> usize {
             // Add data for the FWDT OperationRegion declared in the SSDT
             // table.
             let fwdt_data_offset = self.tables.len();
@@ -1519,7 +1519,7 @@ pub mod formats {
                 self.tables.extend_from_slice(&data.to_le_bytes());
             });
 
-            let ssdt = acpi::Ssdt::new(fwdt_data_offset);
+            let ssdt = acpi::SsdtEdk2::new(fwdt_data_offset);
             let ssdt_offset = self.tables.len();
             ssdt.to_aml_bytes(&mut self.tables);
 
@@ -1531,8 +1531,8 @@ pub mod formats {
             self.loader.add_pointer(
                 FW_CFG_ACPI_TABLES_PATH,
                 FW_CFG_ACPI_TABLES_PATH,
-                (ssdt_offset + acpi::SSDT_FWDT_ADDR_OFFSET) as u32,
-                acpi::SSDT_FWDT_ADDR_LEN as u8,
+                (ssdt_offset + acpi::ssdt_edk2::FWDT_ADDR_OFFSET) as u32,
+                acpi::ssdt_edk2::FWDT_ADDR_LEN as u8,
             );
 
             // Recalculate checksum after changes.

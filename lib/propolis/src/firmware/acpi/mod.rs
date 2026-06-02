@@ -27,12 +27,10 @@ pub mod fadt;
 pub mod file_sink;
 pub mod madt;
 pub mod rsdp;
+pub mod ssdt_edk2;
 pub mod xsdt;
 
-pub use dsdt::{
-    Dsdt, DsdtConfig, DsdtGenerator, DsdtScope, Ssdt, SSDT_FWDT_ADDR_LEN,
-    SSDT_FWDT_ADDR_OFFSET,
-};
+pub use dsdt::{Dsdt, DsdtConfig, DsdtGenerator, DsdtScope};
 pub use facs::Facs;
 pub use fadt::{
     Fadt, FADT_DSDT_LEN, FADT_DSDT_OFFSET, FADT_FACS_LEN, FADT_FACS_OFFSET,
@@ -45,6 +43,7 @@ pub use rsdp::{
     RSDP_V1_CHECKSUM_OFFSET, RSDP_V1_TABLE_LEN, RSDP_XSDT_ADDR_LEN,
     RSDP_XSDT_ADDR_OFFSET,
 };
+pub use ssdt_edk2::SsdtEdk2;
 pub use xsdt::{Xsdt, XSDT_HEADER_LEN};
 
 // Values used to reference table checksums to recompute them after values are
