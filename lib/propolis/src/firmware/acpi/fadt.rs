@@ -198,8 +198,9 @@ mod test {
         let mut sink = Vec::new();
         let config = FadtConfig {
             acpi_variant: AcpiVariant::V0,
-            facs_offset: 0x0abc,
-            dsdt_offset: 0x0def,
+            fwctrl_addr: 0x0abc,
+            dsdt_addr: 0x0def,
+            x_dsdt_addr: 0x0def,
         };
         Fadt::new(config).to_aml_bytes(&mut sink);
         assert_eq!(
