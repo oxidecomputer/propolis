@@ -895,6 +895,8 @@ impl MachineInitializer<'_> {
                 }
             };
 
+            let block_size;
+            let volume_id;
             if let Some(crucible) = crucible {
                 let crucible =
                     match self.crucible_backends.entry(backend_id.clone()) {
@@ -910,27 +912,24 @@ impl MachineInitializer<'_> {
                         }
                     };
 
-                let Some(block_size) = crucible.block_size().await else {
-                    slog::error!(
-                        self.log,
-                        "Could not get Crucible backend block size, \
-                        virtual disk metrics can't be reported for it";
-                        "disk_id" => %backend_id,
-                    );
-                    continue;
+                block_size = crucible.block_size().await;
+                volume_id = crucible.get_uuid().await.ok();
+            } else {
+                // Not a Crucible backend, e.g. local disk
+                block_size = match &disk.backend_spec {
+                    StorageBackend::File(fsb) => Some(fsb.block_size),
+                    StorageBackend::Blob(_) => Some(512),
+                    _ => None,
                 };
-
-                let Ok(volume_id) = crucible.get_uuid().await else {
-                    slog::error!(
-                        self.log,
-                        "Could not get Crucible volume ID, \
-                        virtual disk metrics can't be reported for it";
-                        "disk_id" => %backend_id,
-                    );
-                    continue;
+                volume_id = match backend_id {
+                    SpecKey::Uuid(uuid) => Some(*uuid),
+                    _ => None,
                 };
-
-                if let Some(registry) = &self.producer_registry {
+            }
+            if let Some(registry) = &self.producer_registry {
+                if let (Some(block_size), Some(volume_id)) =
+                    (block_size, volume_id)
+                {
                     let block_metrics = BlockMetrics::new(
                         VirtualDisk {
                             attached_instance_id: self.properties.id,
@@ -957,7 +956,15 @@ impl MachineInitializer<'_> {
                     };
 
                     block_dev.attachment().set_metric_consumer(block_metrics);
-                };
+                } else {
+                    slog::error!(
+                        self.log,
+                        "Could not get backend volume UUID or block size, \
+                        virtual disk metrics can't be reported for it";
+                        "disk_id" => %backend_id,
+                    );
+                    continue;
+                }
             }
         }
         Ok(wanted_heap)
