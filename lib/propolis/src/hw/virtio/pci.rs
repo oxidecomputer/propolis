@@ -1161,10 +1161,13 @@ impl PciVirtioState {
         state: &mut MutexGuard<VirtioState>,
     ) {
         for queue in self.queues.iter_all() {
-            queue.reset();
+            // We must queue_change() before the reset: the device may use
+            // information from the queue in handling the state transition, so
+            // give it an opportunity to use that data as part of a reset.
             if dev.queue_change(queue, VqChange::Reset).is_err() {
                 self.needs_reset_locked(dev, state);
             }
+            queue.reset();
         }
     }
 

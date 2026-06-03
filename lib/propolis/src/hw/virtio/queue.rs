@@ -328,10 +328,7 @@ impl VirtQueue {
         used.reset();
         self.live.store(false, Ordering::Release);
         self.enabled.store(false, Ordering::Release);
-
-        // We don't modify `self.is_control` here. This allows devices to avoid,
-        // e.g., attempting to plumb a later `VqChange::Reset` down to the
-        // kernel in the case of viona.
+        self.is_control.store(false, Ordering::Release);
     }
 
     pub(super) fn enable(&self) {

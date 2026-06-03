@@ -2331,7 +2331,6 @@ mod test {
 
             self.common_config.write_le64(common_cfg::queue_device, used_gpa);
 
-            // TODO(ky): why are we failing on this step?
             self.common_config.write_le16(common_cfg::queue_enable, 1);
 
             // Finally, round up so the next queue (if there is one) starts
@@ -2644,7 +2643,6 @@ mod test {
         Lifecycle::reset(test_ctx.dev.as_ref());
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats);
-        Lifecycle::reset(test_ctx.dev.as_ref());
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
 
