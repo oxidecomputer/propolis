@@ -233,7 +233,7 @@ impl block::DeviceQueue for NvmeBlockQueue {
             Operation::Flush => {
                 probes::nvme_flush_complete!(|| (devsq_id, cid, resnum));
             }
-            Operation::Discard => {
+            Operation::Discard(..) => {
                 probes::nvme_discard_complete!(|| (devsq_id, cid, resnum));
             }
         }
