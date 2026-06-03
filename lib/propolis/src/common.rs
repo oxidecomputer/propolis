@@ -518,18 +518,15 @@ impl DeviceMetadataMap {
 
     /// Inserts a device and its metadata into storage.
     ///
-    /// Returns `None` if the device was not previously in storage or the old
-    /// metadata otherwise.
+    /// It differs from the standard `insert` API, where the old value is
+    /// returned if present, to avoid downcasting errors in the unlikely case a
+    /// different device metadata type is inserted into an existing key.
     pub fn insert<T: 'static + DeviceMetadata>(
         &mut self,
         k: &Arc<T>,
         v: Box<T::Metadata>,
-    ) -> Option<T::Metadata> {
-        let old = self.map.insert(Arc::as_ptr(k) as *const (), v)?;
-
-        // Value type was enforced on previous insert, so the downcasting is
-        // not expected to fail.
-        Some(*old.downcast().unwrap())
+    ) {
+        self.map.insert(Arc::as_ptr(k) as *const (), v);
     }
 
     /// Retrieves metadata for a device.
@@ -538,6 +535,8 @@ impl DeviceMetadataMap {
     /// needs to be used to access the metadata.
     ///
     /// Returns `None` if the device is not present in storage.
+    ///
+    /// Panics if the device metadata can't be downcasted.
     pub fn get<T: 'static + DeviceMetadata>(
         &self,
         k: &T,
@@ -550,7 +549,7 @@ impl DeviceMetadataMap {
 
         // Value type is enforced on insert, so the downcasting is not expected
         // to fail.
-        self.map.get(&k_ptr)?.as_ref().downcast_ref()
+        Some(self.map.get(&k_ptr)?.as_ref().downcast_ref().unwrap())
     }
 }
 
@@ -586,8 +585,7 @@ mod device_metadata_test {
 
         // Insert and retrieve metadata.
         let d1 = Arc::new(MockDevice {});
-        let got = map.insert(&d1, Box::new(MockDeviceMetadata { data: 1 }));
-        assert!(got.is_none());
+        map.insert(&d1, Box::new(MockDeviceMetadata { data: 1 }));
 
         // Retrieve metadata from the device.
         let metadata = d1.metadata(&map).unwrap();
@@ -598,9 +596,9 @@ mod device_metadata_test {
         assert_eq!(metadata.data, 1);
 
         // Replace metadata.
-        let got =
-            map.insert(&d1, Box::new(MockDeviceMetadata { data: 2 })).unwrap();
-        assert_eq!(got.data, 1);
+        map.insert(&d1, Box::new(MockDeviceMetadata { data: 2 }));
+        let metadata = map.get(&*d1).unwrap();
+        assert_eq!(metadata.data, 2);
 
         // Try to read non-existing metadata.
         let d2 = Arc::new(MockDevice {});
