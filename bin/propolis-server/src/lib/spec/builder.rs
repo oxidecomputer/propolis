@@ -100,7 +100,7 @@ impl SpecBuilder {
                     memory_mb: board.memory_mb,
                     chipset: board.chipset,
                     guest_hv_interface: board.guest_hv_interface,
-                    ..Default::default()
+                    acpi_variant: propolis::firmware::acpi::AcpiVariant::V0,
                 },
                 cpuid,
                 ..Default::default()
@@ -404,7 +404,7 @@ mod test {
             memory_mb: 512,
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
             guest_hv_interface: GuestHypervisorInterface::Bhyve,
-            ..Default::default()
+            acpi_variant: propolis::firmware::acpi::AcpiVariant::V0,
         };
 
         SpecBuilder {
