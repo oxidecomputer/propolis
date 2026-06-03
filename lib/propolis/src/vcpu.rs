@@ -26,7 +26,7 @@ use migrate::VcpuReadWrite;
 use thiserror::Error;
 
 use bhyve_api::ApiVersion;
-use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor};
+use propolis_types::{CpuidIdent, CpuidVendor};
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
@@ -77,7 +77,9 @@ impl Vcpu {
         #[cfg(target_arch = "x86_64")]
         fn query_hardware_vendor() -> CpuidVendor {
             let res = unsafe { core::arch::x86_64::__cpuid(0) };
-            CpuidValues::from(res).try_into().expect("CPU vendor is recognized")
+            propolis_types::CpuidValues::from(res)
+                .try_into()
+                .expect("CPU vendor is recognized")
         }
 
         #[cfg(not(target_arch = "x86_64"))]
