@@ -1044,13 +1044,13 @@ impl PciVirtioViona {
 
         // Don't inflict promiscuous mode on drivers which request only their
         // own MAC address.
-        let filter_is_self = state
-            .unicast_mac_filters
-            .get(0)
-            .map(|mac| mac == &self.mac_addr)
-            .unwrap_or_default();
-        let need_promisc = state.filter.contains(FilterState::PROMISCUOUS)
-            || !(filter_is_self || state.unicast_mac_filters.is_empty());
+        let filter_is_self = !state.unicast_mac_filters.is_empty()
+            && state
+                .unicast_mac_filters
+                .iter()
+                .all(|mac| mac == &self.mac_addr);
+        let need_promisc =
+            state.filter.contains(FilterState::PROMISCUOUS) || !filter_is_self;
 
         if need_promisc {
             PromiscLevel::All
