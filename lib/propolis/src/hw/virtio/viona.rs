@@ -1043,12 +1043,12 @@ impl PciVirtioViona {
             || !state.multicast_mac_filters.is_empty();
 
         // Don't inflict promiscuous mode on drivers which request only their
-        // own MAC address.
-        let filter_is_self = !state.unicast_mac_filters.is_empty()
-            && state
-                .unicast_mac_filters
-                .iter()
-                .all(|mac| mac == &self.mac_addr);
+        // own MAC address. Most guests *should not pass us any unicast
+        // addresses*, as the config-space MAC is assumed to be included by
+        // default. `.all()` will return `true` for such an empty list. This is
+        // defensive programming against an otherwise well-meaning guest.
+        let filter_is_self =
+            state.unicast_mac_filters.iter().all(|mac| mac == &self.mac_addr);
         let need_promisc =
             state.filter.contains(FilterState::PROMISCUOUS) || !filter_is_self;
 
