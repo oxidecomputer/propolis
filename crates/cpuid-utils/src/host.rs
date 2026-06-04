@@ -87,7 +87,7 @@ pub fn query(leaf: CpuidIdent) -> CpuidValues {
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-pub fn query(leaf: CpuidIdent) -> CpuidValues {
+pub fn query(_leaf: CpuidIdent) -> CpuidValues {
     panic!("host CPUID queries only work on x86-64 hosts")
 }
 
