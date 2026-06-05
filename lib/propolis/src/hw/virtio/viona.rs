@@ -2269,12 +2269,34 @@ mod test {
             !self.read_status().intersects(Status::NEEDS_RESET | Status::FAILED)
         }
 
+        fn ctl_qidx(&self) -> Option<u16> {
+            let ctl_queues: Vec<_> = self
+                .dev
+                .virtio_state
+                .queues
+                .iter()
+                .filter_map(|v| v.is_control().then_some(v.id))
+                .collect();
+            assert!(
+                ctl_queues.len() <= 1,
+                "virtio NICs have at most one control queue"
+            );
+            ctl_queues.get(0).copied()
+        }
+
         // Modern and legacy queue layout requirements differ a bit, but this
         // sets up queues in the legacy format to be usable in both contexts.
         //
         // This does not actually initialize the descriptor tables in any
         // meaningful way! These queues are not actually usable!
         fn init_queue(&mut self, queue: u16) {
+            // Linux's setup_vq checks that the queue index is valid compared to
+            // the advertised `num_queues`, regardless of whether or not the
+            // device will handle it.
+            assert!(
+                queue < self.common_config.read_le16(common_cfg::num_queues)
+            );
+
             self.common_config.write_le16(common_cfg::queue_select, queue);
 
             // We don't strictly *need* to check if the queue was already
@@ -2373,6 +2395,8 @@ mod test {
             // > accepting it.
             let device_feats =
                 self.common_config.read_le32(common_cfg::device_feature);
+            let num_queues =
+                self.common_config.read_le16(common_cfg::num_queues);
 
             // VirtIO defines features as up to 64 bits, but the register is an le32
             // with a separate register to select which part of feature space is to
@@ -2393,17 +2417,14 @@ mod test {
                 );
             }
 
-            // TODO:
-            // if `features` includes multi-queue, for example, a guest might check
-            // the number of supported queues to decide if it actually can operate
-            // the device in multi-queue mode...
-            //
             // We know that `features` is a subset of `device_feats` by
             // `unsupported` being zero, above.
             eprintln!("writing features: {:#08x}", features_u32);
             self.common_config
                 .write_le32(common_cfg::driver_feature, features_u32);
 
+            // > 5. Set the FEATURES_OK status bit. The driver MUST NOT accept new
+            // > feature bits after this step.
             self.set_status_bits(Status::FEATURES_OK);
 
             // > 6. Re-read device status to ensure the FEATURES_OK bit is still
@@ -2428,53 +2449,68 @@ mod test {
             // > for the device, optional per-bus setup, reading and possibly
             // > writing the device's virtio configuration space, and population of
             // > virtqueues.
+            let is_mq = features & VIRTIO_NET_F_MQ != 0;
+            let has_control = features & VIRTIO_NET_F_CTRL_VQ != 0;
+            assert!(
+                !is_mq || has_control,
+                "multiqueue requires the control queue feature"
+            );
 
-            let n_qpairs = if features & VIRTIO_NET_F_MQ == 0 {
-                1
+            // We'll configure all of the device's queues here. This is what
+            // we've seen both Linux and Windows do with virtio devices (in
+            // Linux, virtnet_probe()->init_vqs()). The number of
+            // actually-used queues is only configured later.
+            let n_qpairs = if is_mq {
+                self.device_config.read_le16(net_config::max_virtqueue_pairs)
             } else {
-                // We'll configure all of the device's queues here. This is what
-                // we've seen both Linux and Windows do with virtio devices (in
-                // Linux, virtnet_probe()->init_vqs()). The number of
-                // actually-used queues is only configured later.
-                let max_pairs = self
-                    .device_config
-                    .read_le16(net_config::max_virtqueue_pairs);
-                // TODO: the *right* thing to do here would be to set up the control
-                // queue, send an MQ command with VQ_PAIRS_SET, then wait for a
-                // (should be immediate) response. Or .. just call into the device
-                // directly.
-                self.dev
-                    .set_use_pairs(max_pairs)
-                    .expect("can set_use_pairs(max_pairs)");
-                max_pairs
+                1
             };
-            let n_queues = n_qpairs * 2;
             eprintln!("n_qpairs: {}", n_qpairs);
 
+            // Initialising each required queue will check that its qidx is
+            // less than the device's advertised num_queues.
+            //
+            // Linux enforces this, whereas illumos will overlook this for the
+            // control queue iff. we handle the queue operations successfully.
+            let n_queues = n_qpairs * 2 + u16::from(has_control);
             for queue in 0..n_queues {
                 eprintln!("initializing queue {}", queue);
                 self.init_queue(queue);
                 assert!(self.status_ok());
             }
 
+            // The last queue we initialise is the control queue. Ensure that
+            // the device agrees with us.
+            let ctl_qidx = has_control.then_some(n_queues - 1);
+            assert_eq!(ctl_qidx, self.ctl_qidx());
+
             if n_qpairs > 1 {
+                self.dev
+                    .set_use_pairs(n_qpairs)
+                    .expect("can set_use_pairs(max_pairs)");
+
                 // Again following in the footsteps of observed Windows/Linux
                 // virtio drivers: now that queues are all initialized, set the
                 // number of queue pairs we'll actually use. The test (playing
                 // the role of the guest OS) may have selected less than the
                 // maximum queue pairs.
-                let wanted_pairs = self.state.max_pairs.unwrap_or(n_qpairs);
-                assert!(wanted_pairs <= n_qpairs);
-                self.dev
-                    .set_use_pairs(wanted_pairs)
-                    .expect("can set_use_pairs(wanted_pairs)");
+                if let Some(wanted_pairs) = self.state.max_pairs {
+                    assert!(wanted_pairs <= n_qpairs);
+                    self.dev
+                        .set_use_pairs(wanted_pairs)
+                        .expect("can set_use_pairs(wanted_pairs)");
+                }
             }
 
-            if features & VIRTIO_NET_F_CTRL_VQ != 0 {
-                // configure the control queue too?
-                self.common_config
-                    .write_le16(common_cfg::queue_select, n_queues);
-            }
+            // The config-space value num_queues represents the *maximum* number
+            // of queues supported by the device, and should not change in
+            // response to use_pairs. The control queue should also stay the same,
+            // as it depends on max_virtqueue_pairs.
+            assert_eq!(
+                self.common_config.read_le16(common_cfg::num_queues),
+                num_queues
+            );
+            assert_eq!(ctl_qidx, self.ctl_qidx());
 
             // From 5.1.4.2 "Driver Requirements: Device configuration layout",
             // > If the driver negotiates VIRTIO_NET_F_MTU, it MUST supply enough
@@ -2599,6 +2635,12 @@ mod test {
         driver.modern_device_init(expected_feats);
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats);
+
+        // If the driver does not offer VIRTIO_NET_F_CTRL_VQ, then we
+        // should clear the is_control flag from all queues.
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS);
+        assert!(driver.ctl_qidx().is_none());
 
         test_ctx
     }
