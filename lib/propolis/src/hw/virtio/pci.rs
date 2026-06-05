@@ -530,7 +530,14 @@ impl PciVirtioState {
                 ro.write_u16(state.msix_cfg_vec);
             }
             CommonConfigReg::NumQueues => {
-                ro.write_u16(self.queues.count().get());
+                // This is the maximum count of *non-administration* virtqueues
+                // supported by the device. As we do not support
+                // `VIRTIO_F_ADMIN_VQ`, this is all of the virtqueues we have
+                // allocated.
+                ro.write_u16(
+                    u16::try_from(self.queues.max_capacity())
+                        .expect("must have fewer than u16::MAX queues"),
+                );
             }
             CommonConfigReg::DeviceStatus => {
                 let state = self.state.lock().unwrap();

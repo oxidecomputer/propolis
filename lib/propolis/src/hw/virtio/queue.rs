@@ -1108,7 +1108,7 @@ impl VirtQueues {
     }
 
     pub fn count(&self) -> NonZeroU16 {
-        NonZeroU16::try_from(self.len() as u16)
+        NonZeroU16::try_from(self.iter().count() as u16)
             .expect("queue count already validated")
     }
 

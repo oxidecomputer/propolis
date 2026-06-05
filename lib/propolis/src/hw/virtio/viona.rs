@@ -621,7 +621,7 @@ impl PciVirtioViona {
     fn process_interrupts(&self) {
         if let Some(mem) = self.pci_state.acc_mem.access() {
             self.hdl
-                .intr_poll(self.virtio_state.queues.len() - 1, |vq_idx| {
+                .intr_poll(self.virtio_state.queues.len(), |vq_idx| {
                     self.hdl.ring_intr_clear(vq_idx).unwrap();
                     let vq = self.virtio_state.queues.get(vq_idx).unwrap();
                     vq.send_intr(&mem);
@@ -721,11 +721,12 @@ impl PciVirtioViona {
             return Err(());
         }
         let npairs = requested as usize;
-        if npairs == self.virtio_state.queues.len() {
+        let nqueues = npairs * 2;
+        if nqueues == self.virtio_state.queues.len() {
             return Ok(());
         }
         self.hdl.set_usepairs(requested).unwrap();
-        self.virtio_state.queues.set_len(npairs * 2).expect("num queue pairs");
+        self.virtio_state.queues.set_len(nqueues).expect("num queue pairs");
         Ok(())
     }
 
@@ -1338,7 +1339,7 @@ impl MigrateMulti for PciVirtioViona {
             self.hdl.set_pairs(PROPOLIS_MAX_MQ_PAIRS).unwrap();
         }
         // Queue count is a NonZeroU16; hence `get` and -1 will not underflow.
-        let io_queues = self.virtio_state.queues.count().get();
+        let io_queues = self.virtio_state.queues.count().get() - 1;
         let pairs = io_queues / 2;
         if !io_queues.is_multiple_of(2) {
             return Err(MigrateStateError::ImportFailed(format!(
