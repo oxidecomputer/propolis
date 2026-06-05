@@ -1335,11 +1335,13 @@ impl MigrateMulti for PciVirtioViona {
             ))
         })?;
 
+        let has_ctl_queue = (feat & VIRTIO_NET_F_CTRL_VQ) != 0;
         if (feat & VIRTIO_NET_F_MQ) != 0 {
             self.hdl.set_pairs(PROPOLIS_MAX_MQ_PAIRS).unwrap();
         }
         // Queue count is a NonZeroU16; hence `get` and -1 will not underflow.
-        let io_queues = self.virtio_state.queues.count().get() - 1;
+        let io_queues =
+            self.virtio_state.queues.count().get() - u16::from(has_ctl_queue);
         let pairs = io_queues / 2;
         if !io_queues.is_multiple_of(2) {
             return Err(MigrateStateError::ImportFailed(format!(
