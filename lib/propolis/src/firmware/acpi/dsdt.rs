@@ -523,7 +523,7 @@ impl Aml for PciRootBridgePrt {
 }
 
 // These IO ports are handled in-kernel by bhyve.
-// https://github.com/freebsd/freebsd-src/blob/d66fec481bfd65cbabb6c12a410d76843e76083e/sys/amd64/vmm/vmm_ioport.c#L46-L61
+// https://github.com/oxidecomputer/illumos-gate/blob/7bb217d179ac9ed816bf7dd48420417f85f270f9/usr/src/uts/intel/io/vmm/vmm_ioport.c#L92-L115
 const IO_ICU1: u16 = 0x20;
 const IO_ICU2: u16 = 0xa0;
 const IO_ELCR1: u16 = 0x4d0;
