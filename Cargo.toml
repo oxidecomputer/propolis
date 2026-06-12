@@ -100,6 +100,7 @@ dice-verifier = { git = "https://github.com/oxidecomputer/dice-util", rev = "d74
 vm-attest = { git = "https://github.com/oxidecomputer/vm-attest", rev = "deaf0203ecfa8cbe8c0c28c9bd16645d5d7be4e8", default-features = false }
 
 # External dependencies
+acpi_tables = { git = 'https://github.com/oxidecomputer/acpi_tables.git', tag = "v0.2.1-oxide.1" }
 anyhow = "1.0"
 async-trait = "0.1.88"
 atty = "0.2.14"

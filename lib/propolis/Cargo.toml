@@ -25,6 +25,7 @@ tokio = { workspace = true, features = ["full"] }
 futures.workspace = true
 paste.workspace = true
 pin-project-lite.workspace = true
+acpi_tables.workspace = true
 anyhow.workspace = true
 rgb_frame.workspace = true
 rfb.workspace = true
@@ -67,6 +68,7 @@ rand.workspace = true
 default = []
 crucible-full = ["crucible", "crucible-client-types", "oximeter", "nexus-client"]
 falcon = ["libloading", "p9ds", "dlpi", "ispf", "rand", "softnpu", "viona_api/falcon"]
+acpi-debug = []
 
 # TODO until crucible#1280 is addressed, enabling Nexus notifications is done
 # through a feature flag.

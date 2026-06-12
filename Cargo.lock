@@ -3,6 +3,14 @@
 version = 3
 
 [[package]]
+name = "acpi_tables"
+version = "0.2.1"
+source = "git+https://github.com/oxidecomputer/acpi_tables.git?tag=v0.2.1-oxide.1#f20592bc0f2bfe9b71493de67e6b917fcea50c2e"
+dependencies = [
+ "zerocopy 0.8.27",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6066,6 +6074,7 @@ dependencies = [
 name = "phd-tests"
 version = "0.1.0"
 dependencies = [
+ "acpi_tables",
  "anyhow",
  "backoff",
  "byteorder",
@@ -6080,6 +6089,7 @@ dependencies = [
  "oximeter",
  "oximeter-producer",
  "phd-testcase",
+ "propolis",
  "propolis-client 0.1.0",
  "reqwest 0.13.2",
  "slog",
@@ -6687,6 +6697,7 @@ dependencies = [
 name = "propolis"
 version = "0.1.0"
 dependencies = [
+ "acpi_tables",
  "anyhow",
  "async-trait",
  "bhyve_api 0.0.0",

@@ -34,6 +34,10 @@ pub struct PanicCounts {
 
 pub const DEVICE_NAME: &str = "qemu-pvpanic";
 
+/// IO port for the pvpanic device.
+/// This value is chosen to match the convention in QEMU.
+pub const IOPORT: u16 = 0x505;
+
 /// Indicates that a guest panic has happened and should be processed by the
 /// host
 const HOST_HANDLED: u8 = 0b01;
@@ -48,8 +52,6 @@ mod probes {
 }
 
 impl QemuPvpanic {
-    const IOPORT: u16 = 0x505;
-
     pub fn create(log: slog::Logger) -> Arc<Self> {
         Arc::new(Self {
             counts: Mutex::new(PanicCounts {
@@ -65,7 +67,7 @@ impl QemuPvpanic {
         let piodev = self.clone();
         let piofn = Arc::new(move |_port: u16, rwo: RWOp| piodev.pio_rw(rwo))
             as Arc<PioFn>;
-        pio.register(Self::IOPORT, 1, piofn).unwrap();
+        pio.register(IOPORT, 1, piofn).unwrap();
     }
 
     /// Returns the current panic counts reported by the guest.

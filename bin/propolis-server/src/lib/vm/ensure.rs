@@ -93,6 +93,7 @@ use std::sync::Arc;
 
 use oximeter::types::ProducerRegistry;
 use oximeter_instruments::kstat::KstatSampler;
+use propolis::common::DeviceMetadataMap;
 use propolis::enlightenment::{
     bhyve::BhyveGuestInterface,
     hyperv::{Features as HyperVFeatures, HyperV},
@@ -532,6 +533,7 @@ async fn initialize_vm_objects(
         log: log.clone(),
         machine: &machine,
         devices: Default::default(),
+        device_metadata: DeviceMetadataMap::new(),
         block_backends: Default::default(),
         crucible_backends: Default::default(),
         spec: &spec,
@@ -579,8 +581,11 @@ async fn initialize_vm_objects(
         .initialize_storage_devices(&chipset, options.nexus_client.clone())
         .await?;
 
-    let ramfb =
-        init.initialize_fwcfg(spec.board.cpus, &options.bootrom_version)?;
+    let ramfb = init.initialize_fwcfg(
+        spec.board.cpus,
+        &options.bootrom_version,
+        spec.board.acpi_variant,
+    )?;
 
     // If we have a VM RoT, that RoT needs to be able to collect some
     // information about the guest before it can be actually usable. It will do

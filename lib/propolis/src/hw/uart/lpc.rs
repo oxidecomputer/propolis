@@ -7,9 +7,13 @@ use std::sync::{Arc, Mutex};
 use super::uart16550::{migrate, Uart};
 use crate::chardev::*;
 use crate::common::*;
+use crate::common::{DeviceMetadata, DeviceMetadataMap};
+use crate::firmware::acpi;
 use crate::intr_pins::IntrPin;
 use crate::migrate::*;
 use crate::pio::{PioBus, PioFn};
+
+use acpi_tables::{aml, Aml, AmlSink};
 
 // Low Pin Count UART
 
@@ -172,6 +176,10 @@ impl Lifecycle for LpcUart {
         let mut state = self.state.lock().unwrap();
         state.paused = false;
     }
+
+    fn as_dsdt_generator(&self) -> Option<&dyn acpi::DsdtGenerator> {
+        Some(self)
+    }
 }
 impl MigrateSingle for LpcUart {
     fn export(
@@ -192,5 +200,60 @@ impl MigrateSingle for LpcUart {
         state.uart.import(&data)?;
         state.irq_pin.import_state(state.uart.intr_state());
         Ok(())
+    }
+}
+
+impl acpi::DsdtGenerator for LpcUart {
+    fn dsdt_scope(&self) -> acpi::DsdtScope {
+        acpi::DsdtScope::Lpc
+    }
+
+    // This AML code is inherited from the original EDK2 static tables.
+    fn to_aml_bytes(
+        &self,
+        acpi_variant: acpi::AcpiVariant,
+        device_metadata: &DeviceMetadataMap,
+        sink: &mut dyn AmlSink,
+    ) {
+        let metadata = device_metadata.get(self).unwrap();
+
+        if acpi_variant == acpi::AcpiVariant::V0 {
+            // The original EDK2-based tables only defined COM1 and COM2, even
+            // though VMs usually have 4 serial ports.
+            if metadata.num > 2 {
+                return;
+            }
+        }
+
+        aml::Device::new(
+            aml::Path::new(&format!("UAR{}", metadata.num)),
+            vec![
+                &acpi::aml::names::hid(&aml::EISAName::new(
+                    acpi::aml::devids::COM_PORT_16550A,
+                )),
+                &acpi::aml::names::ddn(&format!("COM{}", metadata.num)),
+                &acpi::aml::names::uid(&metadata.num),
+                &acpi::aml::names::crs(&aml::ResourceTemplate::new(vec![
+                    &acpi::aml::io_port(metadata.port, 1, REGISTER_LEN as u8),
+                    &aml::Irq::new(true, false, false, metadata.irq),
+                ])),
+            ],
+        )
+        .to_aml_bytes(sink);
+    }
+}
+
+impl DeviceMetadata for LpcUart {
+    type Metadata = LpcUartMetadata;
+}
+
+pub struct LpcUartMetadata {
+    num: u8,
+    port: u16,
+    irq: u8,
+}
+impl LpcUartMetadata {
+    pub fn new(num: u8, port: u16, irq: u8) -> Self {
+        Self { num, port, irq }
     }
 }

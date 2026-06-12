@@ -84,6 +84,7 @@ proptest.workspace = true
 
 [features]
 default = []
+acpi-debug = ["propolis/acpi-debug"]
 
 # When building to be packaged for inclusion in the production ramdisk
 # (nominally an Omicron package), certain code is compiled in or out.
