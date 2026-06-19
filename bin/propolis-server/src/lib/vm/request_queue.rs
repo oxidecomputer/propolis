@@ -102,11 +102,15 @@ pub enum ComponentChangeRequest {
     },
 
     PlugDisk {
+        device_id: SpecKey,
         disk: Disk,
+        result_tx: super::InstancePlugDiskResultTx,
     },
 
     UnplugDisk {
-        device: u8,
+        device_id: SpecKey,
+        disk: Disk,
+        result_tx: super::InstanceUnplugDiskResultTx,
     },
 }
 
@@ -117,8 +121,10 @@ impl std::fmt::Debug for ComponentChangeRequest {
                 .debug_struct("ReconfigureCrucibleVolume")
                 .field("backend_id", backend_id)
                 .finish(),
-            Self::PlugDisk { disk } => write!(f, "plug disk {:?}", disk),
-            Self::UnplugDisk { device } => write!(f, "unplug disk {}", device),
+            Self::PlugDisk { disk, .. } => write!(f, "plug disk {:?}", disk),
+            Self::UnplugDisk { disk, .. } => {
+                write!(f, "unplug disk {:?}", disk)
+            }
         }
     }
 }
@@ -176,12 +182,28 @@ impl ExternalRequest {
         })
     }
 
-    pub fn plug_disk(disk: Disk) -> Self {
-        Self::Component(ComponentChangeRequest::PlugDisk { disk })
+    pub fn plug_disk(
+        device_id: SpecKey,
+        disk: Disk,
+        result_tx: super::InstancePlugDiskResultTx,
+    ) -> Self {
+        Self::Component(ComponentChangeRequest::PlugDisk {
+            device_id,
+            disk,
+            result_tx,
+        })
     }
 
-    pub fn unplug_disk(device: u8) -> Self {
-        Self::Component(ComponentChangeRequest::UnplugDisk { device })
+    pub fn unplug_disk(
+        device_id: SpecKey,
+        disk: Disk,
+        result_tx: super::InstanceUnplugDiskResultTx,
+    ) -> Self {
+        Self::Component(ComponentChangeRequest::UnplugDisk {
+            device_id,
+            disk,
+            result_tx,
+        })
     }
 
     fn is_stop(&self) -> bool {
@@ -507,11 +529,11 @@ impl ExternalRequestQueue {
                 ) => {}
 
                 ExternalRequest::Component(
-                    ComponentChangeRequest::PlugDisk { disk: _ },
+                    ComponentChangeRequest::PlugDisk { .. },
                 ) => {}
 
                 ExternalRequest::Component(
-                    ComponentChangeRequest::UnplugDisk { device: _ },
+                    ComponentChangeRequest::UnplugDisk { .. },
                 ) => {}
             }
         };
@@ -603,8 +625,8 @@ impl Drop for ExternalRequestQueue {
                         ),
                     ));
                 }
-                ComponentChangeRequest::PlugDisk { disk: _ } => todo!(),
-                ComponentChangeRequest::UnplugDisk { device: _ } => todo!(),
+                ComponentChangeRequest::PlugDisk { .. } => todo!(),
+                ComponentChangeRequest::UnplugDisk { .. } => todo!(),
             }
         }
     }

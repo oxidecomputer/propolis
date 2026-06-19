@@ -78,6 +78,7 @@ impl<D: Device + Send + Sync + 'static> Endpoint for D {
     }
     fn detach(&self) {
         // TODO: undo DeviceState::attach
+        // leave a note about orphan tree nodes
         self.detach();
     }
     fn cfg_rw(&self, mut rwo: RWOp) {
@@ -653,6 +654,11 @@ impl DeviceState {
         let attach = state.attach.as_ref().unwrap();
         attach.acc_mem.adopt(&self.acc_mem, None);
         attach.acc_msi.adopt(&self.acc_msi, None);
+    }
+    fn detach(&self) {
+        // clean-up device state
+        // drop state.attach
+        // orphan_node
     }
 
     pub fn lintr_pin(&self) -> Option<Arc<dyn IntrPin>> {

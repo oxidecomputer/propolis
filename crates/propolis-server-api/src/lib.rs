@@ -54,7 +54,10 @@ pub trait PropolisServerApi {
     async fn instance_disk_attach(
         rqctx: RequestContext<Self::Context>,
         request: TypedBody<latest::instance::InstanceDiskAttachRequest>,
-    ) -> Result<HttpResponseOk<()>, HttpError>;
+    ) -> Result<
+        HttpResponseOk<latest::instance::InstanceDiskAttachResponse>,
+        HttpError,
+    >;
 
     #[endpoint {
         method = PUT,
@@ -64,7 +67,10 @@ pub trait PropolisServerApi {
     async fn instance_disk_detach(
         rqctx: RequestContext<Self::Context>,
         request: TypedBody<latest::instance::InstanceDiskDetachRequest>,
-    ) -> Result<HttpResponseOk<()>, HttpError>;
+    ) -> Result<
+        HttpResponseOk<latest::instance::InstanceDiskDetachResponse>,
+        HttpError,
+    >;
 
     #[endpoint {
         method = PUT,

@@ -302,6 +302,11 @@ impl<D: PciVirtio + Send + Sync + 'static> pci::Device for D {
         }
     }
 
+    fn detach(&self) {
+        // unbind lintr_pin
+        todo!();
+    }
+
     fn interrupt_mode_change(&self, intr_mode: pci::IntrMode) {
         let vs = self.virtio_state();
         vs.set_intr_mode(self.pci_state(), intr_mode.into(), false);

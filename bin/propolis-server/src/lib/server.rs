@@ -42,7 +42,8 @@ use propolis_api_types::disk::{
     VolumeStatus, VolumeStatusPathParams,
 };
 use propolis_api_types::instance::{
-    ErrorCode, Instance, InstanceDiskAttachRequest, InstanceDiskDetachRequest,
+    ErrorCode, Instance, InstanceDiskAttachRequest, InstanceDiskAttachResponse,
+    InstanceDiskDetachRequest, InstanceDiskDetachResponse,
     InstanceEnsureRequest, InstanceEnsureResponse, InstanceGetResponse,
     InstanceInitializationMethod, InstanceStateMonitorRequest,
     InstanceStateMonitorResponse, InstanceStateRequested,
@@ -227,27 +228,49 @@ impl PropolisServerApi for PropolisServerImpl {
     async fn instance_disk_attach(
         rqctx: RequestContext<Self::Context>,
         request: TypedBody<InstanceDiskAttachRequest>,
-    ) -> Result<HttpResponseOk<()>, HttpError> {
+    ) -> Result<HttpResponseOk<InstanceDiskAttachResponse>, HttpError> {
         let components = request.into_inner().components;
-        let device_spec = components
+        if components.len() != 2 {
+            return Err(HttpError::for_bad_request(
+                None,
+                "expected 2 components".to_string(),
+            ));
+        }
+
+        let (device_id, device_spec) = components
             .iter()
-            .find_map(|(_k, v)| {
-                crate::spec::StorageDevice::try_from(v.clone()).ok()
+            .find_map(|(k, v)| {
+                match crate::spec::StorageDevice::try_from(v.clone()) {
+                    Ok(dev) => Some((k, dev)),
+                    Err(_) => None,
+                }
             })
             .ok_or(HttpError::for_bad_request(
                 None,
                 "missing disk".to_string(),
             ))?;
-        let backend_spec = components
+
+        let (backend_id, backend_spec) = components
             .iter()
-            .find_map(|(_k, v)| {
-                crate::spec::StorageBackend::try_from(v.clone()).ok()
+            .find_map(|(k, v)| {
+                match crate::spec::StorageBackend::try_from(v.clone()) {
+                    Ok(be) => Some((k, be)),
+                    Err(_) => None,
+                }
             })
             .ok_or(HttpError::for_bad_request(
                 None,
                 "missing backend".to_string(),
             ))?;
 
+        if device_spec.backend_id() != backend_id {
+            return Err(HttpError::for_bad_request(
+                None,
+                "backend mismatch".to_string(),
+            ));
+        }
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
         let vm = rqctx
             .context()
             .vm
@@ -255,17 +278,31 @@ impl PropolisServerApi for PropolisServerImpl {
             .await
             .ok_or_else(not_created_error)?;
 
-        vm.plug_disk(crate::spec::Disk { device_spec, backend_spec })
-            .map_err(|_| HttpError::for_internal_error("Error".to_string()))?;
+        vm.plug_disk(
+            device_id.clone(),
+            crate::spec::Disk { device_spec, backend_spec },
+            tx,
+        )
+        .await
+        .map_err(|_| HttpError::for_internal_error("Error".to_string()))?;
 
-        Ok(HttpResponseOk(()))
+        let result = rx.await.map_err(|_| {
+            HttpError::for_internal_error(
+                "VM worker task unexpectedly dropped result channel"
+                    .to_string(),
+            )
+        })?;
+
+        Ok(HttpResponseOk(InstanceDiskAttachResponse {
+            spec: result?.clone().into(),
+        }))
     }
 
     async fn instance_disk_detach(
         rqctx: RequestContext<Self::Context>,
         request: TypedBody<InstanceDiskDetachRequest>,
-    ) -> Result<HttpResponseOk<()>, HttpError> {
-        let device = request.into_inner().device;
+    ) -> Result<HttpResponseOk<InstanceDiskDetachResponse>, HttpError> {
+        let device_id = request.into_inner().device_id;
 
         let vm = rqctx
             .context()
@@ -274,10 +311,33 @@ impl PropolisServerApi for PropolisServerImpl {
             .await
             .ok_or_else(not_created_error)?;
 
-        vm.unplug_disk(device)
+        let disk = {
+            let objects = vm.objects().lock_shared().await;
+            let Some(disk) = objects.instance_spec().disks.get(&device_id)
+            else {
+                return Err(HttpError::for_bad_request(
+                    None,
+                    "component is not a disk".to_string(),
+                ));
+            };
+            disk.clone()
+        };
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        vm.unplug_disk(device_id.clone(), disk, tx)
+            .await
             .map_err(|_| HttpError::for_internal_error("Error".to_string()))?;
 
-        Ok(HttpResponseOk(()))
+        let result = rx.await.map_err(|_| {
+            HttpError::for_internal_error(
+                "VM worker task unexpectedly dropped result channel"
+                    .to_string(),
+            )
+        })?;
+
+        Ok(HttpResponseOk(InstanceDiskDetachResponse {
+            spec: result?.clone().into(),
+        }))
     }
 
     async fn instance_ensure(

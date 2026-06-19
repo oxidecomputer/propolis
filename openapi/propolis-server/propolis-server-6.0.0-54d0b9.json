@@ -83,11 +83,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "title": "Null",
-                  "type": "string",
-                  "enum": [
-                    null
-                  ]
+                  "$ref": "#/components/schemas/InstanceDiskAttachResponse"
                 }
               }
             }
@@ -120,11 +116,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "title": "Null",
-                  "type": "string",
-                  "enum": [
-                    null
-                  ]
+                  "$ref": "#/components/schemas/InstanceDiskDetachResponse"
                 }
               }
             }
@@ -1713,17 +1705,37 @@
           "components"
         ]
       },
-      "InstanceDiskDetachRequest": {
+      "InstanceDiskAttachResponse": {
         "type": "object",
         "properties": {
-          "device": {
-            "type": "integer",
-            "format": "uint8",
-            "minimum": 0
+          "spec": {
+            "$ref": "#/components/schemas/InstanceSpec"
           }
         },
         "required": [
-          "device"
+          "spec"
+        ]
+      },
+      "InstanceDiskDetachRequest": {
+        "type": "object",
+        "properties": {
+          "device_id": {
+            "$ref": "#/components/schemas/SpecKey"
+          }
+        },
+        "required": [
+          "device_id"
+        ]
+      },
+      "InstanceDiskDetachResponse": {
+        "type": "object",
+        "properties": {
+          "spec": {
+            "$ref": "#/components/schemas/InstanceSpec"
+          }
+        },
+        "required": [
+          "spec"
         ]
       },
       "InstanceEnsureRequest": {

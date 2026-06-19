@@ -1403,6 +1403,10 @@ impl pci::Device for PciNvme {
         assert!(state.msix_hdl.is_some());
     }
 
+    fn detach(&self) {
+        // add log/probe/something
+    }
+
     fn device_state(&self) -> &pci::DeviceState {
         &self.pci_state
     }

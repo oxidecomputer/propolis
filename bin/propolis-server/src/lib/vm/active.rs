@@ -18,7 +18,8 @@ use crate::vm::request_queue::ExternalRequest;
 
 use super::{
     objects::VmObjects, services::VmServices, CrucibleReplaceResultTx,
-    InstanceStateRx, VmError,
+    InstancePlugDiskResultTx, InstanceStateRx, InstanceUnplugDiskResultTx,
+    VmError,
 };
 
 /// The components and services that make up an active Propolis VM.
@@ -115,15 +116,33 @@ impl ActiveVm {
             .map_err(Into::into)
     }
 
-    pub(crate) fn plug_disk(&self, disk: Disk) -> Result<(), VmError> {
+    pub(crate) async fn plug_disk(
+        &self,
+        device_id: SpecKey,
+        disk: Disk,
+        result_tx: InstancePlugDiskResultTx,
+    ) -> Result<(), VmError> {
         self.state_driver_queue
-            .queue_external_request(ExternalRequest::plug_disk(disk))
+            .queue_external_request(ExternalRequest::plug_disk(
+                device_id.clone(),
+                disk.clone(),
+                result_tx,
+            ))
             .map_err(Into::into)
     }
 
-    pub(crate) fn unplug_disk(&self, device: u8) -> Result<(), VmError> {
+    pub(crate) async fn unplug_disk(
+        &self,
+        device_id: SpecKey,
+        disk: Disk,
+        result_tx: InstanceUnplugDiskResultTx,
+    ) -> Result<(), VmError> {
         self.state_driver_queue
-            .queue_external_request(ExternalRequest::unplug_disk(device))
+            .queue_external_request(ExternalRequest::unplug_disk(
+                device_id.clone(),
+                disk,
+                result_tx,
+            ))
             .map_err(Into::into)
     }
 

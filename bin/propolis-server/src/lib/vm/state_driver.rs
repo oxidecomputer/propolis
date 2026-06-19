@@ -766,10 +766,10 @@ impl StateDriver {
                     );
                 }
                 ExternalRequest::Component(
-                    ComponentChangeRequest::PlugDisk { disk: _ },
+                    ComponentChangeRequest::PlugDisk { .. },
                 ) => todo!(),
                 ExternalRequest::Component(
-                    ComponentChangeRequest::UnplugDisk { device: _ },
+                    ComponentChangeRequest::UnplugDisk { .. },
                 ) => todo!(),
                 // The request queue is expected to reject (or at least silently
                 // ignore) requests to migrate or reboot an instance that hasn't
@@ -910,24 +910,32 @@ impl StateDriver {
                 HandleEventOutcome::Continue
             }
             ExternalRequest::Component(ComponentChangeRequest::PlugDisk {
+                device_id,
                 disk,
+                result_tx,
             }) => {
-                self.plug_disk(disk).await;
+                let _ = result_tx.send(self.plug_disk(&device_id, disk).await);
                 HandleEventOutcome::Continue
             }
             ExternalRequest::Component(
-                ComponentChangeRequest::UnplugDisk { device },
+                ComponentChangeRequest::UnplugDisk {
+                    device_id,
+                    disk,
+                    result_tx,
+                },
             ) => {
-                self.unplug_disk(device).await;
+                let _ =
+                    result_tx.send(self.unplug_disk(&device_id, disk).await);
                 HandleEventOutcome::Continue
             }
         }
     }
 
-    async fn plug_disk(&self, disk: Disk) {
-        let pci_path = disk.device_spec.pci_path();
-        let key = SpecKey::Name(format!("hotplug-{:02}", pci_path.device()));
-
+    async fn plug_disk(
+        &self,
+        device_id: &SpecKey,
+        disk: Disk,
+    ) -> super::InstancePlugDiskResult {
         let backend: Arc<dyn Backend> = match &disk.backend_spec {
             StorageBackend::File(spec) => {
                 let workers: NonZeroUsize = match spec.workers {
@@ -996,13 +1004,14 @@ impl StateDriver {
                 .unwrap()
             }
         };
+        let backend_id = disk.device_spec.backend_id();
 
         let dev: Arc<dyn BlockDevice> = match &disk.device_spec {
             StorageDevice::Virtio(_) => virtio::PciVirtioBlock::new(0x100),
             StorageDevice::Nvme(disk) => nvme::PciNvme::create(
                 &disk.serial_number,
                 Some(8),
-                self.log.new(slog::o!("component" => key.to_string())),
+                self.log.new(slog::o!("component" => device_id.to_string())),
             ),
         };
         block::attach(dev.attachment(), backend.attachment()).unwrap();
@@ -1010,56 +1019,61 @@ impl StateDriver {
         let mut objects = self.objects.lock_exclusive().await;
         assert!(objects
             .block_backend_map_mut()
-            .insert(disk.device_spec.backend_id().clone(), backend.clone())
+            .insert(backend_id.clone(), backend.clone())
             .is_none());
         assert!(objects
             .device_map_mut()
-            .insert(key.clone(), dev.clone())
+            .insert(device_id.clone(), dev.clone())
             .is_none());
 
         dev.start().unwrap();
         backend.start().await.unwrap();
 
         let chipset = objects.chipset();
-        chipset.pci_hot_attach(Bdf::from(pci_path), dev.clone());
+        chipset.pci_hot_attach(
+            Bdf::from(disk.device_spec.pci_path()),
+            dev.clone(),
+        );
 
-        assert!(objects.instance_spec_mut().disks.insert(key, disk).is_none());
+        assert!(objects
+            .instance_spec_mut()
+            .disks
+            .insert(device_id.clone(), disk)
+            .is_none());
+
+        Ok(objects.instance_spec().clone())
     }
 
-    async fn unplug_disk(&self, device: u8) {
-        let key = SpecKey::Name(format!("hotplug-{:02}", device));
-        let bdf = Bdf::new(0, device, 0).unwrap();
-
+    async fn unplug_disk(
+        &self,
+        device_id: &SpecKey,
+        disk: Disk,
+    ) -> super::InstanceUnplugDiskResult {
         let mut objects = self.objects.lock_exclusive().await;
+        let pci_path = disk.device_spec.pci_path();
 
-        let dev = objects.device_map().get(&key).unwrap();
+        let chipset = objects.chipset();
+        chipset.pci_hot_detach(pci_path.device());
+        // TODO: wait until ACPI unplug is confirmed by the guest.
+        thread::sleep(time::Duration::from_secs(1));
+        chipset.pci_detach(pci_path.into());
+
+        let dev = objects.device_map().get(device_id).unwrap();
         dev.pause();
         dev.paused().await;
         // TODO: probably not a good idea.
         dev.halt();
 
-        let chipset = objects.chipset();
-        chipset.pci_hot_detach(device);
-        // TODO: wait until ACPI unplug is confirmed by the guest.
-        thread::sleep(time::Duration::from_secs(1));
-        chipset.pci_detach(bdf);
-
-        let backend_id = {
-            let (_, disk) = objects
-                .instance_spec()
-                .disks
-                .iter()
-                .find(|(_, d)| d.device_spec.pci_path().device() == device)
-                .unwrap();
-            disk.device_spec.backend_id().clone()
-        };
-        let backend = objects.block_backend_map().get(&backend_id).unwrap();
+        let backend_id = disk.device_spec.backend_id();
+        let backend = objects.block_backend_map().get(backend_id).unwrap();
         backend.stop().await;
         backend.attachment().detach();
 
-        assert!(objects.device_map_mut().remove(&key).is_some());
-        assert!(objects.block_backend_map_mut().remove(&backend_id).is_some());
-        assert!(objects.instance_spec_mut().disks.remove(&key).is_some());
+        assert!(objects.device_map_mut().remove(device_id).is_some());
+        assert!(objects.block_backend_map_mut().remove(backend_id).is_some());
+        assert!(objects.instance_spec_mut().disks.remove(device_id).is_some());
+
+        Ok(objects.instance_spec().clone())
     }
 
     async fn do_reboot(&mut self) {

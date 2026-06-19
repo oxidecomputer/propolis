@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 use crate::v1::instance_spec::Component;
 use crate::v1::instance_spec::SpecKey;
+use crate::v3::instance_spec::InstanceSpec;
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceDiskAttachRequest {
@@ -15,6 +16,16 @@ pub struct InstanceDiskAttachRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceDiskAttachResponse {
+    pub spec: InstanceSpec,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceDiskDetachRequest {
-    pub device: u8,
+    pub device_id: SpecKey,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+pub struct InstanceDiskDetachResponse {
+    pub spec: InstanceSpec,
 }

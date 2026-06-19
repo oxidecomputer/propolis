@@ -146,6 +146,14 @@ pub(crate) type CrucibleReplaceResult =
 pub(crate) type CrucibleReplaceResultTx =
     oneshot::Sender<CrucibleReplaceResult>;
 
+pub(crate) type InstancePlugDiskResult = Result<Spec, dropshot::HttpError>;
+pub(crate) type InstancePlugDiskResultTx =
+    oneshot::Sender<InstancePlugDiskResult>;
+
+pub(crate) type InstanceUnplugDiskResult = Result<Spec, dropshot::HttpError>;
+pub(crate) type InstanceUnplugDiskResultTx =
+    oneshot::Sender<InstanceUnplugDiskResult>;
+
 /// PCI device instance ID type to which a per-component Kstat (kernal stat)
 /// instance ID maps to.
 type KstatInstanceId = u32;
