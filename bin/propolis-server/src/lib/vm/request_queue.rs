@@ -213,7 +213,7 @@ impl ExternalRequest {
 
 /// A set of reasons why a request to queue an external state transition can
 /// fail.
-#[derive(Copy, Clone, Debug, Error)]
+#[derive(Copy, Clone, Debug, Error, PartialEq)]
 pub(crate) enum RequestDeniedReason {
     #[error("Operation requires an active instance")]
     InstanceNotActive,
@@ -530,11 +530,35 @@ impl ExternalRequestQueue {
 
                 ExternalRequest::Component(
                     ComponentChangeRequest::PlugDisk { .. },
-                ) => {}
+                ) => {
+                    if self.awaiting_migration_out {
+                        return Err(
+                            RequestDeniedReason::InvalidForMigrationSource,
+                        );
+                    } else if self.awaiting_stop {
+                        return Err(RequestDeniedReason::HaltPending);
+                    } else if self.state == QueueState::NotStarted {
+                        return Err(RequestDeniedReason::InstanceNotActive);
+                    } else if self.state == QueueState::StartPending {
+                        return Err(RequestDeniedReason::StartInProgress);
+                    }
+                }
 
                 ExternalRequest::Component(
                     ComponentChangeRequest::UnplugDisk { .. },
-                ) => {}
+                ) => {
+                    if self.awaiting_migration_out {
+                        return Err(
+                            RequestDeniedReason::InvalidForMigrationSource,
+                        );
+                    } else if self.awaiting_stop {
+                        return Err(RequestDeniedReason::HaltPending);
+                    } else if self.state == QueueState::NotStarted {
+                        return Err(RequestDeniedReason::InstanceNotActive);
+                    } else if self.state == QueueState::StartPending {
+                        return Err(RequestDeniedReason::StartInProgress);
+                    }
+                }
             }
         };
 
@@ -625,8 +649,28 @@ impl Drop for ExternalRequestQueue {
                         ),
                     ));
                 }
-                ComponentChangeRequest::PlugDisk { .. } => todo!(),
-                ComponentChangeRequest::UnplugDisk { .. } => todo!(),
+                ComponentChangeRequest::PlugDisk { result_tx, .. } => {
+                    let _ = result_tx.send(Err(
+                        dropshot::HttpError::for_client_error_with_status(
+                            Some(
+                                "VM destroyed before request could be handled"
+                                    .to_string(),
+                            ),
+                            dropshot::ClientErrorStatusCode::GONE,
+                        ),
+                    ));
+                }
+                ComponentChangeRequest::UnplugDisk { result_tx, .. } => {
+                    let _ = result_tx.send(Err(
+                        dropshot::HttpError::for_client_error_with_status(
+                            Some(
+                                "VM destroyed before request could be handled"
+                                    .to_string(),
+                            ),
+                            dropshot::ClientErrorStatusCode::GONE,
+                        ),
+                    ));
+                }
             }
         }
     }
@@ -636,7 +680,13 @@ impl Drop for ExternalRequestQueue {
 mod test {
     use super::*;
 
+    use crate::spec::{Disk, StorageBackend, StorageDevice};
+    use propolis_api_types::instance_spec::components::{
+        backends::FileStorageBackend, devices::VirtioDisk,
+    };
+    use propolis_types::PciPath;
     use proptest::prelude::*;
+    use std::num::NonZeroUsize;
     use uuid::Uuid;
 
     fn test_logger() -> slog::Logger {
@@ -872,6 +922,65 @@ mod test {
         assert!(queue.try_queue(req).is_ok());
         drop(queue);
         let err = rx.await.unwrap().unwrap_err();
+        assert_eq!(err.status_code, dropshot::ClientErrorStatusCode::GONE);
+    }
+
+    #[tokio::test]
+    async fn disk_hotplug_canceled_on_migration() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
+        queue.notify_request_completed(CompletedRequest::Start {
+            succeeded: true,
+        });
+
+        let disk = Disk {
+            device_spec: StorageDevice::Virtio(VirtioDisk {
+                backend_id: "test".into(),
+                pci_path: PciPath::new(0, 8, 0).unwrap(),
+            }),
+            backend_spec: StorageBackend::File(FileStorageBackend {
+                path: "/tmp/test.raw".into(),
+                readonly: false,
+                block_size: 512,
+                workers: NonZeroUsize::new(8),
+            }),
+        };
+
+        // Enqueue disk hotplug request first.
+        let (tx1, rx1) = tokio::sync::oneshot::channel();
+        let req =
+            ExternalRequest::Component(ComponentChangeRequest::PlugDisk {
+                device_id: "test_disk".into(),
+                disk: disk.clone(),
+                result_tx: tx1,
+            });
+        assert!(queue.try_queue(req).is_ok());
+
+        // Enqueue migration request second.
+        assert!(queue.try_queue(make_migrate_as_source_request()).is_ok());
+
+        // Enqueue second disk hotplug after migration and expect it to fail.
+        // TODO: report failure back to client.
+        let (tx2, _rx2) = tokio::sync::oneshot::channel();
+        let req =
+            ExternalRequest::Component(ComponentChangeRequest::PlugDisk {
+                device_id: "test_disk".into(),
+                disk: disk.clone(),
+                result_tx: tx2,
+            });
+        assert_eq!(
+            queue.try_queue(req).unwrap_err(),
+            RequestDeniedReason::InvalidForMigrationSource
+        );
+
+        // Assert migration request is dequeued first.
+        queue.pop_front().unwrap().assert_migrate_as_source();
+
+        // Drop queue because the VM is gone.
+        drop(queue);
+
+        // Assert disk hotplug request client receives an error message.
+        let err = rx1.await.unwrap().unwrap_err();
         assert_eq!(err.status_code, dropshot::ClientErrorStatusCode::GONE);
     }
 
