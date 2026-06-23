@@ -184,8 +184,8 @@ pci-path = "0.4.0"
 type = "crucible"
 # these MUST match the region configuration downstairs
 block_size = 4096
-blocks_per_extent = 131072
-extent_count = 128
+blocks_per_extent = 16384
+extent_count = 512
 targets = [
   "127.0.0.1:8810",
   "127.0.0.1:8820",
