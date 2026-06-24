@@ -1030,6 +1030,24 @@ impl WorkerCollection {
                 continue;
             };
 
+            {
+            // gross hack: we are going to reconfigure all of the queues, so any existing notify
+            // bits may become incorrect. Such as, imagine queue 0 had idled, indicated to minder
+            // 0 that it was idle, then reassigned to a fixed assignment to queue1. A wakeup for
+            // queue 0 could wake worker 0 based on notify_bits, which would not successfully
+            // discovery that work is ready on queue 0, as it would instead check queue 1.
+            //
+            // this is way more wordy than is worth PRing. anyway, clear all the notify bits
+            // because as part of updating assignments we will go wake every worker anyway. do this
+            // *before* waking *any* workers so we don't have TOCTOU issues on the notify bits and
+            // clear freshly-correct idle bits of just-reassigned queuees.
+            let ws = slot.state.lock().unwrap();
+            if let PollAssignment::Fixed(assigned_qid) = ws.assign_poll {
+                if qid_hint != Some(assigned_qid) {
+                    continue;
+                }
+            };
+            }
             if slot.wake(None, qid_hint) {
                 num_woken += 1;
             }
