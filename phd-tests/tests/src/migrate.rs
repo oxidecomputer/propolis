@@ -400,8 +400,13 @@ async fn run_smoke_test(ctx: &TestCtx, mut source: TestVm) -> Result<()> {
                 // that brought it back. if so, there's a line about resetting
                 // the controller in dmesg. so if we see that, we've actually
                 // failed to migrate reasonably.
+                //
+                // ignore the status from `grep` because it returns 1 when the
+                // regex matches no line. we don't want to `check_err()`
+                // because it's useful for debugging to see what *did* match.
                 let disk_reset = target
                     .run_shell_command("dmesg | grep 'reset controller'")
+                    .ignore_status()
                     .await
                     .expect("can grep dmesg");
 
