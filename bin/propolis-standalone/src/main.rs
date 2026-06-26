@@ -1324,6 +1324,18 @@ fn setup_instance(
                 "pci-virtio-viona" => {
                     let vnic_name =
                         dev.options.get("vnic").unwrap().as_str().unwrap();
+                    let rxqsz = match dev.options.get("rx-queue-size") {
+                        Some(toml::Value::Integer(v)) => {
+                            hw::virtio::VqSize::new(u16::try_from(*v).unwrap())
+                        }
+                        _ => hw::virtio::viona::RX_QUEUE_SIZE,
+                    };
+                    let txqsz = match dev.options.get("tx-queue-size") {
+                        Some(toml::Value::Integer(v)) => {
+                            hw::virtio::VqSize::new(u16::try_from(*v).unwrap())
+                        }
+                        _ => hw::virtio::viona::TX_QUEUE_SIZE,
+                    };
                     let bdf = bdf.unwrap();
 
                     let viona_params =
@@ -1333,11 +1345,15 @@ fn setup_instance(
                     // The viona_params here (currently just copy_data and
                     // header_pad) require `viona::ApiVersion::V3`, below
                     // Propolis' minimum of V6, so we can always set them.
-                    let viona = hw::virtio::PciVirtioViona::new(
-                        vnic_name,
-                        &hdl,
-                        viona_params,
-                    )?;
+                    let viona =
+                        hw::virtio::PciVirtioViona::new_with_queue_sizes(
+                            vnic_name,
+                            rxqsz,
+                            txqsz,
+                            hw::virtio::viona::CTL_QUEUE_SIZE,
+                            &hdl,
+                            viona_params,
+                        )?;
                     guard.inventory.register_instance(&viona, &bdf.to_string());
                     chipset_pci_attach(bdf, viona);
                 }
