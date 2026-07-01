@@ -85,6 +85,7 @@ pub struct VqAvail {
     cur_avail_idx: Wrapping<u16>,
 
     gpa_desc: GuestAddr,
+    gpa_used_event: GuestAddr,
 }
 
 impl VqAvail {
@@ -130,12 +131,16 @@ impl VqAvail {
         self.cur_avail_idx = Wrapping(0);
     }
 
-    fn map_split(&mut self, desc_addr: u64, avail_addr: u64) {
+    fn map_split(&mut self, desc_addr: u64, avail_addr: u64, sz: u16) {
         self.gpa_desc = GuestAddr(desc_addr);
-        // 16-bit flags, followed by 16-bit idx, followed by avail desc ring
+        // 16-bit flags, followed by 16-bit idx, avail desc ring
+        // (u16[sz]), followed by 16-bit used_event.
         self.gpa_flags = GuestAddr(avail_addr);
         self.gpa_idx = GuestAddr(avail_addr + 2);
         self.gpa_ring = GuestAddr(avail_addr + 4);
+        self.gpa_used_event = GuestAddr(
+            avail_addr + (2 + sz as u64) * mem::size_of::<u16>() as u64,
+        );
     }
 
     /// Returns guest flags.
@@ -145,11 +150,13 @@ impl VqAvail {
         AvailFlags::from_bits_truncate(value)
     }
 
-    /// Returns true IFF interrupts are supressed.
-    #[allow(dead_code)]
-    fn _intr_supressed(&self, mem: &MemCtx) -> bool {
-        let flags = self.flags(mem);
-        flags.contains(AvailFlags::NO_INTERRUPT)
+    /// Return used_event value.
+    fn used_event(&self, mem: &MemCtx) -> u16 {
+        if self.valid {
+            *mem.read(self.gpa_used_event).unwrap()
+        } else {
+            0
+        }
     }
 }
 
@@ -160,7 +167,13 @@ pub struct VqUsed {
     gpa_flags: GuestAddr,
     gpa_idx: GuestAddr,
     gpa_ring: GuestAddr,
+    /// Used by device to control notification when F_EVENT_IDX is
+    /// negotiated.
+    gpa_avail_event: GuestAddr,
     used_idx: Wrapping<u16>,
+    /// The value of uidx the last time we checked if the guest
+    /// required notification.
+    last_chk_uidx: Wrapping<u16>,
     interrupt: Option<Box<dyn VirtioIntr>>,
 }
 
@@ -193,25 +206,28 @@ impl VqUsed {
         mem.write(self.gpa_flags, &value);
     }
 
-    /// Disables notifications on this queue; returns whether notfications were
-    /// enabled before.
-    fn disable_notify(&self, mem: &MemCtx) -> bool {
-        let flags = self.flags(mem);
-        let current = !flags.contains(UsedFlags::NO_NOTIFY);
-        self.set_flags(flags | UsedFlags::NO_NOTIFY, mem);
-        current
+    /// Disables notifications on this queue.
+    fn disable_notify(&self, avail_idx: Option<Wrapping<u16>>, mem: &MemCtx) {
+        if let Some(idx) = avail_idx {
+            assert!(self.gpa_avail_event.0 != 0);
+            mem.write(self.gpa_avail_event, &idx);
+        } else {
+            let flags = self.flags(mem);
+            self.set_flags(flags | UsedFlags::NO_NOTIFY, mem);
+        }
     }
 
-    fn enable_notify(&self, mem: &MemCtx) {
-        let mut flags = self.flags(mem);
-        flags.remove(UsedFlags::NO_NOTIFY);
-        self.set_flags(flags, mem);
-    }
-
-    /// Returns true iff notifications are supressed for this queue.
-    fn notify_supressed(&self, mem: &MemCtx) -> bool {
-        let flags = self.flags(mem);
-        flags.contains(UsedFlags::NO_NOTIFY)
+    /// Let the driver know that we are interested in receiving
+    /// interrupts.
+    fn enable_notify(&self, avail_idx: Option<u16>, mem: &MemCtx) {
+        if let Some(idx) = avail_idx {
+            assert!(self.gpa_avail_event.0 != 0);
+            mem.write(self.gpa_avail_event, &idx);
+        } else {
+            let mut flags = self.flags(mem);
+            flags.remove(UsedFlags::NO_NOTIFY);
+            self.set_flags(flags, mem);
+        }
     }
 
     fn reset(&mut self) {
@@ -221,11 +237,15 @@ impl VqUsed {
         self.gpa_ring = GuestAddr(0);
         self.used_idx = Wrapping(0);
     }
-    fn map_split(&mut self, gpa: u64) {
-        // 16-bit flags, followed by 16-bit idx, followed by used desc ring
+
+    fn map_split(&mut self, gpa: u64, sz: u16) {
+        // 16-bit flags, followed by 16-bit idx, followed by used desc
+        // ring, followed by avail_event
         self.gpa_flags = GuestAddr(gpa);
         self.gpa_idx = GuestAddr(gpa + 2);
         self.gpa_ring = GuestAddr(gpa + 4);
+        self.gpa_avail_event =
+            GuestAddr(gpa + 4 + mem::size_of::<VqdUsed>() as u64 * sz as u64);
     }
 }
 
@@ -282,6 +302,8 @@ pub struct VirtQueue {
     avail: Mutex<VqAvail>,
     used: Mutex<VqUsed>,
     pub acc_mem: MemAccessor,
+    /// Is the F_EVENT_IDX feature in use?
+    f_event_idx: AtomicBool,
 }
 
 const fn qalign(addr: u64, align: u64) -> u64 {
@@ -306,16 +328,20 @@ impl VirtQueue {
                 gpa_ring: GuestAddr(0),
                 cur_avail_idx: Wrapping(0),
                 gpa_desc: GuestAddr(0),
+                gpa_used_event: GuestAddr(0),
             }),
             used: Mutex::new(VqUsed {
                 valid: false,
                 gpa_flags: GuestAddr(0),
                 gpa_idx: GuestAddr(0),
                 gpa_ring: GuestAddr(0),
+                gpa_avail_event: GuestAddr(0),
                 used_idx: Wrapping(0),
+                last_chk_uidx: Wrapping(0),
                 interrupt: None,
             }),
             acc_mem: MemAccessor::new_orphan(),
+            f_event_idx: AtomicBool::new(false),
         }
     }
 
@@ -355,6 +381,14 @@ impl VirtQueue {
         self.is_control.store(val, Ordering::Release);
     }
 
+    fn f_event_idx(&self) -> bool {
+        self.f_event_idx.load(Ordering::Acquire)
+    }
+
+    fn set_f_event_idx(&self, val: bool) {
+        self.f_event_idx.store(val, Ordering::Release);
+    }
+
     #[inline(always)]
     pub fn size(&self) -> u16 {
         let size = *self.size.lock().unwrap();
@@ -376,8 +410,8 @@ impl VirtQueue {
     ) {
         let mut avail = self.avail.lock().expect("avail is initialized");
         let mut used = self.used.lock().expect("used is initialized");
-        avail.map_split(desc_addr, avail_addr);
-        used.map_split(used_addr);
+        avail.map_split(desc_addr, avail_addr, self.size());
+        used.map_split(used_addr, self.size());
         avail.valid = true;
         used.valid = true;
     }
@@ -440,8 +474,12 @@ impl VirtQueue {
         let mut avail = self.avail.lock().unwrap();
         let mut used = self.used.lock().unwrap();
 
-        avail.map_split(info.mapping.desc_addr, info.mapping.avail_addr);
-        used.map_split(info.mapping.used_addr);
+        avail.map_split(
+            info.mapping.desc_addr,
+            info.mapping.avail_addr,
+            self.size(),
+        );
+        used.map_split(info.mapping.used_addr, self.size());
         avail.valid = info.mapping.valid;
         used.valid = info.mapping.valid;
         avail.cur_avail_idx = Wrapping(info.avail_idx);
@@ -538,19 +576,16 @@ impl VirtQueue {
 
     pub fn push_used(&self, chain: &mut Chain, mem: &MemCtx) {
         assert!(chain.idx.is_some());
+        let avail = self.avail.lock().unwrap();
         let mut used = self.used.lock().unwrap();
         let id = mem::replace(&mut chain.idx, None).unwrap();
         // XXX: for now, just go off of the write stats
         let len = chain.write_stat.bytes - chain.write_stat.bytes_remain;
         probes::virtio_vq_push!(|| (self as *const VirtQueue as u64, id, len));
         used.write_used(id, len, self.size(), mem);
-        // XXX: This is wrong.  Interrupt notification is on the avail ring,
-        // not used.
-        #[allow(clippy::overly_complex_bool_expr)]
-        if true || !used.notify_supressed(mem) {
-            if let Some(intr) = used.interrupt.as_ref() {
-                intr.notify();
-            }
+
+        if self.needs_intr_locked(&avail, &mut used, mem) {
+            self.send_intr_locked(&used);
         }
         chain.reset();
     }
@@ -570,28 +605,123 @@ impl VirtQueue {
     /// Disables interrupts (notifications) on the `Used` ring.
     ///
     /// Returns `true` if notifications were previously enabled.
-    pub(super) fn disable_intr(&self, mem: &MemCtx) -> bool {
-        let used = self.used.lock().unwrap();
-        used.disable_notify(mem)
+    pub(super) fn disable_intr(&self, mem: &MemCtx) {
+        let idx = if self.f_event_idx() {
+            let aidx = self.avail.lock().unwrap().cur_avail_idx - Wrapping(1);
+            probes::virtio_vq_disable_intr!(|| (
+                self as *const VirtQueue as u64,
+                self.id,
+                1,
+                aidx.0,
+            ));
+            Some(aidx)
+        } else {
+            probes::virtio_vq_disable_intr!(|| (
+                self as *const VirtQueue as u64,
+                self.id,
+                0,
+                0,
+            ));
+            None
+        };
+
+        self.used.lock().unwrap().disable_notify(idx, mem);
     }
 
     /// Enables interrupts (notifications) on the `Used` ring
     pub(super) fn enable_intr(&self, mem: &MemCtx) {
-        let used = self.used.lock().unwrap();
-        used.enable_notify(mem);
+        let aidx = if self.f_event_idx() {
+            let aidx = self.avail.lock().unwrap().cur_avail_idx;
+            probes::virtio_vq_enable_intr!(|| (
+                self as *const VirtQueue as u64,
+                self.id,
+                1,
+                aidx.0,
+            ));
+            Some(aidx.0)
+        } else {
+            probes::virtio_vq_enable_intr!(|| (
+                self as *const VirtQueue as u64,
+                self.id,
+                0,
+                0,
+            ));
+            None
+        };
+
+        self.used.lock().unwrap().enable_notify(aidx, mem);
+    }
+
+    pub fn needs_intr(&self, mem: &MemCtx) -> bool {
+        let avail = self.avail.lock().unwrap();
+        let mut used = self.used.lock().unwrap();
+        self.needs_intr_locked(&avail, &mut used, mem)
+    }
+
+    /// Returns true if the guest should receive an interrupt.
+    fn needs_intr_locked(
+        &self,
+        avail: &VqAvail,
+        used: &mut VqUsed,
+        mem: &MemCtx,
+    ) -> bool {
+        if self.f_event_idx() {
+            let used_event = Wrapping(avail.used_event(mem));
+            let uidx = used.used_idx;
+            let last_chk_uidx = used.last_chk_uidx;
+            let res =
+                (uidx - used_event - Wrapping(1)) < (uidx - last_chk_uidx);
+            used.last_chk_uidx = uidx;
+            let info = crate::hw::virtio::VqNeedsIntrProbeInfo {
+                used_event: used_event.0,
+                last_chk_uidx: last_chk_uidx.0,
+                uidx: uidx.0,
+                needed: res,
+            };
+            probes::virtio_vq_needs_intr!(|| (
+                self as *const VirtQueue as u64,
+                self.id,
+                1,
+                info,
+            ));
+            res
+        } else {
+            let flags = avail.flags(mem);
+            let res = !flags.contains(AvailFlags::NO_INTERRUPT);
+            let info = crate::hw::virtio::VqNeedsIntrProbeInfo {
+                used_event: 0,
+                last_chk_uidx: 0,
+                uidx: 0,
+                needed: res,
+            };
+            probes::virtio_vq_needs_intr!(|| (
+                self as *const VirtQueue as u64,
+                self.id,
+                0,
+                info,
+            ));
+            res
+        }
     }
 
     /// Send an interrupt for this virtual queue.
-    pub(super) fn send_intr(&self, mem: &MemCtx) {
+    pub(super) fn send_intr(&self) {
         let used = self.used.lock().unwrap();
-        // XXX: This is wrong.  Interrupt notification is on the avail ring,
-        // not used.
-        #[allow(clippy::overly_complex_bool_expr)]
-        if true || !used.notify_supressed(mem) {
-            if let Some(intr) = used.interrupt.as_ref() {
-                intr.notify();
-            }
-        }
+        self.send_intr_locked(&used);
+    }
+
+    fn send_intr_locked(&self, used: &VqUsed) {
+        let sent = if let Some(intr) = used.interrupt.as_ref() {
+            intr.notify();
+            true
+        } else {
+            false
+        };
+        probes::virtio_vq_send_intr!(|| (
+            self as *const VirtQueue as u64,
+            self.id,
+            sent as u64,
+        ));
     }
 
     pub fn export(&self) -> migrate::VirtQueueV1 {
@@ -676,11 +806,11 @@ impl VirtQueue {
             )));
         }
 
-        avail.map_split(state.descr_gpa, state.avail_gpa);
+        avail.map_split(state.descr_gpa, state.avail_gpa, self.size());
         avail.valid = state.mapping_valid;
         avail.cur_avail_idx = Wrapping(state.avail_cur_idx);
 
-        used.map_split(state.used_gpa);
+        used.map_split(state.used_gpa, self.size());
         used.valid = state.mapping_valid;
         used.used_idx = Wrapping(state.used_idx);
 
@@ -1105,6 +1235,12 @@ impl VirtQueues {
             vq.set_control(true);
         }
         Ok(())
+    }
+
+    pub fn set_f_event_idx(&self, f_event_idx: bool) {
+        for vq in &self.queues {
+            vq.set_f_event_idx(f_event_idx);
+        }
     }
 
     pub fn count(&self) -> NonZeroU16 {
