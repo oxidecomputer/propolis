@@ -7,15 +7,12 @@ use std::convert::TryFrom;
 use std::mem::replace;
 use std::sync::{Arc, Mutex};
 
-use crate::common::DeviceMetadataMap;
 use crate::common::*;
-use crate::firmware::acpi;
 use crate::hw::ibmpc;
 use crate::intr_pins::IntrPin;
 use crate::migrate::*;
 use crate::pio::{PioBus, PioFn};
 
-use acpi_tables::{aml, Aml, AmlSink};
 use rfb::proto::KeyEvent;
 
 use super::keyboard::KeyEventRep;
@@ -608,9 +605,6 @@ impl Lifecycle for PS2Ctrl {
     fn migrate(&self) -> Migrator<'_> {
         Migrator::Single(self)
     }
-    fn as_dsdt_generator(&self) -> Option<&dyn acpi::DsdtGenerator> {
-        Some(self)
-    }
 }
 impl MigrateSingle for PS2Ctrl {
     fn export(
@@ -707,36 +701,6 @@ impl MigrateSingle for PS2Ctrl {
         mouse.buf = VecDeque::from(saved_mouse.buf);
 
         Ok(())
-    }
-}
-impl acpi::DsdtGenerator for PS2Ctrl {
-    fn dsdt_scope(&self) -> acpi::DsdtScope {
-        acpi::DsdtScope::Lpc
-    }
-
-    fn to_aml_bytes(
-        &self,
-        _: acpi::AcpiVariant,
-        _: &DeviceMetadataMap,
-        sink: &mut dyn AmlSink,
-    ) {
-        aml::Device::new(
-            "PS2K".into(),
-            vec![
-                &acpi::aml::names::hid(&aml::EISAName::new(
-                    acpi::aml::devids::IBM_ENHANCED_KEYBOARD,
-                )),
-                &acpi::aml::names::cid(&aml::EISAName::new(
-                    acpi::aml::devids::MICROSOFT_RESERVED_KEYBOARD,
-                )),
-                &acpi::aml::names::crs(&aml::ResourceTemplate::new(vec![
-                    &acpi::aml::io_port(ibmpc::PORT_PS2_DATA, 0x00, 0x01),
-                    &acpi::aml::io_port(ibmpc::PORT_PS2_CMD_STATUS, 0x00, 0x01),
-                    &aml::IrqNoFlags::new(ibmpc::IRQ_PS2_PRI),
-                ])),
-            ],
-        )
-        .to_aml_bytes(sink);
     }
 }
 
