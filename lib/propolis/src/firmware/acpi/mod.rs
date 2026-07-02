@@ -32,7 +32,7 @@ pub mod rsdp;
 pub mod ssdt_edk2;
 pub mod xsdt;
 
-pub use dsdt::{Dsdt, DsdtConfig, DsdtGenerator, DsdtScope};
+pub use dsdt::{Dsdt, DsdtConfig, DsdtDeviceType, DsdtGenerator, DsdtScope};
 pub use facs::{Facs, FacsConfig};
 pub use fadt::{
     Fadt, FadtConfig, FADT_DSDT_LEN, FADT_DSDT_OFFSET, FADT_FACS_LEN,

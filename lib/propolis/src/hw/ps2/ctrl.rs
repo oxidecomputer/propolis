@@ -714,6 +714,10 @@ impl acpi::DsdtGenerator for PS2Ctrl {
         acpi::DsdtScope::Lpc
     }
 
+    fn device_type(&self) -> Option<acpi::DsdtDeviceType> {
+        Some(acpi::DsdtDeviceType::PS2Ctrl)
+    }
+
     fn to_aml_bytes(
         &self,
         _: acpi::AcpiVariant,
