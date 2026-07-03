@@ -1491,11 +1491,11 @@ pub mod formats {
         }
 
         fn add_dsdt(&mut self) -> usize {
-            let dsdt_config = acpi::DsdtConfig::new(
-                self.config.acpi_variant,
-                self.config.dsdt_generators,
-                self.config.device_metadata,
-            );
+            let dsdt_config = acpi::DsdtConfig {
+                acpi_variant: self.config.acpi_variant,
+                generators: self.config.dsdt_generators,
+                device_metadata: self.config.device_metadata,
+            };
             let dsdt = acpi::Dsdt::new(dsdt_config);
             let dsdt_offset = self.tables.len();
             dsdt.to_aml_bytes(&mut self.tables);
