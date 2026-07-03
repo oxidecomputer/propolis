@@ -13,6 +13,14 @@
 //!
 //! Structs that implement the [`DsdtGenerator`] trait can be passed to
 //! [`DsdtConfig`] and their AML code will be added to the scope they selected.
+//! [`DsdtGenerator`] implementations can also use [`DsdtDeviceType`] to
+//! indicate that the code being generated represents a specific type of
+//! device that should be placed in specific parts of the table.
+//!
+//! # Panics
+//!
+//! Table generation panics if a [`DsdtGenerator`] is defined in [`DsdtConfig`]
+//! but it is not used during table generation.
 
 // The DSDT and SSDT tables generated here are kept consistent with the
 // original EDK2 static tables.
@@ -25,6 +33,8 @@
 // lack all the information necessary to generate their portion of the tables.
 //
 // This pattern is already used for some devices when possible.
+
+use std::cell::RefCell;
 
 use super::aml::{devids, methods, names, paths, *};
 use super::{
@@ -94,11 +104,13 @@ impl<'a> Aml for DsdtGeneratorAml<'a> {
         self.config
             .generators
             .iter()
-            .filter(|&&g| {
+            .enumerate()
+            .filter(|&(_, &g)| {
                 g.dsdt_scope() == self.scope
                     && g.device_type() == self.device_type
             })
-            .for_each(|&g| {
+            .for_each(|(i, &g)| {
+                self.config.generator_used(i);
                 g.to_aml_bytes(
                     self.config.acpi_variant,
                     self.config.device_metadata,
@@ -122,13 +134,53 @@ const PM1A_CNT_SLP_TYP_S5: u8 = 0;
 /// Configuration for generating a DSDT table.
 pub struct DsdtConfig<'a> {
     /// The ACPI table variant to use.
-    pub acpi_variant: AcpiVariant,
+    acpi_variant: AcpiVariant,
 
     /// Devices that generate their own ACPI code.
-    pub generators: &'a [&'a dyn DsdtGenerator],
+    generators: &'a [&'a dyn DsdtGenerator],
+
+    /// Track which generators have been used during table generation to ensure
+    /// all of them are called at least once.
+    ///
+    /// Table generation is a sequential single-threaded process that writes
+    /// to a common sink, so generators are guaranteed to be called (and
+    /// `borrow_mut()` this `RefCell`) one at a time.
+    generators_used: RefCell<Vec<bool>>,
 
     /// Storage for device metadata.
-    pub device_metadata: &'a DeviceMetadataMap,
+    device_metadata: &'a DeviceMetadataMap,
+}
+impl<'a> DsdtConfig<'a> {
+    pub fn new(
+        acpi_variant: AcpiVariant,
+        generators: &'a [&'a dyn DsdtGenerator],
+        device_metadata: &'a DeviceMetadataMap,
+    ) -> Self {
+        Self {
+            acpi_variant,
+            generators,
+            device_metadata,
+            generators_used: RefCell::new(vec![false; generators.len()]),
+        }
+    }
+
+    fn generator_used(&self, i: usize) {
+        self.generators_used.borrow_mut()[i] = true
+    }
+}
+impl<'a> Drop for DsdtConfig<'a> {
+    fn drop(&mut self) {
+        let leftovers: Vec<_> = self
+            .generators_used
+            .borrow()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &used)| if used { None } else { Some(i) })
+            .collect();
+        if leftovers.len() > 0 {
+            panic!("DSDT generators not called: {:?}", leftovers);
+        }
+    }
 }
 
 /// The DSDT table is part of the fixed ACPI tables and is used to describe
@@ -1154,11 +1206,8 @@ mod test {
         device_metadata
             .insert(&lpc_ps2, Box::new(MockDsdtGeneratorMetadata { data: 3 }));
 
-        let config = DsdtConfig {
-            acpi_variant: AcpiVariant::V0,
-            generators: &generators,
-            device_metadata: &device_metadata,
-        };
+        let config =
+            DsdtConfig::new(AcpiVariant::V0, &generators, &device_metadata);
 
         // Filter by SystemBus.
         DsdtGeneratorAml {
@@ -1227,10 +1276,33 @@ mod test {
     }
 
     #[test]
+    #[should_panic(expected = "DSDT generators not called")]
+    fn panic_if_generator_not_called() {
+        let lpc_uart = Arc::new(MockDsdtGenerator {
+            scope: DsdtScope::Lpc,
+            device_type: Some(DsdtDeviceType::Uart),
+        });
+        let generators: Vec<&dyn DsdtGenerator> = vec![&*lpc_uart];
+        let device_metadata = DeviceMetadataMap::new();
+        let config =
+            DsdtConfig::new(AcpiVariant::V0, &generators, &device_metadata);
+
+        // Generate AML code without calling the lpc_uart generator.
+        let mut sink = Vec::new();
+        DsdtGeneratorAml {
+            scope: DsdtScope::SystemBus,
+            device_type: None,
+            config: &config,
+        }
+        .to_aml_bytes(&mut sink);
+    }
+
+    #[test]
     fn dsdt_valid_aml() {
-        let config = DsdtConfig {
-            acpi_variant: AcpiVariant::V0,
-            generators: &[
+        let device_metadata = DeviceMetadataMap::new();
+        let config = DsdtConfig::new(
+            AcpiVariant::V0,
+            &[
                 &MockDsdtGenerator {
                     scope: DsdtScope::SystemBus,
                     device_type: None,
@@ -1241,8 +1313,8 @@ mod test {
                 },
                 &MockDsdtGenerator { scope: DsdtScope::Lpc, device_type: None },
             ],
-            device_metadata: &DeviceMetadataMap::new(),
-        };
+            &device_metadata,
+        );
         let dsdt = Dsdt::new(config);
         let mut aml = Vec::new();
         dsdt.to_aml_bytes(&mut aml);
