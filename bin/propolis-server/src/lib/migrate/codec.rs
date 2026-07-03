@@ -23,7 +23,6 @@
 use super::MigrateError;
 
 use bytes::{Buf, BufMut, Bytes};
-use slog::error;
 use strum::FromRepr;
 use thiserror::Error;
 use tokio_tungstenite::tungstenite;
