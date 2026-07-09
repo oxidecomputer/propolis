@@ -8,7 +8,7 @@ use dropshot::{
     WebsocketChannelResult, WebsocketConnection,
 };
 use dropshot_api_manager_types::api_versions;
-use propolis_api_types_versions::{latest, v1, v2, v3};
+use propolis_api_types_versions::{latest, v1, v2, v3, v6};
 
 api_versions!([
     // WHEN CHANGING THE API (part 1 of 2):
@@ -71,7 +71,13 @@ pub trait PropolisServerApi {
     ) -> Result<
         HttpResponseCreated<v1::instance::InstanceEnsureResponse>,
         HttpError,
-    >;
+    > {
+        Self::instance_ensure(
+            rqctx,
+            request.map(v6::api::InstanceEnsureRequest::from),
+        )
+        .await
+    }
 
     #[endpoint {
         operation_id = "instance_ensure",

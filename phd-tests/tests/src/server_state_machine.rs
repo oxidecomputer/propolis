@@ -127,7 +127,7 @@ async fn stop_while_blocked_on_start_test(ctx: &TestCtx) {
     config.data_disk(
         DATA_DISK_NAME,
         DiskSource::Blank(1024 * 1024 * 1024),
-        DiskInterface::Nvme,
+        DiskInterface::nvme(),
         DiskBackend::Crucible {
             min_disk_size_gib: 1,
             block_size: BlockSize::Bytes512,

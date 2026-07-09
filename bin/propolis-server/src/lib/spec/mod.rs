@@ -36,7 +36,7 @@ use propolis_api_types::instance_spec::{
 use propolis_api_types::instance_spec::{
     Component, InstanceSpec, SmbiosType1Input,
 };
-use propolis_api_types_versions::{v1, v2};
+use propolis_api_types_versions::{v1, v2, v3};
 use thiserror::Error;
 
 #[cfg(feature = "failure-injection")]
@@ -62,7 +62,8 @@ impl From<Spec> for InstanceSpec {
         let v1_spec: v1::instance_spec::InstanceSpec = val.into();
         let v2_spec =
             v2::instance_spec::InstanceSpec { smbios, ..v1_spec.into() };
-        let mut spec: InstanceSpec = v2_spec.into();
+        let v3_spec: v3::instance_spec::InstanceSpec = v2_spec.into();
+        let mut spec: InstanceSpec = v3_spec.into();
 
         if let Some(vsock) = vsock {
             spec.components
@@ -87,7 +88,8 @@ impl TryFrom<InstanceSpec> for Spec {
             }
         }
 
-        let v2_spec: v2::instance_spec::InstanceSpec = value.into();
+        let v3_spec: v3::instance_spec::InstanceSpec = value.into();
+        let v2_spec: v2::instance_spec::InstanceSpec = v3_spec.into();
         let smbios = v2_spec.smbios.clone();
         let v1_spec: v1::instance_spec::InstanceSpec = v2_spec.into();
 
@@ -238,7 +240,7 @@ impl StorageDevice {
     }
 }
 
-impl From<StorageDevice> for v1::instance_spec::Component {
+impl TryFrom<StorageDevice> for v1::instance_spec::Component {
     fn from(value: StorageDevice) -> Self {
         match value {
             StorageDevice::Virtio(d) => Self::VirtioDisk(d),
@@ -247,15 +249,15 @@ impl From<StorageDevice> for v1::instance_spec::Component {
     }
 }
 
-impl TryFrom<v1::instance_spec::Component> for StorageDevice {
+impl TryFrom<Component> for StorageDevice {
     type Error = ComponentTypeMismatch;
 
     fn try_from(
-        value: v1::instance_spec::Component,
+        value: Component,
     ) -> Result<Self, Self::Error> {
         match value {
-            v1::instance_spec::Component::VirtioDisk(d) => Ok(Self::Virtio(d)),
-            v1::instance_spec::Component::NvmeDisk(d) => Ok(Self::Nvme(d)),
+            Component::VirtioDisk(d) => Ok(Self::Virtio(d)),
+            Component::NvmeDisk(d) => Ok(Self::Nvme(d)),
             _ => Err(ComponentTypeMismatch),
         }
     }
@@ -287,7 +289,7 @@ impl StorageBackend {
     }
 }
 
-impl From<StorageBackend> for v1::instance_spec::Component {
+impl From<StorageBackend> for Component {
     fn from(value: StorageBackend) -> Self {
         match value {
             StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),
@@ -297,20 +299,20 @@ impl From<StorageBackend> for v1::instance_spec::Component {
     }
 }
 
-impl TryFrom<v1::instance_spec::Component> for StorageBackend {
+impl TryFrom<Component> for StorageBackend {
     type Error = ComponentTypeMismatch;
 
     fn try_from(
-        value: v1::instance_spec::Component,
+        value: Component,
     ) -> Result<Self, Self::Error> {
         match value {
-            v1::instance_spec::Component::CrucibleStorageBackend(be) => {
+            Component::CrucibleStorageBackend(be) => {
                 Ok(Self::Crucible(be))
             }
-            v1::instance_spec::Component::FileStorageBackend(be) => {
+            Component::FileStorageBackend(be) => {
                 Ok(Self::File(be))
             }
-            v1::instance_spec::Component::BlobStorageBackend(be) => {
+            Component::BlobStorageBackend(be) => {
                 Ok(Self::Blob(be))
             }
             _ => Err(ComponentTypeMismatch),
