@@ -80,6 +80,10 @@ pub trait DsdtGenerator {
     /// positions in the DSDT.
     ///
     /// If `None`, the generated code is not guaranteed have a stable position.
+    ///
+    /// If there is more than one generator for a given device type, their
+    /// generated code will be positioned in the same order as their generators
+    /// are defined in DsdtConfig.
     fn device_type(&self) -> Option<DsdtDeviceType> {
         None
     }
