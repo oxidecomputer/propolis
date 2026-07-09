@@ -147,6 +147,13 @@ struct CtrlState {
     /// Controller Capabilities
     cap: Capabilities,
 
+    /// Version
+    ///
+    /// A bare u32 as we expect to support specific NVMe major/minor versions
+    /// if/when we move beyond simply 1.0. The field is constant after the
+    /// controller is instantiated and returned to the guest in one read.
+    vs: u32,
+
     /// Controller Configuration
     cc: Configuration,
 
@@ -811,6 +818,7 @@ impl PciNvme {
     pub fn create(
         serial_number: &[u8; 20],
         mdts: Option<u8>,
+        has_write_cache: bool,
         log: slog::Logger,
     ) -> Arc<Self> {
         let builder = pci::Builder::new(pci::Ident {
@@ -831,6 +839,24 @@ impl PciNvme {
         let cqes = size_of::<CompletionQueueEntry>().trailing_zeros() as u8;
         let sqes = size_of::<SubmissionQueueEntry>().trailing_zeros() as u8;
 
+        // The controller's supported NVMe version is not (yet) configurable,
+        // but making it available to ourselves is useful to ensure we handle
+        // new versions correctly.
+        let vs = NVME_VER_1_0;
+
+        // In NVMe 1.0e, VWC defines only bit 0, the presence of a volatile
+        // write cache.
+        let vwc = if has_write_cache {
+            // XXX: Later NVMe revisions define upper bits and only allow bits
+            // 1-2 to be zero in controllers implementing older versions of
+            // NVMe. This will need more precise handling when the supported
+            // NVMe version is configurable.
+            assert!(vs == NVME_VER_1_0);
+            1
+        } else {
+            0
+        };
+
         // Initialize the Identify structure returned when the host issues
         // an Identify Controller command.
         let ctrl_ident = bits::IdentifyController {
@@ -839,8 +865,8 @@ impl PciNvme {
             sn: *serial_number,
             ieee: OXIDE_OUI,
             mdts: mdts.unwrap_or(0),
-            // We use standard Completion/Submission Queue Entry structures with no extra
-            // data, so required (minimum) == maximum
+            // We use standard Completion/Submission Queue Entry structures with
+            // no extra data, so required (minimum) == maximum
             sqes: NvmQueueEntrySize(0).with_maximum(sqes).with_required(sqes),
             cqes: NvmQueueEntrySize(0).with_maximum(cqes).with_required(cqes),
             // Supporting multiple namespaces complicates I/O dispatching,
@@ -848,8 +874,7 @@ impl PciNvme {
             nn: 1,
             // bit 2 indicates support for the Dataset Management command
             oncs: (1 << 2),
-            // bit 0 indicates volatile write cache is present
-            vwc: 1,
+            vwc,
             // bit 8 indicates Doorbell Buffer support
             oacs: (1 << 8),
             ..Default::default()
@@ -898,7 +923,7 @@ impl PciNvme {
 
         let state = NvmeCtrl {
             device_id: DeviceId::new(),
-            ctrl: CtrlState { cap, cc, csts, ..Default::default() },
+            ctrl: CtrlState { cap, vs, cc, csts, ..Default::default() },
             doorbell_buf: None,
             msix_hdl: None,
             cqs: Default::default(),
@@ -1001,7 +1026,8 @@ impl PciNvme {
                 ro.write_u64(state.ctrl.cap.0);
             }
             CtrlrReg::Version => {
-                ro.write_u32(NVME_VER_1_0);
+                let state = self.state.lock().unwrap();
+                ro.write_u32(state.ctrl.vs);
             }
 
             CtrlrReg::IntrMaskSet | CtrlrReg::IntrMaskClear => {
