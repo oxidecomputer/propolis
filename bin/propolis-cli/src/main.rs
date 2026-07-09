@@ -263,6 +263,7 @@ impl DiskRequest {
                 backend_id: backend_id.clone(),
                 pci_path,
                 serial_number: nvme_serial_from_str(&self.name, b' '),
+                has_write_cache: true,
             }),
             _ => anyhow::bail!(
                 "invalid device type in disk request: {:?}",

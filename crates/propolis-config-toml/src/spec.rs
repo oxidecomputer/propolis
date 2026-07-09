@@ -339,6 +339,8 @@ fn parse_storage_device_from_config(
                 backend_id,
                 pci_path,
                 serial_number: nvme_serial_from_str(name, b' '),
+                // XXX(ixi): this should actually be read from tomls and defaulted normally
+                has_write_cache: true,
             }),
         },
         id_to_return,
