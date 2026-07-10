@@ -27,3 +27,9 @@ uuid = { workspace = true, features = ["serde", "v4"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
+
+[build-dependencies]
+prettyplease = "0.2.22"
+progenitor.workspace = true
+serde_json = "1.0"
+syn = "2.0"
