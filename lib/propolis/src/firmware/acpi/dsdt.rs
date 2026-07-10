@@ -13,6 +13,14 @@
 //!
 //! Structs that implement the [`DsdtGenerator`] trait can be passed to
 //! [`DsdtConfig`] and their AML code will be added to the scope they selected.
+//! [`DsdtGenerator`] implementations can also use [`DsdtDeviceType`] to
+//! indicate that the code being generated represents a specific type of
+//! device that should be placed in specific parts of the table.
+//!
+//! # Panics
+//!
+//! Table generation panics if a [`DsdtGenerator`] is defined in [`DsdtConfig`]
+//! but it is not used during table generation.
 
 // The DSDT and SSDT tables generated here are kept consistent with the
 // original EDK2 static tables.
@@ -25,6 +33,8 @@
 // lack all the information necessary to generate their portion of the tables.
 //
 // This pattern is already used for some devices when possible.
+
+use std::cell::RefCell;
 
 use super::aml::{devids, methods, names, paths, *};
 use super::{
@@ -50,12 +60,33 @@ pub enum DsdtScope {
     Lpc,       // \_SB.PCI0.LPC scope.
 }
 
+/// The types of devices represented in specific parts of the DSDT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DsdtDeviceType {
+    PS2Ctrl,
+    Uart,
+}
+
 /// An implementer of DsdtGenerator is able to generate AML code to be loaded
 /// into the DSDT ACPI table.
 pub trait DsdtGenerator {
     /// Returns the scope of the DSDT table in which the generated AML code
     /// should be placed.
     fn dsdt_scope(&self) -> DsdtScope;
+
+    /// Returns the device type this generator represents.
+    ///
+    /// This value can be used to place the generated code into specific
+    /// positions in the DSDT.
+    ///
+    /// If `None`, the generated code is not guaranteed have a stable position.
+    ///
+    /// If there is more than one generator for a given device type, their
+    /// generated code will be positioned in the same order as their generators
+    /// are defined in DsdtConfig.
+    fn device_type(&self) -> Option<DsdtDeviceType> {
+        None
+    }
 
     fn to_aml_bytes(
         &self,
@@ -68,19 +99,26 @@ pub trait DsdtGenerator {
 /// Wraps a list of DsdtGenerators to help generate their AML code in places
 /// where a `&dyn Aml` is needed.
 struct DsdtGeneratorAml<'a> {
+    dsdt: &'a Dsdt<'a>,
     scope: DsdtScope,
-    config: &'a DsdtConfig<'a>,
+    device_type: Option<DsdtDeviceType>,
 }
 impl<'a> Aml for DsdtGeneratorAml<'a> {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
-        self.config
+        self.dsdt
+            .config
             .generators
             .iter()
-            .filter(|&&g| g.dsdt_scope() == self.scope)
-            .for_each(|&g| {
+            .enumerate()
+            .filter(|&(_, &g)| {
+                g.dsdt_scope() == self.scope
+                    && g.device_type() == self.device_type
+            })
+            .for_each(|(i, &g)| {
+                self.dsdt.generator_used(i);
                 g.to_aml_bytes(
-                    self.config.acpi_variant,
-                    self.config.device_metadata,
+                    self.dsdt.config.acpi_variant,
+                    self.dsdt.config.device_metadata,
                     sink,
                 )
             });
@@ -116,11 +154,40 @@ pub struct DsdtConfig<'a> {
 /// ACPI rev. 6.6 section 5.2.11.1 "Differentiated System Description Table (DSDT)"
 pub struct Dsdt<'a> {
     config: DsdtConfig<'a>,
+
+    /// Track which generators have been used during table generation to ensure
+    /// all of them are called at least once.
+    ///
+    /// Table generation is a sequential single-threaded process that writes
+    /// to a common sink, so generators are guaranteed to be called (and
+    /// `borrow_mut()` this `RefCell`) one at a time.
+    generators_used: RefCell<Vec<bool>>,
 }
 
 impl<'a> Dsdt<'a> {
     pub fn new(config: DsdtConfig<'a>) -> Self {
-        Self { config }
+        let generators_used =
+            RefCell::new(vec![false; config.generators.len()]);
+        Self { config, generators_used }
+    }
+
+    fn generator_used(&self, i: usize) {
+        self.generators_used.borrow_mut()[i] = true
+    }
+}
+
+impl<'a> Drop for Dsdt<'a> {
+    fn drop(&mut self) {
+        let leftovers: Vec<_> = self
+            .generators_used
+            .borrow()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &used)| if used { None } else { Some(i) })
+            .collect();
+        if leftovers.len() > 0 {
+            panic!("DSDT generators not called: {:?}", leftovers);
+        }
     }
 }
 
@@ -152,10 +219,11 @@ impl<'a> Aml for Dsdt<'a> {
         aml::Scope::new(
             "_SB_".into(),
             vec![
-                &PciRootBridge { config: &self.config },
+                &PciRootBridge { dsdt: &self },
                 &DsdtGeneratorAml {
+                    dsdt: &self,
                     scope: DsdtScope::SystemBus,
-                    config: &self.config,
+                    device_type: None,
                 },
             ],
         )
@@ -170,7 +238,7 @@ impl<'a> Aml for Dsdt<'a> {
 
 /// PCI root bridge namespace (\_SB.PCI0).
 struct PciRootBridge<'a> {
-    config: &'a DsdtConfig<'a>,
+    dsdt: &'a Dsdt<'a>,
 }
 
 impl<'a> Aml for PciRootBridge<'a> {
@@ -184,10 +252,11 @@ impl<'a> Aml for PciRootBridge<'a> {
                 &names::uid(&aml::ZERO),
                 &PciRootBridgeCrs {},
                 &PciRootBridgePrt {},
-                &PciRootBridgeLpc { config: self.config },
+                &PciRootBridgeLpc { dsdt: self.dsdt },
                 &DsdtGeneratorAml {
+                    dsdt: self.dsdt,
                     scope: DsdtScope::PciRoot,
-                    config: self.config,
+                    device_type: None,
                 },
             ],
         )
@@ -538,7 +607,7 @@ const NMISC_PORT: u16 = 0x61;
 ///
 /// <https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiTables/Dsdt.asl#L299-L303>
 struct PciRootBridgeLpc<'a> {
-    config: &'a DsdtConfig<'a>,
+    dsdt: &'a Dsdt<'a>,
 }
 
 // This table is currently kept the same as the original EDK2 static table, but
@@ -663,7 +732,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                 // table. Its IO ports are not actually handled anywhere.
                 // It can be removed in the future .
                 &AcpiVariantFilter::new(
-                    self.config.acpi_variant,
+                    self.dsdt.config.acpi_variant,
                     vec![AcpiVariant::V0],
                     &aml::Device::new(
                         "DMAC".into(),
@@ -730,7 +799,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                 // table. Its IO ports are not actually handled anywhere.
                 // It can be removed in the future .
                 &AcpiVariantFilter::new(
-                    self.config.acpi_variant,
+                    self.dsdt.config.acpi_variant,
                     vec![AcpiVariant::V0],
                     &aml::Device::new(
                         "FPU_".into(),
@@ -804,8 +873,14 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                     ],
                 ),
                 &DsdtGeneratorAml {
+                    dsdt: self.dsdt,
                     scope: DsdtScope::Lpc,
-                    config: self.config,
+                    device_type: Some(DsdtDeviceType::PS2Ctrl),
+                },
+                &DsdtGeneratorAml {
+                    dsdt: self.dsdt,
+                    scope: DsdtScope::Lpc,
+                    device_type: Some(DsdtDeviceType::Uart),
                 },
                 // QEMU panic device.
                 //
@@ -859,6 +934,11 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                         ),
                     ],
                 ),
+                &DsdtGeneratorAml {
+                    dsdt: self.dsdt,
+                    scope: DsdtScope::Lpc,
+                    device_type: None,
+                },
             ],
         )
         .to_aml_bytes(sink);
@@ -1043,10 +1123,15 @@ mod test {
 
     struct MockDsdtGenerator {
         scope: DsdtScope,
+        device_type: Option<DsdtDeviceType>,
     }
     impl DsdtGenerator for MockDsdtGenerator {
         fn dsdt_scope(&self) -> DsdtScope {
             self.scope
+        }
+
+        fn device_type(&self) -> Option<DsdtDeviceType> {
+            self.device_type
         }
 
         fn to_aml_bytes(
@@ -1089,11 +1174,20 @@ mod test {
 
     #[test]
     fn dsdt_generator_aml() {
-        let sb = Arc::new(MockDsdtGenerator { scope: DsdtScope::SystemBus });
-        let pci = Arc::new(MockDsdtGenerator { scope: DsdtScope::PciRoot });
-        let lpc = Arc::new(MockDsdtGenerator { scope: DsdtScope::Lpc });
+        let sb = Arc::new(MockDsdtGenerator {
+            scope: DsdtScope::SystemBus,
+            device_type: None,
+        });
+        let pci = Arc::new(MockDsdtGenerator {
+            scope: DsdtScope::PciRoot,
+            device_type: None,
+        });
+        let lpc_ps2 = Arc::new(MockDsdtGenerator {
+            scope: DsdtScope::Lpc,
+            device_type: Some(DsdtDeviceType::PS2Ctrl),
+        });
 
-        let generators: Vec<&dyn DsdtGenerator> = vec![&*sb, &*pci, &*lpc];
+        let generators: Vec<&dyn DsdtGenerator> = vec![&*sb, &*pci, &*lpc_ps2];
 
         let mut got = Vec::new();
         let mut expected = Vec::new();
@@ -1104,17 +1198,21 @@ mod test {
         device_metadata
             .insert(&pci, Box::new(MockDsdtGeneratorMetadata { data: 2 }));
         device_metadata
-            .insert(&lpc, Box::new(MockDsdtGeneratorMetadata { data: 3 }));
+            .insert(&lpc_ps2, Box::new(MockDsdtGeneratorMetadata { data: 3 }));
 
-        let config = DsdtConfig {
+        let dsdt = Dsdt::new(DsdtConfig {
             acpi_variant: AcpiVariant::V0,
             generators: &generators,
             device_metadata: &device_metadata,
-        };
+        });
 
         // Filter by SystemBus.
-        DsdtGeneratorAml { scope: DsdtScope::SystemBus, config: &config }
-            .to_aml_bytes(&mut got);
+        DsdtGeneratorAml {
+            dsdt: &dsdt,
+            scope: DsdtScope::SystemBus,
+            device_type: None,
+        }
+        .to_aml_bytes(&mut got);
 
         aml::ResourceTemplate::new(vec![
             &aml::Name::new("SCOP".into(), &"SystemBus"),
@@ -1129,8 +1227,12 @@ mod test {
         got.clear();
         expected.clear();
 
-        DsdtGeneratorAml { scope: DsdtScope::PciRoot, config: &config }
-            .to_aml_bytes(&mut got);
+        DsdtGeneratorAml {
+            dsdt: &dsdt,
+            scope: DsdtScope::PciRoot,
+            device_type: None,
+        }
+        .to_aml_bytes(&mut got);
 
         aml::ResourceTemplate::new(vec![
             &aml::Name::new("SCOP".into(), &"PciRoot"),
@@ -1141,12 +1243,24 @@ mod test {
 
         assert_eq!(expected, got);
 
-        // Filter by Lpc.
+        // Filter by Lpc scope and device type.
         got.clear();
         expected.clear();
 
-        DsdtGeneratorAml { scope: DsdtScope::Lpc, config: &config }
-            .to_aml_bytes(&mut got);
+        DsdtGeneratorAml {
+            dsdt: &dsdt,
+            scope: DsdtScope::Lpc,
+            device_type: Some(DsdtDeviceType::PS2Ctrl),
+        }
+        .to_aml_bytes(&mut got);
+
+        // Filter on device type without generators.
+        DsdtGeneratorAml {
+            dsdt: &dsdt,
+            scope: DsdtScope::Lpc,
+            device_type: Some(DsdtDeviceType::Uart),
+        }
+        .to_aml_bytes(&mut got);
 
         aml::ResourceTemplate::new(vec![
             &aml::Name::new("SCOP".into(), &"Lpc"),
@@ -1159,17 +1273,48 @@ mod test {
     }
 
     #[test]
+    #[should_panic(expected = "DSDT generators not called")]
+    fn panic_if_generator_not_called() {
+        let lpc_uart = Arc::new(MockDsdtGenerator {
+            scope: DsdtScope::Lpc,
+            device_type: Some(DsdtDeviceType::Uart),
+        });
+        let generators: Vec<&dyn DsdtGenerator> = vec![&*lpc_uart];
+        let device_metadata = DeviceMetadataMap::new();
+        let dsdt = Dsdt::new(DsdtConfig {
+            acpi_variant: AcpiVariant::V0,
+            generators: &generators,
+            device_metadata: &device_metadata,
+        });
+
+        // Generate AML code without calling the lpc_uart generator.
+        let mut sink = Vec::new();
+        DsdtGeneratorAml {
+            dsdt: &dsdt,
+            scope: DsdtScope::SystemBus,
+            device_type: None,
+        }
+        .to_aml_bytes(&mut sink);
+    }
+
+    #[test]
     fn dsdt_valid_aml() {
-        let config = DsdtConfig {
+        let device_metadata = DeviceMetadataMap::new();
+        let dsdt = Dsdt::new(DsdtConfig {
             acpi_variant: AcpiVariant::V0,
             generators: &[
-                &MockDsdtGenerator { scope: DsdtScope::SystemBus },
-                &MockDsdtGenerator { scope: DsdtScope::PciRoot },
-                &MockDsdtGenerator { scope: DsdtScope::Lpc },
+                &MockDsdtGenerator {
+                    scope: DsdtScope::SystemBus,
+                    device_type: None,
+                },
+                &MockDsdtGenerator {
+                    scope: DsdtScope::PciRoot,
+                    device_type: None,
+                },
+                &MockDsdtGenerator { scope: DsdtScope::Lpc, device_type: None },
             ],
-            device_metadata: &DeviceMetadataMap::new(),
-        };
-        let dsdt = Dsdt::new(config);
+            device_metadata: &device_metadata,
+        });
         let mut aml = Vec::new();
         dsdt.to_aml_bytes(&mut aml);
 

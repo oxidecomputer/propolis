@@ -208,6 +208,10 @@ impl acpi::DsdtGenerator for LpcUart {
         acpi::DsdtScope::Lpc
     }
 
+    fn device_type(&self) -> Option<acpi::DsdtDeviceType> {
+        Some(acpi::DsdtDeviceType::Uart)
+    }
+
     // This AML code is inherited from the original EDK2 static tables.
     fn to_aml_bytes(
         &self,
