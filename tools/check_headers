@@ -8,7 +8,15 @@ set -e
 # if your changes to Propolis track changes in the OS as well.
 #
 # As a default this ref should probably not change.
-HEADER_CHECK_REF="stlouis"
+#
+# This is temporarily pinned to the viona MAC filter table change (stlouis#986,
+# https://code.oxide.computer/c/illumos-gate/+/775), which adds the
+# VNA_IOC_SET_MAC_FILTERS ioctl and struct vioc_mac_filters checked by the
+# viona-api header-check.
+#
+# Restore to "stlouis" once that change integrates. Note: this ref names a
+# specific patchset and must be bumped if a new patchset is uploaded.
+HEADER_CHECK_REF="refs/changes/75/775/3"
 
 # Directories with `ctest2`-based `header-check` crates. This list should track
 # the similar exclusions in `Cargo.toml`, and are described more there.

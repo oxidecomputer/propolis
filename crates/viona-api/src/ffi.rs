@@ -39,6 +39,7 @@ pub const VNA_IOC_GET_MTU: i32 = vna_ioc(0x27);
 pub const VNA_IOC_SET_MTU: i32 = vna_ioc(0x28);
 pub const VNA_IOC_SET_NOTIFY_MMIO: i32 = vna_ioc(0x29);
 pub const VNA_IOC_INTR_POLL_MQ: i32 = vna_ioc(0x2a);
+pub const VNA_IOC_SET_MAC_FILTERS: i32 = vna_ioc(0x2b);
 
 /// VirtIO 1.2 queue pair support.
 pub const VNA_IOC_GET_PAIRS: i32 = vna_ioc(0x30);
@@ -135,6 +136,49 @@ pub const VIONA_PROMISC_ALL: i32 = 2;
 #[cfg(feature = "falcon")]
 pub const VIONA_PROMISC_ALL_VLAN: i32 = 3;
 
+/// Number of bytes in a filterable MAC address.
+pub const VIONA_MAC_FILTER_ADDRL: usize = 6;
+
+/// Maximum number of unicast MAC address filters accepted by viona.
+///
+/// No cross-device convention exists for a separate unicast table. QEMU
+/// shares one 64-entry table across both address classes (see
+/// [`VIONA_MAX_MCAST_FILTERS`]). Half the multicast table is generous for
+/// entries that are rejected unless they match the primary MAC.
+pub const VIONA_MAX_UNICAST_FILTERS: usize = 32;
+
+/// Maximum number of multicast MAC address filters accepted by viona.
+///
+/// Matches the 64-entry table convention of other virtio-net devices, per
+/// QEMU's [`MAC_TABLE_ENTRIES`].
+///
+/// [`MAC_TABLE_ENTRIES`]: https://github.com/qemu/qemu/blob/f893c46c3931b3684d235d221bf8b7844ddbf1d7/include/hw/virtio/virtio-net.h
+pub const VIONA_MAX_MCAST_FILTERS: usize = 64;
+
+/// Complete unicast and multicast MAC filter tables, replacing any tables
+/// previously installed on the link.  Counts of zero clear all filters.
+///
+/// Viona installs only multicast filters on the underlying MAC client.  The
+/// unicast table exists for shape parity with `VIRTIO_NET_CTRL_MAC_TABLE_SET`,
+/// and entries other than the primary MAC of the link are rejected.
+#[repr(C)]
+pub struct vioc_mac_filters {
+    pub vmf_nucast: u32,
+    pub vmf_nmcast: u32,
+    pub vmf_ucast: [[u8; VIONA_MAC_FILTER_ADDRL]; VIONA_MAX_UNICAST_FILTERS],
+    pub vmf_mcast: [[u8; VIONA_MAC_FILTER_ADDRL]; VIONA_MAX_MCAST_FILTERS],
+}
+impl Default for vioc_mac_filters {
+    fn default() -> Self {
+        Self {
+            vmf_nucast: 0,
+            vmf_nmcast: 0,
+            vmf_ucast: [[0; VIONA_MAC_FILTER_ADDRL]; VIONA_MAX_UNICAST_FILTERS],
+            vmf_mcast: [[0; VIONA_MAC_FILTER_ADDRL]; VIONA_MAX_MCAST_FILTERS],
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Default)]
 pub struct vioc_get_params {
@@ -154,7 +198,7 @@ pub struct vioc_set_params {
 /// This is the viona interface version which viona_api expects to operate
 /// against.  All constants and structs defined by the crate are done so in
 /// terms of that specific version.
-pub const VIONA_CURRENT_INTERFACE_VERSION: u32 = 6;
+pub const VIONA_CURRENT_INTERFACE_VERSION: u32 = 7;
 
 /// Maximum size of packed nvlists used in viona parameter ioctls
 pub const VIONA_MAX_PARAM_NVLIST_SZ: usize = 4096;

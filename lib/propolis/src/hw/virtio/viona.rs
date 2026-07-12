@@ -205,6 +205,17 @@ pub mod control {
             return Err(());
         }
 
+        // Bound the driver's entry count before it reaches an allocation.
+        // The limit sits well above viona's filter limits so that oversized
+        // tables still arrive intact and trigger the fallback to multicast
+        // promiscuity. Shipping guest drivers (Linux virtio_net, FreeBSD
+        // vtnet, Windows NetKVM) request all-multicast on their own long
+        // before this size.
+        const MAC_TABLE_MAX_ENTRIES: u32 = 1024;
+        if entry_count > MAC_TABLE_MAX_ENTRIES {
+            return Err(());
+        }
+
         chain
             .read_many_owned(mem, entry_count as usize)
             .map_err(|_| ())
@@ -323,6 +334,19 @@ bitflags! {
     }
 }
 
+/// The kernel-side Rx configuration required to satisfy a guest's filter
+/// state: a promiscuity level, optionally paired with an explicit multicast
+/// filter table.
+///
+/// `install_filters` is only set when `promisc` is [`PromiscLevel::None`].
+/// At any promiscuity level above `None`, the kernel already delivers all
+/// multicast traffic, so no table is installed.
+#[derive(Copy, Clone, Eq, PartialEq)]
+struct RxConfig {
+    promisc: PromiscLevel,
+    install_filters: bool,
+}
+
 struct Inner {
     poller: Option<PollerHdl>,
     iop_state: Option<NonZeroU16>,
@@ -333,6 +357,9 @@ struct Inner {
     filter: FilterState,
     unicast_mac_filters: Box<[MacAddr]>,
     multicast_mac_filters: Box<[MacAddr]>,
+    /// Whether a (possibly partial) multicast filter table is installed on
+    /// the in-kernel MAC client via `VNA_IOC_SET_MAC_FILTERS`.
+    mac_filters_installed: bool,
 }
 impl Inner {
     fn new(max_queues: usize, promisc: PromiscLevel) -> Self {
@@ -349,6 +376,7 @@ impl Inner {
             filter: FilterState::empty(),
             unicast_mac_filters: Box::new([]),
             multicast_mac_filters: Box::new([]),
+            mac_filters_installed: false,
         }
     }
 
@@ -483,8 +511,15 @@ impl From<[u8; ETHERADDRL]> for MacAddr {
 }
 
 impl MacAddr {
+    /// Returns true if the group bit (IEEE 802 I/G, the least significant
+    /// bit of the first octet) is clear.
     pub const fn is_unicast(&self) -> bool {
         (self.0[0] & 0b1) == 0
+    }
+
+    /// Returns true for the Ethernet broadcast address.
+    pub const fn is_broadcast(&self) -> bool {
+        matches!(self.0, [0xff, 0xff, 0xff, 0xff, 0xff, 0xff])
     }
 }
 
@@ -498,6 +533,15 @@ pub struct PciVirtioViona {
     dev_features: u64,
     mac_addr: MacAddr,
     mtu: Option<u16>,
+    /// Whether the viona device supports `VNA_IOC_SET_MAC_FILTERS`
+    /// ([`viona_api::ApiVersion::V7`]).
+    kernel_mac_filters: bool,
+    /// Promiscuity pinned at construction (ALL_VLAN, or ALL where the host
+    /// lacks that support). Falcon links carry traffic for the entire
+    /// emulated fabric, which classified delivery would drop, so no guest
+    /// or migration state may downgrade below this level.
+    #[cfg(feature = "falcon")]
+    pinned_promisc: PromiscLevel,
     hdl: VionaHdl,
     inner: Mutex<Inner>,
 }
@@ -538,13 +582,18 @@ impl PciVirtioViona {
         let promisc_level = match hdl.set_promisc(PromiscLevel::AllVlan) {
             Ok(()) => PromiscLevel::AllVlan,
             Err(e) => {
-                // Until/unless this support is integrated into stlouis/illumos,
-                // this is an expected failure.   This is needed to use vlans,
-                // but shouldn't affect any other use case.
+                // ALL_VLAN support only exists on the viona_vlans branch of
+                // illumos-gate, so this failure is expected elsewhere.
+                //
+                // We fall back to full promiscuity rather than all-multicast:
+                // falcon links carry traffic for the entire emulated fabric,
+                // and classified or multicast-only reception would drop
+                // transit frames.
                 eprintln!(
-                    "failed to enable promisc mode on {vnic_name}: {e:?}"
+                    "failed to enable ALL_VLAN promisc on {vnic_name}: {e:?}"
                 );
-                PromiscLevel::AllMulti
+                hdl.set_promisc(PromiscLevel::All)?;
+                PromiscLevel::All
             }
         };
 
@@ -552,9 +601,11 @@ impl PciVirtioViona {
             vp.set(&hdl)?;
         }
 
+        let api_version = hdl.api_version()?;
+
         // Do in-kernel configuration of device MTU
         if let Some(mtu) = info.mtu {
-            if hdl.api_version().unwrap() >= viona_api::ApiVersion::V4 {
+            if api_version >= viona_api::ApiVersion::V4 {
                 hdl.set_mtu(mtu)?;
             } else if mtu != 1500 {
                 // Squawk about MTUs not matching the default of 1500
@@ -599,6 +650,9 @@ impl PciVirtioViona {
             dev_features,
             mac_addr: info.mac_addr.into(),
             mtu: info.mtu,
+            kernel_mac_filters: api_version >= viona_api::ApiVersion::V7,
+            #[cfg(feature = "falcon")]
+            pinned_promisc: promisc_level,
             hdl,
             inner: Mutex::new(Inner::new(nqueues, promisc_level)),
         };
@@ -952,10 +1006,17 @@ impl PciVirtioViona {
         let old_filter = state.filter;
         state.filter.set(filter, active);
 
-        match self.set_promisc(self.needed_promisc(&state), &mut state) {
+        match self.apply_rx_config(&mut state) {
             Ok(()) => Ok(()),
             Err(()) => {
                 state.filter = old_filter;
+                // The failure may have left a partial filter table on the
+                // MAC client, which would silently drop traffic at
+                // PromiscLevel::None. Reconcile the kernel with the restored
+                // state, and force a reset if that fails as well.
+                if self.apply_rx_config(&mut state).is_err() {
+                    self.virtio_state.set_needs_reset(self);
+                }
                 Err(())
             }
         }
@@ -984,11 +1045,16 @@ impl PciVirtioViona {
         std::mem::swap(&mut unicast, &mut state.unicast_mac_filters);
         std::mem::swap(&mut multicast, &mut state.multicast_mac_filters);
 
-        match self.set_promisc(self.needed_promisc(&state), &mut state) {
+        match self.apply_rx_config(&mut state) {
             Ok(()) => Ok(()),
             Err(()) => {
                 state.unicast_mac_filters = unicast;
                 state.multicast_mac_filters = multicast;
+                // Reconcile the kernel with the restored tables, as in
+                // set_filter_state above.
+                if self.apply_rx_config(&mut state).is_err() {
+                    self.virtio_state.set_needs_reset(self);
+                }
                 Err(())
             }
         }
@@ -1019,29 +1085,55 @@ impl PciVirtioViona {
         }
     }
 
-    /// Compute whether the driver requires us to move into promiscuous mode
-    /// based on its MAC filters and explicit filter mode.
-    fn needed_promisc(&self, state: &Inner) -> PromiscLevel {
-        // The VLAN tag workaround, if requested, always wins and cannot
-        // be downgraded.
+    /// The promiscuity level pinned at construction, if any.
+    ///
+    /// See the `pinned_promisc` field. This accessor exists so that callers
+    /// need no `cfg` gates of their own.
+    fn pinned_promisc(&self) -> Option<PromiscLevel> {
         #[cfg(feature = "falcon")]
-        if state.promisc == PromiscLevel::AllVlan {
-            return PromiscLevel::AllVlan;
+        {
+            Some(self.pinned_promisc)
+        }
+
+        #[cfg(not(feature = "falcon"))]
+        {
+            None
+        }
+    }
+
+    /// Compute the Rx configuration required to satisfy the driver's MAC
+    /// filters and explicit filter mode.
+    ///
+    /// This is computed solely from the guest's filter state and device
+    /// capabilities, with no side effects. Effecting the result on the
+    /// in-kernel device is left to [`Self::apply_rx_config`].
+    fn rx_config(&self, state: &Inner) -> RxConfig {
+        // A pinned link ignores the guest's filter state entirely. The pin
+        // supersets any level the guest could request, so at worst the
+        // guest receives traffic it did not ask for.
+        if let Some(pinned) = self.pinned_promisc() {
+            return RxConfig { promisc: pinned, install_filters: false };
         }
 
         // We don't yet have any mechanism to account for ALL_UNICAST or
         // related filters from VIRTIO_NET_F_CTRL_RX_EXTRA, and the guest will
         // not request them.
 
-        // We don't have an ioctl yet for viona to explicitly install a set of
-        // filters. For now, we need to apply some level of promiscuous mode
-        // to give the guest what it asks for.
+        // An explicit multicast table can be installed on the in-kernel MAC
+        // client (VNA_IOC_SET_MAC_FILTERS) when the kernel supports it
+        // (viona_api::ApiVersion::V7) and the table fits. Otherwise
+        // multicast promiscuity covers the request.
         //
-        // Even though the guest can't yet use its parent feature, we can still
-        // account for NO_MULTICAST here.
-        let need_mcast = (state.filter.contains(FilterState::ALL_MULTICAST)
+        // NO_MULTICAST is gated behind VIRTIO_NET_F_CTRL_RX_EXTRA, which we
+        // do not offer, but the derivation accounts for it regardless.
+        let mcast_filterable = self.kernel_mac_filters
+            && state.multicast_mac_filters.len()
+                <= viona_api::VIONA_MAX_MCAST_FILTERS;
+        let need_mcast_promisc = (state
+            .filter
+            .contains(FilterState::ALL_MULTICAST)
             && !state.filter.contains(FilterState::NO_MULTICAST))
-            || !state.multicast_mac_filters.is_empty();
+            || (!state.multicast_mac_filters.is_empty() && !mcast_filterable);
 
         // Don't inflict promiscuous mode on drivers which request only their
         // own MAC address. Most guests *should not pass us any unicast
@@ -1053,13 +1145,79 @@ impl PciVirtioViona {
         let need_promisc =
             state.filter.contains(FilterState::PROMISCUOUS) || !filter_is_self;
 
-        if need_promisc {
+        // A guest whose multicast table is empty has not demonstrated that
+        // it manages its own filtering. illumos vioif negotiates CTRL_RX and
+        // forwards promiscuity toggles over the control queue, but its
+        // multicast entry point is a noop, so narrowing to classified
+        // delivery after a promiscuity cycle (snoop on/off) would silently
+        // drop its multicast traffic. Unrequested traffic is permitted by
+        // the virtio spec, so hold the all-multicast lower bound until the
+        // table is populated.
+        let promisc = if need_promisc {
             PromiscLevel::All
-        } else if need_mcast {
+        } else if need_mcast_promisc || state.multicast_mac_filters.is_empty() {
             PromiscLevel::AllMulti
         } else {
             PromiscLevel::None
+        };
+
+        RxConfig {
+            promisc,
+            // The empty-table check is implied by the all-multicast lower
+            // bound above, but kept so an empty table is never installed if
+            // the bound is ever relaxed.
+            install_filters: promisc == PromiscLevel::None
+                && !state.multicast_mac_filters.is_empty(),
         }
+    }
+
+    /// Reconcile the in-kernel Rx configuration with the guest's filter
+    /// state, as computed by [`Self::rx_config`].
+    ///
+    /// Ordering follows the contract documented for
+    /// `VNA_IOC_SET_MAC_FILTERS`: a filter table is installed before
+    /// promiscuity is lowered, and promiscuity is raised before a table is
+    /// cleared. Across the transition, delivery is at least once rather
+    /// than at most once.
+    fn apply_rx_config(&self, state: &mut Inner) -> Result<(), ()> {
+        let target = self.rx_config(state);
+
+        let promisc = if target.install_filters {
+            // The table is reissued even when only the filter bits have
+            // changed. The kernel applies it differentially, leaving unchanged entries
+            // untouched, so the reissue is idempotent and cheap at these
+            // table sizes.
+            match self.hdl.set_mac_filters(&state.multicast_mac_filters) {
+                Ok(()) => {
+                    state.mac_filters_installed = true;
+                    target.promisc
+                }
+                // If the table could not be installed, cover the guest's
+                // request with multicast promiscuity instead. Unrequested
+                // traffic is permitted by the virtio spec, but loss is not.
+                // A failed install may leave a partial table on the MAC client,
+                // so we record it as installed to guarantee a later clearing.
+                Err(_) => {
+                    state.mac_filters_installed = true;
+                    PromiscLevel::AllMulti
+                }
+            }
+        } else {
+            target.promisc
+        };
+
+        self.set_promisc(promisc, state)?;
+
+        // Promiscuity now meets or exceeds the required level, so a
+        // lingering table is redundant rather than harmful; clearing it is
+        // best-effort.
+        if !target.install_filters
+            && state.mac_filters_installed
+            && self.hdl.set_mac_filters(&[]).is_ok()
+        {
+            state.mac_filters_installed = false;
+        }
+        Ok(())
     }
 }
 impl VirtioDevice for PciVirtioViona {
@@ -1122,11 +1280,6 @@ impl VirtioDevice for PciVirtioViona {
             } else {
                 VIRTIO_NO_MQ_CTRL_Q_INDEX
             };
-
-            if (feat & VIRTIO_NET_F_CTRL_RX) != 0 {
-                let mut state = self.inner.lock().unwrap();
-                self.set_promisc(PromiscLevel::None, &mut state)?;
-            }
 
             Some(ctl_q_idx.try_into().expect("queue index must be a valid u16"))
         };
@@ -1213,6 +1366,35 @@ impl VirtioDevice for PciVirtioViona {
         }
         Ok(())
     }
+
+    fn device_reset(&self) {
+        // The next driver may not negotiate `VIRTIO_NET_F_CTRL_RX`, so any
+        // filter state configured by the previous driver must not outlive the
+        // reset. This runs for guest status resets as well as full device
+        // resets.
+        let mut state = self.inner.lock().unwrap();
+        state.filter = FilterState::empty();
+        state.unicast_mac_filters = Box::new([]);
+        state.multicast_mac_filters = Box::new([]);
+
+        // Restore the pre-CTRL_RX default of multicast promiscuity (or the
+        // pinned level) before clearing any installed filter table so that
+        // no delivery gap opens.
+        //
+        // A guest reaches this path with a status write, so a failed restore
+        // must not panic. The table is left in place to keep covering delivery
+        // and the device is flagged as needing reset.
+        let restore = self.pinned_promisc().unwrap_or(PromiscLevel::AllMulti);
+        if self.set_promisc(restore, &mut state).is_err() {
+            self.virtio_state.set_needs_reset(self);
+            return;
+        }
+
+        if state.mac_filters_installed && self.hdl.set_mac_filters(&[]).is_ok()
+        {
+            state.mac_filters_installed = false;
+        }
+    }
 }
 impl Lifecycle for PciVirtioViona {
     fn type_name(&self) -> &'static str {
@@ -1227,12 +1409,6 @@ impl Lifecycle for PciVirtioViona {
         self.set_use_pairs(1).expect("can set viona back to one queue pair");
         self.hdl.set_pairs(1).expect("can set viona back to one queue pair");
         self.virtio_state.queues.reset_peak();
-
-        let mut state = self.inner.lock().unwrap();
-        state.unicast_mac_filters = Box::new([]);
-        state.multicast_mac_filters = Box::new([]);
-        self.set_promisc(PromiscLevel::AllMulti, &mut state)
-            .expect("can reset viona promiscuous state");
     }
     fn start(&self) -> anyhow::Result<()> {
         self.run();
@@ -1307,6 +1483,8 @@ impl MigrateMulti for PciVirtioViona {
     ) -> Result<(), MigrateStateError> {
         <dyn PciVirtio>::export(self, output, ctx)?;
 
+        // Exported unconditionally, as importers take this payload without
+        // consulting negotiated features.
         let viona_state = {
             let state = self.inner.lock().unwrap();
 
@@ -1358,7 +1536,18 @@ impl MigrateMulti for PciVirtioViona {
             ))
         })?;
 
-        let input: migrate::VionaStateV1 = offer.take()?;
+        let input: migrate::VionaStateV1 = match offer.take() {
+            Ok(input) => input,
+            // Only a source predating this payload sends nothing. Such a
+            // source never offered CTRL_RX, so the construction defaults
+            // already match its state.
+            Err(MigrateStateError::DataMissing)
+                if (feat & VIRTIO_NET_F_CTRL_RX) == 0 =>
+            {
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
 
         let mut state = self.inner.lock().unwrap();
         state.filter =
@@ -1370,12 +1559,33 @@ impl MigrateMulti for PciVirtioViona {
             })?;
         state.unicast_mac_filters = input.unicast_mac_filters.into();
         state.multicast_mac_filters = input.multicast_mac_filters.into();
-        self.set_promisc(input.promisc, &mut state).map_err(|_| {
-            MigrateStateError::ImportFailed(format!(
-                "Could not move device promisc level to {:?}.",
-                input.promisc
-            ))
-        })
+        match input.promisc {
+            // The source could only reach PromiscLevel::None through the
+            // guest's own filter state, so recompute the Rx configuration
+            // here rather than blindly restoring the level. This installs
+            // any needed multicast table on this host, or falls back to
+            // multicast promiscuity if it cannot be installed.
+            PromiscLevel::None => {
+                self.apply_rx_config(&mut state).map_err(|_| {
+                    MigrateStateError::ImportFailed(
+                        "Could not apply imported viona Rx configuration."
+                            .to_string(),
+                    )
+                })
+            }
+            // Any other level is either the pre-CTRL_RX default or already
+            // covers the guest's filters without a table.
+            level => {
+                // The pin is a property of this host's link, so an imported
+                // level must not downgrade it (see rx_config).
+                let level = self.pinned_promisc().unwrap_or(level);
+                self.set_promisc(level, &mut state).map_err(|_| {
+                    MigrateStateError::ImportFailed(format!(
+                        "Could not move device promisc level to {level:?}.",
+                    ))
+                })
+            }
+        }
     }
 }
 
@@ -1674,6 +1884,36 @@ impl VionaHdl {
         self.0.ioctl_usize(viona_api::VNA_IOC_SET_PROMISC, usize::from(p))?;
         Ok(())
     }
+
+    /// Replace the explicit multicast MAC filter table on the underlying
+    /// device. An empty table clears any installed filters.
+    ///
+    /// Broadcast entries are omitted. The kernel drops them from the table,
+    /// as a MAC client is joined to broadcast for the lifetime of its unicast
+    /// address, so passing them would only waste table slots.
+    ///
+    /// The device's primary unicast address is always programmed on the
+    /// in-kernel MAC client, so no unicast entries are passed and `vmf_nucast`
+    /// remains zero.
+    ///
+    /// This requires [viona_api::ApiVersion::V7] or greater.
+    fn set_mac_filters(&self, multicast: &[MacAddr]) -> io::Result<()> {
+        assert!(multicast.len() <= viona_api::VIONA_MAX_MCAST_FILTERS);
+
+        let entries = multicast
+            .iter()
+            .filter(|mac| !mac.is_broadcast())
+            .map(|mac| mac.0)
+            .collect::<Vec<_>>();
+
+        let mut vmf = viona_api::vioc_mac_filters::default();
+        vmf.vmf_nmcast = entries.len() as u32;
+        vmf.vmf_mcast[..entries.len()].copy_from_slice(&entries);
+        unsafe {
+            self.0.ioctl(viona_api::VNA_IOC_SET_MAC_FILTERS, &mut vmf)?;
+        }
+        Ok(())
+    }
 }
 
 impl AsRawFd for VionaHdl {
@@ -1913,10 +2153,11 @@ mod test {
     use crate::hw::pci::Bdf;
     use crate::hw::virtio::pci::Status;
     use crate::hw::virtio::viona::{
+        control, FilterState, MacAddr, PromiscLevel, VIRTIO_NET_F_CTRL_RX,
         VIRTIO_NET_F_CTRL_VQ, VIRTIO_NET_F_MAC, VIRTIO_NET_F_MQ,
         VIRTIO_NET_F_STATUS,
     };
-    use crate::hw::virtio::PciVirtioViona;
+    use crate::hw::virtio::{PciVirtioViona, VirtioDevice};
     use crate::lifecycle::Lifecycle;
     use crate::migrate::{
         MigrateCtx, MigrateMulti, PayloadOffer, PayloadOffers, PayloadOutputs,
@@ -2218,6 +2459,18 @@ mod test {
     struct DriverState {
         max_pairs: Option<u16>,
         next_queue_gpa: u64,
+        queue_locs: std::collections::BTreeMap<u16, QueueLoc>,
+    }
+
+    /// Guest-physical layout of a virtqueue as programmed by `init_queue`,
+    /// retained so tests can build descriptor chains on it later.
+    #[derive(Copy, Clone)]
+    struct QueueLoc {
+        desc_gpa: u64,
+        avail_gpa: u64,
+        size: u16,
+        /// The next available-ring index the driver will publish.
+        avail_idx: u16,
     }
 
     impl DriverState {
@@ -2226,6 +2479,7 @@ mod test {
                 max_pairs: None,
                 // Start virtio-nic queues somewhere other than address 0.
                 next_queue_gpa: 2 * MB as u64,
+                queue_locs: std::collections::BTreeMap::new(),
             }
         }
     }
@@ -2357,7 +2611,14 @@ mod test {
             self.common_config
                 .write_le64(common_cfg::queue_desc, descriptor_table_gpa);
 
-            let avail_gpa = descriptor_table_gpa.next_multiple_of(page_u64);
+            // Give each ring a page of its own by stepping a full page per
+            // ring.
+            //
+            // Aligning with `next_multiple_of` would not work here:
+            // `next_queue_gpa` is already page-aligned, so it would be a
+            // noop and leave the descriptor table, available ring, and used
+            // ring all at the same address.
+            let avail_gpa = descriptor_table_gpa + page_u64;
             // First, flags.
             // > If the VIRTIO_F_EVENT_IDX feature bit is not negotiated:
             // > * The driver MUST set flags to 0 or 1.
@@ -2370,15 +2631,25 @@ mod test {
             // negotiated VIRTIO_F_EVENT_IDX so no `used_event` for now.
             self.common_config.write_le64(common_cfg::queue_driver, avail_gpa);
 
-            let used_gpa = avail_gpa.next_multiple_of(page_u64);
+            let used_gpa = avail_gpa + page_u64;
 
             self.common_config.write_le64(common_cfg::queue_device, used_gpa);
 
             self.common_config.write_le16(common_cfg::queue_enable, 1);
 
-            // Finally, round up so the next queue (if there is one) starts
-            // page-aligned like it should.
-            self.state.next_queue_gpa = used_gpa.next_multiple_of(page_u64);
+            // Skip past the used ring so the next allocation (another queue,
+            // or a control message scratch buffer) does not share its page.
+            self.state.next_queue_gpa = used_gpa + page_u64;
+
+            self.state.queue_locs.insert(
+                queue,
+                QueueLoc {
+                    desc_gpa: descriptor_table_gpa,
+                    avail_gpa,
+                    size: queue_size.min(chosen_size),
+                    avail_idx: 0,
+                },
+            );
 
             let msi_vector = 0x100 + queue;
             self.common_config
@@ -2550,6 +2821,111 @@ mod test {
             // thinks everything is OK...
             assert!(self.status_ok());
         }
+
+        /// Submit a command on the control queue and return the device's ack
+        /// byte.
+        ///
+        /// The message is laid out as one device-readable descriptor holding
+        /// the header and payload, followed by one device-writable descriptor
+        /// for the ack, mirroring how guest drivers structure control commands.
+        fn send_ctrl_cmd(
+            &mut self,
+            class: u8,
+            command: u8,
+            payload: &[u8],
+        ) -> u8 {
+            const VIRTQ_DESC_F_NEXT: u16 = 1;
+            const VIRTQ_DESC_F_WRITE: u16 = 2;
+
+            let qidx = self.ctl_qidx().expect("device has a control queue");
+            let loc = *self
+                .state
+                .queue_locs
+                .get(&qidx)
+                .expect("control queue was initialized");
+
+            // Reserve a scratch page for the message buffers. Descriptors and
+            // rings are rewritten on every submission, so this also works on
+            // the fresh (0'ed) guest memory of a migration target.
+            let buf_gpa = self.state.next_queue_gpa;
+            self.state.next_queue_gpa += PAGE_SIZE as u64;
+
+            let acc_mem =
+                self.machine.acc_mem.access().expect("can access memory");
+
+            let mut msg = vec![class, command];
+            msg.extend_from_slice(payload);
+            assert_eq!(
+                acc_mem.write_from(GuestAddr(buf_gpa), &msg, msg.len()),
+                Some(msg.len())
+            );
+
+            let ack_gpa = buf_gpa + msg.len() as u64;
+            // Seed the ack with a value the device will never write.
+            assert!(acc_mem.write::<u8>(GuestAddr(ack_gpa), &0xaa));
+
+            // Descriptor 0: header and payload, device-readable.
+            let d0 = loc.desc_gpa;
+            assert!(acc_mem.write::<u64>(GuestAddr(d0), &buf_gpa));
+            assert!(
+                acc_mem.write::<u32>(GuestAddr(d0 + 8), &(msg.len() as u32))
+            );
+            assert!(
+                acc_mem.write::<u16>(GuestAddr(d0 + 12), &VIRTQ_DESC_F_NEXT)
+            );
+            assert!(acc_mem.write::<u16>(GuestAddr(d0 + 14), &1u16));
+
+            // Descriptor 1: ack byte, device-writable.
+            let d1 = loc.desc_gpa + 16;
+            assert!(acc_mem.write::<u64>(GuestAddr(d1), &ack_gpa));
+            assert!(acc_mem.write::<u32>(GuestAddr(d1 + 8), &1u32));
+            assert!(
+                acc_mem.write::<u16>(GuestAddr(d1 + 12), &VIRTQ_DESC_F_WRITE)
+            );
+            assert!(acc_mem.write::<u16>(GuestAddr(d1 + 14), &0u16));
+
+            // Publish the chain head in the available ring and bump the index.
+            let slot = u64::from(loc.avail_idx % loc.size);
+            assert!(acc_mem
+                .write::<u16>(GuestAddr(loc.avail_gpa + 4 + 2 * slot), &0u16));
+            let new_idx = loc.avail_idx.wrapping_add(1);
+            assert!(
+                acc_mem.write::<u16>(GuestAddr(loc.avail_gpa + 2), &new_idx)
+            );
+            self.state.queue_locs.get_mut(&qidx).unwrap().avail_idx = new_idx;
+
+            let vq = self
+                .dev
+                .virtio_state
+                .queues
+                .get(qidx)
+                .expect("control queue exists")
+                .clone();
+            self.dev.queue_notify(&vq);
+
+            *acc_mem.read::<u8>(GuestAddr(ack_gpa)).expect("can read ack byte")
+        }
+
+        fn ctrl_rx_cmd(&mut self, cmd: control::RxCmd, enable: bool) -> u8 {
+            self.send_ctrl_cmd(0, cmd as u8, &[u8::from(enable)])
+        }
+
+        fn ctrl_mac_table_set(
+            &mut self,
+            unicast: &[MacAddr],
+            multicast: &[MacAddr],
+        ) -> u8 {
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&(unicast.len() as u32).to_le_bytes());
+            for mac in unicast {
+                payload.extend_from_slice(&mac.0);
+            }
+            payload.extend_from_slice(&(multicast.len() as u32).to_le_bytes());
+            for mac in multicast {
+                payload.extend_from_slice(&mac.0);
+            }
+            self.send_ctrl_cmd(1, control::MacCmd::TableSet as u8, &payload)
+        }
     }
 
     fn test_device_status_writes(test_ctx: TestCtx) -> TestCtx {
@@ -2629,7 +3005,7 @@ mod test {
         // try using it or setting any interesting features.
 
         // First, we have a fresh device on a fresh VM. The test is playing the
-        // role of the first use of the device by OVMF, an intiial bootloader,
+        // role of the first use of the device by OVMF, an initial bootloader,
         // or maybe the actual guest OS.
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats);
@@ -2734,7 +3110,7 @@ mod test {
 
         let mut driver = test_ctx.create_driver();
         // `basic_operation_multiqueue()` talks about why it's an interesting
-        // test to shink max pairs.
+        // test to shrink max pairs.
         driver.set_max_pairs(Some(4));
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
 
@@ -2789,7 +3165,7 @@ mod test {
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
         let mut driver = test_ctx.create_driver();
         // `basic_operation_multiqueue()` talks about why it's an interesting
-        // test to shink max pairs.
+        // test to shrink max pairs.
         driver.set_max_pairs(Some(4));
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
 
@@ -2810,6 +3186,276 @@ mod test {
         // Same as `set_max_pairs()` above.
         driver.set_max_pairs(Some(4));
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
+
+        test_ctx
+    }
+
+    /// Drive the `VIRTIO_NET_F_CTRL_RX` command set, including the explicit MAC
+    /// filter tables, class-wide filter flags, and the promiscuity fallbacks
+    /// they demand from the device.
+    fn control_rx_filtering(test_ctx: TestCtx) -> TestCtx {
+        if cfg!(feature = "falcon") {
+            // Falcon links pin their promiscuity for the emulated fabric,
+            // which makes guest-driven Rx filtering a noop.
+            return test_ctx;
+        }
+
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(
+            VIRTIO_NET_F_MAC
+                | VIRTIO_NET_F_STATUS
+                | VIRTIO_NET_F_CTRL_VQ
+                | VIRTIO_NET_F_CTRL_RX,
+        );
+
+        let kernel_filters = test_ctx.dev.kernel_mac_filters;
+        let self_mac = test_ctx.dev.mac_addr;
+
+        // Negotiating CTRL_RX alone leaves the device at its all-multicast
+        // default. Filtering only engages once a non-empty multicast table
+        // is installed, protecting drivers that negotiate the feature but
+        // never manage a filter table (illumos vioif among them).
+        {
+            let state = test_ctx.dev.inner.lock().unwrap();
+            assert_eq!(state.promisc, PromiscLevel::AllMulti);
+            assert!(!state.mac_filters_installed);
+        }
+
+        // A table of our own MAC + a small multicast set narrows the
+        // device to classified delivery. V7 kernels take the explicit
+        // table, older kernels are covered by multicast promiscuity.
+        let mcast = [
+            MacAddr([0x33, 0x33, 0, 0, 0, 1]),
+            MacAddr([0x33, 0x33, 0, 0, 0, 2]),
+        ];
+        let ack = driver.ctrl_mac_table_set(&[self_mac], &mcast);
+
+        assert_eq!(ack, control::Ack::Ok as u8);
+        {
+            let state = test_ctx.dev.inner.lock().unwrap();
+            assert_eq!(&*state.multicast_mac_filters, &mcast[..]);
+            if kernel_filters {
+                assert_eq!(state.promisc, PromiscLevel::None);
+                assert!(state.mac_filters_installed);
+            } else {
+                assert_eq!(state.promisc, PromiscLevel::AllMulti);
+                assert!(!state.mac_filters_installed);
+            }
+        }
+
+        // A broadcast entry is kept in the guest-visible table but omitted
+        // from the kernel filter set, as the MAC client is already joined
+        // to broadcast. Installation must still succeed.
+        let with_bcast = [
+            MacAddr([0x33, 0x33, 0, 0, 0, 1]),
+            MacAddr([0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+        ];
+        let ack = driver.ctrl_mac_table_set(&[self_mac], &with_bcast);
+        assert_eq!(ack, control::Ack::Ok as u8);
+        {
+            let state = test_ctx.dev.inner.lock().unwrap();
+            assert_eq!(&*state.multicast_mac_filters, &with_bcast[..]);
+            if kernel_filters {
+                assert_eq!(state.promisc, PromiscLevel::None);
+                assert!(state.mac_filters_installed);
+            } else {
+                assert_eq!(state.promisc, PromiscLevel::AllMulti);
+                assert!(!state.mac_filters_installed);
+            }
+        }
+
+        // A multicast table larger than viona's filter maximum must fall
+        // back to multicast promiscuity rather than losing traffic. The
+        // limit is judged on the guest's table before broadcast omission,
+        // so a broadcast entry does not bring an over-limit table back
+        // under the maximum.
+        let mut big: Vec<MacAddr> = (0..viona_api::VIONA_MAX_MCAST_FILTERS)
+            .map(|i| MacAddr([0x33, 0x33, 0, 0, 0, i as u8]))
+            .collect();
+        big.push(MacAddr([0xff, 0xff, 0xff, 0xff, 0xff, 0xff]));
+        let ack = driver.ctrl_mac_table_set(&[], &big);
+        assert_eq!(ack, control::Ack::Ok as u8);
+        {
+            let state = test_ctx.dev.inner.lock().unwrap();
+            assert_eq!(state.promisc, PromiscLevel::AllMulti);
+            assert!(!state.mac_filters_installed);
+        }
+
+        // An entry count beyond the parser's bound is rejected outright,
+        // leaving the previous table untouched.
+        let mut payload = 0u32.to_le_bytes().to_vec();
+        payload.extend_from_slice(&2048u32.to_le_bytes());
+        let ack =
+            driver.send_ctrl_cmd(1, control::MacCmd::TableSet as u8, &payload);
+        assert_eq!(ack, control::Ack::Err as u8);
+        {
+            let state = test_ctx.dev.inner.lock().unwrap();
+            assert_eq!(state.multicast_mac_filters.len(), big.len());
+        }
+
+        // A unicast entry other than the device's own MAC cannot be
+        // classified and forces full promiscuity.
+        let foreign = MacAddr([0x02, 0, 0, 0, 0, 0x77]);
+        let ack = driver.ctrl_mac_table_set(&[foreign], &[]);
+        assert_eq!(ack, control::Ack::Ok as u8);
+        {
+            let state = test_ctx.dev.inner.lock().unwrap();
+            assert_eq!(state.promisc, PromiscLevel::All);
+        }
+
+        // Clearing the tables returns to the all-multicast lower bound, and not
+        // classified delivery. An empty table gives no evidence the guest
+        // manages its own filtering.
+        let ack = driver.ctrl_mac_table_set(&[], &[]);
+        assert_eq!(ack, control::Ack::Ok as u8);
+        assert_eq!(
+            test_ctx.dev.inner.lock().unwrap().promisc,
+            PromiscLevel::AllMulti
+        );
+
+        // Class-wide flags: ALL_MULTICAST raises multicast promiscuity,
+        // PROMISCUOUS raises full promiscuity, and disabling each falls
+        // back to the empty-table lower bound rather than classified
+        // delivery.
+        for (cmd, level) in [
+            (control::RxCmd::AllMulticast, PromiscLevel::AllMulti),
+            (control::RxCmd::Promisc, PromiscLevel::All),
+        ] {
+            let ack = driver.ctrl_rx_cmd(cmd, true);
+            assert_eq!(ack, control::Ack::Ok as u8);
+            assert_eq!(test_ctx.dev.inner.lock().unwrap().promisc, level);
+            let ack = driver.ctrl_rx_cmd(cmd, false);
+            assert_eq!(ack, control::Ack::Ok as u8);
+            assert_eq!(
+                test_ctx.dev.inner.lock().unwrap().promisc,
+                PromiscLevel::AllMulti
+            );
+        }
+
+        // A malformed enable byte is rejected.
+        let ack = driver.send_ctrl_cmd(0, control::RxCmd::Promisc as u8, &[2]);
+        assert_eq!(ack, control::Ack::Err as u8);
+
+        // CTRL_RX_EXTRA commands are not advertised and must be rejected.
+        let ack = driver.ctrl_rx_cmd(control::RxCmd::NoMulticast, true);
+        assert_eq!(ack, control::Ack::Err as u8);
+
+        test_ctx
+    }
+
+    /// A guest-initiated status reset must not leak the previous driver's
+    /// filter state to the next driver, which may not negotiate CTRL_RX at
+    /// all.
+    fn control_rx_reset_clears_filters(test_ctx: TestCtx) -> TestCtx {
+        if cfg!(feature = "falcon") {
+            // Falcon links pin their promiscuity, see `control_rx_filtering`.
+            return test_ctx;
+        }
+
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(
+            VIRTIO_NET_F_MAC
+                | VIRTIO_NET_F_STATUS
+                | VIRTIO_NET_F_CTRL_VQ
+                | VIRTIO_NET_F_CTRL_RX,
+        );
+
+        let self_mac = test_ctx.dev.mac_addr;
+        let mcast = [MacAddr([0x01, 0x00, 0x5e, 0, 0, 0xfb])];
+        let ack = driver.ctrl_mac_table_set(&[self_mac], &mcast);
+        assert_eq!(ack, control::Ack::Ok as u8);
+        assert!(!test_ctx
+            .dev
+            .inner
+            .lock()
+            .unwrap()
+            .multicast_mac_filters
+            .is_empty());
+
+        // Reset via device status, as a guest reboot would. All filter state
+        // must revert to the pre-negotiation default of multicast
+        // promiscuity.
+        driver.write_status(Status::RESET);
+        {
+            let state = test_ctx.dev.inner.lock().unwrap();
+            assert!(state.filter.is_empty());
+            assert!(state.unicast_mac_filters.is_empty());
+            assert!(state.multicast_mac_filters.is_empty());
+            assert_eq!(state.promisc, PromiscLevel::AllMulti);
+            assert!(!state.mac_filters_installed);
+        }
+
+        // The next driver comes up without CTRL_RX and keeps that default.
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(
+            VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_CTRL_VQ,
+        );
+        assert_eq!(
+            test_ctx.dev.inner.lock().unwrap().promisc,
+            PromiscLevel::AllMulti
+        );
+
+        test_ctx
+    }
+
+    /// Filter state must survive migration: the guest-visible state (filter
+    /// flags and MAC tables) is carried in the payload and the target
+    /// re-derives the kernel configuration from it.
+    fn control_rx_migration(test_ctx: TestCtx) -> TestCtx {
+        if cfg!(feature = "falcon") {
+            // Falcon links pin their promiscuity, see `control_rx_filtering`.
+            return test_ctx;
+        }
+
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(
+            VIRTIO_NET_F_MAC
+                | VIRTIO_NET_F_STATUS
+                | VIRTIO_NET_F_CTRL_VQ
+                | VIRTIO_NET_F_CTRL_RX,
+        );
+
+        let self_mac = test_ctx.dev.mac_addr;
+        let mcast = [
+            MacAddr([0x33, 0x33, 0, 0, 0, 3]),
+            MacAddr([0x33, 0x33, 0, 0, 0, 4]),
+        ];
+        let ack = driver.ctrl_mac_table_set(&[self_mac], &mcast);
+        assert_eq!(ack, control::Ack::Ok as u8);
+        let ack = driver.ctrl_rx_cmd(control::RxCmd::AllMulticast, true);
+        assert_eq!(ack, control::Ack::Ok as u8);
+
+        let drv_state = driver.export();
+        let test_ctx = test_ctx.migrate();
+        let mut driver = VirtioNetDriver::import(
+            &test_ctx.machine,
+            &test_ctx.dev,
+            drv_state,
+        );
+        assert!(driver.status_ok());
+        {
+            let state = test_ctx.dev.inner.lock().unwrap();
+            assert!(state.filter.contains(FilterState::ALL_MULTICAST));
+            assert_eq!(&*state.multicast_mac_filters, &mcast[..]);
+            assert_eq!(state.promisc, PromiscLevel::AllMulti);
+        }
+
+        // The imported state must be live, not just carried data. Dropping
+        // ALL_MULTICAST on the target must re-derive the table-backed
+        // config.
+        let kernel_filters = test_ctx.dev.kernel_mac_filters;
+        let ack = driver.ctrl_rx_cmd(control::RxCmd::AllMulticast, false);
+        assert_eq!(ack, control::Ack::Ok as u8);
+        {
+            let state = test_ctx.dev.inner.lock().unwrap();
+            if kernel_filters {
+                assert_eq!(state.promisc, PromiscLevel::None);
+                assert!(state.mac_filters_installed);
+            } else {
+                assert_eq!(state.promisc, PromiscLevel::AllMulti);
+                assert!(!state.mac_filters_installed);
+            }
+        }
 
         test_ctx
     }
@@ -2846,8 +3492,8 @@ mod test {
     }
 
     // We'll actually create and destroy some vnics so not only do we need
-    // `dladm`, we need a recent enough viona and everything.. this test is only
-    // meaningful on an illumos host:;
+    // `dladm`, we need a recent enough viona and everything. This test is only
+    // meaningful on an illumos host.
     #[test]
     #[cfg_attr(not(target_os = "illumos"), ignore)]
     fn run_viona_tests() {
@@ -2869,6 +3515,9 @@ mod test {
             testcase!(multiqueue_to_singlequeue_to_multiqueue),
             testcase!(multiqueue_migration),
             testcase!(multiqueue_migration_after_boot),
+            testcase!(control_rx_filtering),
+            testcase!(control_rx_reset_clears_filters),
+            testcase!(control_rx_migration),
         ];
 
         let underlying_nic = match std::env::var("VIONA_TEST_NIC") {
