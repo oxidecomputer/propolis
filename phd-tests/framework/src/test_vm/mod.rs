@@ -49,6 +49,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, info_span, instrument, warn, Instrument};
 use uuid::Uuid;
+use vnc::client::AuthChoice;
 
 type PropolisClientError =
     propolis_client::Error<propolis_client::types::Error>;
@@ -931,7 +932,7 @@ impl TestVm {
             let line = line.to_string();
             let (preceding_tx, preceding_rx) = oneshot::channel();
             match &self.state {
-                VmState::Ensured { serial } => {
+                VmState::Ensured { serial, .. } => {
                     serial
                         .register_wait_for_string(line.clone(), preceding_tx)?;
                     let t =
@@ -1075,6 +1076,33 @@ impl TestVm {
     fn serial_console(&self) -> Result<&SerialConsole> {
         match &self.state {
             VmState::Ensured { serial } => Ok(serial),
+            VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
+        }
+    }
+
+    pub fn vnc_client(&self) -> Result<vnc::Client> {
+        match &self.state {
+            // not stored as a field in VmState because it's not Send
+            VmState::Ensured { .. } => {
+                let vnc_addr = SocketAddr::V4(
+                    self.server
+                        .as_ref()
+                        .expect("server should be alive")
+                        .vnc_addr(),
+                );
+                let vnc_tcp_stream = std::net::TcpStream::connect(vnc_addr)
+                    .with_context(|| {
+                        anyhow!(
+                            "failed to connect to VNC socket at {vnc_addr:?}"
+                        )
+                    })?;
+                vnc::Client::from_tcp_stream(vnc_tcp_stream, true, |_| {
+                    Some(AuthChoice::None)
+                })
+                .with_context(|| {
+                    anyhow!("failed to create VNC client from TCP stream")
+                })
+            }
             VmState::New => Err(VmStateError::InstanceNotEnsured.into()),
         }
     }
@@ -1280,6 +1308,7 @@ impl TestVmManualStop {
             let success_opt = *self.success_rx.borrow();
             if let Some(false) = success_opt {
                 let sock = server.server_addr();
+                let vnc = server.vnc_addr();
                 let ip = sock.ip();
                 let port = sock.port();
                 let test_name = self.test_name;
@@ -1303,7 +1332,7 @@ impl TestVmManualStop {
                         error!(
                             r#"
 test {test_name:?} failed. propolis-server {vm_name:?} was left running,
-with API accessible at http://{sock}
+with API accessible at http://{sock} and VNC at vnc://{vnc}
 phd-runner will resume when this instance is shut down; e.g. by one of:
 
 $ propolis-cli -s {ip} -p {port} serial

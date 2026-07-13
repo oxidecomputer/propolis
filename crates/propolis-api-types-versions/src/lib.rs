@@ -37,5 +37,8 @@ pub mod v1;
 pub mod v2;
 #[path = "add_vsock/mod.rs"]
 pub mod v3;
+// v4 was a schema change from dropshot, no propolis-side API difference
 #[path = "crucible_volume_info/mod.rs"]
 pub mod v5;
+#[path = "xhci_usb/mod.rs"]
+pub mod v6;

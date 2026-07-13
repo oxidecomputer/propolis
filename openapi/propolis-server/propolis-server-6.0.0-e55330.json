@@ -7,7 +7,7 @@
       "url": "https://oxide.computer",
       "email": "api@oxide.computer"
     },
-    "version": "5.0.0"
+    "version": "6.0.0"
   },
   "paths": {
     "/instance": {
@@ -916,6 +916,44 @@
                 "type": "string",
                 "enum": [
                   "dlpi_network_backend"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/XhciController"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "xhci_controller"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/UsbDevice"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "usb_device"
                 ]
               }
             },
@@ -2100,6 +2138,57 @@
           "disabled"
         ]
       },
+      "UsbDevice": {
+        "description": "Describes a USB device, requires the presence of an XhciController.",
+        "type": "object",
+        "properties": {
+          "root_hub_port_num": {
+            "description": "The root hub port number to which this USB device shall be attached. For USB 2.0 devices, valid values are 1-4, inclusive. For USB 3.0 devices, valid values are 5-8, inclusive.",
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0
+          },
+          "usb_device_type": {
+            "description": "Which kind of supported USB device this is (e.g. `hid_tablet`)",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UsbDeviceType"
+              }
+            ]
+          },
+          "xhc_device": {
+            "description": "The name of the xHC to which this USB device shall be attached.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SpecKey"
+              }
+            ]
+          }
+        },
+        "required": [
+          "root_hub_port_num",
+          "usb_device_type",
+          "xhc_device"
+        ],
+        "additionalProperties": false
+      },
+      "UsbDeviceType": {
+        "oneOf": [
+          {
+            "type": "string",
+            "enum": [
+              "null"
+            ]
+          },
+          {
+            "description": "Human Interface Device tablet for VNC pointer input support.",
+            "type": "string",
+            "enum": [
+              "hid_tablet"
+            ]
+          }
+        ]
+      },
       "VirtioDisk": {
         "description": "A disk that presents a virtio-block interface to the guest.",
         "type": "object",
@@ -2310,6 +2399,24 @@
         "required": [
           "volume_info"
         ]
+      },
+      "XhciController": {
+        "description": "Describes a PCI device implementing the eXtensible Host Controller Interface for the purpose of attaching USB devices.",
+        "type": "object",
+        "properties": {
+          "pci_path": {
+            "description": "The PCI path at which to attach the guest to this xHC.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PciPath"
+              }
+            ]
+          }
+        },
+        "required": [
+          "pci_path"
+        ],
+        "additionalProperties": false
       }
     },
     "responses": {

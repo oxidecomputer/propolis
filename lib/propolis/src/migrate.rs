@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::sync::Arc;
+
 use crate::vmm::MemCtx;
 
 use serde::{Deserialize, Serialize};
@@ -105,6 +107,9 @@ pub trait MigrateMulti: Send + Sync {
 /// Additional (borrowed) context data used during device import and export.
 pub struct MigrateCtx<'a> {
     pub mem: &'a MemCtx,
+    pub hid_report: &'a Arc<
+        std::sync::Mutex<crate::hw::usb::usbdev::vnc_tablet::HIDTabletReport>,
+    >,
 }
 
 /// Device state payload (of a given kind/version) offered to the import logic

@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use propolis::hw::ps2::ctrl::PS2Ctrl;
 use propolis::hw::qemu::ramfb::{FrameSnap, RamFb};
+use propolis::hw::usb::usbdev::vnc_tablet::HIDTabletReport;
 
 use futures::StreamExt;
 use rfb::encodings::{EncodingType, RawEncoding};
@@ -37,6 +38,7 @@ const FRAME_US_10FPS: usize = 1000000 / 10;
 
 struct Devices {
     keyboard: Arc<PS2Ctrl>,
+    tablet: Arc<Mutex<HIDTabletReport>>,
     display: Arc<RamFb>,
 }
 
@@ -114,9 +116,15 @@ impl VncServer {
             log,
         })
     }
-    pub fn attach(&self, ps2: Arc<PS2Ctrl>, fb: Arc<RamFb>) {
+    pub fn attach(
+        &self,
+        ps2: Arc<PS2Ctrl>,
+        usb_tablet: Arc<Mutex<HIDTabletReport>>,
+        fb: Arc<RamFb>,
+    ) {
         let mut state = self.state.lock().unwrap();
-        state.devices = Some(Devices { keyboard: ps2, display: fb });
+        state.devices =
+            Some(Devices { keyboard: ps2, tablet: usb_tablet, display: fb });
     }
     pub async fn connect(
         self: &Arc<Self>,
@@ -254,8 +262,13 @@ impl VncServer {
                 }
             }
             ClientMessage::PointerEvent(pe) => {
+                let state = self.state.lock().unwrap();
                 trace!(self.log, "VNC pointer event: {:?}", pe);
-                // TODO: wire to tablet device
+                if let Some(devs) = state.devices.as_ref() {
+                    if let Ok(spec) = devs.display.read_spec() {
+                        devs.tablet.lock().unwrap().pointer_event(pe, spec);
+                    }
+                }
             }
             ClientMessage::ClientCutText(_) => {
                 trace!(self.log, "Ignoring VNC CutText request");

@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
 
@@ -74,6 +75,76 @@ impl From<VmTimeData> for bhyve_api::vdi_time_info_v1 {
             vt_hres_ns: info.hres_ns,
             vt_boot_hrtime: info.boot_hrtime,
         }
+    }
+}
+
+/// Boot-time-relative timestamps for use in device states (which are migrated
+/// after time data, at which point adjustments have been made and communicated
+/// to the VMM)
+#[derive(
+    Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Deserialize, Serialize,
+)]
+pub struct VmGuestInstant(i64);
+
+#[derive(Clone)]
+pub struct VmGuestTime(Option<Arc<VmmHdl>>);
+impl VmGuestTime {
+    pub fn new(vmm_hdl: Arc<VmmHdl>) -> Self {
+        Self(Some(vmm_hdl))
+    }
+    #[cfg(test)]
+    pub fn new_test() -> Self {
+        Self(None)
+    }
+    pub fn now(&self) -> std::io::Result<VmGuestInstant> {
+        let Some(vmm_hdl) = &self.0 else {
+            if cfg!(test) {
+                return Ok(VmGuestInstant(0));
+            } else {
+                unreachable!();
+            }
+        };
+        let td = export_time_data(vmm_hdl)?;
+        let normalized_ns =
+            td.hrtime.checked_sub(td.boot_hrtime).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    TimeAdjustError::GuestUptimeOverflow {
+                        desc: "hrtime - boot_hrtime",
+                        src_hrt: td.hrtime,
+                        boot_hrtime: td.boot_hrtime,
+                    },
+                )
+            })?;
+        Ok(VmGuestInstant(normalized_ns))
+    }
+    pub fn vmm_destroyed(&self) -> bool {
+        if let Some(vmm_hdl) = &self.0 {
+            vmm_hdl.is_destroyed()
+        } else if cfg!(test) {
+            false
+        } else {
+            unreachable!()
+        }
+    }
+}
+
+impl VmGuestInstant {
+    pub fn checked_add(&self, dur: Duration) -> Option<Self> {
+        self.0.checked_add(dur.as_nanos().try_into().ok()?).map(Self)
+    }
+
+    pub fn checked_duration_since(&self, then: Self) -> Option<Duration> {
+        let diff_ns = self.0.checked_sub(then.0)?;
+        if diff_ns > 0 {
+            Some(Duration::from_nanos(diff_ns as u64))
+        } else {
+            None
+        }
+    }
+
+    pub fn saturating_duration_since(&self, then: Self) -> Duration {
+        self.checked_duration_since(then).unwrap_or_default()
     }
 }
 

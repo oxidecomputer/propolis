@@ -7,14 +7,17 @@
 use std::{
     ops::{Deref, DerefMut},
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Mutex},
     task::{Context, Poll},
 };
 
 use futures::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
 use propolis::{
     attestation,
-    hw::{ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart},
+    hw::{
+        ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart,
+        usb::usbdev::vnc_tablet::HIDTabletReport,
+    },
     vmm::VmmHdl,
     Machine,
 };
@@ -53,6 +56,7 @@ pub(super) struct InputVmObjects {
     pub framebuffer: Option<Arc<RamFb>>,
     pub ps2ctrl: Arc<PS2Ctrl>,
     pub attest_handle: Option<attestation::server::AttestationSock>,
+    pub hid_report: Arc<Mutex<HIDTabletReport>>,
 }
 
 /// The collection of objects and state that make up a Propolis instance.
@@ -91,6 +95,10 @@ pub(crate) struct VmObjectsLocked {
 
     /// A handle to the VM's attestation server.
     attest_handle: Option<attestation::server::AttestationSock>,
+
+    /// A handle to the HID report given by an attached tablet, to be used
+    /// by the VNC server and a USB device within the xHCI controller.
+    hid_report: Arc<Mutex<HIDTabletReport>>,
 }
 
 impl VmObjects {
@@ -132,6 +140,7 @@ impl VmObjectsLocked {
             framebuffer: input.framebuffer,
             ps2ctrl: input.ps2ctrl,
             attest_handle: input.attest_handle,
+            hid_report: input.hid_report,
         }
     }
 
@@ -192,6 +201,11 @@ impl VmObjectsLocked {
     /// Yields a clonable reference to this VM's PS/2 controller.
     pub(crate) fn ps2ctrl(&self) -> &Arc<PS2Ctrl> {
         &self.ps2ctrl
+    }
+
+    /// Yields a clonable reference to this VM's USB HID pointing device.
+    pub(crate) fn hid_report(&self) -> &Arc<Mutex<HIDTabletReport>> {
+        &self.hid_report
     }
 
     pub(crate) fn device_map(&self) -> &DeviceMap {
