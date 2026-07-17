@@ -79,6 +79,13 @@ pub(crate) struct SpecBuilder {
     component_names: BTreeSet<SpecKey>,
 }
 
+/// hokay. SpecBuilder is where we're stuffing the large ball of glue and twine that connects
+/// between versioned HTTP API types like InstanceSpec and all its descendants, and the
+/// non-versioned "This Version Of Propolis" types like Spec and specific device configuration
+/// structs.
+///
+/// this means that we have conversions from all external API InstanceSpec to `Spec` (via
+/// SpecBuilder) here. elsewhere, conversions from Spec to all InstanceSpec.
 impl SpecBuilder {
     pub(super) fn with_instance_spec_board(
         board: InstanceSpecBoard,

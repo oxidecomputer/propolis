@@ -5,22 +5,29 @@
 use std::collections::BTreeMap;
 
 use propolis_api_types::instance::ReplacementComponent;
-use propolis_api_types_versions::v1;
+use propolis_api_types_versions::{v1, v3, v6};
 use serde::{Deserialize, Serialize};
 
-use crate::spec::{api_spec_v0::ApiSpecError, Spec};
+use crate::migrate;
+use crate::spec::{
+    api_spec_v1::ApiSpecError as V1SpecError,
+//    api_spec_v2::ApiSpecError as V2SpecError,
+    api_spec_v3::ApiSpecError as V3SpecError,
+    api_spec_v6::ApiSpecError as V6SpecError,
+    Spec
+};
 
 use super::MigrateError;
 
 #[derive(Deserialize, Serialize, Debug)]
 pub(crate) struct Preamble {
-    pub instance_spec: v1::instance_spec::VersionedInstanceSpec,
+    pub instance_spec: migrate::types::VersionedInstanceSpec,
     pub blobs: Vec<Vec<u8>>,
 }
 
 impl Preamble {
     pub fn new(
-        instance_spec: v1::instance_spec::VersionedInstanceSpec,
+        instance_spec: migrate::types::VersionedInstanceSpec,
     ) -> Preamble {
         Preamble { instance_spec, blobs: Vec::new() }
     }
@@ -49,66 +56,261 @@ impl Preamble {
             MigrateError::InstanceSpecsIncompatible(msg)
         }
 
-        let v1::instance_spec::VersionedInstanceSpec::V0(mut source_spec) =
-            self.instance_spec;
-        for (id, comp) in replacements {
-            let Some(to_amend) = source_spec.components.get_mut(id) else {
-                return Err(MigrateError::InstanceSpecsIncompatible(format!(
-                    "replacement component {id} not in source spec",
-                )));
-            };
-
-            match comp {
-                #[cfg(not(feature = "failure-injection"))]
-                ReplacementComponent::MigrationFailureInjector(_) => {
-                    return Err(MigrateError::InstanceSpecsIncompatible(
-                        format!(
-                            "replacing migration failure injector {id} is \
-                            impossible because the feature is compiled out"
-                        ),
-                    ));
-                }
-
-                #[cfg(feature = "failure-injection")]
-                ReplacementComponent::MigrationFailureInjector(comp) => {
-                    let v1::instance_spec::Component::MigrationFailureInjector(
-                        src,
-                    ) = to_amend
-                    else {
-                        return Err(wrong_type_error(
-                            id,
-                            "migration failure injector",
-                        ));
+        let amended_spec = match self.instance_spec {
+            migrate::types::VersionedInstanceSpec::V1(mut source_spec) => {
+                for (id, comp) in replacements {
+                    let Some(to_amend) = source_spec.components.get_mut(id) else {
+                        return Err(MigrateError::InstanceSpecsIncompatible(format!(
+                            "replacement component {id} not in source spec",
+                        )));
                     };
 
-                    *src = comp.clone();
-                }
-                ReplacementComponent::CrucibleStorageBackend(comp) => {
-                    let v1::instance_spec::Component::CrucibleStorageBackend(
-                        src,
-                    ) = to_amend
-                    else {
-                        return Err(wrong_type_error(id, "crucible backend"));
-                    };
+                    match comp {
+                        #[cfg(not(feature = "failure-injection"))]
+                        ReplacementComponent::MigrationFailureInjector(_) => {
+                            return Err(MigrateError::InstanceSpecsIncompatible(
+                                format!(
+                                    "replacing migration failure injector {id} is \
+                                    impossible because the feature is compiled out"
+                                ),
+                            ));
+                        }
 
-                    *src = comp.clone();
-                }
-                ReplacementComponent::VirtioNetworkBackend(comp) => {
-                    let v1::instance_spec::Component::VirtioNetworkBackend(src) =
-                        to_amend
-                    else {
-                        return Err(wrong_type_error(id, "viona backend"));
-                    };
+                        #[cfg(feature = "failure-injection")]
+                        ReplacementComponent::MigrationFailureInjector(comp) => {
+                            let v1::instance_spec::Component::MigrationFailureInjector(
+                                src,
+                            ) = to_amend
+                            else {
+                                return Err(wrong_type_error(
+                                    id,
+                                    "migration failure injector",
+                                ));
+                            };
 
-                    *src = comp.clone();
+                            *src = comp.clone();
+                        }
+                        ReplacementComponent::CrucibleStorageBackend(comp) => {
+                            let v1::instance_spec::Component::CrucibleStorageBackend(
+                                src,
+                            ) = to_amend
+                            else {
+                                return Err(wrong_type_error(id, "crucible backend"));
+                            };
+
+                            *src = comp.clone();
+                        }
+                        ReplacementComponent::VirtioNetworkBackend(comp) => {
+                            let v1::instance_spec::Component::VirtioNetworkBackend(src) =
+                                to_amend
+                            else {
+                                return Err(wrong_type_error(id, "viona backend"));
+                            };
+
+                            *src = comp.clone();
+                        }
+                    }
                 }
+
+                let amended_spec: Spec =
+                    source_spec.try_into().map_err(|e: V1SpecError| {
+                        MigrateError::PreambleParse(e.to_string())
+                    })?;
+
+                amended_spec
             }
-        }
+            migrate::types::VersionedInstanceSpec::V2(mut source_spec) => {
+                panic!("source spec: {:?}", source_spec);
+                /*
+                for (id, comp) in replacements {
+                    let Some(to_amend) = source_spec.components.get_mut(id) else {
+                        return Err(MigrateError::InstanceSpecsIncompatible(format!(
+                            "replacement component {id} not in source spec",
+                        )));
+                    };
 
-        let amended_spec =
-            source_spec.try_into().map_err(|e: ApiSpecError| {
-                MigrateError::PreambleParse(e.to_string())
-            })?;
+                    match comp {
+                        #[cfg(not(feature = "failure-injection"))]
+                        ReplacementComponent::MigrationFailureInjector(_) => {
+                            return Err(MigrateError::InstanceSpecsIncompatible(
+                                format!(
+                                    "replacing migration failure injector {id} is \
+                                    impossible because the feature is compiled out"
+                                ),
+                            ));
+                        }
+
+                        #[cfg(feature = "failure-injection")]
+                        ReplacementComponent::MigrationFailureInjector(comp) => {
+                            let v1::instance_spec::Component::MigrationFailureInjector(
+                                src,
+                            ) = to_amend
+                            else {
+                                return Err(wrong_type_error(
+                                    id,
+                                    "migration failure injector",
+                                ));
+                            };
+
+                            *src = comp.clone();
+                        }
+                        ReplacementComponent::CrucibleStorageBackend(comp) => {
+                            let v1::instance_spec::Component::CrucibleStorageBackend(
+                                src,
+                            ) = to_amend
+                            else {
+                                return Err(wrong_type_error(id, "crucible backend"));
+                            };
+
+                            *src = comp.clone();
+                        }
+                        ReplacementComponent::VirtioNetworkBackend(comp) => {
+                            let v1::instance_spec::Component::VirtioNetworkBackend(src) =
+                                to_amend
+                            else {
+                                return Err(wrong_type_error(id, "viona backend"));
+                            };
+
+                            *src = comp.clone();
+                        }
+                    }
+                }
+
+                let amended_spec: Spec =
+                    source_spec.try_into().map_err(|e: V1SpecError| {
+                        MigrateError::PreambleParse(e.to_string())
+                    })?;
+
+                amended_spec
+                */
+            }
+            migrate::types::VersionedInstanceSpec::V3(mut source_spec) => {
+                for (id, comp) in replacements {
+                    let Some(to_amend) = source_spec.components.get_mut(id) else {
+                        return Err(MigrateError::InstanceSpecsIncompatible(format!(
+                            "replacement component {id} not in source spec",
+                        )));
+                    };
+
+                    match comp {
+                        #[cfg(not(feature = "failure-injection"))]
+                        ReplacementComponent::MigrationFailureInjector(_) => {
+                            return Err(MigrateError::InstanceSpecsIncompatible(
+                                format!(
+                                    "replacing migration failure injector {id} is \
+                                    impossible because the feature is compiled out"
+                                ),
+                            ));
+                        }
+
+                        #[cfg(feature = "failure-injection")]
+                        ReplacementComponent::MigrationFailureInjector(comp) => {
+                            let v3::instance_spec::Component::MigrationFailureInjector(
+                                src,
+                            ) = to_amend
+                            else {
+                                return Err(wrong_type_error(
+                                    id,
+                                    "migration failure injector",
+                                ));
+                            };
+
+                            *src = comp.clone();
+                        }
+                        ReplacementComponent::CrucibleStorageBackend(comp) => {
+                            let v3::instance_spec::Component::CrucibleStorageBackend(
+                                src,
+                            ) = to_amend
+                            else {
+                                return Err(wrong_type_error(id, "crucible backend"));
+                            };
+
+                            *src = comp.clone();
+                        }
+                        ReplacementComponent::VirtioNetworkBackend(comp) => {
+                            let v3::instance_spec::Component::VirtioNetworkBackend(src) =
+                                to_amend
+                            else {
+                                return Err(wrong_type_error(id, "viona backend"));
+                            };
+
+                            *src = comp.clone();
+                        }
+                    }
+                }
+
+                let v6_spec: v6::instance_spec::InstanceSpec = source_spec.into();
+                let amended_spec: Spec =
+                    v6_spec.try_into().map_err(|e: V6SpecError| {
+                        let v3_error: V3SpecError = e.into();
+                        MigrateError::PreambleParse(v3_error.to_string())
+                    })?;
+
+                amended_spec
+            }
+            migrate::types::VersionedInstanceSpec::V6(mut source_spec) => {
+                for (id, comp) in replacements {
+                    let Some(to_amend) = source_spec.components.get_mut(id) else {
+                        return Err(MigrateError::InstanceSpecsIncompatible(format!(
+                            "replacement component {id} not in source spec",
+                        )));
+                    };
+
+                    match comp {
+                        #[cfg(not(feature = "failure-injection"))]
+                        ReplacementComponent::MigrationFailureInjector(_) => {
+                            return Err(MigrateError::InstanceSpecsIncompatible(
+                                format!(
+                                    "replacing migration failure injector {id} is \
+                                    impossible because the feature is compiled out"
+                                ),
+                            ));
+                        }
+
+                        #[cfg(feature = "failure-injection")]
+                        ReplacementComponent::MigrationFailureInjector(comp) => {
+                            let v6::instance_spec::Component::MigrationFailureInjector(
+                                src,
+                            ) = to_amend
+                            else {
+                                return Err(wrong_type_error(
+                                    id,
+                                    "migration failure injector",
+                                ));
+                            };
+
+                            *src = comp.clone();
+                        }
+                        ReplacementComponent::CrucibleStorageBackend(comp) => {
+                            let v6::instance_spec::Component::CrucibleStorageBackend(
+                                src,
+                            ) = to_amend
+                            else {
+                                return Err(wrong_type_error(id, "crucible backend"));
+                            };
+
+                            *src = comp.clone();
+                        }
+                        ReplacementComponent::VirtioNetworkBackend(comp) => {
+                            let v6::instance_spec::Component::VirtioNetworkBackend(src) =
+                                to_amend
+                            else {
+                                return Err(wrong_type_error(id, "viona backend"));
+                            };
+
+                            *src = comp.clone();
+                        }
+                    }
+                }
+
+                let amended_spec: Spec =
+                    source_spec.try_into().map_err(|e: V6SpecError| {
+                        MigrateError::PreambleParse(e.to_string())
+                    })?;
+
+                amended_spec
+            }
+        };
 
         // TODO: Compare opaque blobs.
 

@@ -112,19 +112,24 @@ impl TryFrom<Component> for V1Component {
     }
 }
 
-impl From<InstanceSpec> for v2::instance_spec::InstanceSpec {
-    fn from(new: InstanceSpec) -> Self {
-        Self {
-            board: new.board,
-            components: new
+impl TryFrom<InstanceSpec> for v2::instance_spec::InstanceSpec {
+    type Error = InvalidV1Component;
+
+    fn try_from(new: InstanceSpec) -> Result<Self, Self::Error> {
+        let components: Result<BTreeMap<_, _>, _> = new
                 .components
                 .into_iter()
-                .filter_map(|(k, v)| {
-                    V1Component::try_from(v).ok().map(|c| (k, c))
+                .map(|(k, v)| {
+                    V1Component::try_from(v).map(|c| (k, c))
                 })
-                .collect(),
+                .collect::<Result<BTreeMap<_, _>, _>>();
+        let components = components.expect("TODO: hueagghggh");
+
+        Ok(Self {
+            board: new.board,
+            components,
             smbios: new.smbios,
-        }
+        })
     }
 }
 
@@ -170,7 +175,11 @@ impl From<InstanceSpecStatus> for v2::instance_spec::InstanceSpecStatus {
             InstanceSpecStatus::WaitingForMigrationSource => {
                 Self::WaitingForMigrationSource
             }
-            InstanceSpecStatus::Present(spec) => Self::Present(spec.into()),
+            InstanceSpecStatus::Present(spec) => {
+                let v2_spec: v2::instance_spec::InstanceSpec = spec.try_into()
+                    .expect("TODO: v3 instance spec into v2");
+                Self::Present(v2_spec)
+            },
         }
     }
 }

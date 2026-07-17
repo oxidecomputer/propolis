@@ -79,7 +79,7 @@ pub struct SpecConfig {
     pub components: BTreeMap<SpecKey, Component>,
 }
 
-// Inspired by `api_spec_v0.rs`'s `insert_component` and
+// Inspired by `api_spec_v1.rs`'s `insert_component` and
 // `propolis-cli/src/main.rs`'s `add_component_to_spec`. Same purpose as both of
 // them.
 //

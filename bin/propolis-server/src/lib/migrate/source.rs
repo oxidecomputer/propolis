@@ -467,9 +467,12 @@ impl<T: MigrateConn> RonV0Runner<'_, T> {
 
     async fn sync(&mut self) -> Result<(), MigrateError> {
         self.update_state(MigrationState::Sync);
+        let spec = self.vm.lock_shared().await.instance_spec().clone();
+        let v1_spec: v1::instance_spec::InstanceSpec = spec.try_into()
+            .expect("TODO: handle being unable to turn Spec into a v1 InstanceSpec");
         let preamble =
-            Preamble::new(v1::instance_spec::VersionedInstanceSpec::V0(
-                self.vm.lock_shared().await.instance_spec().clone().into(),
+            Preamble::new(crate::migrate::types::VersionedInstanceSpec::V1(
+                v1_spec
             ));
         let s = ron::ser::to_string(&preamble)
             .map_err(codec::ProtocolError::from)?;

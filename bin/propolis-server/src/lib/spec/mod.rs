@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::spec::api_spec_v0::ApiSpecError;
+use crate::spec::api_spec_v6::ApiSpecError;
 use cpuid_utils::CpuidSet;
 use propolis_api_types::instance_spec::{
     components::{
@@ -36,7 +36,7 @@ use propolis_api_types::instance_spec::{
 use propolis_api_types::instance_spec::{
     Component, InstanceSpec, SmbiosType1Input,
 };
-use propolis_api_types_versions::{v1, v2, v3};
+use propolis_api_types_versions::{v1, v3, v6, latest};
 use thiserror::Error;
 
 #[cfg(feature = "failure-injection")]
@@ -50,34 +50,36 @@ use propolis_api_types::instance_spec::components::{
 };
 
 // mod api_request;
-pub(crate) mod api_spec_v0;
+pub(crate) mod api_spec_v1;
+pub(crate) mod api_spec_v3;
+pub(crate) mod api_spec_v6;
 pub(crate) mod builder;
 
-/// The code related to latest types does not go into a versioned module
-impl From<Spec> for InstanceSpec {
+/*
+/// TODO: it happens to be true that we can write this today. it is not true in general that `Spec`
+/// must be convertible into `latest::instance_spec::InstanceSpec` (we can deprecate or remove an
+/// item in a new InstanceSpec, and the conversion can become impossible. this just hasn't happened
+/// yet.)
+impl From<Spec> for latest::instance_spec::InstanceSpec {
     fn from(val: Spec) -> Self {
-        let smbios = val.smbios_type1_input.clone();
-        let vsock = val.vsock.clone();
-
-        let v1_spec: v1::instance_spec::InstanceSpec = val.into();
-        let v2_spec =
-            v2::instance_spec::InstanceSpec { smbios, ..v1_spec.into() };
-        let v3_spec: v3::instance_spec::InstanceSpec = v2_spec.into();
-        let mut spec: InstanceSpec = v3_spec.into();
-
-        if let Some(vsock) = vsock {
-            spec.components
-                .insert(vsock.id, Component::VirtioSocket(vsock.spec));
-        }
-        spec
+        api_spec_v6::
+        // TODO:
+        panic!("convert the spec into a latest::InstanceSpec or die trying");
     }
 }
+*/
 
 /// The code related to latest types does not go into a versioned module
+///
+/// TODO: impls here can probably be copied wholesale when new versions are added
+/// it may not be correct for a new `TryFrom<InstanceSpec> for Spec` to be derived from this
+/// function. or it may be reasonable. this depends exclusively on the changes in InstanceSpec.
 impl TryFrom<InstanceSpec> for Spec {
     type Error = ApiSpecError;
 
     fn try_from(value: InstanceSpec) -> Result<Self, Self::Error> {
+        Ok(api_spec_v6::latest_api_spec_to_spec_builder(value)?.finish())
+            /*
         // Extract vsock before conversion since it's v3-only and will be
         // filtered out during the v3→v2→v1 chain.
         let mut vsock_entry = None;
@@ -93,13 +95,23 @@ impl TryFrom<InstanceSpec> for Spec {
         let smbios = v2_spec.smbios.clone();
         let v1_spec: v1::instance_spec::InstanceSpec = v2_spec.into();
 
-        let mut builder = api_spec_v0::v1_to_spec_builder(v1_spec)?;
+        let mut builder = api_spec_v1::v1_to_spec_builder(v1_spec)?;
         if let Some(vsock) = vsock_entry {
             builder.add_vsock_device(vsock)?;
         }
         let mut spec = builder.finish();
         spec.smbios_type1_input = smbios;
         Ok(spec)
+            */
+    }
+}
+
+// TODO: now.. what about the older versions of InstanceSpec!
+impl TryFrom<v1::instance_spec::InstanceSpec> for Spec {
+    type Error = api_spec_v1::ApiSpecError;
+
+    fn try_from(value: v1::instance_spec::InstanceSpec) -> Result<Self, Self::Error> {
+        Ok(api_spec_v1::v1_to_spec_builder(value)?.finish())
     }
 }
 
@@ -240,11 +252,35 @@ impl StorageDevice {
     }
 }
 
-impl TryFrom<StorageDevice> for v1::instance_spec::Component {
+impl From<StorageDevice> for latest::instance_spec::Component {
     fn from(value: StorageDevice) -> Self {
         match value {
             StorageDevice::Virtio(d) => Self::VirtioDisk(d),
             StorageDevice::Nvme(d) => Self::NvmeDisk(d),
+        }
+    }
+}
+
+// TODO: this needs to move or die
+impl TryFrom<StorageDevice> for v3::instance_spec::Component {
+    type Error = v6::instance_spec::InvalidV3Component;
+
+    fn try_from(value: StorageDevice) -> Result<Self, Self::Error> {
+        match value {
+            StorageDevice::Virtio(d) => Ok(Self::VirtioDisk(d)),
+            StorageDevice::Nvme(d) => Ok(Self::NvmeDisk(d.try_into()?)),
+        }
+    }
+}
+
+// TODO: this needs to move or die
+impl TryFrom<StorageDevice> for v1::instance_spec::Component {
+    type Error = v6::instance_spec::InvalidV3Component;
+
+    fn try_from(value: StorageDevice) -> Result<Self, Self::Error> {
+        match value {
+            StorageDevice::Virtio(d) => Ok(Self::VirtioDisk(d)),
+            StorageDevice::Nvme(d) => Ok(Self::NvmeDisk(d.try_into()?)),
         }
     }
 }
@@ -290,6 +326,26 @@ impl StorageBackend {
 }
 
 impl From<StorageBackend> for Component {
+    fn from(value: StorageBackend) -> Self {
+        match value {
+            StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),
+            StorageBackend::File(be) => Self::FileStorageBackend(be),
+            StorageBackend::Blob(be) => Self::BlobStorageBackend(be),
+        }
+    }
+}
+
+impl From<StorageBackend> for v3::instance_spec::Component {
+    fn from(value: StorageBackend) -> Self {
+        match value {
+            StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),
+            StorageBackend::File(be) => Self::FileStorageBackend(be),
+            StorageBackend::Blob(be) => Self::BlobStorageBackend(be),
+        }
+    }
+}
+
+impl From<StorageBackend> for v1::instance_spec::Component {
     fn from(value: StorageBackend) -> Self {
         match value {
             StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),

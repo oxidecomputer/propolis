@@ -355,9 +355,10 @@ impl Vm {
                 let spec =
                     vm.objects().lock_shared().await.instance_spec().clone();
                 let state = vm.external_state_rx.borrow().clone();
+                let external_spec: propolis_api_types_versions::latest::instance_spec::InstanceSpec = spec.into();
                 Some(InstanceSpecGetResponse {
                     properties: vm.properties.clone(),
-                    spec: InstanceSpecStatus::Present(spec.into()),
+                    spec: InstanceSpecStatus::Present(external_spec),
                     state: state.state,
                 })
             }
@@ -369,13 +370,14 @@ impl Vm {
                     spec: spec.clone().into(),
                 })
             }
-            VmState::Rundown { vm, spec } => Some(InstanceSpecGetResponse {
-                properties: vm.properties.clone(),
-                state: vm.external_state_rx.borrow().state,
-                spec: InstanceSpecStatus::Present(
-                    spec.as_ref().to_owned().into(),
-                ),
-            }),
+            VmState::Rundown { vm, spec } => {
+                let external_spec: propolis_api_types_versions::latest::instance_spec::InstanceSpec = (*spec.to_owned()).into();
+                Some(InstanceSpecGetResponse {
+                    properties: vm.properties.clone(),
+                    state: vm.external_state_rx.borrow().state,
+                    spec: InstanceSpecStatus::Present(external_spec),
+                })
+            },
         }
     }
 
