@@ -369,7 +369,7 @@ fn parse_storage_device_from_config(
                 // causes unnecessary guest work, but is not a correctness
                 // issue. The converse can be. Default to reporting write caches
                 // if we're not instructed otherwise.
-                let has_write_cache = write_cache_opt.unwrap_or(true);
+                let has_write_cache = write_cache_opt.unwrap_or(false);
 
                 Component::NvmeDisk(NvmeDisk {
                     backend_id,

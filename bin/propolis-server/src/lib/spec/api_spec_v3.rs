@@ -5,11 +5,8 @@
 //! Conversions from [`propolis_api_types::v3`]) instance specs in the
 //! [`propolis_api_types`] crate to the internal [`super::Spec`] representation.
 
-use std::collections::BTreeMap;
-
 use propolis_api_types::instance_spec::{
     components::{
-        backends::{DlpiNetworkBackend, VirtioNetworkBackend},
         board::Board as InstanceSpecBoard,
         devices::{BootSettings, SerialPort as SerialPortDesc},
     },
@@ -23,8 +20,7 @@ use propolis_api_types::instance_spec::components::devices::SoftNpuPort as SoftN
 
 use super::{
     builder::{SpecBuilder, SpecBuilderError},
-    Disk, Nic, QemuPvpanic, SerialPortDevice, Spec, StorageBackend,
-    StorageDevice,
+    SerialPortDevice, Spec,
 };
 
 #[cfg(feature = "failure-injection")]
@@ -50,6 +46,9 @@ pub(crate) enum ApiSpecError {
 
     #[error("backend {0} not used by any device")]
     BackendNotUsed(SpecKey),
+
+    #[error("spec contains v3-incompatible component: {0}")]
+    IncompatibleComponent(String),
 }
 
 use crate::spec::api_spec_v1;
@@ -61,6 +60,7 @@ impl From<ApiSpecError> for api_spec_v1::ApiSpecError {
             ApiSpecError::NetworkBackendNotFound { backend, device } => api_spec_v1::ApiSpecError::NetworkBackendNotFound { backend, device },
             ApiSpecError::FeatureCompiledOut { component, feature } => api_spec_v1::ApiSpecError::FeatureCompiledOut { component, feature },
             ApiSpecError::BackendNotUsed(key) => api_spec_v1::ApiSpecError::BackendNotUsed(key),
+            ApiSpecError::IncompatibleComponent(key) => api_spec_v1::ApiSpecError::IncompatibleComponent(key),
         }
     }
 }
@@ -81,7 +81,7 @@ impl From<api_spec_v6::ApiSpecError> for ApiSpecError {
 }
 
 impl TryFrom<Spec> for v3::instance_spec::InstanceSpec {
-    type Error = String;
+    type Error = ApiSpecError;
 
     fn try_from(val: Spec) -> Result<Self, Self::Error> {
         // Exhaustively destructure the input spec so that adding a new field
@@ -138,7 +138,8 @@ impl TryFrom<Spec> for v3::instance_spec::InstanceSpec {
 
         for (disk_id, disk) in disks {
             let backend_id = disk.device_spec.backend_id().to_owned();
-            let device_component: v3::instance_spec::Component = disk.device_spec.try_into().expect("TODO: StorageDevice into v3::Component");
+            let device_component: v3::instance_spec::Component = disk.device_spec.try_into()
+                .map_err(|e: propolis_api_types_versions::v6::instance_spec::InvalidV3Component| ApiSpecError::IncompatibleComponent(e.to_string()))?;
             let backend_component: v3::instance_spec::Component = disk.backend_spec.into();
             insert_component(&mut spec, disk_id, device_component);
             insert_component(&mut spec, backend_id, backend_component);

@@ -2,6 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+//! This module and its children define the migration protocol for
+//! `propolis-server`. Generally the structures and state machine here are
+//! consistent with the discussion in RFD 71.
+
 use bit_field::BitField;
 use dropshot::HttpError;
 use propolis::migrate::MigrateStateError;

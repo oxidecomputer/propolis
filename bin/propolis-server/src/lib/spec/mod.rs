@@ -55,63 +55,17 @@ pub(crate) mod api_spec_v3;
 pub(crate) mod api_spec_v6;
 pub(crate) mod builder;
 
-/*
-/// TODO: it happens to be true that we can write this today. it is not true in general that `Spec`
-/// must be convertible into `latest::instance_spec::InstanceSpec` (we can deprecate or remove an
-/// item in a new InstanceSpec, and the conversion can become impossible. this just hasn't happened
-/// yet.)
-impl From<Spec> for latest::instance_spec::InstanceSpec {
-    fn from(val: Spec) -> Self {
-        api_spec_v6::
-        // TODO:
-        panic!("convert the spec into a latest::InstanceSpec or die trying");
-    }
-}
-*/
-
 /// The code related to latest types does not go into a versioned module
-///
-/// TODO: impls here can probably be copied wholesale when new versions are added
-/// it may not be correct for a new `TryFrom<InstanceSpec> for Spec` to be derived from this
-/// function. or it may be reasonable. this depends exclusively on the changes in InstanceSpec.
+
+/// `propolis-server` relies on `TryInto` to convert the API-provided
+/// `InstanceSpec` to an internal `Spec`. When adding a new API version to
+/// `propolis-server` you will probably want to take this implementation and
+/// copy it into the no-longer-latest `api_spec_v*` module.
 impl TryFrom<InstanceSpec> for Spec {
     type Error = ApiSpecError;
 
     fn try_from(value: InstanceSpec) -> Result<Self, Self::Error> {
-        Ok(api_spec_v6::latest_api_spec_to_spec_builder(value)?.finish())
-            /*
-        // Extract vsock before conversion since it's v3-only and will be
-        // filtered out during the v3→v2→v1 chain.
-        let mut vsock_entry = None;
-        for (id, component) in &value.components {
-            if let Component::VirtioSocket(v) = component {
-                vsock_entry = Some(VirtioSocket { id: id.clone(), spec: *v });
-                break;
-            }
-        }
-
-        let v3_spec: v3::instance_spec::InstanceSpec = value.into();
-        let v2_spec: v2::instance_spec::InstanceSpec = v3_spec.into();
-        let smbios = v2_spec.smbios.clone();
-        let v1_spec: v1::instance_spec::InstanceSpec = v2_spec.into();
-
-        let mut builder = api_spec_v1::v1_to_spec_builder(v1_spec)?;
-        if let Some(vsock) = vsock_entry {
-            builder.add_vsock_device(vsock)?;
-        }
-        let mut spec = builder.finish();
-        spec.smbios_type1_input = smbios;
-        Ok(spec)
-            */
-    }
-}
-
-// TODO: now.. what about the older versions of InstanceSpec!
-impl TryFrom<v1::instance_spec::InstanceSpec> for Spec {
-    type Error = api_spec_v1::ApiSpecError;
-
-    fn try_from(value: v1::instance_spec::InstanceSpec) -> Result<Self, Self::Error> {
-        Ok(api_spec_v1::v1_to_spec_builder(value)?.finish())
+        Ok(api_spec_v6::v6_to_spec_builder(value)?.finish())
     }
 }
 
@@ -128,6 +82,14 @@ pub struct ComponentTypeMismatch;
 /// device paths, etc.). When constructing a new spec, use the
 /// [`builder::SpecBuilder`] struct to catch requests that violate these
 /// invariants.
+///
+/// ### Relationship to migration
+///
+/// As Propolis' internal representation of a VM, conversion to/from `Spec` is a
+/// front-and-center concern for migrating from a current Propolis to some other
+/// newer or older `propolis-server`. See the module comment in
+/// [`lib/migrate/mod.rs`](crate::lib::migrate) for more about the relationships
+/// between these types.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Spec {
     pub board: Board,

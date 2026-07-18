@@ -159,6 +159,14 @@ impl From<Spec> for v6::instance_spec::InstanceSpec {
             );
         }
 
+        if let Some(vsock) = vsock {
+            insert_component(
+                &mut spec,
+                vsock.id,
+                v6::instance_spec::Component::VirtioSocket(vsock.spec),
+            );
+        }
+
         if let Some(settings) = boot_settings {
             insert_component(
                 &mut spec,
@@ -253,16 +261,8 @@ impl TryFrom<v6::instance_spec::InstanceSpec> for Spec {
 pub(crate) fn v6_to_spec_builder(
     value: v6::instance_spec::InstanceSpec,
 ) -> Result<SpecBuilder, ApiSpecError> {
-    let latest_spec: latest::instance_spec::InstanceSpec = value.into();
-
-    latest_api_spec_to_spec_builder(latest_spec)
-}
-
-pub(crate) fn latest_api_spec_to_spec_builder(
-    value: latest::instance_spec::InstanceSpec,
-) -> Result<SpecBuilder, ApiSpecError> {
     let mut builder = SpecBuilder::with_instance_spec_board(value.board)?;
-    let mut devices: Vec<(SpecKey, latest::instance_spec::Component)> = vec![];
+    let mut devices: Vec<(SpecKey, v6::instance_spec::Component)> = vec![];
     let mut boot_settings = None;
     let mut storage_backends: BTreeMap<SpecKey, StorageBackend> =
         BTreeMap::new();
@@ -273,9 +273,9 @@ pub(crate) fn latest_api_spec_to_spec_builder(
 
     for (id, component) in value.components.into_iter() {
         match component {
-            latest::instance_spec::Component::CrucibleStorageBackend(_)
-            | latest::instance_spec::Component::FileStorageBackend(_)
-            | latest::instance_spec::Component::BlobStorageBackend(_) => {
+            v6::instance_spec::Component::CrucibleStorageBackend(_)
+            | v6::instance_spec::Component::FileStorageBackend(_)
+            | v6::instance_spec::Component::BlobStorageBackend(_) => {
                 storage_backends.insert(
                     id,
                     component
@@ -283,10 +283,10 @@ pub(crate) fn latest_api_spec_to_spec_builder(
                         .expect("component is known to be a storage backend"),
                 );
             }
-            latest::instance_spec::Component::VirtioNetworkBackend(viona) => {
+            v6::instance_spec::Component::VirtioNetworkBackend(viona) => {
                 viona_backends.insert(id, viona);
             }
-            latest::instance_spec::Component::DlpiNetworkBackend(dlpi) => {
+            v6::instance_spec::Component::DlpiNetworkBackend(dlpi) => {
                 dlpi_backends.insert(id, dlpi);
             }
             device => {
@@ -297,8 +297,8 @@ pub(crate) fn latest_api_spec_to_spec_builder(
 
     for (device_id, device_spec) in devices {
         match device_spec {
-            latest::instance_spec::Component::VirtioDisk(_)
-            | latest::instance_spec::Component::NvmeDisk(_) => {
+            v6::instance_spec::Component::VirtioDisk(_)
+            | v6::instance_spec::Component::NvmeDisk(_) => {
                 let device_spec = StorageDevice::try_from(device_spec)
                     .expect("component is known to be a disk");
 
@@ -314,7 +314,7 @@ pub(crate) fn latest_api_spec_to_spec_builder(
                     Disk { device_spec, backend_spec },
                 )?;
             }
-            latest::instance_spec::Component::VirtioNic(nic) => {
+            v6::instance_spec::Component::VirtioNic(nic) => {
                 let (_, backend_spec) = viona_backends
                     .remove_entry(&nic.backend_id)
                     .ok_or_else(|| ApiSpecError::NetworkBackendNotFound {
@@ -327,19 +327,19 @@ pub(crate) fn latest_api_spec_to_spec_builder(
                     Nic { device_spec: nic, backend_spec },
                 )?;
             }
-            latest::instance_spec::Component::SerialPort(port) => {
+            v6::instance_spec::Component::SerialPort(port) => {
                 builder.add_serial_port(device_id, port.num)?;
             }
-            latest::instance_spec::Component::PciPciBridge(bridge) => {
+            v6::instance_spec::Component::PciPciBridge(bridge) => {
                 builder.add_pci_bridge(device_id, bridge)?;
             }
-            latest::instance_spec::Component::QemuPvpanic(pvpanic) => {
+            v6::instance_spec::Component::QemuPvpanic(pvpanic) => {
                 builder.add_pvpanic_device(QemuPvpanic {
                     id: device_id,
                     spec: pvpanic,
                 })?;
             }
-            latest::instance_spec::Component::BootSettings(settings) => {
+            v6::instance_spec::Component::BootSettings(settings) => {
                 // The builder returns an error if its caller tries to add
                 // a boot option that isn't in the set of attached disks.
                 // Since there may be more disk devices left in the
@@ -347,40 +347,40 @@ pub(crate) fn latest_api_spec_to_spec_builder(
                 // apply it to the builder later.
                 boot_settings = Some((device_id, settings));
             }
-            latest::instance_spec::Component::VirtioSocket(vsock) => {
+            v6::instance_spec::Component::VirtioSocket(vsock) => {
                 let vsock_device = crate::spec::VirtioSocket { id: device_id.clone(), spec: vsock };
                 builder.add_vsock_device(vsock_device)?;
             }
             #[cfg(not(feature = "failure-injection"))]
-            latest::instance_spec::Component::MigrationFailureInjector(_) => {
+            v6::instance_spec::Component::MigrationFailureInjector(_) => {
                 return Err(ApiSpecError::FeatureCompiledOut {
                     component: device_id,
                     feature: "failure-injection",
                 });
             }
             #[cfg(feature = "failure-injection")]
-            latest::instance_spec::Component::MigrationFailureInjector(mig) => {
+            v6::instance_spec::Component::MigrationFailureInjector(mig) => {
                 builder.add_migration_failure_device(MigrationFailure {
                     id: device_id,
                     spec: mig,
                 })?;
             }
             #[cfg(not(feature = "falcon"))]
-            latest::instance_spec::Component::SoftNpuPciPort(_)
-            | latest::instance_spec::Component::SoftNpuPort(_)
-            | latest::instance_spec::Component::SoftNpuP9(_)
-            | latest::instance_spec::Component::P9fs(_) => {
+            v6::instance_spec::Component::SoftNpuPciPort(_)
+            | v6::instance_spec::Component::SoftNpuPort(_)
+            | v6::instance_spec::Component::SoftNpuP9(_)
+            | v6::instance_spec::Component::P9fs(_) => {
                 return Err(ApiSpecError::FeatureCompiledOut {
                     component: device_id,
                     feature: "falcon",
                 });
             }
             #[cfg(feature = "falcon")]
-            latest::instance_spec::Component::SoftNpuPciPort(port) => {
+            v6::instance_spec::Component::SoftNpuPciPort(port) => {
                 builder.set_softnpu_pci_port(port)?;
             }
             #[cfg(feature = "falcon")]
-            latest::instance_spec::Component::SoftNpuPort(port) => {
+            v6::instance_spec::Component::SoftNpuPort(port) => {
                 let (_, backend_spec) = dlpi_backends
                     .remove_entry(&port.backend_id)
                     .ok_or_else(|| ApiSpecError::NetworkBackendNotFound {
@@ -397,18 +397,18 @@ pub(crate) fn latest_api_spec_to_spec_builder(
                 builder.add_softnpu_port(device_id, port)?;
             }
             #[cfg(feature = "falcon")]
-            latest::instance_spec::Component::SoftNpuP9(p9) => {
+            v6::instance_spec::Component::SoftNpuP9(p9) => {
                 builder.set_softnpu_p9(p9)?;
             }
             #[cfg(feature = "falcon")]
-            latest::instance_spec::Component::P9fs(p9fs) => {
+            v6::instance_spec::Component::P9fs(p9fs) => {
                 builder.set_p9fs(p9fs)?;
             }
-            latest::instance_spec::Component::CrucibleStorageBackend(_)
-            | latest::instance_spec::Component::FileStorageBackend(_)
-            | latest::instance_spec::Component::BlobStorageBackend(_)
-            | latest::instance_spec::Component::VirtioNetworkBackend(_)
-            | latest::instance_spec::Component::DlpiNetworkBackend(_) => {
+            v6::instance_spec::Component::CrucibleStorageBackend(_)
+            | v6::instance_spec::Component::FileStorageBackend(_)
+            | v6::instance_spec::Component::BlobStorageBackend(_)
+            | v6::instance_spec::Component::VirtioNetworkBackend(_)
+            | v6::instance_spec::Component::DlpiNetworkBackend(_) => {
                 unreachable!("already filtered out backends")
             }
         }
@@ -436,4 +436,10 @@ pub(crate) fn latest_api_spec_to_spec_builder(
     }
 
     Ok(builder)
+}
+
+pub(crate) fn latest_api_spec_to_spec_builder(
+    value: latest::instance_spec::InstanceSpec,
+) -> Result<SpecBuilder, ApiSpecError> {
+    v6_to_spec_builder(value)
 }
