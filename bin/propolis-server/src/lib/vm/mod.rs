@@ -377,7 +377,7 @@ impl Vm {
                     state: vm.external_state_rx.borrow().state,
                     spec: InstanceSpecStatus::Present(external_spec),
                 })
-            },
+            }
         }
     }
 

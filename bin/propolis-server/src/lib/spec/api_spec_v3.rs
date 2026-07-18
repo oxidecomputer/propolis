@@ -12,7 +12,7 @@ use propolis_api_types::instance_spec::{
     },
     SpecKey,
 };
-use propolis_api_types_versions::{v3, latest};
+use propolis_api_types_versions::{latest, v3};
 use thiserror::Error;
 
 #[cfg(feature = "falcon")]
@@ -56,11 +56,30 @@ impl From<ApiSpecError> for api_spec_v1::ApiSpecError {
     fn from(value: ApiSpecError) -> Self {
         match value {
             ApiSpecError::Builder(b) => api_spec_v1::ApiSpecError::Builder(b),
-            ApiSpecError::StorageBackendNotFound { backend, device } => api_spec_v1::ApiSpecError::StorageBackendNotFound { backend, device },
-            ApiSpecError::NetworkBackendNotFound { backend, device } => api_spec_v1::ApiSpecError::NetworkBackendNotFound { backend, device },
-            ApiSpecError::FeatureCompiledOut { component, feature } => api_spec_v1::ApiSpecError::FeatureCompiledOut { component, feature },
-            ApiSpecError::BackendNotUsed(key) => api_spec_v1::ApiSpecError::BackendNotUsed(key),
-            ApiSpecError::IncompatibleComponent(key) => api_spec_v1::ApiSpecError::IncompatibleComponent(key),
+            ApiSpecError::StorageBackendNotFound { backend, device } => {
+                api_spec_v1::ApiSpecError::StorageBackendNotFound {
+                    backend,
+                    device,
+                }
+            }
+            ApiSpecError::NetworkBackendNotFound { backend, device } => {
+                api_spec_v1::ApiSpecError::NetworkBackendNotFound {
+                    backend,
+                    device,
+                }
+            }
+            ApiSpecError::FeatureCompiledOut { component, feature } => {
+                api_spec_v1::ApiSpecError::FeatureCompiledOut {
+                    component,
+                    feature,
+                }
+            }
+            ApiSpecError::BackendNotUsed(key) => {
+                api_spec_v1::ApiSpecError::BackendNotUsed(key)
+            }
+            ApiSpecError::IncompatibleComponent(key) => {
+                api_spec_v1::ApiSpecError::IncompatibleComponent(key)
+            }
         }
     }
 }
@@ -72,10 +91,21 @@ impl From<api_spec_v6::ApiSpecError> for ApiSpecError {
     fn from(value: api_spec_v6::ApiSpecError) -> Self {
         match value {
             api_spec_v6::ApiSpecError::Builder(b) => ApiSpecError::Builder(b),
-            api_spec_v6::ApiSpecError::StorageBackendNotFound { backend, device } => ApiSpecError::StorageBackendNotFound { backend, device },
-            api_spec_v6::ApiSpecError::NetworkBackendNotFound { backend, device } => ApiSpecError::NetworkBackendNotFound { backend, device },
-            api_spec_v6::ApiSpecError::FeatureCompiledOut { component, feature } => ApiSpecError::FeatureCompiledOut { component, feature },
-            api_spec_v6::ApiSpecError::BackendNotUsed(key) => ApiSpecError::BackendNotUsed(key),
+            api_spec_v6::ApiSpecError::StorageBackendNotFound {
+                backend,
+                device,
+            } => ApiSpecError::StorageBackendNotFound { backend, device },
+            api_spec_v6::ApiSpecError::NetworkBackendNotFound {
+                backend,
+                device,
+            } => ApiSpecError::NetworkBackendNotFound { backend, device },
+            api_spec_v6::ApiSpecError::FeatureCompiledOut {
+                component,
+                feature,
+            } => ApiSpecError::FeatureCompiledOut { component, feature },
+            api_spec_v6::ApiSpecError::BackendNotUsed(key) => {
+                ApiSpecError::BackendNotUsed(key)
+            }
         }
     }
 }
@@ -140,7 +170,8 @@ impl TryFrom<Spec> for v3::instance_spec::InstanceSpec {
             let backend_id = disk.device_spec.backend_id().to_owned();
             let device_component: v3::instance_spec::Component = disk.device_spec.try_into()
                 .map_err(|e: propolis_api_types_versions::v6::instance_spec::InvalidV3Component| ApiSpecError::IncompatibleComponent(e.to_string()))?;
-            let backend_component: v3::instance_spec::Component = disk.backend_spec.into();
+            let backend_component: v3::instance_spec::Component =
+                disk.backend_spec.into();
             insert_component(&mut spec, disk_id, device_component);
             insert_component(&mut spec, backend_id, backend_component);
         }

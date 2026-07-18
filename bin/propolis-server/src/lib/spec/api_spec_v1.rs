@@ -95,11 +95,16 @@ impl TryFrom<Spec> for v1::instance_spec::InstanceSpec {
             // * V1 specs are from before live migration was done outside
             //   ad-hoc/CI environments - such an old Propolis will never exist
             //   as a migration target in the field.
-            return Err(ApiSpecError::IncompatibleComponent("cannot express explicit SMBIOS tables in v1 instance spec".to_string()));
+            return Err(ApiSpecError::IncompatibleComponent(
+                "cannot express explicit SMBIOS tables in v1 instance spec"
+                    .to_string(),
+            ));
         }
 
         if vsock.is_some() {
-            return Err(ApiSpecError::IncompatibleComponent("cannot convert virtio-socket to v1 instance spec".to_string()));
+            return Err(ApiSpecError::IncompatibleComponent(
+                "cannot convert virtio-socket to v1 instance spec".to_string(),
+            ));
         }
 
         // Inserts a component entry into the supplied map, asserting first that
@@ -138,7 +143,8 @@ impl TryFrom<Spec> for v1::instance_spec::InstanceSpec {
             let backend_id = disk.device_spec.backend_id().to_owned();
             let device_component: v1::instance_spec::Component = disk.device_spec.try_into()
                 .map_err(|e: propolis_api_types_versions::v6::instance_spec::InvalidV3Component| ApiSpecError::IncompatibleComponent(e.to_string()))?;
-            let backend_component: v1::instance_spec::Component = disk.backend_spec.into();
+            let backend_component: v1::instance_spec::Component =
+                disk.backend_spec.into();
             insert_component(&mut spec, disk_id, device_component);
             insert_component(&mut spec, backend_id, backend_component);
         }
@@ -267,7 +273,9 @@ impl TryFrom<Spec> for v1::instance_spec::InstanceSpec {
 impl TryFrom<v1::instance_spec::InstanceSpec> for Spec {
     type Error = ApiSpecError;
 
-    fn try_from(value: v1::instance_spec::InstanceSpec) -> Result<Self, Self::Error> {
+    fn try_from(
+        value: v1::instance_spec::InstanceSpec,
+    ) -> Result<Self, Self::Error> {
         Ok(v1_to_spec_builder(value)?.finish())
     }
 }
@@ -281,6 +289,5 @@ pub(crate) fn v1_to_spec_builder(
     let v2_spec: v2::instance_spec::InstanceSpec = value.into();
     let v3_spec: v3::instance_spec::InstanceSpec = v2_spec.into();
 
-    crate::spec::api_spec_v3::v3_to_spec_builder(v3_spec)
-        .map_err(|e| e.into())
+    crate::spec::api_spec_v3::v3_to_spec_builder(v3_spec).map_err(|e| e.into())
 }

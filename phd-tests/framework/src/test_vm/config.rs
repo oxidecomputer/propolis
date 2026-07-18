@@ -344,22 +344,24 @@ impl<'dr> VmConfig<'dr> {
                     ),
                     pci_path,
                 }),
-                DiskInterface::Nvme { has_write_cache }  => Component::NvmeDisk(NvmeDisk {
-                    backend_id: SpecKey::Name(
-                        backend_name.clone().into_string(),
-                    ),
-                    pci_path,
-                    serial_number: nvme_serial_from_str(
-                        device_name.as_str(),
-                        // Omicron supplies (or will supply, as of this writing)
-                        // 0 as the padding byte to maintain compatibility for
-                        // existing disks. Match that behavior here so that PHD
-                        // and Omicron VM configurations are as similar as
-                        // possible.
-                        0,
-                    ),
-                    has_write_cache,
-                }),
+                DiskInterface::Nvme { has_write_cache } => {
+                    Component::NvmeDisk(NvmeDisk {
+                        backend_id: SpecKey::Name(
+                            backend_name.clone().into_string(),
+                        ),
+                        pci_path,
+                        serial_number: nvme_serial_from_str(
+                            device_name.as_str(),
+                            // Omicron supplies (or will supply, as of this writing)
+                            // 0 as the padding byte to maintain compatibility for
+                            // existing disks. Match that behavior here so that PHD
+                            // and Omicron VM configurations are as similar as
+                            // possible.
+                            0,
+                        ),
+                        has_write_cache,
+                    })
+                }
             };
 
             let _old = spec

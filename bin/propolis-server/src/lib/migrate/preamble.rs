@@ -9,9 +9,7 @@ use propolis_api_types_versions::v1;
 use serde::{Deserialize, Serialize};
 
 use crate::migrate;
-use crate::spec::{
-    Spec
-};
+use crate::spec::Spec;
 
 use super::MigrateError;
 
@@ -43,7 +41,8 @@ impl Preamble {
             ReplacementComponent,
         >,
     ) -> Result<Spec, MigrateError> {
-        let amended_spec = self.instance_spec.into_amended_spec(replacements)?;
+        let amended_spec =
+            self.instance_spec.into_amended_spec(replacements)?;
 
         // TODO: Compare opaque blobs.
 

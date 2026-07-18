@@ -24,12 +24,12 @@ use crate::migrate::memx;
 use crate::migrate::preamble::Preamble;
 use crate::migrate::probes;
 use crate::migrate::protocol::Protocol;
+use crate::migrate::types::VersionedInstanceSpec;
 use crate::migrate::{codec, protocol};
 use crate::migrate::{
     Device, DevicePayload, MigrateError, MigratePhase, MigrateRole,
     MigrationState, PageIter,
 };
-use crate::migrate::types::VersionedInstanceSpec;
 
 use crate::vm::objects::VmObjects;
 use crate::vm::state_publisher::{
@@ -467,7 +467,9 @@ impl<T: MigrateConn> RonV0Runner<'_, T> {
 
     async fn sync(&mut self) -> Result<(), MigrateError> {
         self.update_state(MigrationState::Sync);
-        let versioned = VersionedInstanceSpec::from_spec(self.vm.lock_shared().await.instance_spec())?;
+        let versioned = VersionedInstanceSpec::from_spec(
+            self.vm.lock_shared().await.instance_spec(),
+        )?;
         let preamble = Preamble::new(versioned);
         let s = ron::ser::to_string(&preamble)
             .map_err(codec::ProtocolError::from)?;

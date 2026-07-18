@@ -15,7 +15,7 @@ use propolis_api_types::instance_spec::{
     },
     SpecKey,
 };
-use propolis_api_types_versions::{v6, latest};
+use propolis_api_types_versions::{latest, v6};
 use thiserror::Error;
 
 #[cfg(feature = "falcon")]
@@ -108,8 +108,10 @@ impl From<Spec> for v6::instance_spec::InstanceSpec {
 
         for (disk_id, disk) in disks {
             let backend_id = disk.device_spec.backend_id().to_owned();
-            let device_component: v6::instance_spec::Component = disk.device_spec.into();
-            let backend_component: v6::instance_spec::Component = disk.backend_spec.into();
+            let device_component: v6::instance_spec::Component =
+                disk.device_spec.into();
+            let backend_component: v6::instance_spec::Component =
+                disk.backend_spec.into();
             insert_component(&mut spec, disk_id, device_component);
             insert_component(&mut spec, backend_id, backend_component);
         }
@@ -348,7 +350,10 @@ pub(crate) fn v6_to_spec_builder(
                 boot_settings = Some((device_id, settings));
             }
             v6::instance_spec::Component::VirtioSocket(vsock) => {
-                let vsock_device = crate::spec::VirtioSocket { id: device_id.clone(), spec: vsock };
+                let vsock_device = crate::spec::VirtioSocket {
+                    id: device_id.clone(),
+                    spec: vsock,
+                };
                 builder.add_vsock_device(vsock_device)?;
             }
             #[cfg(not(feature = "failure-injection"))]

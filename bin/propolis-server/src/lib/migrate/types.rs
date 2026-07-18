@@ -88,8 +88,7 @@ use crate::migrate::MigrateError;
 use crate::spec::{
     api_spec_v1::ApiSpecError as V1SpecError,
     api_spec_v3::ApiSpecError as V3SpecError,
-    api_spec_v6::ApiSpecError as V6SpecError,
-    Spec,
+    api_spec_v6::ApiSpecError as V6SpecError, Spec,
 };
 
 /// A wrapper for one of any supported `InstanceSpec` that describe a
@@ -112,7 +111,9 @@ pub(crate) enum VersionedInstanceSpec {
 }
 
 impl VersionedInstanceSpec {
-    pub(crate) fn from_spec(spec: &Spec) -> Result<VersionedInstanceSpec, MigrateError> {
+    pub(crate) fn from_spec(
+        spec: &Spec,
+    ) -> Result<VersionedInstanceSpec, MigrateError> {
         // Try conversions in oldest-to-newest order in support of
         // migration-to-older-version. As long as the VM doesn't use a new
         // feature or setting, we'll pick a version the older Propolis should
@@ -124,20 +125,28 @@ impl VersionedInstanceSpec {
         // features have been added. The new latest version, hopefully, will
         // have an `Into<Spec>`. Those two versions should be the only ones that
         // need attention.
-        let versioned = if let Ok(v1_spec) = TryInto::<v1::instance_spec::InstanceSpec>::try_into(spec.clone()) {
+        let versioned = if let Ok(v1_spec) =
+            TryInto::<v1::instance_spec::InstanceSpec>::try_into(spec.clone())
+        {
             VersionedInstanceSpec::V1(v1_spec)
-        } else if let Ok(v3_spec) = TryInto::<v3::instance_spec::InstanceSpec>::try_into(spec.clone()) {
+        } else if let Ok(v3_spec) =
+            TryInto::<v3::instance_spec::InstanceSpec>::try_into(spec.clone())
+        {
             VersionedInstanceSpec::V3(v3_spec)
         } else {
-            VersionedInstanceSpec::V6(Into::<v6::instance_spec::InstanceSpec>::into(spec.clone()))
+            VersionedInstanceSpec::V6(
+                Into::<v6::instance_spec::InstanceSpec>::into(spec.clone()),
+            )
         };
         Ok(versioned)
     }
 
-    pub(crate) fn into_amended_spec(self, replacements: &BTreeMap<
-        v1::instance_spec::SpecKey,
-        ReplacementComponent,
-    >
+    pub(crate) fn into_amended_spec(
+        self,
+        replacements: &BTreeMap<
+            v1::instance_spec::SpecKey,
+            ReplacementComponent,
+        >,
     ) -> Result<Spec, MigrateError> {
         fn wrong_type_error(
             id: &v1::instance_spec::SpecKey,
@@ -151,10 +160,13 @@ impl VersionedInstanceSpec {
         let amended_spec = match self {
             VersionedInstanceSpec::V1(mut source_spec) => {
                 for (id, comp) in replacements {
-                    let Some(to_amend) = source_spec.components.get_mut(id) else {
-                        return Err(MigrateError::InstanceSpecsIncompatible(format!(
-                            "replacement component {id} not in source spec",
-                        )));
+                    let Some(to_amend) = source_spec.components.get_mut(id)
+                    else {
+                        return Err(MigrateError::InstanceSpecsIncompatible(
+                            format!(
+                                "replacement component {id} not in source spec",
+                            ),
+                        ));
                     };
 
                     match comp {
@@ -169,7 +181,9 @@ impl VersionedInstanceSpec {
                         }
 
                         #[cfg(feature = "failure-injection")]
-                        ReplacementComponent::MigrationFailureInjector(comp) => {
+                        ReplacementComponent::MigrationFailureInjector(
+                            comp,
+                        ) => {
                             let v1::instance_spec::Component::MigrationFailureInjector(
                                 src,
                             ) = to_amend
@@ -216,10 +230,13 @@ impl VersionedInstanceSpec {
             }
             VersionedInstanceSpec::V3(mut source_spec) => {
                 for (id, comp) in replacements {
-                    let Some(to_amend) = source_spec.components.get_mut(id) else {
-                        return Err(MigrateError::InstanceSpecsIncompatible(format!(
-                            "replacement component {id} not in source spec",
-                        )));
+                    let Some(to_amend) = source_spec.components.get_mut(id)
+                    else {
+                        return Err(MigrateError::InstanceSpecsIncompatible(
+                            format!(
+                                "replacement component {id} not in source spec",
+                            ),
+                        ));
                     };
 
                     match comp {
@@ -234,7 +251,9 @@ impl VersionedInstanceSpec {
                         }
 
                         #[cfg(feature = "failure-injection")]
-                        ReplacementComponent::MigrationFailureInjector(comp) => {
+                        ReplacementComponent::MigrationFailureInjector(
+                            comp,
+                        ) => {
                             let v3::instance_spec::Component::MigrationFailureInjector(
                                 src,
                             ) = to_amend
@@ -269,7 +288,8 @@ impl VersionedInstanceSpec {
                     }
                 }
 
-                let v6_spec: v6::instance_spec::InstanceSpec = source_spec.into();
+                let v6_spec: v6::instance_spec::InstanceSpec =
+                    source_spec.into();
                 let amended_spec: Spec =
                     v6_spec.try_into().map_err(|e: V6SpecError| {
                         let v3_error: V3SpecError = e.into();
@@ -280,10 +300,13 @@ impl VersionedInstanceSpec {
             }
             VersionedInstanceSpec::V6(mut source_spec) => {
                 for (id, comp) in replacements {
-                    let Some(to_amend) = source_spec.components.get_mut(id) else {
-                        return Err(MigrateError::InstanceSpecsIncompatible(format!(
-                            "replacement component {id} not in source spec",
-                        )));
+                    let Some(to_amend) = source_spec.components.get_mut(id)
+                    else {
+                        return Err(MigrateError::InstanceSpecsIncompatible(
+                            format!(
+                                "replacement component {id} not in source spec",
+                            ),
+                        ));
                     };
 
                     match comp {
@@ -298,7 +321,9 @@ impl VersionedInstanceSpec {
                         }
 
                         #[cfg(feature = "failure-injection")]
-                        ReplacementComponent::MigrationFailureInjector(comp) => {
+                        ReplacementComponent::MigrationFailureInjector(
+                            comp,
+                        ) => {
                             let v6::instance_spec::Component::MigrationFailureInjector(
                                 src,
                             ) = to_amend

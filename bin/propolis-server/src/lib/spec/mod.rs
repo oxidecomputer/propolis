@@ -36,7 +36,7 @@ use propolis_api_types::instance_spec::{
 use propolis_api_types::instance_spec::{
     Component, InstanceSpec, SmbiosType1Input,
 };
-use propolis_api_types_versions::{v1, v3, v6, latest};
+use propolis_api_types_versions::{latest, v1, v3, v6};
 use thiserror::Error;
 
 #[cfg(feature = "failure-injection")]
@@ -250,9 +250,7 @@ impl TryFrom<StorageDevice> for v1::instance_spec::Component {
 impl TryFrom<Component> for StorageDevice {
     type Error = ComponentTypeMismatch;
 
-    fn try_from(
-        value: Component,
-    ) -> Result<Self, Self::Error> {
+    fn try_from(value: Component) -> Result<Self, Self::Error> {
         match value {
             Component::VirtioDisk(d) => Ok(Self::Virtio(d)),
             Component::NvmeDisk(d) => Ok(Self::Nvme(d)),
@@ -320,19 +318,11 @@ impl From<StorageBackend> for v1::instance_spec::Component {
 impl TryFrom<Component> for StorageBackend {
     type Error = ComponentTypeMismatch;
 
-    fn try_from(
-        value: Component,
-    ) -> Result<Self, Self::Error> {
+    fn try_from(value: Component) -> Result<Self, Self::Error> {
         match value {
-            Component::CrucibleStorageBackend(be) => {
-                Ok(Self::Crucible(be))
-            }
-            Component::FileStorageBackend(be) => {
-                Ok(Self::File(be))
-            }
-            Component::BlobStorageBackend(be) => {
-                Ok(Self::Blob(be))
-            }
+            Component::CrucibleStorageBackend(be) => Ok(Self::Crucible(be)),
+            Component::FileStorageBackend(be) => Ok(Self::File(be)),
+            Component::BlobStorageBackend(be) => Ok(Self::Blob(be)),
             _ => Err(ComponentTypeMismatch),
         }
     }
