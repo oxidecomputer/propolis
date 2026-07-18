@@ -112,9 +112,39 @@ dtrace:::BEGIN
 	printf("    \"pagelock-complete\": { \"value\": 17, \"color\": \"#8a61f1\" },\n");
 	printf("    \"kmem-cache-alloc\": { \"value\": 18, \"color\": \"#1ff161\" },\n");
 	printf("    \"kmem-cache-free\": { \"value\": 19, \"color\": \"#1fc311\" },\n");
-	printf("    \"nvme-sq-doorbell\": { \"value\": 20, \"color\": \"#fa17f6\" }\n");
+	printf("    \"nvme-sq-doorbell\": { \"value\": 20, \"color\": \"#fa17f6\" },\n");
+	printf("    \"nvme-read-enq\": { \"value\": 21, \"color\": \"#aaf7a6\" },\n");
+	printf("    \"read-os-dispatched\": { \"value\": 22, \"color\": \"#aac7a6\" },\n");
+	printf("    \"read-os-complete\": { \"value\": 23, \"color\": \"#aaf7f6\" },\n");
+	printf("    \"nvme-read-comp\": { \"value\": 24, \"color\": \"#aa67a6\" }\n");
 	printf("} }\n");
 	START = timestamp;
+}
+
+propolis$target:::nvme_read_enqueue
+{
+	self->id = arg0;
+	self->state = 21;
+	printf("{\"state\": %d, \"time\": \"%d\", \"entity\": \"%x\"}\n", self->state, timestamp - START, self->id);
+}
+
+propolis$target:::nvme_read_complete / self->id /
+{
+	self->state = 8;
+	printf("{\"state\": %d, \"time\": \"%d\", \"entity\": \"%x\"}\n", self->state, timestamp - START, self->id);
+	self->id = 0;
+}
+
+propolis$target:::block_begin_read / self->id /
+{
+	self->state = 22;
+	printf("{\"state\": %d, \"time\": \"%d\", \"entity\": \"%x\"}\n", self->state, timestamp - START, self->id);
+}
+
+propolis$target:::block_complete_read / self->id /
+{
+	self->state = 23;
+	printf("{\"state\": %d, \"time\": \"%d\", \"entity\": \"%x\"}\n", self->state, timestamp - START, self->id);
 }
 
 propolis$target:::nvme_doorbell / arg2 == 0 / {
@@ -279,7 +309,4 @@ fbt::biowait:return / self->id && self->in_default_physio / {
 
 tick-1s {
 	exit(0);
-}
-dtrace:::END
-{
 }
