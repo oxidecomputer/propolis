@@ -15,7 +15,7 @@ use propolis_api_types::instance_spec::{
     },
     SpecKey,
 };
-use propolis_api_types_versions::{latest, v6};
+use propolis_api_types_versions::v6;
 use thiserror::Error;
 
 #[cfg(feature = "falcon")]
@@ -441,10 +441,4 @@ pub(crate) fn v6_to_spec_builder(
     }
 
     Ok(builder)
-}
-
-pub(crate) fn latest_api_spec_to_spec_builder(
-    value: latest::instance_spec::InstanceSpec,
-) -> Result<SpecBuilder, ApiSpecError> {
-    v6_to_spec_builder(value)
 }

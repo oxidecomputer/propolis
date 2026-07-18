@@ -36,7 +36,7 @@ use propolis_api_types::instance_spec::{
 use propolis_api_types::instance_spec::{
     Component, InstanceSpec, SmbiosType1Input,
 };
-use propolis_api_types_versions::{latest, v1, v3, v6};
+use propolis_api_types_versions::latest;
 use thiserror::Error;
 
 #[cfg(feature = "failure-injection")]
@@ -49,7 +49,6 @@ use propolis_api_types::instance_spec::components::{
     devices::{P9fs, SoftNpuP9, SoftNpuPciPort},
 };
 
-// mod api_request;
 pub(crate) mod api_spec_v1;
 pub(crate) mod api_spec_v3;
 pub(crate) mod api_spec_v6;
@@ -111,16 +110,19 @@ pub(crate) struct Spec {
     #[cfg(feature = "falcon")]
     pub softnpu: SoftNpu,
 
-    // TODO: This is an option because there is no good way to generate a
-    // default implementation of `SmbiosType1Input`. The default `serial_number`
-    // field of `SmbiosType1Input` should be equivalent to the VM UUID for
-    // backwards compatibility, but that isn't currently possible.
+    // This is an option because in v1::instance_spec::InstanceSpec the defaults
+    // `None` would imply came from the data outside the `InstanceSpec` itself;
+    // instance properties, for the instance's UUID, in particular. Two
+    // options here are to have `Builder` take the instance's UUID at all times
+    // and only sometimes synthesize `SmbiosType1Input` if nothing else is
+    // provided, or allow this to be `None` and interpret that in "the old way"
+    // when instantiating the SMBIOS tables. We've gone the latter.
+    // Alternatively, we could scratch `Builder` entirely and have open-coded
+    // functions to translate `InstanceSpec` to a `Spec`, and have v1 of *those*
+    // take the requisite ancillary data.
     //
-    // One way to fix this would be to remove the `Builder` and directly
-    // construct `Spec` from a function that takes an `v1::instance_spec::InstanceSpec` and the
-    // VM UUID. This would replace `impl TryFrom<v1::instance_spec::InstanceSpec> for Spec`, and
-    // would allow removing the `Default` derive on `Spec`, and the `Option`
-    // from the `smbios_type1_input` field.
+    // If (when!) we remove `v1` types - they are wholly from before any kind of
+    // live migration was supported - this can be de-Option'd.
     pub smbios_type1_input: Option<SmbiosType1Input>,
 }
 
@@ -223,30 +225,6 @@ impl From<StorageDevice> for latest::instance_spec::Component {
     }
 }
 
-// TODO: this needs to move or die
-impl TryFrom<StorageDevice> for v3::instance_spec::Component {
-    type Error = v6::instance_spec::InvalidV3Component;
-
-    fn try_from(value: StorageDevice) -> Result<Self, Self::Error> {
-        match value {
-            StorageDevice::Virtio(d) => Ok(Self::VirtioDisk(d)),
-            StorageDevice::Nvme(d) => Ok(Self::NvmeDisk(d.try_into()?)),
-        }
-    }
-}
-
-// TODO: this needs to move or die
-impl TryFrom<StorageDevice> for v1::instance_spec::Component {
-    type Error = v6::instance_spec::InvalidV3Component;
-
-    fn try_from(value: StorageDevice) -> Result<Self, Self::Error> {
-        match value {
-            StorageDevice::Virtio(d) => Ok(Self::VirtioDisk(d)),
-            StorageDevice::Nvme(d) => Ok(Self::NvmeDisk(d.try_into()?)),
-        }
-    }
-}
-
 impl TryFrom<Component> for StorageDevice {
     type Error = ComponentTypeMismatch;
 
@@ -286,26 +264,6 @@ impl StorageBackend {
 }
 
 impl From<StorageBackend> for Component {
-    fn from(value: StorageBackend) -> Self {
-        match value {
-            StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),
-            StorageBackend::File(be) => Self::FileStorageBackend(be),
-            StorageBackend::Blob(be) => Self::BlobStorageBackend(be),
-        }
-    }
-}
-
-impl From<StorageBackend> for v3::instance_spec::Component {
-    fn from(value: StorageBackend) -> Self {
-        match value {
-            StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),
-            StorageBackend::File(be) => Self::FileStorageBackend(be),
-            StorageBackend::Blob(be) => Self::BlobStorageBackend(be),
-        }
-    }
-}
-
-impl From<StorageBackend> for v1::instance_spec::Component {
     fn from(value: StorageBackend) -> Self {
         match value {
             StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),

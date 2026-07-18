@@ -71,6 +71,18 @@ pub(crate) enum SpecBuilderError {
     DefaultCpuidReadFailed(#[from] cpuid_utils::host::GetHostCpuidError),
 }
 
+/// A builder onto which devices and other components are added as an
+/// `InstanceSpec` is interpreted. Among other things, this services as a
+/// forcing function to canonicalize VM descriptions, where we can enforce
+/// invariants about components (such as "disk devices must reference backends
+/// that exist").
+///
+/// Note that the API type `Component` itself does not appear here: the
+/// expectation is that individual components' definitions change relatively
+/// rarely, so callers do the work of mapping components to the
+/// closer-to-internal definitions that `SpecBuilder` accepts. In theory,
+/// hopefully, this means `SpecBuilder` itself changes rarely and can be more
+/// reasily audited for semantic drift.
 #[derive(Debug, Default)]
 pub(crate) struct SpecBuilder {
     spec: super::Spec,
@@ -79,13 +91,6 @@ pub(crate) struct SpecBuilder {
     component_names: BTreeSet<SpecKey>,
 }
 
-/// hokay. SpecBuilder is where we're stuffing the large ball of glue and twine that connects
-/// between versioned HTTP API types like InstanceSpec and all its descendants, and the
-/// non-versioned "This Version Of Propolis" types like Spec and specific device configuration
-/// structs.
-///
-/// this means that we have conversions from all external API InstanceSpec to `Spec` (via
-/// SpecBuilder) here. elsewhere, conversions from Spec to all InstanceSpec.
 impl SpecBuilder {
     pub(super) fn with_instance_spec_board(
         board: InstanceSpecBoard,

@@ -12,15 +12,16 @@ use propolis_api_types::instance_spec::{
     },
     SpecKey,
 };
-use propolis_api_types_versions::{latest, v3};
+use propolis_api_types_versions::{latest, v3, v6};
 use thiserror::Error;
 
 #[cfg(feature = "falcon")]
 use propolis_api_types::instance_spec::components::devices::SoftNpuPort as SoftNpuPortSpec;
 
 use super::{
+    api_spec_v6,
     builder::{SpecBuilder, SpecBuilderError},
-    SerialPortDevice, Spec,
+    SerialPortDevice, Spec, StorageBackend, StorageDevice,
 };
 
 #[cfg(feature = "failure-injection")]
@@ -84,28 +85,23 @@ impl From<ApiSpecError> for api_spec_v1::ApiSpecError {
     }
 }
 
-// TODO: docs. conversion back down from v6 to v3 because we defer InstanceSpec->Spec to
-// `v6_to_spec_builder()`.
-use crate::spec::api_spec_v6;
-impl From<api_spec_v6::ApiSpecError> for ApiSpecError {
-    fn from(value: api_spec_v6::ApiSpecError) -> Self {
+impl TryFrom<StorageDevice> for v3::instance_spec::Component {
+    type Error = v6::instance_spec::InvalidV3Component;
+
+    fn try_from(value: StorageDevice) -> Result<Self, Self::Error> {
         match value {
-            api_spec_v6::ApiSpecError::Builder(b) => ApiSpecError::Builder(b),
-            api_spec_v6::ApiSpecError::StorageBackendNotFound {
-                backend,
-                device,
-            } => ApiSpecError::StorageBackendNotFound { backend, device },
-            api_spec_v6::ApiSpecError::NetworkBackendNotFound {
-                backend,
-                device,
-            } => ApiSpecError::NetworkBackendNotFound { backend, device },
-            api_spec_v6::ApiSpecError::FeatureCompiledOut {
-                component,
-                feature,
-            } => ApiSpecError::FeatureCompiledOut { component, feature },
-            api_spec_v6::ApiSpecError::BackendNotUsed(key) => {
-                ApiSpecError::BackendNotUsed(key)
-            }
+            StorageDevice::Virtio(d) => Ok(Self::VirtioDisk(d)),
+            StorageDevice::Nvme(d) => Ok(Self::NvmeDisk(d.try_into()?)),
+        }
+    }
+}
+
+impl From<StorageBackend> for v3::instance_spec::Component {
+    fn from(value: StorageBackend) -> Self {
+        match value {
+            StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),
+            StorageBackend::File(be) => Self::FileStorageBackend(be),
+            StorageBackend::Blob(be) => Self::BlobStorageBackend(be),
         }
     }
 }
@@ -305,17 +301,32 @@ impl TryFrom<Spec> for v3::instance_spec::InstanceSpec {
     }
 }
 
-/*
-impl TryFrom<v3::instance_spec::InstanceSpec> for Spec {
-    type Error = ApiSpecError;
-
-    fn try_from(
-        value: v3::instance_spec::InstanceSpec,
-    ) -> Result<Self, Self::Error> {
-        Ok(v3_to_spec_builder(value)?.finish())
+// Converting the API error back down is lossless, so define that here too.
+//
+// This notionally should be scoped to `v3_to_spec_builder`; there's not much
+// reason to do this conversion anywhere else..
+impl From<api_spec_v6::ApiSpecError> for ApiSpecError {
+    fn from(value: api_spec_v6::ApiSpecError) -> Self {
+        match value {
+            api_spec_v6::ApiSpecError::Builder(b) => ApiSpecError::Builder(b),
+            api_spec_v6::ApiSpecError::StorageBackendNotFound {
+                backend,
+                device,
+            } => ApiSpecError::StorageBackendNotFound { backend, device },
+            api_spec_v6::ApiSpecError::NetworkBackendNotFound {
+                backend,
+                device,
+            } => ApiSpecError::NetworkBackendNotFound { backend, device },
+            api_spec_v6::ApiSpecError::FeatureCompiledOut {
+                component,
+                feature,
+            } => ApiSpecError::FeatureCompiledOut { component, feature },
+            api_spec_v6::ApiSpecError::BackendNotUsed(key) => {
+                ApiSpecError::BackendNotUsed(key)
+            }
+        }
     }
 }
-*/
 
 /// Parses a v3 instance spec into a [`SpecBuilder`], validating component
 /// names, PCI paths, and backend references along the way. Callers can add
@@ -323,9 +334,9 @@ impl TryFrom<v3::instance_spec::InstanceSpec> for Spec {
 pub(crate) fn v3_to_spec_builder(
     value: v3::instance_spec::InstanceSpec,
 ) -> Result<SpecBuilder, ApiSpecError> {
+    // Converting v3 to v6 is lossless so just do that and piggyback on the
+    // latest `InstanceSpec->SpecBuilder`.
     let latest_spec: latest::instance_spec::InstanceSpec = value.into();
 
-    // TODO: talk about this more
-    crate::spec::api_spec_v6::latest_api_spec_to_spec_builder(latest_spec)
-        .map_err(|e| e.into())
+    api_spec_v6::v6_to_spec_builder(latest_spec).map_err(|e| e.into())
 }

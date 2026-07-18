@@ -13,7 +13,7 @@ use propolis_api_types::instance_spec::{
     },
     SpecKey,
 };
-use propolis_api_types_versions::{v1, v2, v3};
+use propolis_api_types_versions::{v1, v2, v3, v6};
 use thiserror::Error;
 
 #[cfg(feature = "falcon")]
@@ -21,7 +21,7 @@ use propolis_api_types::instance_spec::components::devices::SoftNpuPort as SoftN
 
 use super::{
     builder::{SpecBuilder, SpecBuilderError},
-    SerialPortDevice, Spec,
+    SerialPortDevice, Spec, StorageBackend, StorageDevice,
 };
 
 #[cfg(feature = "failure-injection")]
@@ -50,6 +50,37 @@ pub(crate) enum ApiSpecError {
 
     #[error("spec contains v1-incompatible component: {0}")]
     IncompatibleComponent(String),
+}
+
+// Woah! It's strange to have a conversion to a *v1* type which has an error
+// from *v6* about *v3*. Not as bad as it seems though: v6 is when this
+// component changed, and v3 is next-most-recent version of
+// `instance_spec::Component`. So in v6, the error is "I can't convert this to
+// v3::instance_spec::Component".
+//
+// We're converting to v1, though, which has a further-different `Component`
+// type. If we had a fallible operation converting a storage device all the way
+// down, that might produce an error about failing to convert a V3 type to V1 -
+// it turns out that's infallible here.
+impl TryFrom<StorageDevice> for v1::instance_spec::Component {
+    type Error = v6::instance_spec::InvalidV3Component;
+
+    fn try_from(value: StorageDevice) -> Result<Self, Self::Error> {
+        match value {
+            StorageDevice::Virtio(d) => Ok(Self::VirtioDisk(d)),
+            StorageDevice::Nvme(d) => Ok(Self::NvmeDisk(d.try_into()?)),
+        }
+    }
+}
+
+impl From<StorageBackend> for v1::instance_spec::Component {
+    fn from(value: StorageBackend) -> Self {
+        match value {
+            StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),
+            StorageBackend::File(be) => Self::FileStorageBackend(be),
+            StorageBackend::Blob(be) => Self::BlobStorageBackend(be),
+        }
+    }
 }
 
 impl TryFrom<Spec> for v1::instance_spec::InstanceSpec {
