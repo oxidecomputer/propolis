@@ -16,7 +16,7 @@ set -e
 #
 # Restore to "stlouis" once that change integrates. Note: this ref names a
 # specific patchset and must be bumped if a new patchset is uploaded.
-HEADER_CHECK_REF="refs/changes/75/775/3"
+HEADER_CHECK_REF="refs/changes/75/775/4"
 
 # Directories with `ctest2`-based `header-check` crates. This list should track
 # the similar exclusions in `Cargo.toml`, and are described more there.
