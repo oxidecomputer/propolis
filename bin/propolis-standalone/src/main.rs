@@ -1355,6 +1355,12 @@ fn setup_instance(
                         .to_string();
                     let log =
                         log.new(slog::o!("dev" => format!("nvme-{}", name)));
+                    let has_write_cache = dev
+                        .options
+                        .get("has_write_cache")
+                        .unwrap()
+                        .as_bool()
+                        .unwrap();
                     // Limit data transfers to 1MiB (2^8 * 4k) in size
                     let mdts = Some(8);
 
@@ -1366,7 +1372,7 @@ fn setup_instance(
                     let nvme = hw::nvme::PciNvme::create(
                         &serial_number,
                         mdts,
-                        true,
+                        has_write_cache,
                         log,
                     );
 

@@ -909,7 +909,7 @@ impl MachineInitializer<'_> {
                     let nvme = nvme::PciNvme::create(
                         &nvme_spec.serial_number,
                         mdts,
-                        false,
+                        nvme_spec.has_write_cache,
                         self.log.new(slog::o!("component" => component)),
                     );
                     self.devices.insert(device_id.clone(), nvme.clone());

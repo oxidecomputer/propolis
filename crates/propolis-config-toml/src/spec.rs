@@ -340,9 +340,9 @@ fn parse_storage_device_from_config(
             }
             Interface::Nvme => {
                 let write_cache_opt = device
-                    .get("has_write_cache")
-                    .map(|v: toml::Value| {
-                        let s = v.as_str().ok_or_else(|| {
+                    .get_toml_value("has_write_cache")
+                    .map(|v: &toml::Value| {
+                        v.as_bool().ok_or_else(|| {
                             TomlToSpecError::FieldParseError {
                                 field: "has_write_cache",
                                 name: name.to_owned(),
@@ -351,16 +351,6 @@ fn parse_storage_device_from_config(
                                     v
                                 ),
                             }
-                        });
-
-                        s.and_then(|s| {
-                            s.parse::<bool>().map_err(|e| {
-                                TomlToSpecError::FieldParseError {
-                                    field: "has_write_cache",
-                                    name: name.to_owned(),
-                                    error: e.to_string(),
-                                }
-                            })
                         })
                     })
                     .transpose()?;
@@ -369,7 +359,7 @@ fn parse_storage_device_from_config(
                 // causes unnecessary guest work, but is not a correctness
                 // issue. The converse can be. Default to reporting write caches
                 // if we're not instructed otherwise.
-                let has_write_cache = write_cache_opt.unwrap_or(false);
+                let has_write_cache = write_cache_opt.unwrap_or(true);
 
                 Component::NvmeDisk(NvmeDisk {
                     backend_id,
