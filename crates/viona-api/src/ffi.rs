@@ -127,6 +127,7 @@ pub struct vioc_ring_state {
     pub vrs_qaddr_desc: u64,
     pub vrs_qaddr_avail: u64,
     pub vrs_qaddr_used: u64,
+    pub vrs_last_chk_uidx: u16,
 }
 
 pub const VIONA_PROMISC_NONE: i32 = 0;
@@ -154,7 +155,7 @@ pub struct vioc_set_params {
 /// This is the viona interface version which viona_api expects to operate
 /// against.  All constants and structs defined by the crate are done so in
 /// terms of that specific version.
-pub const VIONA_CURRENT_INTERFACE_VERSION: u32 = 6;
+pub const VIONA_CURRENT_INTERFACE_VERSION: u32 = 7;
 
 /// Maximum size of packed nvlists used in viona parameter ioctls
 pub const VIONA_MAX_PARAM_NVLIST_SZ: usize = 4096;

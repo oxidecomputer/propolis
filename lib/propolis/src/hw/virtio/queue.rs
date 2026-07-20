@@ -138,9 +138,7 @@ impl VqAvail {
         self.gpa_flags = GuestAddr(avail_addr);
         self.gpa_idx = GuestAddr(avail_addr + 2);
         self.gpa_ring = GuestAddr(avail_addr + 4);
-        self.gpa_used_event = GuestAddr(
-            avail_addr + (2 + sz as u64) * mem::size_of::<u16>() as u64,
-        );
+        self.gpa_used_event = self.gpa_ring.offset::<u16>(usize::from(sz));
     }
 
     /// Returns guest flags.
@@ -244,8 +242,7 @@ impl VqUsed {
         self.gpa_flags = GuestAddr(gpa);
         self.gpa_idx = GuestAddr(gpa + 2);
         self.gpa_ring = GuestAddr(gpa + 4);
-        self.gpa_avail_event =
-            GuestAddr(gpa + 4 + mem::size_of::<VqdUsed>() as u64 * sz as u64);
+        self.gpa_avail_event = self.gpa_ring.offset::<VqUsed>(usize::from(sz));
     }
 }
 
@@ -467,6 +464,7 @@ impl VirtQueue {
             },
             avail_idx: avail.cur_avail_idx.0,
             used_idx: used.used_idx.0,
+            last_chk_uidx: used.last_chk_uidx.0,
         }
     }
 
@@ -484,6 +482,7 @@ impl VirtQueue {
         used.valid = info.mapping.valid;
         avail.cur_avail_idx = Wrapping(info.avail_idx);
         used.used_idx = Wrapping(info.used_idx);
+        used.last_chk_uidx = Wrapping(info.last_chk_uidx);
     }
 
     /// Accummulates a sequence of available descriptors into a `Chain`.
@@ -602,9 +601,7 @@ impl VirtQueue {
         used.interrupt.as_ref().map(|x| x.read())
     }
 
-    /// Disables interrupts (notifications) on the `Used` ring.
-    ///
-    /// Returns `true` if notifications were previously enabled.
+    /// Disable interrupts (notifications) from driver to device.
     pub(super) fn disable_intr(&self, mem: &MemCtx) {
         let idx = if self.f_event_idx() {
             let aidx = self.avail.lock().unwrap().cur_avail_idx - Wrapping(1);
@@ -628,7 +625,7 @@ impl VirtQueue {
         self.used.lock().unwrap().disable_notify(idx, mem);
     }
 
-    /// Enables interrupts (notifications) on the `Used` ring
+    /// Enable interrupts (notifications) from driver to device.
     pub(super) fn enable_intr(&self, mem: &MemCtx) {
         let aidx = if self.f_event_idx() {
             let aidx = self.avail.lock().unwrap().cur_avail_idx;
@@ -1165,6 +1162,7 @@ pub struct Info {
     pub mapping: MapInfo,
     pub avail_idx: u16,
     pub used_idx: u16,
+    pub last_chk_uidx: u16,
 }
 
 pub struct VirtQueues {

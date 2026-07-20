@@ -1461,6 +1461,7 @@ impl From<&VirtQueue> for viona_api::vioc_ring_state {
         let used_addr = state.mapping.used_addr;
         let avail_idx = state.avail_idx;
         let used_idx = state.used_idx;
+        let last_chk_uidx = state.last_chk_uidx;
         viona_api::vioc_ring_state {
             vrs_index: id,
             vrs_qsize: size,
@@ -1468,6 +1469,7 @@ impl From<&VirtQueue> for viona_api::vioc_ring_state {
             vrs_qaddr_avail: avail_addr,
             vrs_qaddr_used: used_addr,
             vrs_used_idx: used_idx,
+            vrs_last_chk_uidx: last_chk_uidx,
             vrs_avail_idx: avail_idx,
         }
     }
@@ -1584,6 +1586,7 @@ impl VionaHdl {
             },
             avail_idx: cfg.vrs_avail_idx,
             used_idx: cfg.vrs_used_idx,
+            last_chk_uidx: cfg.vrs_last_chk_uidx,
         })
     }
     fn ring_cfg_msi(
