@@ -287,6 +287,26 @@ impl TryFrom<&super::Config> for SpecConfig {
             )?;
         }
 
+        if let Some(boot_order) = config.machine_settings.boot_order.as_ref() {
+            let settings = Component::BootSettings(
+                propolis_client::instance_spec::BootSettings {
+                    order: boot_order
+                        .iter()
+                        .map(|key| {
+                            propolis_client::instance_spec::BootOrderEntry {
+                                id: SpecKey::Name(key.to_owned()),
+                            }
+                        })
+                        .collect(),
+                },
+            );
+            spec_component_add(
+                &mut spec,
+                SpecKey::Name("boot-settings".to_string()),
+                settings,
+            )?;
+        }
+
         Ok(spec)
     }
 }
