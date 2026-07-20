@@ -21,6 +21,9 @@ pub mod spec;
 // configuration will likely become more dynamic.
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Config {
+    #[serde(default, rename = "main")]
+    pub machine_settings: MachineSettings,
+
     #[serde(default, rename = "pci_bridge")]
     pub pci_bridges: Vec<PciBridge>,
 
@@ -39,6 +42,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            machine_settings: MachineSettings::default(),
             pci_bridges: Vec::new(),
             chipset: Chipset { options: BTreeMap::new() },
             devices: BTreeMap::new(),
@@ -46,6 +50,15 @@ impl Default for Config {
             cpuid_profiles: BTreeMap::new(),
         }
     }
+}
+
+/// Settings covering the VM "at large".
+///
+/// This corresponds to (and is a subset of) the `main` block understood by
+/// `propolis-standalone`
+#[derive(Serialize, Deserialize, Debug, PartialEq, Default)]
+pub struct MachineSettings {
+    pub boot_order: Option<Vec<String>>,
 }
 
 /// The instance's chipset.
