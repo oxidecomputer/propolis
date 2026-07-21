@@ -13,6 +13,10 @@
 //! wire-format types in the [`propolis_api_types`] crate. This, in turn, allows
 //! [`Spec`] and its component types to take forms that might otherwise be hard
 //! to change in a backward-compatible way.
+//!
+//! Types and operations here are copied as-needed into new verson-specific
+//! modules as needed, as new versions of the `propolis-server` HTTP API are
+//! added.
 
 use std::collections::BTreeMap;
 
@@ -53,8 +57,6 @@ pub(crate) mod api_spec_v1;
 pub(crate) mod api_spec_v3;
 pub(crate) mod api_spec_v6;
 pub(crate) mod builder;
-
-/// The code related to latest types does not go into a versioned module
 
 /// `propolis-server` relies on `TryInto` to convert the API-provided
 /// `InstanceSpec` to an internal `Spec`. When adding a new API version to
@@ -116,7 +118,7 @@ pub(crate) struct Spec {
     // options here are to have `Builder` take the instance's UUID at all times
     // and only sometimes synthesize `SmbiosType1Input` if nothing else is
     // provided, or allow this to be `None` and interpret that in "the old way"
-    // when instantiating the SMBIOS tables. We've gone the latter.
+    // when instantiating the SMBIOS tables. We've gone with the latter.
     // Alternatively, we could scratch `Builder` entirely and have open-coded
     // functions to translate `InstanceSpec` to a `Spec`, and have v1 of *those*
     // take the requisite ancillary data.

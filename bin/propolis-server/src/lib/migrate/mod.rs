@@ -9,6 +9,7 @@
 use bit_field::BitField;
 use dropshot::HttpError;
 use propolis::migrate::MigrateStateError;
+use propolis_api_types::instance_spec::SpecKey;
 use propolis_api_types::migration::MigrationState;
 use serde::{Deserialize, Serialize};
 use slog::error;
@@ -156,6 +157,13 @@ pub enum MigrateError {
     /// The other end of the migration ran into an error
     #[error("{0:?} migration instance encountered error: {1}")]
     RemoteError(MigrateRole, String),
+}
+
+impl MigrateError {
+    pub(crate) fn wrong_type(id: &SpecKey, kind: &str) -> MigrateError {
+        let msg = format!("component {id} is not a {kind} in the source spec");
+        MigrateError::InstanceSpecsIncompatible(msg)
+    }
 }
 
 impl From<tokio_tungstenite::tungstenite::Error> for MigrateError {

@@ -5,6 +5,8 @@
 //! Conversions from [`propolis_api_types::v3`]) instance specs in the
 //! [`propolis_api_types`] crate to the internal [`super::Spec`] representation.
 
+use std::collections::BTreeMap;
+
 use propolis_api_types::instance_spec::{
     components::{
         board::Board as InstanceSpecBoard,
@@ -12,7 +14,7 @@ use propolis_api_types::instance_spec::{
     },
     SpecKey,
 };
-use propolis_api_types_versions::{latest, v3, v6};
+use propolis_api_types_versions::{v1::instance::ReplacementComponent, v3, v6};
 use thiserror::Error;
 
 #[cfg(feature = "falcon")]
@@ -23,12 +25,10 @@ use super::{
     builder::{SpecBuilder, SpecBuilderError},
     SerialPortDevice, Spec, StorageBackend, StorageDevice,
 };
+use crate::migrate::MigrateError;
 
 #[cfg(feature = "failure-injection")]
 use super::MigrationFailure;
-
-#[cfg(feature = "falcon")]
-use super::SoftNpuPort;
 
 #[derive(Debug, Error)]
 pub(crate) enum ApiSpecError {
@@ -335,8 +335,75 @@ pub(crate) fn v3_to_spec_builder(
     value: v3::instance_spec::InstanceSpec,
 ) -> Result<SpecBuilder, ApiSpecError> {
     // Converting v3 to v6 is lossless so just do that and piggyback on the
-    // latest `InstanceSpec->SpecBuilder`.
-    let latest_spec: latest::instance_spec::InstanceSpec = value.into();
+    // v6 `InstanceSpec->SpecBuilder`.
+    let v6_spec: v6::instance_spec::InstanceSpec = value.into();
 
-    api_spec_v6::v6_to_spec_builder(latest_spec).map_err(|e| e.into())
+    api_spec_v6::v6_to_spec_builder(v6_spec).map_err(|e| e.into())
+}
+
+fn amend_component(
+    id: &SpecKey,
+    to_amend: &mut v3::instance_spec::Component,
+    replacement: &ReplacementComponent,
+) -> Result<(), MigrateError> {
+    match replacement {
+        #[cfg(not(feature = "failure-injection"))]
+        ReplacementComponent::MigrationFailureInjector(_) => {
+            return Err(MigrateError::InstanceSpecsIncompatible(format!(
+                "replacing migration failure injector {id} is \
+                    impossible because the feature is compiled out"
+            )));
+        }
+
+        #[cfg(feature = "failure-injection")]
+        ReplacementComponent::MigrationFailureInjector(comp) => {
+            let v3::instance_spec::Component::MigrationFailureInjector(src) =
+                to_amend
+            else {
+                return Err(MigrateError::wrong_type(
+                    id,
+                    "migration failure injector",
+                ));
+            };
+
+            *src = comp.clone();
+        }
+        ReplacementComponent::CrucibleStorageBackend(comp) => {
+            let v3::instance_spec::Component::CrucibleStorageBackend(src) =
+                to_amend
+            else {
+                return Err(MigrateError::wrong_type(id, "crucible backend"));
+            };
+
+            *src = comp.clone();
+        }
+        ReplacementComponent::VirtioNetworkBackend(comp) => {
+            let v3::instance_spec::Component::VirtioNetworkBackend(src) =
+                to_amend
+            else {
+                return Err(MigrateError::wrong_type(id, "viona backend"));
+            };
+
+            *src = comp.clone();
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn amend(
+    spec: &mut v3::instance_spec::InstanceSpec,
+    replacements: &BTreeMap<SpecKey, ReplacementComponent>,
+) -> Result<(), MigrateError> {
+    for (id, replacement) in replacements {
+        let Some(to_amend) = spec.components.get_mut(id) else {
+            return Err(MigrateError::InstanceSpecsIncompatible(format!(
+                "replacement component {id} not in source spec",
+            )));
+        };
+
+        amend_component(id, to_amend, replacement)?;
+    }
+
+    Ok(())
 }
