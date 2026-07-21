@@ -232,6 +232,10 @@ impl QueueCollection {
         }
     }
 
+    // Callers must hold the worker's lock while polling the next request for
+    // the selected device queue. This ensures that if the worker is to have its
+    // queue assignment changed, this is mutually exclusive with the worker
+    // indicating idleness to a QueueMinder.
     fn next_req(
         &self,
         queue_select: QueueId,
@@ -742,11 +746,15 @@ impl WorkerSlot {
         WaitForReq::new(self)
     }
 
-    fn update_assignment(&self, assign: &Assignment) {
+    /// Reconfigure this worker for a polling strategy matching the current
+    /// assignment. Returns if the worker has actually been modified; `false` if
+    /// the current strategy is newer than provided (as in the case of racing
+    /// worker assignments).
+    fn update_assignment(&self, assign: &Assignment) -> bool {
         let mut state = self.state.lock().unwrap();
         if state.assign_strat.newer_than(&assign.strategy) {
-            // We already have a newer assignment
-            return;
+            // We already have a newer assignment; nothing has been updated.
+            return false;
         }
         state.assign_strat = assign.strategy;
         if assign.should_halt {
@@ -759,7 +767,8 @@ impl WorkerSlot {
                     PollAssignment::Idle
                 };
         }
-        self.wake(Some(state), None);
+
+        true
     }
 
     fn wake(
@@ -983,8 +992,67 @@ impl WorkerCollection {
             let generation = assign.strategy.generation() as u64;
             (devid.0, assign_name, generation)
         });
+
+        let mut any_updated = false;
         for slot in self.workers.iter() {
-            slot.update_assignment(&assign);
+            if slot.update_assignment(&assign) {
+                any_updated = true;
+            }
+        }
+
+        if !any_updated {
+            return;
+        }
+
+        // At this point we have updated at least one worker. The worker may
+        // already have been active, its assignment may have been Fixed or
+        // FreeForAll. It may have become idle, setting `notify_workers` on some
+        // queue, and if the strategy was changed from Fixed(A) to Fixed(B) the
+        // queue with a notify bit for this worker may actually not be the queue
+        // this worker will try pulling I/Os from! In short, we've made a mess
+        // of things. Cleaning this up is not all bad, but subtle.
+        //
+        // First, we'll clear all notification bits. At this point, if any
+        // workers idle again, they will indicate idleness on the correct
+        // queues, at least. We may blow away some worker idleness bits that are
+        // correctly placed, along with any bits that might be incorrectly
+        // placed.
+        //
+        // Then, kick all the workers. We probably don't actually have I/O for
+        // all of them. But, when workers idle this time, they'll indicate
+        // *correct* idle bits and notifications will engage the correct
+        // workers.
+        //
+        // The strangest case here is probably if a queue is moved from Fixed to
+        // FreeForAll; the worker should have set a bit for its ID in all
+        // minders. This procedure will result in bits for all idle queues as
+        // appropriate once the worker is kicked and deposits idleness across
+        // the minders.
+        for slot in self.workers.iter() {
+            // The mechanics of this are a little paranoid: only worker slots
+            // themselves have a queue collection, and it *should* be the case
+            // that all queue collections are the same. But even if it wasn't,
+            // we need to walk all the queues that all the reassigned workers
+            // could access to clear all the notify_workers bits.
+            //
+            // Currently this means we walk all the queue minders for the device
+            // NUM_WORKERS-many times. Queue reassignment is already terribly
+            // expensive what with having to kick all the workers. Please do not
+            // reconfigure device queues while sensitive to I/O latency or
+            // throughput..
+            let state = slot.state.lock().unwrap();
+            if let Some(qcol) = state.queues.as_ref() {
+                for queue in qcol.queues.iter() {
+                    let qs = queue.state.lock().unwrap();
+                    if let Some(minder) = qs.minder.as_ref() {
+                        let _ = minder.take_notifications();
+                    }
+                }
+            }
+        }
+
+        for slot in self.workers.iter() {
+            slot.wake(None, None);
         }
     }
     fn slot(&self, id: WorkerId) -> &WorkerSlot {

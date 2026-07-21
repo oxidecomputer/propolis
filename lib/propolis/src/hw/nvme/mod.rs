@@ -1418,6 +1418,14 @@ impl MigrateMulti for PciNvme {
         output.push(ctrl.export().into())?;
         drop(ctrl);
 
+        // We leave `is_enabled` and `device_id` behind here:
+        // * is_enabled is just a mirror of the controller's enabled bit. We'll
+        //   recover it when importing controller state on the other side.
+        // * `device_id` is, like other `define_id` items, tied to non-migrated
+        //   statics in the Propolis process. Migrating it is, absent other
+        //   work, a bug waiting to happen (imagine ID gaps where devices with
+        //   ID 0, 1, and 4 are migrated)
+
         MigrateMulti::export(&self.pci_state, output, ctx)?;
 
         Ok(())
@@ -1432,6 +1440,9 @@ impl MigrateMulti for PciNvme {
 
         let mut ctrl = self.state.lock().unwrap();
         ctrl.import(input, self)?;
+        // Now that the controller is imported, update our mirror of its
+        // enablement bit.
+        self.is_enabled.store(ctrl.ctrl.cc.enabled(), Ordering::Release);
         drop(ctrl);
 
         MigrateMulti::import(&self.pci_state, offer, ctx)?;
