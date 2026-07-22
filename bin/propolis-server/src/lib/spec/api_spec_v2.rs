@@ -13,9 +13,6 @@ use propolis_api_types_versions::{
     v1, v1::instance::ReplacementComponent, v2, v3,
 };
 
-#[cfg(feature = "falcon")]
-use propolis_api_types::instance_spec::components::devices::SoftNpuPort as SoftNpuPortSpec;
-
 use super::{builder::SpecBuilder, Spec};
 use crate::migrate::MigrateError;
 
@@ -39,11 +36,7 @@ impl TryFrom<Spec> for v2::instance_spec::InstanceSpec {
         let v1::instance_spec::InstanceSpec { board, components } =
             val.try_into()?;
 
-        Ok(v2::instance_spec::InstanceSpec {
-            board,
-            smbios: smbios,
-            components,
-        })
+        Ok(v2::instance_spec::InstanceSpec { board, smbios, components })
     }
 }
 

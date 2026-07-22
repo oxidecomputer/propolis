@@ -8,23 +8,15 @@
 use std::collections::BTreeMap;
 
 use propolis_api_types::instance_spec::{
-    components::{
-        backends::{DlpiNetworkBackend, VirtioNetworkBackend},
-        board::Board as InstanceSpecBoard,
-        devices::{BootSettings, SerialPort as SerialPortDesc},
-    },
+    components::backends::{DlpiNetworkBackend, VirtioNetworkBackend},
     SpecKey,
 };
-use propolis_api_types_versions::{v1::instance::ReplacementComponent, v6};
+use propolis_api_types_versions::{v1::instance::ReplacementComponent, v3, v6};
 use thiserror::Error;
-
-#[cfg(feature = "falcon")]
-use propolis_api_types::instance_spec::components::devices::SoftNpuPort as SoftNpuPortSpec;
 
 use super::{
     builder::{SpecBuilder, SpecBuilderError},
-    Disk, Nic, QemuPvpanic, SerialPortDevice, Spec, StorageBackend,
-    StorageDevice,
+    Disk, Nic, QemuPvpanic, Spec, StorageBackend, StorageDevice,
 };
 use crate::migrate::MigrateError;
 
@@ -54,25 +46,42 @@ pub(crate) enum ApiSpecError {
 }
 
 impl From<Spec> for v6::instance_spec::InstanceSpec {
-    fn from(val: Spec) -> Self {
-        // Exhaustively destructure the input spec so that adding a new field
-        // without considering it here will break the build.
-        let Spec {
-            board,
-            cpuid,
-            disks,
-            nics,
-            boot_settings,
-            serial,
-            pci_pci_bridges,
-            pvpanic,
-            smbios_type1_input,
-            vsock,
-            #[cfg(feature = "failure-injection")]
-            migration_failure,
-            #[cfg(feature = "falcon")]
-            softnpu,
-        } = val;
+    fn from(mut val: Spec) -> Self {
+        // v6 adds a new field on NvmeDisk. Such disks probably can't be
+        // converted to v3 components and would cause a conversion from
+        // Spec->v3::instance_spec::InstanceSpec to fail. So, extract those
+        // disks and convert the rest of the Spec to a
+        // v3::instance_spec::InstanceSpec. If this fails, we wouldn't have been
+        // able to get a v6 spec anyway. If it succeeds, we can add the disks
+        // back in here.
+        //
+        // TODO: could be extract_if once we're on a Rust >= 1.91.0.
+        let mut nvme_disks = Vec::new();
+        for (key, disk) in val.disks.iter() {
+            let should_remove = match disk.device_spec {
+                StorageDevice::Nvme(_) => true,
+                _ => false,
+            };
+            if should_remove {
+                nvme_disks.push((key.clone(), disk.clone()));
+            }
+        }
+        val.disks.retain(|_, disk| match disk.device_spec {
+            StorageDevice::Nvme(_) => false,
+            _ => true,
+        });
+
+        let v3_spec: v3::instance_spec::InstanceSpec =
+            val.try_into().unwrap_or_else(|e| {
+                unreachable!(
+                    "Converting to Spec without v6 bits to v3 failed: {e}. \
+                        This is currently impossible. When Spec to \
+                        v6::instance_spec::InstanceSpec becomes fallible, \
+                        this should `?`."
+                );
+            });
+
+        let mut spec: v6::instance_spec::InstanceSpec = v3_spec.into();
 
         // Inserts a component entry into the supplied map, asserting first that
         // the supplied key is not present in that map.
@@ -94,20 +103,7 @@ impl From<Spec> for v6::instance_spec::InstanceSpec {
             spec.components.insert(key, val);
         }
 
-        let board = InstanceSpecBoard {
-            cpus: board.cpus,
-            memory_mb: board.memory_mb,
-            chipset: board.chipset,
-            guest_hv_interface: board.guest_hv_interface,
-            cpuid: Some(cpuid.into_instance_spec_cpuid()),
-        };
-        let mut spec = v6::instance_spec::InstanceSpec {
-            board,
-            smbios: smbios_type1_input,
-            components: Default::default(),
-        };
-
-        for (disk_id, disk) in disks {
+        for (disk_id, disk) in nvme_disks {
             let backend_id = disk.device_spec.backend_id().to_owned();
             let device_component: v6::instance_spec::Component =
                 disk.device_spec.into();
@@ -117,146 +113,9 @@ impl From<Spec> for v6::instance_spec::InstanceSpec {
             insert_component(&mut spec, backend_id, backend_component);
         }
 
-        for (nic_id, nic) in nics {
-            let backend_id = nic.device_spec.backend_id.clone();
-            insert_component(
-                &mut spec,
-                nic_id,
-                v6::instance_spec::Component::VirtioNic(nic.device_spec),
-            );
-
-            insert_component(
-                &mut spec,
-                backend_id,
-                v6::instance_spec::Component::VirtioNetworkBackend(
-                    nic.backend_spec,
-                ),
-            );
-        }
-
-        for (name, desc) in serial {
-            if desc.device == SerialPortDevice::Uart {
-                insert_component(
-                    &mut spec,
-                    name,
-                    v6::instance_spec::Component::SerialPort(SerialPortDesc {
-                        num: desc.num,
-                    }),
-                );
-            }
-        }
-
-        for (bridge_name, bridge) in pci_pci_bridges {
-            insert_component(
-                &mut spec,
-                bridge_name,
-                v6::instance_spec::Component::PciPciBridge(bridge),
-            );
-        }
-
-        if let Some(pvpanic) = pvpanic {
-            insert_component(
-                &mut spec,
-                pvpanic.id,
-                v6::instance_spec::Component::QemuPvpanic(pvpanic.spec),
-            );
-        }
-
-        if let Some(vsock) = vsock {
-            insert_component(
-                &mut spec,
-                vsock.id,
-                v6::instance_spec::Component::VirtioSocket(vsock.spec),
-            );
-        }
-
-        if let Some(settings) = boot_settings {
-            insert_component(
-                &mut spec,
-                settings.name,
-                v6::instance_spec::Component::BootSettings(BootSettings {
-                    order: settings.order.into_iter().map(Into::into).collect(),
-                }),
-            );
-        }
-
-        #[cfg(feature = "failure-injection")]
-        if let Some(mig) = migration_failure {
-            insert_component(
-                &mut spec,
-                mig.id,
-                v6::instance_spec::Component::MigrationFailureInjector(
-                    mig.spec,
-                ),
-            );
-        }
-
-        #[cfg(feature = "falcon")]
-        {
-            if let Some(softnpu_pci) = softnpu.pci_port {
-                insert_component(
-                    &mut spec,
-                    SpecKey::Name(format!(
-                        "softnpu-pci-{}",
-                        softnpu_pci.pci_path
-                    )),
-                    v6::instance_spec::Component::SoftNpuPciPort(softnpu_pci),
-                );
-            }
-
-            if let Some(p9) = softnpu.p9_device {
-                insert_component(
-                    &mut spec,
-                    SpecKey::Name(format!("softnpu-p9-{}", p9.pci_path)),
-                    v6::instance_spec::Component::SoftNpuP9(p9),
-                );
-            }
-
-            if let Some(p9fs) = softnpu.p9fs {
-                insert_component(
-                    &mut spec,
-                    SpecKey::Name(format!("p9fs-{}", p9fs.pci_path)),
-                    v6::instance_spec::Component::P9fs(p9fs),
-                );
-            }
-
-            for (port_name, port) in softnpu.ports {
-                insert_component(
-                    &mut spec,
-                    port_name.clone(),
-                    v6::instance_spec::Component::SoftNpuPort(
-                        SoftNpuPortSpec {
-                            link_name: port.link_name,
-                            backend_id: port.backend_name.clone(),
-                        },
-                    ),
-                );
-
-                insert_component(
-                    &mut spec,
-                    port.backend_name,
-                    v6::instance_spec::Component::DlpiNetworkBackend(
-                        port.backend_spec,
-                    ),
-                );
-            }
-        }
-
         spec
     }
 }
-
-/*
-impl TryFrom<v6::instance_spec::InstanceSpec> for Spec {
-    type Error = ApiSpecError;
-
-    fn try_from(
-        value: v6::instance_spec::InstanceSpec,
-    ) -> Result<Self, Self::Error> {
-        Ok(v6_to_spec_builder(value)?.finish())
-    }
-}
-*/
 
 /// Parses a v6 instance spec into a [`SpecBuilder`], validating component
 /// names, PCI paths, and backend references along the way. Callers can add

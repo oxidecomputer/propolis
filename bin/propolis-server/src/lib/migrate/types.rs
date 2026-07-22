@@ -87,8 +87,7 @@ use std::collections::BTreeMap;
 use crate::migrate::MigrateError;
 use crate::spec::{
     api_spec_v1, api_spec_v1::ApiSpecError as V1SpecError, api_spec_v2,
-    api_spec_v3, api_spec_v3::ApiSpecError as V3SpecError, api_spec_v6,
-    api_spec_v6::ApiSpecError as V6SpecError, Spec,
+    api_spec_v3, api_spec_v6, api_spec_v6::ApiSpecError as V6SpecError, Spec,
 };
 
 /// A wrapper for one of any supported `InstanceSpec` that describe a
@@ -176,8 +175,8 @@ impl VersionedInstanceSpec {
                     source_spec.into();
                 let amended_spec: Spec =
                     v6_spec.try_into().map_err(|e: V6SpecError| {
-                        let v3_error: V3SpecError = e.into();
-                        MigrateError::PreambleParse(v3_error.to_string())
+                        let v1_error: V1SpecError = e.into();
+                        MigrateError::PreambleParse(v1_error.to_string())
                     })?;
 
                 amended_spec
