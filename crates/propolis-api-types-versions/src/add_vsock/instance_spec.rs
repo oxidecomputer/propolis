@@ -116,12 +116,11 @@ impl TryFrom<InstanceSpec> for v2::instance_spec::InstanceSpec {
     type Error = InvalidV1Component;
 
     fn try_from(new: InstanceSpec) -> Result<Self, Self::Error> {
-        let components: Result<BTreeMap<_, _>, _> = new
+        let components: BTreeMap<_, _> = new
             .components
             .into_iter()
             .map(|(k, v)| V1Component::try_from(v).map(|c| (k, c)))
-            .collect::<Result<BTreeMap<_, _>, _>>();
-        let components = components.expect("TODO: hueagghggh");
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
 
         Ok(Self { board: new.board, components, smbios: new.smbios })
     }
@@ -163,30 +162,34 @@ impl From<V1Component> for Component {
     }
 }
 
-impl From<InstanceSpecStatus> for v2::instance_spec::InstanceSpecStatus {
-    fn from(new: InstanceSpecStatus) -> Self {
+impl TryFrom<InstanceSpecStatus> for v2::instance_spec::InstanceSpecStatus {
+    type Error = InvalidV1Component;
+
+    fn try_from(new: InstanceSpecStatus) -> Result<Self, Self::Error> {
         match new {
             InstanceSpecStatus::WaitingForMigrationSource => {
-                Self::WaitingForMigrationSource
+                Ok(Self::WaitingForMigrationSource)
             }
             InstanceSpecStatus::Present(spec) => {
                 let v2_spec: v2::instance_spec::InstanceSpec =
-                    spec.try_into().expect("TODO: v3 instance spec into v2");
-                Self::Present(v2_spec)
+                    spec.try_into()?;
+                Ok(Self::Present(v2_spec))
             }
         }
     }
 }
 
-impl From<InstanceSpecGetResponse>
+impl TryFrom<InstanceSpecGetResponse>
     for v2::instance_spec::InstanceSpecGetResponse
 {
-    fn from(new: InstanceSpecGetResponse) -> Self {
-        Self {
+    type Error = InvalidV1Component;
+
+    fn try_from(new: InstanceSpecGetResponse) -> Result<Self, Self::Error> {
+        Ok(Self {
             properties: new.properties,
             state: new.state,
-            spec: new.spec.into(),
-        }
+            spec: new.spec.try_into()?,
+        })
     }
 }
 

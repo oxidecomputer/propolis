@@ -89,7 +89,7 @@ use propolis_api_types::instance::{
     InstanceStateMonitorResponse,
 };
 use propolis_api_types::instance_spec::{
-    InstanceSpecGetResponse, InstanceSpecStatus, SpecKey,
+    InstanceSpec, InstanceSpecGetResponse, InstanceSpecStatus, SpecKey,
 };
 use propolis_api_types::migration::{
     InstanceMigrateStatusResponse, InstanceMigrationStatus, MigrationState,
@@ -355,7 +355,7 @@ impl Vm {
                 let spec =
                     vm.objects().lock_shared().await.instance_spec().clone();
                 let state = vm.external_state_rx.borrow().clone();
-                let external_spec: propolis_api_types_versions::latest::instance_spec::InstanceSpec = spec.into();
+                let external_spec: InstanceSpec = spec.into();
                 Some(InstanceSpecGetResponse {
                     properties: vm.properties.clone(),
                     spec: InstanceSpecStatus::Present(external_spec),
@@ -371,7 +371,7 @@ impl Vm {
                 })
             }
             VmState::Rundown { vm, spec } => {
-                let external_spec: propolis_api_types_versions::latest::instance_spec::InstanceSpec = (*spec.to_owned()).into();
+                let external_spec: InstanceSpec = (*spec.to_owned()).into();
                 Some(InstanceSpecGetResponse {
                     properties: vm.properties.clone(),
                     state: vm.external_state_rx.borrow().state,

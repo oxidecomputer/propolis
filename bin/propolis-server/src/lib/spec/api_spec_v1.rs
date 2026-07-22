@@ -174,8 +174,12 @@ impl TryFrom<Spec> for v1::instance_spec::InstanceSpec {
 
         for (disk_id, disk) in disks {
             let backend_id = disk.device_spec.backend_id().to_owned();
-            let device_component: v1::instance_spec::Component = disk.device_spec.try_into()
-                .map_err(|e: propolis_api_types_versions::v6::instance_spec::InvalidV3Component| ApiSpecError::IncompatibleComponent(e.to_string()))?;
+            let device_component: v1::instance_spec::Component = disk
+                .device_spec
+                .try_into()
+                .map_err(|e: v6::instance_spec::InvalidV3Component| {
+                    ApiSpecError::IncompatibleComponent(e.to_string())
+                })?;
             let backend_component: v1::instance_spec::Component =
                 disk.backend_spec.into();
             insert_component(&mut spec, disk_id, device_component);

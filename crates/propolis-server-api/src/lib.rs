@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use dropshot::{
-    HttpError, HttpResponseCreated, HttpResponseOk,
+    ClientErrorStatusCode, HttpError, HttpResponseCreated, HttpResponseOk,
     HttpResponseUpdatedNoContent, Path, Query, RequestContext, TypedBody,
     WebsocketChannelResult, WebsocketConnection,
 };
@@ -160,9 +160,17 @@ pub trait PropolisServerApi {
         HttpResponseOk<v2::instance_spec::InstanceSpecGetResponse>,
         HttpError,
     > {
-        Ok(Self::instance_spec_get_v3(rqctx)
-            .await?
-            .map(v2::instance_spec::InstanceSpecGetResponse::from))
+        let v3_response = Self::instance_spec_get_v3(rqctx).await?.0;
+        let v2_response: v2::instance_spec::InstanceSpecGetResponse =
+            v3_response.try_into().map_err(|_e| {
+                HttpError::for_client_error(
+                    None,
+                    ClientErrorStatusCode::BAD_REQUEST,
+                    "instance spec cannot be expressed to v2 clients"
+                        .to_owned(),
+                )
+            })?;
+        Ok(HttpResponseOk(v2_response))
     }
 
     #[endpoint {

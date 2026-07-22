@@ -1358,9 +1358,8 @@ fn setup_instance(
                     let has_write_cache = dev
                         .options
                         .get("has_write_cache")
-                        .unwrap()
-                        .as_bool()
-                        .unwrap();
+                        .map(|v| v.as_bool().unwrap())
+                        .unwrap_or(false);
                     // Limit data transfers to 1MiB (2^8 * 4k) in size
                     let mdts = Some(8);
 
