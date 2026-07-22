@@ -103,7 +103,6 @@ vm-attest = { git = "https://github.com/oxidecomputer/vm-attest", rev = "deaf020
 acpi_tables = { git = 'https://github.com/oxidecomputer/acpi_tables.git', tag = "v0.2.1-oxide.1" }
 anyhow = "1.0"
 async-trait = "0.1.88"
-atty = "0.2.14"
 backoff = "0.4.0"
 backtrace = "0.3.66"
 base64 = "0.21"

@@ -337,7 +337,7 @@ impl Inner {
             ];
 
             // NOTE: `log_format` is ignored here because Crucible determines
-            // Bunyan or plain formatting based on `atty::is()`. In practice
+            // Bunyan or plain formatting based on `is_terminal()`. In practice
             // this is fine, and matches what we want right now, but it might be
             // nice to connect this more directly to the output desire expressed
             // by the test runner.

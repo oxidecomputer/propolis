@@ -6863,7 +6863,6 @@ name = "propolis-mock-server"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "atty",
  "base64 0.21.7",
  "clap",
  "dropshot 0.17.1",
@@ -6908,7 +6907,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "atty",
  "base64 0.21.7",
  "bit_field",
  "bitvec",
@@ -6984,7 +6982,6 @@ name = "propolis-standalone"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "atty",
  "bhyve_api 0.0.0",
  "clap",
  "cpuid_profile_config",
