@@ -57,19 +57,14 @@ impl From<Spec> for v6::instance_spec::InstanceSpec {
         //
         // TODO: could be extract_if once we're on a Rust >= 1.91.0.
         let mut nvme_disks = Vec::new();
+        let v6_only_disk =
+            |disk: &Disk| matches!(disk.device_spec, StorageDevice::Nvme(_));
         for (key, disk) in val.disks.iter() {
-            let should_remove = match disk.device_spec {
-                StorageDevice::Nvme(_) => true,
-                _ => false,
-            };
-            if should_remove {
+            if v6_only_disk(disk) {
                 nvme_disks.push((key.clone(), disk.clone()));
             }
         }
-        val.disks.retain(|_, disk| match disk.device_spec {
-            StorageDevice::Nvme(_) => false,
-            _ => true,
-        });
+        val.disks.retain(|_, disk| v6_only_disk(disk));
 
         let v3_spec: v3::instance_spec::InstanceSpec =
             val.try_into().unwrap_or_else(|e| {

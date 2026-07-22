@@ -326,7 +326,7 @@ pub(crate) fn v1_to_spec_builder(
     let v2_spec: v2::instance_spec::InstanceSpec = value.into();
     let v3_spec: v3::instance_spec::InstanceSpec = v2_spec.into();
 
-    crate::spec::api_spec_v3::v3_to_spec_builder(v3_spec).map_err(|e| e.into())
+    crate::spec::api_spec_v3::v3_to_spec_builder(v3_spec)
 }
 
 // `amend_component` is suitable for (and used in) amending a v2 InstanceSpec,

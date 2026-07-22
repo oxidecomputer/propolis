@@ -58,7 +58,7 @@ pub(crate) fn v2_to_spec_builder(
 ) -> Result<SpecBuilder, ApiSpecError> {
     let v3_spec: v3::instance_spec::InstanceSpec = value.into();
 
-    crate::spec::api_spec_v3::v3_to_spec_builder(v3_spec).map_err(|e| e.into())
+    crate::spec::api_spec_v3::v3_to_spec_builder(v3_spec)
 }
 
 pub(crate) fn amend(
