@@ -44,7 +44,7 @@ fn add_default_boot_disk<'a>(
         ctx,
         config,
         ctx.default_guest_os_artifact(),
-        DiskInterface::Nvme,
+        DiskInterface::nvme(),
         4,
         10,
         BlockSize::Bytes512,

@@ -2,9 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+//! This module and its children define the migration protocol for
+//! `propolis-server`. Generally the structures and state machine here are
+//! consistent with the discussion in RFD 71.
+
 use bit_field::BitField;
 use dropshot::HttpError;
 use propolis::migrate::MigrateStateError;
+use propolis_api_types::instance_spec::SpecKey;
 use propolis_api_types::migration::MigrationState;
 use serde::{Deserialize, Serialize};
 use slog::error;
@@ -17,6 +22,7 @@ mod memx;
 mod preamble;
 pub mod protocol;
 pub mod source;
+mod types;
 
 /// Trait bounds for connection objects used in live migrations.
 pub(crate) trait MigrateConn:
@@ -151,6 +157,13 @@ pub enum MigrateError {
     /// The other end of the migration ran into an error
     #[error("{0:?} migration instance encountered error: {1}")]
     RemoteError(MigrateRole, String),
+}
+
+impl MigrateError {
+    pub(crate) fn wrong_type(id: &SpecKey, kind: &str) -> MigrateError {
+        let msg = format!("component {id} is not a {kind} in the source spec");
+        MigrateError::InstanceSpecsIncompatible(msg)
+    }
 }
 
 impl From<tokio_tungstenite::tungstenite::Error> for MigrateError {

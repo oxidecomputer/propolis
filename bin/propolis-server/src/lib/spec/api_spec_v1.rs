@@ -2,20 +2,22 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Conversions from version-0 instance specs in the [`propolis_api_types`]
-//! crate to the internal [`super::Spec`] representation.
+//! Conversions from the initial API version ([`propolis_api_types::v1`], aka
+//! "V0" in some parts of propolis-server) instance specs in the
+//! [`propolis_api_types`] crate to the internal [`super::Spec`] representation.
 
 use std::collections::BTreeMap;
 
 use propolis_api_types::instance_spec::{
     components::{
-        backends::{DlpiNetworkBackend, VirtioNetworkBackend},
         board::Board as InstanceSpecBoard,
         devices::{BootSettings, SerialPort as SerialPortDesc},
     },
     SpecKey,
 };
-use propolis_api_types_versions::v1;
+use propolis_api_types_versions::{
+    v1, v1::instance::ReplacementComponent, v2, v3, v6,
+};
 use thiserror::Error;
 
 #[cfg(feature = "falcon")]
@@ -23,15 +25,12 @@ use propolis_api_types::instance_spec::components::devices::SoftNpuPort as SoftN
 
 use super::{
     builder::{SpecBuilder, SpecBuilderError},
-    Disk, Nic, QemuPvpanic, SerialPortDevice, Spec, StorageBackend,
-    StorageDevice,
+    SerialPortDevice, Spec, StorageBackend, StorageDevice,
 };
+use crate::migrate::MigrateError;
 
 #[cfg(feature = "failure-injection")]
 use super::MigrationFailure;
-
-#[cfg(feature = "falcon")]
-use super::SoftNpuPort;
 
 #[derive(Debug, Error)]
 pub(crate) enum ApiSpecError {
@@ -50,10 +49,46 @@ pub(crate) enum ApiSpecError {
 
     #[error("backend {0} not used by any device")]
     BackendNotUsed(SpecKey),
+
+    #[error("spec contains v1-incompatible component: {0}")]
+    IncompatibleComponent(String),
 }
 
-impl From<Spec> for v1::instance_spec::InstanceSpec {
-    fn from(val: Spec) -> Self {
+// Woah! It's strange to have a conversion to a *v1* type which has an error
+// from *v6* about *v3*. Not as bad as it seems though: v6 is when this
+// component changed, and v3 is next-most-recent version of
+// `instance_spec::Component`. So in v6, the error is "I can't convert this to
+// v3::instance_spec::Component".
+//
+// We're converting to v1, though, which has a further-different `Component`
+// type. If we had a fallible operation converting a storage device all the way
+// down, that might produce an error about failing to convert a V3 type to V1 -
+// it turns out that's infallible here.
+impl TryFrom<StorageDevice> for v1::instance_spec::Component {
+    type Error = v6::instance_spec::InvalidV3Component;
+
+    fn try_from(value: StorageDevice) -> Result<Self, Self::Error> {
+        match value {
+            StorageDevice::Virtio(d) => Ok(Self::VirtioDisk(d)),
+            StorageDevice::Nvme(d) => Ok(Self::NvmeDisk(d.try_into()?)),
+        }
+    }
+}
+
+impl From<StorageBackend> for v1::instance_spec::Component {
+    fn from(value: StorageBackend) -> Self {
+        match value {
+            StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),
+            StorageBackend::File(be) => Self::FileStorageBackend(be),
+            StorageBackend::Blob(be) => Self::BlobStorageBackend(be),
+        }
+    }
+}
+
+impl TryFrom<Spec> for v1::instance_spec::InstanceSpec {
+    type Error = ApiSpecError;
+
+    fn try_from(val: Spec) -> Result<Self, Self::Error> {
         // Exhaustively destructure the input spec so that adding a new field
         // without considering it here will break the build.
         let Spec {
@@ -72,12 +107,38 @@ impl From<Spec> for v1::instance_spec::InstanceSpec {
 
             // Not part of `v1::instance_spec::InstanceSpec`. Added in
             // `InstanceSpec` in API Version 2.0.0.
-            smbios_type1_input: _,
+            smbios_type1_input,
 
             // Not part of `v1::instance_spec::InstanceSpec`. Added in
             // `InstanceSpec` in API Version 3.0.0.
-            vsock: _,
+            vsock,
         } = val;
+
+        if smbios_type1_input.is_some() {
+            // NOTE: This is overly strict. There is one specific SMBIOS Type 1
+            // table that could be expressed previously, and that is the one
+            // where the instance serial is set to the instance UUID.
+            //
+            // This is the Type 1 table provided by Nexus as of specs later than
+            // V1, so by bailing here we're effectively blocking migration from
+            // new Propolises to old Propolises. This is acceptable for a few
+            // reasons:
+            // * the control plane is not expected to migrate VMs to down-rev
+            //   Propolises
+            // * V1 specs are from before live migration was done outside
+            //   ad-hoc/CI environments - such an old Propolis will never exist
+            //   as a migration target in the field.
+            return Err(ApiSpecError::IncompatibleComponent(
+                "cannot express explicit SMBIOS tables in v1 instance spec"
+                    .to_string(),
+            ));
+        }
+
+        if vsock.is_some() {
+            return Err(ApiSpecError::IncompatibleComponent(
+                "cannot convert virtio-socket to v1 instance spec".to_string(),
+            ));
+        }
 
         // Inserts a component entry into the supplied map, asserting first that
         // the supplied key is not present in that map.
@@ -113,8 +174,16 @@ impl From<Spec> for v1::instance_spec::InstanceSpec {
 
         for (disk_id, disk) in disks {
             let backend_id = disk.device_spec.backend_id().to_owned();
-            insert_component(&mut spec, disk_id, disk.device_spec.into());
-            insert_component(&mut spec, backend_id, disk.backend_spec.into());
+            let device_component: v1::instance_spec::Component = disk
+                .device_spec
+                .try_into()
+                .map_err(|e: v6::instance_spec::InvalidV3Component| {
+                    ApiSpecError::IncompatibleComponent(e.to_string())
+                })?;
+            let backend_component: v1::instance_spec::Component =
+                disk.backend_spec.into();
+            insert_component(&mut spec, disk_id, device_component);
+            insert_component(&mut spec, backend_id, backend_component);
         }
 
         for (nic_id, nic) in nics {
@@ -234,7 +303,7 @@ impl From<Spec> for v1::instance_spec::InstanceSpec {
             }
         }
 
-        spec
+        Ok(spec)
     }
 }
 
@@ -254,175 +323,77 @@ impl TryFrom<v1::instance_spec::InstanceSpec> for Spec {
 pub(crate) fn v1_to_spec_builder(
     value: v1::instance_spec::InstanceSpec,
 ) -> Result<SpecBuilder, ApiSpecError> {
-    let mut builder = SpecBuilder::with_instance_spec_board(value.board)?;
-    let mut devices: Vec<(SpecKey, v1::instance_spec::Component)> = vec![];
-    let mut boot_settings = None;
-    let mut storage_backends: BTreeMap<SpecKey, StorageBackend> =
-        BTreeMap::new();
-    let mut viona_backends: BTreeMap<SpecKey, VirtioNetworkBackend> =
-        BTreeMap::new();
-    let mut dlpi_backends: BTreeMap<SpecKey, DlpiNetworkBackend> =
-        BTreeMap::new();
+    let v2_spec: v2::instance_spec::InstanceSpec = value.into();
+    let v3_spec: v3::instance_spec::InstanceSpec = v2_spec.into();
 
-    for (id, component) in value.components.into_iter() {
-        match component {
-            v1::instance_spec::Component::CrucibleStorageBackend(_)
-            | v1::instance_spec::Component::FileStorageBackend(_)
-            | v1::instance_spec::Component::BlobStorageBackend(_) => {
-                storage_backends.insert(
+    crate::spec::api_spec_v3::v3_to_spec_builder(v3_spec)
+}
+
+// `amend_component` is suitable for (and used in) amending a v2 InstanceSpec,
+// so this one is pub(crate) unlike other `api_spec_v*`.
+pub(crate) fn amend_component(
+    id: &SpecKey,
+    to_amend: &mut v1::instance_spec::Component,
+    replacement: &ReplacementComponent,
+) -> Result<(), MigrateError> {
+    match replacement {
+        #[cfg(not(feature = "failure-injection"))]
+        ReplacementComponent::MigrationFailureInjector(_) => {
+            return Err(MigrateError::InstanceSpecsIncompatible(format!(
+                "replacing migration failure injector {id} is \
+                    impossible because the feature is compiled out"
+            )));
+        }
+
+        #[cfg(feature = "failure-injection")]
+        ReplacementComponent::MigrationFailureInjector(comp) => {
+            let v1::instance_spec::Component::MigrationFailureInjector(src) =
+                to_amend
+            else {
+                return Err(MigrateError::wrong_type(
                     id,
-                    component
-                        .try_into()
-                        .expect("component is known to be a storage backend"),
-                );
-            }
-            v1::instance_spec::Component::VirtioNetworkBackend(viona) => {
-                viona_backends.insert(id, viona);
-            }
-            v1::instance_spec::Component::DlpiNetworkBackend(dlpi) => {
-                dlpi_backends.insert(id, dlpi);
-            }
-            device => {
-                devices.push((id, device));
-            }
+                    "migration failure injector",
+                ));
+            };
+
+            *src = comp.clone();
+        }
+        ReplacementComponent::CrucibleStorageBackend(comp) => {
+            let v1::instance_spec::Component::CrucibleStorageBackend(src) =
+                to_amend
+            else {
+                return Err(MigrateError::wrong_type(id, "crucible backend"));
+            };
+
+            *src = comp.clone();
+        }
+        ReplacementComponent::VirtioNetworkBackend(comp) => {
+            let v1::instance_spec::Component::VirtioNetworkBackend(src) =
+                to_amend
+            else {
+                return Err(MigrateError::wrong_type(id, "viona backend"));
+            };
+
+            *src = comp.clone();
         }
     }
 
-    for (device_id, device_spec) in devices {
-        match device_spec {
-            v1::instance_spec::Component::VirtioDisk(_)
-            | v1::instance_spec::Component::NvmeDisk(_) => {
-                let device_spec = StorageDevice::try_from(device_spec)
-                    .expect("component is known to be a disk");
+    Ok(())
+}
 
-                let (_, backend_spec) = storage_backends
-                    .remove_entry(device_spec.backend_id())
-                    .ok_or_else(|| ApiSpecError::StorageBackendNotFound {
-                        backend: device_spec.backend_id().to_owned(),
-                        device: device_id.clone(),
-                    })?;
+pub(crate) fn amend(
+    spec: &mut v1::instance_spec::InstanceSpec,
+    replacements: &BTreeMap<SpecKey, ReplacementComponent>,
+) -> Result<(), MigrateError> {
+    for (id, replacement) in replacements {
+        let Some(to_amend) = spec.components.get_mut(id) else {
+            return Err(MigrateError::InstanceSpecsIncompatible(format!(
+                "replacement component {id} not in source spec",
+            )));
+        };
 
-                builder.add_storage_device(
-                    device_id,
-                    Disk { device_spec, backend_spec },
-                )?;
-            }
-            v1::instance_spec::Component::VirtioNic(nic) => {
-                let (_, backend_spec) = viona_backends
-                    .remove_entry(&nic.backend_id)
-                    .ok_or_else(|| ApiSpecError::NetworkBackendNotFound {
-                        backend: nic.backend_id.clone(),
-                        device: device_id.clone(),
-                    })?;
-
-                builder.add_network_device(
-                    device_id,
-                    Nic { device_spec: nic, backend_spec },
-                )?;
-            }
-            v1::instance_spec::Component::SerialPort(port) => {
-                builder.add_serial_port(device_id, port.num)?;
-            }
-            v1::instance_spec::Component::PciPciBridge(bridge) => {
-                builder.add_pci_bridge(device_id, bridge)?;
-            }
-            v1::instance_spec::Component::QemuPvpanic(pvpanic) => {
-                builder.add_pvpanic_device(QemuPvpanic {
-                    id: device_id,
-                    spec: pvpanic,
-                })?;
-            }
-            v1::instance_spec::Component::BootSettings(settings) => {
-                // The builder returns an error if its caller tries to add
-                // a boot option that isn't in the set of attached disks.
-                // Since there may be more disk devices left in the
-                // component map, just capture the boot order for now and
-                // apply it to the builder later.
-                boot_settings = Some((device_id, settings));
-            }
-            #[cfg(not(feature = "failure-injection"))]
-            v1::instance_spec::Component::MigrationFailureInjector(_) => {
-                return Err(ApiSpecError::FeatureCompiledOut {
-                    component: device_id,
-                    feature: "failure-injection",
-                });
-            }
-            #[cfg(feature = "failure-injection")]
-            v1::instance_spec::Component::MigrationFailureInjector(mig) => {
-                builder.add_migration_failure_device(MigrationFailure {
-                    id: device_id,
-                    spec: mig,
-                })?;
-            }
-            #[cfg(not(feature = "falcon"))]
-            v1::instance_spec::Component::SoftNpuPciPort(_)
-            | v1::instance_spec::Component::SoftNpuPort(_)
-            | v1::instance_spec::Component::SoftNpuP9(_)
-            | v1::instance_spec::Component::P9fs(_) => {
-                return Err(ApiSpecError::FeatureCompiledOut {
-                    component: device_id,
-                    feature: "falcon",
-                });
-            }
-            #[cfg(feature = "falcon")]
-            v1::instance_spec::Component::SoftNpuPciPort(port) => {
-                builder.set_softnpu_pci_port(port)?;
-            }
-            #[cfg(feature = "falcon")]
-            v1::instance_spec::Component::SoftNpuPort(port) => {
-                let (_, backend_spec) = dlpi_backends
-                    .remove_entry(&port.backend_id)
-                    .ok_or_else(|| ApiSpecError::NetworkBackendNotFound {
-                        backend: port.backend_id.clone(),
-                        device: device_id.clone(),
-                    })?;
-
-                let port = SoftNpuPort {
-                    link_name: port.link_name,
-                    backend_name: port.backend_id,
-                    backend_spec,
-                };
-
-                builder.add_softnpu_port(device_id, port)?;
-            }
-            #[cfg(feature = "falcon")]
-            v1::instance_spec::Component::SoftNpuP9(p9) => {
-                builder.set_softnpu_p9(p9)?;
-            }
-            #[cfg(feature = "falcon")]
-            v1::instance_spec::Component::P9fs(p9fs) => {
-                builder.set_p9fs(p9fs)?;
-            }
-            v1::instance_spec::Component::CrucibleStorageBackend(_)
-            | v1::instance_spec::Component::FileStorageBackend(_)
-            | v1::instance_spec::Component::BlobStorageBackend(_)
-            | v1::instance_spec::Component::VirtioNetworkBackend(_)
-            | v1::instance_spec::Component::DlpiNetworkBackend(_) => {
-                unreachable!("already filtered out backends")
-            }
-        }
+        amend_component(id, to_amend, replacement)?;
     }
 
-    // Now that all disks have been attached, try to establish the boot
-    // order if one was supplied.
-    if let Some(settings) = boot_settings {
-        builder.add_boot_order(
-            settings.0,
-            settings.1.order.into_iter().map(Into::into),
-        )?;
-    }
-
-    if let Some(backend) = storage_backends.into_keys().next() {
-        return Err(ApiSpecError::BackendNotUsed(backend));
-    }
-
-    if let Some(backend) = viona_backends.into_keys().next() {
-        return Err(ApiSpecError::BackendNotUsed(backend));
-    }
-
-    if let Some(backend) = dlpi_backends.into_keys().next() {
-        return Err(ApiSpecError::BackendNotUsed(backend));
-    }
-
-    Ok(builder)
+    Ok(())
 }

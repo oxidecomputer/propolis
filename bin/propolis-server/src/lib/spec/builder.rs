@@ -71,6 +71,18 @@ pub(crate) enum SpecBuilderError {
     DefaultCpuidReadFailed(#[from] cpuid_utils::host::GetHostCpuidError),
 }
 
+/// A builder onto which devices and other components are added as an
+/// `InstanceSpec` is interpreted. Among other things, this services as a
+/// forcing function to canonicalize VM descriptions, where we can enforce
+/// invariants about components (such as "disk devices must reference backends
+/// that exist").
+///
+/// Note that the API type `Component` itself does not appear here: the
+/// expectation is that individual components' definitions change relatively
+/// rarely, so callers do the work of mapping components to the
+/// closer-to-internal definitions that `SpecBuilder` accepts. In theory,
+/// hopefully, this means `SpecBuilder` itself changes rarely and can be more
+/// reasily audited for semantic drift.
 #[derive(Debug, Default)]
 pub(crate) struct SpecBuilder {
     spec: super::Spec,

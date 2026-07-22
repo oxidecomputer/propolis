@@ -3,12 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use dropshot::{
-    HttpError, HttpResponseCreated, HttpResponseOk,
+    ClientErrorStatusCode, HttpError, HttpResponseCreated, HttpResponseOk,
     HttpResponseUpdatedNoContent, Path, Query, RequestContext, TypedBody,
     WebsocketChannelResult, WebsocketConnection,
 };
 use dropshot_api_manager_types::api_versions;
-use propolis_api_types_versions::{latest, v1, v2};
+use propolis_api_types_versions::{latest, v1, v2, v3, v6};
 
 api_versions!([
     // WHEN CHANGING THE API (part 1 of 2):
@@ -22,6 +22,7 @@ api_versions!([
     // |  example for the next person.
     // v
     // (next_int, IDENT),
+    (6, NVME_WRITE_CACHE),
     (5, CRUCIBLE_VOLUME_INFO),
     (4, DROPSHOT_BUMP_WEBSOCKET),
     (3, ADD_VSOCK),
@@ -48,7 +49,7 @@ pub trait PropolisServerApi {
     #[endpoint {
         method = PUT,
         path = "/instance",
-        versions = VERSION_ADD_VSOCK..
+        versions = VERSION_NVME_WRITE_CACHE..
     }]
     async fn instance_ensure(
         rqctx: RequestContext<Self::Context>,
@@ -62,18 +63,38 @@ pub trait PropolisServerApi {
         operation_id = "instance_ensure",
         method = PUT,
         path = "/instance",
+        versions = VERSION_ADD_VSOCK..VERSION_NVME_WRITE_CACHE
+    }]
+    async fn instance_ensure_v3(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<v3::api::InstanceEnsureRequest>,
+    ) -> Result<
+        HttpResponseCreated<v1::instance::InstanceEnsureResponse>,
+        HttpError,
+    > {
+        Self::instance_ensure(
+            rqctx,
+            request.map(v6::api::InstanceEnsureRequest::from),
+        )
+        .await
+    }
+
+    #[endpoint {
+        operation_id = "instance_ensure",
+        method = PUT,
+        path = "/instance",
         versions = VERSION_PROGRAMMABLE_SMBIOS..VERSION_ADD_VSOCK
     }]
     async fn instance_ensure_v2(
         rqctx: RequestContext<Self::Context>,
         request: TypedBody<v2::api::InstanceEnsureRequest>,
     ) -> Result<
-        HttpResponseCreated<latest::instance::InstanceEnsureResponse>,
+        HttpResponseCreated<v1::instance::InstanceEnsureResponse>,
         HttpError,
     > {
-        Self::instance_ensure(
+        Self::instance_ensure_v3(
             rqctx,
-            request.map(latest::instance::InstanceEnsureRequest::from),
+            request.map(v3::api::InstanceEnsureRequest::from),
         )
         .await
     }
@@ -88,7 +109,7 @@ pub trait PropolisServerApi {
         rqctx: RequestContext<Self::Context>,
         request: TypedBody<v1::instance::InstanceEnsureRequest>,
     ) -> Result<
-        HttpResponseCreated<latest::instance::InstanceEnsureResponse>,
+        HttpResponseCreated<v1::instance::InstanceEnsureResponse>,
         HttpError,
     > {
         Self::instance_ensure_v2(
@@ -101,7 +122,7 @@ pub trait PropolisServerApi {
     #[endpoint {
         method = GET,
         path = "/instance/spec",
-        versions = VERSION_ADD_VSOCK..
+        versions = VERSION_NVME_WRITE_CACHE..
     }]
     async fn instance_spec_get(
         rqctx: RequestContext<Self::Context>,
@@ -109,6 +130,23 @@ pub trait PropolisServerApi {
         HttpResponseOk<latest::instance_spec::InstanceSpecGetResponse>,
         HttpError,
     >;
+
+    #[endpoint {
+        operation_id = "instance_spec_get",
+        method = GET,
+        path = "/instance/spec",
+        versions = VERSION_ADD_VSOCK..VERSION_NVME_WRITE_CACHE
+    }]
+    async fn instance_spec_get_v3(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<
+        HttpResponseOk<v3::instance_spec::InstanceSpecGetResponse>,
+        HttpError,
+    > {
+        Ok(Self::instance_spec_get(rqctx)
+            .await?
+            .map(v3::instance_spec::InstanceSpecGetResponse::from))
+    }
 
     #[endpoint {
         operation_id = "instance_spec_get",
@@ -122,9 +160,17 @@ pub trait PropolisServerApi {
         HttpResponseOk<v2::instance_spec::InstanceSpecGetResponse>,
         HttpError,
     > {
-        Ok(Self::instance_spec_get(rqctx)
-            .await?
-            .map(v2::instance_spec::InstanceSpecGetResponse::from))
+        let v3_response = Self::instance_spec_get_v3(rqctx).await?.0;
+        let v2_response: v2::instance_spec::InstanceSpecGetResponse =
+            v3_response.try_into().map_err(|_e| {
+                HttpError::for_client_error(
+                    None,
+                    ClientErrorStatusCode::BAD_REQUEST,
+                    "instance spec cannot be expressed to v2 clients"
+                        .to_owned(),
+                )
+            })?;
+        Ok(HttpResponseOk(v2_response))
     }
 
     #[endpoint {

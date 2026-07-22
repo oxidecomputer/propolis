@@ -13,10 +13,14 @@
 //! wire-format types in the [`propolis_api_types`] crate. This, in turn, allows
 //! [`Spec`] and its component types to take forms that might otherwise be hard
 //! to change in a backward-compatible way.
+//!
+//! Types and operations here are copied as-needed into new verson-specific
+//! modules as needed, as new versions of the `propolis-server` HTTP API are
+//! added.
 
 use std::collections::BTreeMap;
 
-use crate::spec::api_spec_v0::ApiSpecError;
+use crate::spec::api_spec_v6::ApiSpecError;
 use cpuid_utils::CpuidSet;
 use propolis_api_types::instance_spec::{
     components::{
@@ -36,7 +40,7 @@ use propolis_api_types::instance_spec::{
 use propolis_api_types::instance_spec::{
     Component, InstanceSpec, SmbiosType1Input,
 };
-use propolis_api_types_versions::{v1, v2};
+use propolis_api_types_versions::latest;
 use thiserror::Error;
 
 #[cfg(feature = "failure-injection")]
@@ -49,55 +53,21 @@ use propolis_api_types::instance_spec::components::{
     devices::{P9fs, SoftNpuP9, SoftNpuPciPort},
 };
 
-// mod api_request;
-pub(crate) mod api_spec_v0;
+pub(crate) mod api_spec_v1;
+pub(crate) mod api_spec_v2;
+pub(crate) mod api_spec_v3;
+pub(crate) mod api_spec_v6;
 pub(crate) mod builder;
 
-/// The code related to latest types does not go into a versioned module
-impl From<Spec> for InstanceSpec {
-    fn from(val: Spec) -> Self {
-        let smbios = val.smbios_type1_input.clone();
-        let vsock = val.vsock.clone();
-
-        let v1_spec: v1::instance_spec::InstanceSpec = val.into();
-        let v2_spec =
-            v2::instance_spec::InstanceSpec { smbios, ..v1_spec.into() };
-        let mut spec: InstanceSpec = v2_spec.into();
-
-        if let Some(vsock) = vsock {
-            spec.components
-                .insert(vsock.id, Component::VirtioSocket(vsock.spec));
-        }
-        spec
-    }
-}
-
-/// The code related to latest types does not go into a versioned module
+/// `propolis-server` relies on `TryInto` to convert the API-provided
+/// `InstanceSpec` to an internal `Spec`. When adding a new API version to
+/// `propolis-server` you will probably want to take this implementation and
+/// copy it into the no-longer-latest `api_spec_v*` module.
 impl TryFrom<InstanceSpec> for Spec {
     type Error = ApiSpecError;
 
     fn try_from(value: InstanceSpec) -> Result<Self, Self::Error> {
-        // Extract vsock before conversion since it's v3-only and will be
-        // filtered out during the v3→v2→v1 chain.
-        let mut vsock_entry = None;
-        for (id, component) in &value.components {
-            if let Component::VirtioSocket(v) = component {
-                vsock_entry = Some(VirtioSocket { id: id.clone(), spec: *v });
-                break;
-            }
-        }
-
-        let v2_spec: v2::instance_spec::InstanceSpec = value.into();
-        let smbios = v2_spec.smbios.clone();
-        let v1_spec: v1::instance_spec::InstanceSpec = v2_spec.into();
-
-        let mut builder = api_spec_v0::v1_to_spec_builder(v1_spec)?;
-        if let Some(vsock) = vsock_entry {
-            builder.add_vsock_device(vsock)?;
-        }
-        let mut spec = builder.finish();
-        spec.smbios_type1_input = smbios;
-        Ok(spec)
+        Ok(api_spec_v6::v6_to_spec_builder(value)?.finish())
     }
 }
 
@@ -114,6 +84,14 @@ pub struct ComponentTypeMismatch;
 /// device paths, etc.). When constructing a new spec, use the
 /// [`builder::SpecBuilder`] struct to catch requests that violate these
 /// invariants.
+///
+/// ### Relationship to migration
+///
+/// As Propolis' internal representation of a VM, conversion to/from `Spec` is a
+/// front-and-center concern for migrating from a current Propolis to some other
+/// newer or older `propolis-server`. See the module comment in
+/// [`lib/migrate/mod.rs`](crate::lib::migrate) for more about the relationships
+/// between these types.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Spec {
     pub board: Board,
@@ -135,16 +113,19 @@ pub(crate) struct Spec {
     #[cfg(feature = "falcon")]
     pub softnpu: SoftNpu,
 
-    // TODO: This is an option because there is no good way to generate a
-    // default implementation of `SmbiosType1Input`. The default `serial_number`
-    // field of `SmbiosType1Input` should be equivalent to the VM UUID for
-    // backwards compatibility, but that isn't currently possible.
+    // This is an option because in v1::instance_spec::InstanceSpec the defaults
+    // `None` would imply came from the data outside the `InstanceSpec` itself;
+    // instance properties, for the instance's UUID, in particular. Two
+    // options here are to have `Builder` take the instance's UUID at all times
+    // and only sometimes synthesize `SmbiosType1Input` if nothing else is
+    // provided, or allow this to be `None` and interpret that in "the old way"
+    // when instantiating the SMBIOS tables. We've gone with the latter.
+    // Alternatively, we could scratch `Builder` entirely and have open-coded
+    // functions to translate `InstanceSpec` to a `Spec`, and have v1 of *those*
+    // take the requisite ancillary data.
     //
-    // One way to fix this would be to remove the `Builder` and directly
-    // construct `Spec` from a function that takes an `v1::instance_spec::InstanceSpec` and the
-    // VM UUID. This would replace `impl TryFrom<v1::instance_spec::InstanceSpec> for Spec`, and
-    // would allow removing the `Default` derive on `Spec`, and the `Option`
-    // from the `smbios_type1_input` field.
+    // If (when!) we remove `v1` types - they are wholly from before any kind of
+    // live migration was supported - this can be de-Option'd.
     pub smbios_type1_input: Option<SmbiosType1Input>,
 }
 
@@ -238,7 +219,7 @@ impl StorageDevice {
     }
 }
 
-impl From<StorageDevice> for v1::instance_spec::Component {
+impl From<StorageDevice> for latest::instance_spec::Component {
     fn from(value: StorageDevice) -> Self {
         match value {
             StorageDevice::Virtio(d) => Self::VirtioDisk(d),
@@ -247,15 +228,13 @@ impl From<StorageDevice> for v1::instance_spec::Component {
     }
 }
 
-impl TryFrom<v1::instance_spec::Component> for StorageDevice {
+impl TryFrom<Component> for StorageDevice {
     type Error = ComponentTypeMismatch;
 
-    fn try_from(
-        value: v1::instance_spec::Component,
-    ) -> Result<Self, Self::Error> {
+    fn try_from(value: Component) -> Result<Self, Self::Error> {
         match value {
-            v1::instance_spec::Component::VirtioDisk(d) => Ok(Self::Virtio(d)),
-            v1::instance_spec::Component::NvmeDisk(d) => Ok(Self::Nvme(d)),
+            Component::VirtioDisk(d) => Ok(Self::Virtio(d)),
+            Component::NvmeDisk(d) => Ok(Self::Nvme(d)),
             _ => Err(ComponentTypeMismatch),
         }
     }
@@ -287,7 +266,7 @@ impl StorageBackend {
     }
 }
 
-impl From<StorageBackend> for v1::instance_spec::Component {
+impl From<StorageBackend> for Component {
     fn from(value: StorageBackend) -> Self {
         match value {
             StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),
@@ -297,22 +276,14 @@ impl From<StorageBackend> for v1::instance_spec::Component {
     }
 }
 
-impl TryFrom<v1::instance_spec::Component> for StorageBackend {
+impl TryFrom<Component> for StorageBackend {
     type Error = ComponentTypeMismatch;
 
-    fn try_from(
-        value: v1::instance_spec::Component,
-    ) -> Result<Self, Self::Error> {
+    fn try_from(value: Component) -> Result<Self, Self::Error> {
         match value {
-            v1::instance_spec::Component::CrucibleStorageBackend(be) => {
-                Ok(Self::Crucible(be))
-            }
-            v1::instance_spec::Component::FileStorageBackend(be) => {
-                Ok(Self::File(be))
-            }
-            v1::instance_spec::Component::BlobStorageBackend(be) => {
-                Ok(Self::Blob(be))
-            }
+            Component::CrucibleStorageBackend(be) => Ok(Self::Crucible(be)),
+            Component::FileStorageBackend(be) => Ok(Self::File(be)),
+            Component::BlobStorageBackend(be) => Ok(Self::Blob(be)),
             _ => Err(ComponentTypeMismatch),
         }
     }
