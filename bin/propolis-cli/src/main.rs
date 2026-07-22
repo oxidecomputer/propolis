@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::{
-    net::{IpAddr, SocketAddr, ToSocketAddrs},
+    net::{SocketAddr, ToSocketAddrs},
     os::unix::prelude::AsRawFd,
     time::Duration,
 };
@@ -48,13 +48,9 @@ use propolis_client::{
 #[clap(about, version)]
 /// A simple CLI tool to manipulate propolis-server
 struct Opt {
-    /// propolis-server address
-    #[clap(short, long, value_parser = resolve_host)]
-    server: IpAddr,
-
-    /// propolis-server port
-    #[clap(short, long, default_value = "12400", action)]
-    port: u16,
+    /// propolis-server address, as IP:PORT
+    #[clap(short, long, value_parser = resolve_server)]
+    server: SocketAddr,
 
     /// Enable debugging
     #[clap(short, long, action)]
@@ -132,13 +128,9 @@ enum Command {
 
     /// Migrate instance to new propolis-server
     Migrate {
-        /// Destination propolis-server address
-        #[clap(value_parser = resolve_host)]
-        dst_server: IpAddr,
-
-        /// Destination propolis-server port
-        #[clap(short = 'p', default_value = "12400", action)]
-        dst_port: u16,
+        /// Destination propolis-server address, as IP:PORT
+        #[clap(value_parser = resolve_server)]
+        dst_server: SocketAddr,
 
         /// Uuid for the destination instance
         #[clap(short = 'u', action)]
@@ -463,11 +455,11 @@ fn parse_json_file<T: serde::de::DeserializeOwned>(
     serde_json::from_reader(reader).map_err(|e| e.into())
 }
 
-/// Given a string representing an host, attempts to resolve it to a specific IP address
-fn resolve_host(server: &str) -> anyhow::Result<IpAddr> {
-    (server, 0)
+/// Resolve a `HOST:PORT` server argument to a socket address, performing a DNS
+/// lookup when the host is a name rather than a literal IP address.
+fn resolve_server(server: &str) -> anyhow::Result<SocketAddr> {
+    server
         .to_socket_addrs()?
-        .map(|sock_addr| sock_addr.ip())
         .next()
         .ok_or_else(|| anyhow!("failed to resolve server argument '{server}'"))
 }
@@ -922,7 +914,7 @@ async fn main() -> anyhow::Result<()> {
     let opt = Opt::parse();
     let log = create_logger(&opt);
 
-    let addr = SocketAddr::new(opt.server, opt.port);
+    let addr = opt.server;
     let client = Client::new(&format!("http://{addr}"));
 
     match opt.cmd {
@@ -965,8 +957,8 @@ async fn main() -> anyhow::Result<()> {
         Command::Serial { byte_offset } => {
             serial(addr, byte_offset, log).await?
         }
-        Command::Migrate { dst_server, dst_port, dst_uuid, crucible_disks } => {
-            let dst_addr = SocketAddr::new(dst_server, dst_port);
+        Command::Migrate { dst_server, dst_uuid, crucible_disks } => {
+            let dst_addr = dst_server;
             let dst_client = Client::new(&format!("http://{dst_addr}"));
             let dst_uuid = dst_uuid.unwrap_or_else(Uuid::new_v4);
             let disks = if let Some(crucible_disks) = crucible_disks {
@@ -1025,7 +1017,27 @@ impl Drop for RawTermiosGuard {
 
 #[cfg(test)]
 mod test {
-    use super::stdin_to_websockets_task;
+    use super::{resolve_server, stdin_to_websockets_task};
+
+    #[test]
+    fn resolve_server_accepts_ip_port() {
+        use std::net::SocketAddr;
+
+        assert_eq!(
+            resolve_server("127.0.0.1:12345").unwrap(),
+            "127.0.0.1:12345".parse::<SocketAddr>().unwrap()
+        );
+        assert_eq!(
+            resolve_server("[::1]:12345").unwrap(),
+            "[::1]:12345".parse::<SocketAddr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_server_rejects_missing_port() {
+        assert!(resolve_server("127.0.0.1").is_err());
+        assert!(resolve_server("not-a-valid-address").is_err());
+    }
 
     #[tokio::test]
     async fn test_stdin_to_websockets_task() {
