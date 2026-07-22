@@ -1190,6 +1190,10 @@ impl PciVirtioState {
         self.reset_queues_locked(dev, &mut state);
         state.reset();
         let _ = self.isr_state.read_clear();
+        // Release the state lock before calling into the device so that its
+        // reset handling may query generic virtio state.
+        drop(state);
+        dev.device_reset();
     }
 
     pub fn reset<D>(&self, dev: &D)

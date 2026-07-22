@@ -228,6 +228,16 @@ pub trait VirtioDevice: Send + Sync + 'static + Lifecycle {
     ) -> Result<(), ()> {
         Ok(())
     }
+
+    /// Notification that the virtio portion of the device has been reset.
+    ///
+    /// This fires for guest-initiated status resets as well as full device
+    /// resets, after the generic virtio state and virtqueues have been reset.
+    ///
+    /// Devices should use this to restore any state tied to feature
+    /// negotiation, since the next driver may negotiate a different feature
+    /// set.
+    fn device_reset(&self) {}
 }
 
 pub trait VirtioIntr: Send + 'static {

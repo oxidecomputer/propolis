@@ -18,11 +18,13 @@ set -e
 
 GATE_REF="$(./tools/check_headers gate_ref)"
 
-# TODO: `--branch` is overly restrictive, but it's what we've got. In git 2.49
-# the --revision flag was added to `git-clone`, and can clone an arbitrary
-# revision, which is more appropriate here. We might be tracking an arbitrary
-# commit with some changes in illumos-gate that isn't yet merged, after all.
-git clone --depth 1 --branch "$GATE_REF" \
-	https://code.oxide.computer/illumos-gate ./gate_src
+# `git clone --branch` only accepts branches and tags, but GATE_REF may be an
+# arbitrary ref (for example, a Gerrit change ref for an illumos-gate change
+# that has not yet merged). An init-and-fetch handles any ref the remote
+# advertises.
+git init ./gate_src
+git -C ./gate_src fetch --depth 1 \
+	https://code.oxide.computer/illumos-gate "$GATE_REF"
+git -C ./gate_src checkout --detach FETCH_HEAD
 
 ./tools/check_headers run ./gate_src

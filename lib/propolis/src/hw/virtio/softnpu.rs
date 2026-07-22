@@ -348,27 +348,16 @@ impl PciVirtioSoftNpuPort {
 
             let pkt = packet_in::new(&frame[..n]);
 
-            let mut pipeline = match self.pipeline.lock() {
-                Ok(pipe) => pipe,
-                Err(e) => {
-                    error!(self.log, "failed to lock pipeline: {}", e);
-                    break;
-                }
-            };
-            let pl: &mut Box<dyn Pipeline> = match &mut *pipeline {
-                Some(ref mut x) => &mut x.1,
-                None => {
-                    // This just means no P4 program has been set by the guest.
-                    break;
-                }
-            };
-
-            PacketHandler::process_guest_packet(
+            if PacketHandler::process_guest_packet(
                 pkt,
                 &self.data_handles,
-                pl,
+                &self.pipeline,
                 &self.log,
-            );
+            )
+            .is_err()
+            {
+                break;
+            }
         }
 
         if push_used {
@@ -446,6 +435,10 @@ impl VirtioDevice for PciVirtioSoftNpuPort {
     }
 }
 
+/// Error indicating the pipeline cannot process guest packets because no
+/// P4 program has been loaded by the guest.
+struct NoP4Program;
+
 struct PacketHandler {}
 
 impl PacketHandler {
@@ -504,21 +497,13 @@ impl PacketHandler {
             //
             // process packet with loaded P4 program
             //
-
-            // TODO pipeline should not need to be mutable for packet handling?
             let pkt = packet_in::new(&msg[..n]);
-            let mut p = pipeline.lock().unwrap();
-            let pl = match &mut *p {
-                Some(ref mut pl) => &mut pl.1,
-                None => continue, // no program is loaded
-            };
-
             Self::process_external_packet(
                 index + 1,
                 pkt,
                 &data_handles,
                 &virtio,
-                pl,
+                &pipeline,
                 &log,
             )
         }
@@ -531,12 +516,26 @@ impl PacketHandler {
         mut pkt: packet_in<'_>,
         data_handles: &Vec<dlpi::DlpiHandle>,
         virtio: &Arc<PortVirtioState>,
-        pipeline: &mut Box<dyn Pipeline>,
+        pipeline: &Mutex<Option<LoadedP4Program>>,
         log: &Logger,
     ) {
-        for (mut out_pkt, port) in
+        // We hold the pipeline lock only while the pipeline computes the
+        // egress set. Every port worker serializes on this lock, and the
+        // dlpi and virtio egress I/O can block. Holding the lock across
+        // that I/O stalls the other workers, which is especially costly
+        // for multicast where one input frame fans out to several ports.
+        // The egress packets borrow from `pkt` rather than the pipeline,
+        // so they remain valid after the lock is released.
+        let outputs = {
+            let mut guard = pipeline.lock().unwrap();
+            let pipeline = match &mut *guard {
+                Some(ref mut loaded) => &mut loaded.1,
+                None => return, // no program is loaded
+            };
             pipeline.process_packet(index as u16, &mut pkt)
-        {
+        };
+
+        for (mut out_pkt, port) in outputs {
             // packet is going to CPU port
             if port == 0 {
                 Self::send_packet_to_cpu_port(&mut out_pkt, virtio, &log);
@@ -555,20 +554,34 @@ impl PacketHandler {
 
     /// Run a packet coming into the ASIC from the guest pci port through the
     /// loaded pipeline and forward it on to its destination.
+    ///
+    /// Errors indicate the pipeline cannot process packets, and the caller
+    /// should stop reading frames.
     fn process_guest_packet(
         mut pkt: packet_in<'_>,
         data_handles: &Vec<dlpi::DlpiHandle>,
-        pipeline: &mut Box<dyn Pipeline>,
+        pipeline: &Mutex<Option<LoadedP4Program>>,
         log: &Logger,
-    ) {
-        for (mut out_pkt, port) in pipeline.process_packet(0, &mut pkt) {
+    ) -> std::result::Result<(), NoP4Program> {
+        // We hold the pipeline lock only for pipeline processing, not the
+        // egress I/O (see `process_external_packet` for rationale).
+        let outputs = {
+            let mut guard = pipeline.lock().unwrap();
+            let pipeline = match &mut *guard {
+                Some(ref mut loaded) => &mut loaded.1,
+                None => return Err(NoP4Program),
+            };
+            pipeline.process_packet(0, &mut pkt)
+        };
+
+        for (mut out_pkt, port) in outputs {
             if port == 0 {
                 // no looping packets back to the guest
-                return;
+                return Ok(());
             }
             if port == SOFTNPU_CPU_AUX_PORT {
                 // we are not currently emulating this port type
-                return;
+                return Ok(());
             }
             Self::send_packet_to_ext_port(
                 &mut out_pkt,
@@ -577,6 +590,7 @@ impl PacketHandler {
                 &log,
             );
         }
+        Ok(())
     }
 
     /// Send a packet out an external port using dlpi.
