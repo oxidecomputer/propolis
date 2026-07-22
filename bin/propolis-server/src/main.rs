@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::fmt;
+use std::io::IsTerminal;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -203,7 +204,7 @@ fn run_server(
 fn build_logger(level: slog::Level) -> slog::Logger {
     use slog::Drain;
 
-    let main_drain = if atty::is(atty::Stream::Stdout) {
+    let main_drain = if std::io::stdout().is_terminal() {
         let decorator = slog_term::TermDecorator::new().build();
         let drain = slog_term::FullFormat::new(decorator).build().fuse();
         slog_async::Async::new(drain)
