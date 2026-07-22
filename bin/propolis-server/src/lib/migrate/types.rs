@@ -86,8 +86,8 @@ use std::collections::BTreeMap;
 
 use crate::migrate::MigrateError;
 use crate::spec::{
-    api_spec_v1, api_spec_v1::ApiSpecError as V1SpecError, api_spec_v3,
-    api_spec_v3::ApiSpecError as V3SpecError, api_spec_v6,
+    api_spec_v1, api_spec_v1::ApiSpecError as V1SpecError, api_spec_v2,
+    api_spec_v3, api_spec_v3::ApiSpecError as V3SpecError, api_spec_v6,
     api_spec_v6::ApiSpecError as V6SpecError, Spec,
 };
 
@@ -159,8 +159,15 @@ impl VersionedInstanceSpec {
 
                 amended_spec
             }
-            VersionedInstanceSpec::V2(_source_spec) => {
-                panic!("should v2 really be here?");
+            VersionedInstanceSpec::V2(mut source_spec) => {
+                api_spec_v2::amend(&mut source_spec, replacements)?;
+
+                let amended_spec: Spec =
+                    source_spec.try_into().map_err(|e: V1SpecError| {
+                        MigrateError::PreambleParse(e.to_string())
+                    })?;
+
+                amended_spec
             }
             VersionedInstanceSpec::V3(mut source_spec) => {
                 api_spec_v3::amend(&mut source_spec, replacements)?;

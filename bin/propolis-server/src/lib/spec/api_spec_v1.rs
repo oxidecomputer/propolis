@@ -325,7 +325,9 @@ pub(crate) fn v1_to_spec_builder(
     crate::spec::api_spec_v3::v3_to_spec_builder(v3_spec).map_err(|e| e.into())
 }
 
-fn amend_component(
+// `amend_component` is suitable for (and used in) amending a v2 InstanceSpec,
+// so this one is pub(crate) unlike other `api_spec_v*`.
+pub(crate) fn amend_component(
     id: &SpecKey,
     to_amend: &mut v1::instance_spec::Component,
     replacement: &ReplacementComponent,

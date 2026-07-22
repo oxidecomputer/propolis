@@ -54,6 +54,7 @@ use propolis_api_types::instance_spec::components::{
 };
 
 pub(crate) mod api_spec_v1;
+pub(crate) mod api_spec_v2;
 pub(crate) mod api_spec_v3;
 pub(crate) mod api_spec_v6;
 pub(crate) mod builder;
