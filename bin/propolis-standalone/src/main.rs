@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::fs::File;
-use std::io::{Error, ErrorKind, Result};
+use std::io::{Error, ErrorKind, IsTerminal, Result};
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -823,7 +823,7 @@ fn open_bootrom(path: &str) -> Result<(File, usize)> {
 }
 
 fn build_log(level: slog::Level) -> slog::Logger {
-    let main_drain = if atty::is(atty::Stream::Stdout) {
+    let main_drain = if std::io::stdout().is_terminal() {
         let decorator = slog_term::TermDecorator::new().build();
         let drain = slog_term::CompactFormat::new(decorator).build().fuse();
         slog_async::Async::new(drain)
