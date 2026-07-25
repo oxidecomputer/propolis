@@ -94,10 +94,7 @@ use propolis_api_types_versions::{v1, v2, v3, v6};
 use std::collections::BTreeMap;
 
 use crate::migrate::MigrateError;
-use crate::spec::{
-    api_spec_v1, api_spec_v2,
-    api_spec_v3, api_spec_v6, Spec,
-};
+use crate::spec::{api_spec_v1, api_spec_v2, api_spec_v3, api_spec_v6, Spec};
 
 /// A wrapper for one of any supported `InstanceSpec` that describe a
 /// to-be-migrated VM.
@@ -160,30 +157,30 @@ impl VersionedInstanceSpec {
             VersionedInstanceSpec::V1(mut source_spec) => {
                 api_spec_v1::amend(&mut source_spec, replacements)?;
 
-                api_spec_v1::v1_to_spec_builder(source_spec).map_err(|e| {
-                    MigrateError::PreambleParse(e.to_string())
-                })?.finish()
+                api_spec_v1::v1_to_spec_builder(source_spec)
+                    .map_err(|e| MigrateError::PreambleParse(e.to_string()))?
+                    .finish()
             }
             VersionedInstanceSpec::V2(mut source_spec) => {
                 api_spec_v2::amend(&mut source_spec, replacements)?;
 
-                api_spec_v2::v2_to_spec_builder(source_spec).map_err(|e| {
-                    MigrateError::PreambleParse(e.to_string())
-                })?.finish()
+                api_spec_v2::v2_to_spec_builder(source_spec)
+                    .map_err(|e| MigrateError::PreambleParse(e.to_string()))?
+                    .finish()
             }
             VersionedInstanceSpec::V3(mut source_spec) => {
                 api_spec_v3::amend(&mut source_spec, replacements)?;
 
-                api_spec_v3::v3_to_spec_builder(source_spec).map_err(|e| {
-                    MigrateError::PreambleParse(e.to_string())
-                })?.finish()
+                api_spec_v3::v3_to_spec_builder(source_spec)
+                    .map_err(|e| MigrateError::PreambleParse(e.to_string()))?
+                    .finish()
             }
             VersionedInstanceSpec::V6(mut source_spec) => {
                 api_spec_v6::amend(&mut source_spec, replacements)?;
 
-                api_spec_v6::v6_to_spec_builder(source_spec).map_err(|e| {
-                    MigrateError::PreambleParse(e.to_string())
-                })?.finish()
+                api_spec_v6::v6_to_spec_builder(source_spec)
+                    .map_err(|e| MigrateError::PreambleParse(e.to_string()))?
+                    .finish()
             }
         };
 
