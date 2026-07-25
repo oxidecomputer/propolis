@@ -64,7 +64,7 @@ impl From<Spec> for v6::instance_spec::InstanceSpec {
                 nvme_disks.push((key.clone(), disk.clone()));
             }
         }
-        val.disks.retain(|_, disk| v6_only_disk(disk));
+        val.disks.retain(|_, disk| !v6_only_disk(disk));
 
         let v3_spec: v3::instance_spec::InstanceSpec =
             val.try_into().unwrap_or_else(|e| {
