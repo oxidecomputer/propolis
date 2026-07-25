@@ -8,14 +8,14 @@
 //! [`struct Spec`][crate::lib::spec::Spec] as a "how this version happens to
 //! describe VMs" internal structure. Early in migration we must convert this to
 //! some format that a `propolis-server` of a different version can instantiate
-//! an equivalent VM from, for device state everything else to be imported into.
-//! We *kind of* use API types here, and the rest of this section gets into why
-//! and what one should consider in adding future versions.
+//! an equivalent VM from, which CPUs, memory, and device state will be imported
+//! into. We *kind of* use API types here, and the rest of this section gets
+//! into why and what one should consider in adding future versions.
 //!
 //! Even for VMs that have been migrated many times, `propolis-server` must
-//! incarnate a VM that can be described by *some* HTTP API `InstanceSpec`
+//! incarnate a VM that has been[1] described by *some* HTTP API `InstanceSpec`
 //! version at some point in the past. We'll call this "oldest possible VM spec"
-//! the "import horizon" that `propolis-server` supports.  Further, the tooling
+//! the _import horizon_ that `propolis-server` supports.  Further, the tooling
 //! for Dropshot (/OpenAPI) version management is quite good, and provides
 //! guardrails against old versions' API types having structural changes.
 //!
@@ -38,7 +38,7 @@
 //! `propolis-server` and transmitted are what they are: go through a list of
 //! `TryInto<Spec> for v*::instance_spec::InstanceSpec`, one of them will
 //! succeed, and send that over. This is the implementation you'll find in
-//! [`RonV0Runner::sync`][crate::lib::migrate::source::RonV0Runner::sync].
+//! [`RonV0Runner::sync`](crate::lib::migrate::source::RonV0Runner::sync).
 //!
 //! ### [`VersionedInstanceSpec`]
 //!
@@ -52,10 +52,10 @@
 //!
 //! Since we have to support HTTP API types as far back as `propolis-server`'s
 //! import horizon, it's not much additional work to at least try supporting
-//! migration across downgrades of `propolis-server`. If try converting to all
-//! `v1, v2, v3 ..` forms of `InstanceSpec` in *ascending* order, the only time
-//! conversion will fail to be downgradeable is if a VM has been created using
-//! only-in-newest API language. This means that some VMs created using a
+//! migration across downgrades of `propolis-server`. If we try converting to
+//! all `v1, v2, v3 ..` forms of `InstanceSpec` in *ascending* order, the only
+//! time conversion will fail to be downgradeable is if a VM has been created
+//! using only-in-newest API language. This means that some VMs created using a
 //! `latest::instance_spec::InstanceSpec` could end up with even `v1` types on
 //! the wire for migration, but as long as `From/TryFrom` use is correct and
 //! *not lossy*, that's fine!
@@ -76,6 +76,15 @@
 //!
 //! In either case we need testing that old device descriptions don't
 //! *semantically* change, so it doesn't save effort there either.
+//!
+//! [1]: Technically, being able to describe a VM faithfully using the language
+//! of an old API version does not tell you if the VM actually *was* created
+//! using that API description. It's possible a VM was provided to Propolis in
+//! the form of a `v6::instance_spec::InstanceSpec` which _happens_ to be
+//! expressible as a `v1::instance_spec::InstanceSpec`. For the purposes of the
+//! discussion above this a boring nitpick; a V1-compatible instance spec that
+//! happened to come to us in V6-form can be imagined as anything that it can
+//! convert back to (be that V3, V2, V1, ...).
 
 use serde::{Deserialize, Serialize};
 
@@ -86,8 +95,8 @@ use std::collections::BTreeMap;
 
 use crate::migrate::MigrateError;
 use crate::spec::{
-    api_spec_v1, api_spec_v1::ApiSpecError as V1SpecError, api_spec_v2,
-    api_spec_v3, api_spec_v6, api_spec_v6::ApiSpecError as V6SpecError, Spec,
+    api_spec_v1, api_spec_v2,
+    api_spec_v3, api_spec_v6, Spec,
 };
 
 /// A wrapper for one of any supported `InstanceSpec` that describe a
@@ -151,45 +160,30 @@ impl VersionedInstanceSpec {
             VersionedInstanceSpec::V1(mut source_spec) => {
                 api_spec_v1::amend(&mut source_spec, replacements)?;
 
-                let amended_spec: Spec =
-                    source_spec.try_into().map_err(|e: V1SpecError| {
-                        MigrateError::PreambleParse(e.to_string())
-                    })?;
-
-                amended_spec
+                api_spec_v1::v1_to_spec_builder(source_spec).map_err(|e| {
+                    MigrateError::PreambleParse(e.to_string())
+                })?.finish()
             }
             VersionedInstanceSpec::V2(mut source_spec) => {
                 api_spec_v2::amend(&mut source_spec, replacements)?;
 
-                let amended_spec: Spec =
-                    source_spec.try_into().map_err(|e: V1SpecError| {
-                        MigrateError::PreambleParse(e.to_string())
-                    })?;
-
-                amended_spec
+                api_spec_v2::v2_to_spec_builder(source_spec).map_err(|e| {
+                    MigrateError::PreambleParse(e.to_string())
+                })?.finish()
             }
             VersionedInstanceSpec::V3(mut source_spec) => {
                 api_spec_v3::amend(&mut source_spec, replacements)?;
 
-                let v6_spec: v6::instance_spec::InstanceSpec =
-                    source_spec.into();
-                let amended_spec: Spec =
-                    v6_spec.try_into().map_err(|e: V6SpecError| {
-                        let v1_error: V1SpecError = e.into();
-                        MigrateError::PreambleParse(v1_error.to_string())
-                    })?;
-
-                amended_spec
+                api_spec_v3::v3_to_spec_builder(source_spec).map_err(|e| {
+                    MigrateError::PreambleParse(e.to_string())
+                })?.finish()
             }
             VersionedInstanceSpec::V6(mut source_spec) => {
                 api_spec_v6::amend(&mut source_spec, replacements)?;
 
-                let amended_spec: Spec =
-                    source_spec.try_into().map_err(|e: V6SpecError| {
-                        MigrateError::PreambleParse(e.to_string())
-                    })?;
-
-                amended_spec
+                api_spec_v6::v6_to_spec_builder(source_spec).map_err(|e| {
+                    MigrateError::PreambleParse(e.to_string())
+                })?.finish()
             }
         };
 

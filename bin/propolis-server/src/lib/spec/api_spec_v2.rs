@@ -2,8 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Conversions from the initial API version ([`propolis_api_types::v1`], aka
-//! "V0" in some parts of propolis-server) instance specs in the
+//! Conversions from [`propolis_api_types::v2`]) instance specs in the
 //! [`propolis_api_types`] crate to the internal [`super::Spec`] representation.
 
 use std::collections::BTreeMap;
@@ -50,9 +49,9 @@ impl TryFrom<v2::instance_spec::InstanceSpec> for Spec {
     }
 }
 
-/// Parses a v1 instance spec into a [`SpecBuilder`], validating component
+/// Parses a v2 instance spec into a [`SpecBuilder`], validating component
 /// names, PCI paths, and backend references along the way. Callers can add
-/// additional (non-v1) components to the builder before calling `finish()`.
+/// additional (non-v2) components to the builder before calling `finish()`.
 pub(crate) fn v2_to_spec_builder(
     value: v2::instance_spec::InstanceSpec,
 ) -> Result<SpecBuilder, ApiSpecError> {

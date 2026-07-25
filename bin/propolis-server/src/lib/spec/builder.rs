@@ -82,7 +82,7 @@ pub(crate) enum SpecBuilderError {
 /// rarely, so callers do the work of mapping components to the
 /// closer-to-internal definitions that `SpecBuilder` accepts. In theory,
 /// hopefully, this means `SpecBuilder` itself changes rarely and can be more
-/// reasily audited for semantic drift.
+/// readily audited for semantic drift.
 #[derive(Debug, Default)]
 pub(crate) struct SpecBuilder {
     spec: super::Spec,
