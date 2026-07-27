@@ -130,7 +130,7 @@ impl<T> ASpace<T> {
     ///
     /// Returns all space which does not overlap with registered regions.
     pub fn inverse_iter(&self) -> InverseIter<'_, T> {
-        InverseIter { inner: self.map.iter(), next: 0, end: self.end }
+        InverseIter { inner: self.map.iter(), next: self.start, end: self.end }
     }
 
     /// Get iterator for regions which are (partially or totally) covered by a range
@@ -503,6 +503,22 @@ mod test {
         // Entire address space empty
         let mut iter = s.inverse_iter();
         assert_eq!(Extent { start: 0, len: 100 }, iter.next().unwrap());
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn inverse_iterator_nonzero_start() {
+        let start = 50;
+        let end = 100;
+        let mut s: ASpace<()> = ASpace::new(start, end);
+
+        // Registration in the middle of a non-zero-based address space.
+        // Free regions should begin at `start`, not at 0.
+        assert!(s.register(60, 10, ()).is_ok());
+
+        let mut iter = s.inverse_iter();
+        assert_eq!(Extent { start: 50, len: 10 }, iter.next().unwrap());
+        assert_eq!(Extent { start: 70, len: 30 }, iter.next().unwrap());
         assert!(iter.next().is_none());
     }
 }
