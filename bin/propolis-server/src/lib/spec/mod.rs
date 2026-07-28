@@ -66,11 +66,11 @@ use propolis_api_types::instance_spec::components::{
     devices::{P9fs, SoftNpuP9, SoftNpuPciPort},
 };
 
+pub(crate) mod api_spec_latest;
 pub(crate) mod api_spec_v1;
 pub(crate) mod api_spec_v2;
 pub(crate) mod api_spec_v3;
 pub(crate) mod api_spec_v6;
-pub(crate) mod api_spec_latest;
 pub(crate) mod builder;
 
 /// An error that can arise in converting

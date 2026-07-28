@@ -7,15 +7,10 @@
 
 use std::collections::BTreeMap;
 
-use propolis_api_types::instance_spec::{
-    SpecKey,
-};
+use propolis_api_types::instance_spec::SpecKey;
 use propolis_api_types_versions::{v1::instance::ReplacementComponent, v3, v6};
 
-use super::{
-    builder::SpecBuilder, ApiSpecError, Disk, Spec,
-    StorageDevice,
-};
+use super::{builder::SpecBuilder, ApiSpecError, Disk, Spec, StorageDevice};
 use crate::migrate::MigrateError;
 use crate::spec::api_spec_latest;
 

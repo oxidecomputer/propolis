@@ -134,6 +134,10 @@ impl VersionedInstanceSpec {
             TryInto::<v1::instance_spec::InstanceSpec>::try_into(spec.clone())
         {
             VersionedInstanceSpec::V1(v1_spec)
+        } else if let Ok(v2_spec) =
+            TryInto::<v2::instance_spec::InstanceSpec>::try_into(spec.clone())
+        {
+            VersionedInstanceSpec::V2(v2_spec)
         } else if let Ok(v3_spec) =
             TryInto::<v3::instance_spec::InstanceSpec>::try_into(spec.clone())
         {

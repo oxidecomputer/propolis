@@ -14,8 +14,8 @@ use propolis_api_types::instance_spec::{
 use propolis_api_types_versions::latest;
 
 use super::{
-    builder::SpecBuilder, ApiSpecError, Disk, Nic, QemuPvpanic,
-    StorageBackend, StorageDevice,
+    builder::SpecBuilder, ApiSpecError, Disk, Nic, QemuPvpanic, StorageBackend,
+    StorageDevice,
 };
 
 #[cfg(feature = "failure-injection")]
