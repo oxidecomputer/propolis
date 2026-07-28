@@ -1064,29 +1064,6 @@ impl VsockGuestAddr {
     }
 }
 
-// TODO this can become `[VecDeque::pop_front_if]` when we update to Rust 1.93,
-// until then the impl is shamelessly borrowed.
-trait VecDequeExt<T> {
-    fn pop_front_if(
-        &mut self,
-        predicate: impl FnOnce(&mut T) -> bool,
-    ) -> Option<T>;
-}
-
-impl<T> VecDequeExt<T> for VecDeque<T> {
-    fn pop_front_if(
-        &mut self,
-        predicate: impl FnOnce(&mut T) -> bool,
-    ) -> Option<T> {
-        let first = self.front_mut()?;
-        if predicate(first) {
-            self.pop_front()
-        } else {
-            None
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
     use std::io::{Read, Write};
