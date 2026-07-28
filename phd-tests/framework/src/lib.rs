@@ -273,7 +273,7 @@ impl Framework {
             .with_context(|| {
                 format!(
                     "adding Propolis server '{}' from options",
-                    &params.propolis_server_path
+                    params.propolis_server_path
                 )
             })?;
 

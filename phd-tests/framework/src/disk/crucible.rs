@@ -323,7 +323,7 @@ impl Inner {
         // Spawn the downstairs processes that will serve requests from guest
         // VMs.
         let mut downstairs_instances = vec![];
-        for (port, dir) in downstairs_ports.iter().zip(data_dirs.into_iter()) {
+        for (port, dir) in downstairs_ports.iter().zip(data_dirs) {
             let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), *port);
             let dir_arg = dir.path.to_string_lossy();
             let crucible_args = [
