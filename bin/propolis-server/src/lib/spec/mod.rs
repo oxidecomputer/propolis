@@ -17,10 +17,23 @@
 //! Types and operations here are copied as-needed into new verson-specific
 //! modules as needed, as new versions of the `propolis-server` HTTP API are
 //! added.
+//!
+//! ## New Versions
+//!
+//! When adding a new API version, particularly when those API versions inclue a
+//! new defintion for `InstanceSpec`, you will probably want to:
+//!
+//! * add a new `api_spec_vN` module for the new version, with conversions from
+//!   `Spec` to the `vN::instance_spec::InstanceSpec` via the previous version
+//!   and from `vN::instance_spec::InstanceSpec` to `Spec` via
+//!   `latest_to_spec_builder()`
+//! * adjust the formerly-latest module's `vN_to_spec_builder` to call
+//!   `vN_to_spec_builder` and (try) converting `InstanceSpec` upwards to match.
+//! * adjust the formerly-latest module's `Spec` to `InstanceSpec` conversion to
+//!   be fallible, using `LegacyApiSpecError` instead of `ApiSpecError`
 
 use std::collections::BTreeMap;
 
-use crate::spec::api_spec_v6::ApiSpecError;
 use cpuid_utils::CpuidSet;
 use propolis_api_types::instance_spec::{
     components::{
@@ -57,7 +70,55 @@ pub(crate) mod api_spec_v1;
 pub(crate) mod api_spec_v2;
 pub(crate) mod api_spec_v3;
 pub(crate) mod api_spec_v6;
+pub(crate) mod api_spec_latest;
 pub(crate) mod builder;
+
+/// An error that can arise in converting
+/// `propolis_api_types::instance_spec::InstanceSpec` to a propolis-server
+/// `Spec`. To date, this is a subset of the errors that can arise in converting
+/// older versions of `InstanceSpec` as well.
+///
+/// When adding a new `api_spec_v*`, it may be appropriate to either move this
+/// error type into the formerly-latest module and add a nwe top-level type, or
+/// to simply rename uses of this error in the formerly-latest module to
+/// `LegacyApiSpecError`. Whichever is appropriate depends on how similar the
+/// errors in the newly version are to the errors described here.
+#[derive(Debug, Error)]
+pub(crate) enum ApiSpecError {
+    #[error(transparent)]
+    Builder(#[from] builder::SpecBuilderError),
+
+    #[error("storage backend {backend} not found for device {device}")]
+    StorageBackendNotFound { backend: SpecKey, device: SpecKey },
+
+    #[error("network backend {backend} not found for device {device}")]
+    NetworkBackendNotFound { backend: SpecKey, device: SpecKey },
+
+    #[allow(dead_code)]
+    #[error("support for component {component} compiled out via {feature}")]
+    FeatureCompiledOut { component: SpecKey, feature: &'static str },
+
+    #[error("backend {0} not used by any device")]
+    BackendNotUsed(SpecKey),
+}
+
+/// An error that can arise in converting any older versions of `InstanceSpec`
+/// to a propolis-server `Spec`. To date, this may be any of the errors that can
+/// occur in converting the most recent version of the spec, plus errors in
+/// converting components to older API forms.
+///
+/// This type, as well as `ApiSpecError` are best-effort attempts to describe
+/// the error space as we've seen it so far; if the "legacy" kinds of errors end
+/// up variable it may make sense to revisit even having a "shared" error type
+/// for these conversions.
+#[derive(Debug, Error)]
+pub(crate) enum LegacyApiSpecError {
+    #[error(transparent)]
+    SpecError(#[from] ApiSpecError),
+
+    #[error("spec contains v1-incompatible component: {0}")]
+    IncompatibleComponent(String),
+}
 
 /// `propolis-server` relies on `TryInto` to convert the API-provided
 /// `InstanceSpec` to an internal `Spec`. When adding a new API version to

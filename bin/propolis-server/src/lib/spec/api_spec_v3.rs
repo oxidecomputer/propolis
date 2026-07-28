@@ -12,15 +12,11 @@ use propolis_api_types_versions::{
     v1::instance::ReplacementComponent, v2, v3, v6,
 };
 
-use super::{api_spec_v6, builder::SpecBuilder, Spec};
+use super::{api_spec_v6, builder::SpecBuilder, LegacyApiSpecError, Spec};
 use crate::migrate::MigrateError;
 
-// once again, v3 Spec<->InstanceSpec conversion failures are unchanged from
-// previous, so reuse the error type.
-use super::api_spec_v1::ApiSpecError;
-
 impl TryFrom<Spec> for v3::instance_spec::InstanceSpec {
-    type Error = ApiSpecError;
+    type Error = LegacyApiSpecError;
 
     fn try_from(mut val: Spec) -> Result<Self, Self::Error> {
         // v3 added only the `vsock` component, which is expressed only as the
@@ -50,39 +46,12 @@ impl TryFrom<Spec> for v3::instance_spec::InstanceSpec {
     }
 }
 
-// Converting the API error back down is lossless, so define that here too.
-//
-// This notionally should be scoped to `v3_to_spec_builder`; there's not much
-// reason to do this conversion anywhere else..
-impl From<api_spec_v6::ApiSpecError> for ApiSpecError {
-    fn from(value: api_spec_v6::ApiSpecError) -> Self {
-        match value {
-            api_spec_v6::ApiSpecError::Builder(b) => ApiSpecError::Builder(b),
-            api_spec_v6::ApiSpecError::StorageBackendNotFound {
-                backend,
-                device,
-            } => ApiSpecError::StorageBackendNotFound { backend, device },
-            api_spec_v6::ApiSpecError::NetworkBackendNotFound {
-                backend,
-                device,
-            } => ApiSpecError::NetworkBackendNotFound { backend, device },
-            api_spec_v6::ApiSpecError::FeatureCompiledOut {
-                component,
-                feature,
-            } => ApiSpecError::FeatureCompiledOut { component, feature },
-            api_spec_v6::ApiSpecError::BackendNotUsed(key) => {
-                ApiSpecError::BackendNotUsed(key)
-            }
-        }
-    }
-}
-
 /// Parses a v3 instance spec into a [`SpecBuilder`], validating component
 /// names, PCI paths, and backend references along the way. Callers can add
 /// additional (non-v3) components to the builder before calling `finish()`.
 pub(crate) fn v3_to_spec_builder(
     value: v3::instance_spec::InstanceSpec,
-) -> Result<SpecBuilder, ApiSpecError> {
+) -> Result<SpecBuilder, LegacyApiSpecError> {
     // Converting v3 to v6 is lossless so just do that and piggyback on the
     // v6 `InstanceSpec->SpecBuilder`.
     let v6_spec: v6::instance_spec::InstanceSpec = value.into();

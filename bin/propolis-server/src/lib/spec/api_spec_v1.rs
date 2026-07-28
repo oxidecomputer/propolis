@@ -18,41 +18,18 @@ use propolis_api_types::instance_spec::{
 use propolis_api_types_versions::{
     v1, v1::instance::ReplacementComponent, v2, v3, v6,
 };
-use thiserror::Error;
 
 #[cfg(feature = "falcon")]
 use propolis_api_types::instance_spec::components::devices::SoftNpuPort as SoftNpuPortSpec;
 
 use super::{
-    builder::{SpecBuilder, SpecBuilderError},
-    SerialPortDevice, Spec, StorageBackend, StorageDevice,
+    builder::SpecBuilder, LegacyApiSpecError, SerialPortDevice, Spec,
+    StorageBackend, StorageDevice,
 };
 use crate::migrate::MigrateError;
 
 #[cfg(feature = "failure-injection")]
 use super::MigrationFailure;
-
-#[derive(Debug, Error)]
-pub(crate) enum ApiSpecError {
-    #[error(transparent)]
-    Builder(#[from] SpecBuilderError),
-
-    #[error("storage backend {backend} not found for device {device}")]
-    StorageBackendNotFound { backend: SpecKey, device: SpecKey },
-
-    #[error("network backend {backend} not found for device {device}")]
-    NetworkBackendNotFound { backend: SpecKey, device: SpecKey },
-
-    #[allow(dead_code)]
-    #[error("support for component {component} compiled out via {feature}")]
-    FeatureCompiledOut { component: SpecKey, feature: &'static str },
-
-    #[error("backend {0} not used by any device")]
-    BackendNotUsed(SpecKey),
-
-    #[error("spec contains v1-incompatible component: {0}")]
-    IncompatibleComponent(String),
-}
 
 // Woah! It's strange to have a conversion to a *v1* type which has an error
 // from *v6* about *v3*. Not as bad as it seems though: v6 is when this
@@ -86,7 +63,7 @@ impl From<StorageBackend> for v1::instance_spec::Component {
 }
 
 impl TryFrom<Spec> for v1::instance_spec::InstanceSpec {
-    type Error = ApiSpecError;
+    type Error = LegacyApiSpecError;
 
     fn try_from(val: Spec) -> Result<Self, Self::Error> {
         // Exhaustively destructure the input spec so that adding a new field
@@ -128,14 +105,14 @@ impl TryFrom<Spec> for v1::instance_spec::InstanceSpec {
             // * V1 specs are from before live migration was done outside
             //   ad-hoc/CI environments - such an old Propolis will never exist
             //   as a migration target in the field.
-            return Err(ApiSpecError::IncompatibleComponent(
+            return Err(LegacyApiSpecError::IncompatibleComponent(
                 "cannot express explicit SMBIOS tables in v1 instance spec"
                     .to_string(),
             ));
         }
 
         if vsock.is_some() {
-            return Err(ApiSpecError::IncompatibleComponent(
+            return Err(LegacyApiSpecError::IncompatibleComponent(
                 "cannot convert virtio-socket to v1 instance spec".to_string(),
             ));
         }
@@ -178,7 +155,7 @@ impl TryFrom<Spec> for v1::instance_spec::InstanceSpec {
                 .device_spec
                 .try_into()
                 .map_err(|e: v6::instance_spec::InvalidV3Component| {
-                    ApiSpecError::IncompatibleComponent(e.to_string())
+                    LegacyApiSpecError::IncompatibleComponent(e.to_string())
                 })?;
             let backend_component: v1::instance_spec::Component =
                 disk.backend_spec.into();
@@ -308,7 +285,7 @@ impl TryFrom<Spec> for v1::instance_spec::InstanceSpec {
 }
 
 impl TryFrom<v1::instance_spec::InstanceSpec> for Spec {
-    type Error = ApiSpecError;
+    type Error = LegacyApiSpecError;
 
     fn try_from(
         value: v1::instance_spec::InstanceSpec,
@@ -322,7 +299,7 @@ impl TryFrom<v1::instance_spec::InstanceSpec> for Spec {
 /// additional (non-v1) components to the builder before calling `finish()`.
 pub(crate) fn v1_to_spec_builder(
     value: v1::instance_spec::InstanceSpec,
-) -> Result<SpecBuilder, ApiSpecError> {
+) -> Result<SpecBuilder, LegacyApiSpecError> {
     let v2_spec: v2::instance_spec::InstanceSpec = value.into();
     let v3_spec: v3::instance_spec::InstanceSpec = v2_spec.into();
 
