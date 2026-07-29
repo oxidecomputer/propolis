@@ -14,9 +14,8 @@
 //! [`Spec`] and its component types to take forms that might otherwise be hard
 //! to change in a backward-compatible way.
 //!
-//! Types and operations here are copied as-needed into new verson-specific
-//! modules as needed, as new versions of the `propolis-server` HTTP API are
-//! added.
+//! Types and operations here are copied as-needed into new version-specific
+//! modules, as new versions of the `propolis-server` HTTP API are added.
 //!
 //! ## New Versions
 //!
@@ -79,7 +78,7 @@ pub(crate) mod builder;
 /// older versions of `InstanceSpec` as well.
 ///
 /// When adding a new `api_spec_v*`, it may be appropriate to either move this
-/// error type into the formerly-latest module and add a nwe top-level type, or
+/// error type into the formerly-latest module and add a new top-level type, or
 /// to simply rename uses of this error in the formerly-latest module to
 /// `LegacyApiSpecError`. Whichever is appropriate depends on how similar the
 /// errors in the newly version are to the errors described here.

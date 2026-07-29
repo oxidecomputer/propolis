@@ -2,8 +2,15 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Conversions from [`propolis_api_types::v6`] instance specs in the
-//! [`propolis_api_types`] crate to the internal [`super::Spec`] representation.
+//! Conversions from types in [`propolis_api_types`] - that is, the latest
+//! Propolis API version - to the internal [`super::Spec`] representation.
+//!
+//! `propolis_api_types` is a re-export of the latest versions of types out of
+//! `propolis_api_types_versions`. The types that tend to change across files
+//! are referred to here as `latest::<the-item>` for similarity to other
+//! version-specific code. Types that do not tend to change (say, `SpecKey`) are
+//! just taken from the re-exported path because that's how they're used
+//! everywhere (including other `api_spec_*` files.)
 
 use std::collections::BTreeMap;
 
