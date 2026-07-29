@@ -525,6 +525,11 @@ impl VirtQueue {
                 chain.push_buf(buf);
 
                 if flags.contains(DescFlag::NEXT) {
+                    if count == self.size() {
+                        // XXX: signal error condition?
+                        chain.idx = None;
+                        return None;
+                    }
                     // XXX: better error handling
                     desc = idescs.get(desc.next as usize).unwrap();
                     flags = DescFlag::from_bits_truncate(desc.flags);

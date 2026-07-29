@@ -7,7 +7,6 @@ use dropshot::HttpError;
 use propolis::migrate::MigrateStateError;
 use propolis_api_types::migration::MigrationState;
 use serde::{Deserialize, Serialize};
-use slog::error;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 

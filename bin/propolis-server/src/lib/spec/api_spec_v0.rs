@@ -94,7 +94,7 @@ impl From<Spec> for v1::instance_spec::InstanceSpec {
             assert!(
                 !spec.components.contains_key(&key),
                 "component name {} already exists in output spec",
-                &key
+                key
             );
             spec.components.insert(key, val);
         }
