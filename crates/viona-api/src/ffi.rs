@@ -40,6 +40,9 @@ pub const VNA_IOC_SET_MTU: i32 = vna_ioc(0x28);
 pub const VNA_IOC_SET_NOTIFY_MMIO: i32 = vna_ioc(0x29);
 pub const VNA_IOC_INTR_POLL_MQ: i32 = vna_ioc(0x2a);
 pub const VNA_IOC_SET_MAC_FILTERS: i32 = vna_ioc(0x2b);
+pub const VNA_IOC_GET_MAC_FILTERS: i32 = vna_ioc(0x2c);
+pub const VNA_IOC_SET_MAC_ADDR: i32 = vna_ioc(0x2d);
+pub const VNA_IOC_GET_MAC_ADDR: i32 = vna_ioc(0x2e);
 
 /// VirtIO 1.2 queue pair support.
 pub const VNA_IOC_GET_PAIRS: i32 = vna_ioc(0x30);
@@ -136,47 +139,98 @@ pub const VIONA_PROMISC_ALL: i32 = 2;
 #[cfg(feature = "falcon")]
 pub const VIONA_PROMISC_ALL_VLAN: i32 = 3;
 
-/// Number of bytes in a filterable MAC address.
-pub const VIONA_MAC_FILTER_ADDRL: usize = 6;
+/// Number of bytes in an Ethernet address, per `sys/ethernet.h`.
+pub const ETHERADDRL: usize = 6;
 
-/// Maximum number of unicast MAC address filters accepted by viona.
+/// The current multicast filter table capacity of a viona device.
 ///
-/// No cross-device convention exists for a separate unicast table. QEMU
-/// shares one 64-entry table across both address classes (see
-/// [`VIONA_MAX_MCAST_FILTERS`]). Half the multicast table is generous for
-/// entries that are rejected unless they match the primary MAC.
-pub const VIONA_MAX_UNICAST_FILTERS: usize = 32;
-
-/// Maximum number of multicast MAC address filters accepted by viona.
-///
-/// Matches the 64-entry table convention of other virtio-net devices, per
-/// QEMU's [`MAC_TABLE_ENTRIES`].
+/// This matches the 64-entry table convention of other virtio-net devices, per
+/// QEMU's [`MAC_TABLE_ENTRIES`]. A property of the device rather than a
+/// promise of the ABI: it may change, and consumers can discover it at
+/// runtime via [`vmf_nmcast`] on a [`VMF_ERR_COUNT`] failure.
 ///
 /// [`MAC_TABLE_ENTRIES`]: https://github.com/qemu/qemu/blob/f893c46c3931b3684d235d221bf8b7844ddbf1d7/include/hw/virtio/virtio-net.h
+/// [`vmf_nmcast`]: vioc_mac_filters::vmf_nmcast
 pub const VIONA_MAX_MCAST_FILTERS: usize = 64;
 
-/// Complete unicast and multicast MAC filter tables, replacing any tables
-/// previously installed on the link.  Counts of zero clear all filters.
+/// Semantic error codes reported through [`vmf_err`]
+/// (`vioc_mac_filter_err_t`).
 ///
-/// Viona installs only multicast filters on the underlying MAC client.  The
-/// unicast table exists for shape parity with `VIRTIO_NET_CTRL_MAC_TABLE_SET`,
-/// and entries other than the primary MAC of the link are rejected.
+/// [`vmf_err`]: vioc_mac_filters::vmf_err
+pub const VMF_OK: u32 = 0;
+/// Entry count exceeds device capacity (rewritten into [`vmf_nmcast`]).
+///
+/// [`vmf_nmcast`]: vioc_mac_filters::vmf_nmcast
+pub const VMF_ERR_COUNT: u32 = 1;
+/// Entry (in [`vmf_erraddr`]) is not a multicast address.
+///
+/// [`vmf_erraddr`]: vioc_mac_filters::vmf_erraddr
+pub const VMF_ERR_NOT_MCAST: u32 = 2;
+/// MAC layer refused installation of the entry (in [`vmf_erraddr`]).
+///
+/// [`vmf_erraddr`]: vioc_mac_filters::vmf_erraddr
+pub const VMF_ERR_INSTALL: u32 = 3;
+/// Client holds no unicast address (after a failed restoration).
+pub const VMF_ERR_NO_UNICAST: u32 = 4;
+
+/// Complete multicast MAC filter table, passed out-of-band through
+/// [`vmf_addrs`], which holds the user address of an array of
+/// [`vmf_nmcast`] Ethernet addresses ([`ETHERADDRL`] bytes each).
+///
+/// For [`VNA_IOC_SET_MAC_FILTERS`], the table replaces any previously
+/// installed one, and a count of zero clears all filters. On failure,
+/// [`vmf_err`] reports the failed check, with [`vmf_erraddr`] naming the
+/// offending entry for the checks that implicate one.
+///
+/// For [`VNA_IOC_GET_MAC_FILTERS`], [`vmf_nmcast`] counts the entries the
+/// buffer at [`vmf_addrs`] can hold, and is rewritten with the installed
+/// count.
+///
+/// [`vmf_addrs`]: vioc_mac_filters::vmf_addrs
+/// [`vmf_nmcast`]: vioc_mac_filters::vmf_nmcast
+/// [`vmf_err`]: vioc_mac_filters::vmf_err
+/// [`vmf_erraddr`]: vioc_mac_filters::vmf_erraddr
 #[repr(C)]
+#[derive(Default)]
 pub struct vioc_mac_filters {
-    pub vmf_nucast: u32,
     pub vmf_nmcast: u32,
-    pub vmf_ucast: [[u8; VIONA_MAC_FILTER_ADDRL]; VIONA_MAX_UNICAST_FILTERS],
-    pub vmf_mcast: [[u8; VIONA_MAC_FILTER_ADDRL]; VIONA_MAX_MCAST_FILTERS],
+    pub vmf_err: u32,
+    pub vmf_erraddr: [u8; ETHERADDRL],
+    pub vmf_pad: [u8; 2],
+    pub vmf_addrs: u64,
 }
-impl Default for vioc_mac_filters {
-    fn default() -> Self {
-        Self {
-            vmf_nucast: 0,
-            vmf_nmcast: 0,
-            vmf_ucast: [[0; VIONA_MAC_FILTER_ADDRL]; VIONA_MAX_UNICAST_FILTERS],
-            vmf_mcast: [[0; VIONA_MAC_FILTER_ADDRL]; VIONA_MAX_MCAST_FILTERS],
-        }
-    }
+
+/// Semantic error codes reported through [`vma_err`]
+/// (`vioc_mac_addr_err_t`).
+///
+/// [`vma_err`]: vioc_mac_addr::vma_err
+pub const VMA_OK: u32 = 0;
+/// Requested address has the group bit set (IEEE 802.3).
+pub const VMA_ERR_NOT_UNICAST: u32 = 1;
+/// MAC layer refused installation of the address.
+pub const VMA_ERR_INSTALL: u32 = 2;
+/// A multicast filter could not be reinstalled after the swap.
+pub const VMA_ERR_MCAST_RESTORE: u32 = 3;
+
+/// For [`VNA_IOC_SET_MAC_ADDR`], [`vma_addr`] carries the unicast address
+/// to install in place of the current one, with [`vma_err`] copied out on
+/// failure and [`vma_present`] reporting whether an address remains
+/// installed, as a failed restoration leaves none.
+///
+/// For [`VNA_IOC_GET_MAC_ADDR`], [`vma_addr`] is copied out with the
+/// active unicast address of the client, and [`vma_present`] is nonzero
+/// when one is installed.
+///
+/// [`vma_addr`]: vioc_mac_addr::vma_addr
+/// [`vma_present`]: vioc_mac_addr::vma_present
+/// [`vma_err`]: vioc_mac_addr::vma_err
+#[repr(C)]
+#[derive(Default)]
+pub struct vioc_mac_addr {
+    pub vma_addr: [u8; ETHERADDRL],
+    pub vma_present: u8,
+    pub vma_pad: u8,
+    pub vma_err: u32,
 }
 
 #[repr(C)]

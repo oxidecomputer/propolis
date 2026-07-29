@@ -75,6 +75,13 @@ enum MqSetPairsCause {
 mod probes {
     fn virtio_viona_mq_set_use_pairs(cause: u8, npairs: u16) {}
     fn virtio_viona_cq_request(class: u8, command: u8) {}
+    /// A failed `VNA_IOC_SET_MAC_FILTERS`, with the semantic code from
+    /// `vmf_err`, the offending address (`vmf_erraddr`, low 48 bits), and
+    /// the copied-out entry count (the device capacity on `VMF_ERR_COUNT`).
+    fn virtio_viona_mac_filters_err(err: u32, addr: u64, nmcast: u32) {}
+    /// A failed `VNA_IOC_SET_MAC_ADDR`, with the semantic code from
+    /// `vma_err` and whether a unicast address remains installed.
+    fn virtio_viona_mac_swap_err(err: u32, present: u8) {}
 }
 
 /// Types and so forth for supporting the control queue.
@@ -270,6 +277,17 @@ pub mod migrate {
         /// older destinations ignore it.
         #[serde(default)]
         pub multicast_table_managed: Option<bool>,
+        /// The unicast MAC address installed by the driver in place of the
+        /// nominal one the device was created with, if any
+        /// (`VIRTIO_NET_CTRL_MAC_ADDR_SET`).
+        ///
+        /// This is optional for compatibility, as older sources omit it.
+        ///
+        /// An older destination ignores it and reverts config space to the
+        /// nominal address, while the guest continues using the replaced
+        /// one, which that host will not classify.
+        #[serde(default)]
+        pub mac_addr: Option<MacAddr>,
     }
 
     impl Schema<'_> for VionaStateV1 {
@@ -409,6 +427,10 @@ struct Inner {
     /// manages its own filtering, which releases the all-multicast lower bound
     /// in [`PciVirtioViona::rx_config`].
     mac_table_set: bool,
+    /// The unicast MAC address installed by the driver through
+    /// `VIRTIO_NET_CTRL_MAC_ADDR_SET`, when it has replaced the nominal
+    /// [`PciVirtioViona::mac_addr`] the device was created with.
+    mac_override: Option<MacAddr>,
 }
 impl Inner {
     fn new(max_queues: usize, promisc: PromiscLevel) -> Self {
@@ -428,6 +450,7 @@ impl Inner {
             mac_filters_installed: false,
             mac_filters_dirty: false,
             mac_table_set: false,
+            mac_override: None,
         }
     }
 
@@ -504,7 +527,9 @@ pub enum PromiscLevel {
     /// The device should receive only packets for its installed MAC
     /// filters.
     ///
-    /// Today this allows solely [`PciVirtioViona::mac_addr`].
+    /// That is, the active unicast address (nominally
+    /// [`PciVirtioViona::mac_addr`], unless replaced by the driver) and any
+    /// installed multicast filter table.
     #[default]
     None,
     /// The device should receive all multicast traffic in addition
@@ -574,6 +599,23 @@ impl MacAddr {
     }
 }
 
+/// Outcome of a failed `VNA_IOC_SET_MAC_ADDR` swap, decoded from the
+/// semantic error code and address presence copied out through
+/// `vioc_mac_addr`.
+#[derive(Copy, Clone, Debug)]
+enum MacSwapError {
+    /// The new address is active, but the multicast filter table behind it
+    /// was only partially reinstalled (`VMA_ERR_MCAST_RESTORE`).
+    McastRestore,
+    /// The swap failed with the previous address left installed
+    /// (`vma_present` set), though the kernel may have shed entries from
+    /// any installed filter table along the way.
+    Unchanged,
+    /// The swap failed and no unicast address remains on the client, a
+    /// state only full promiscuity can cover.
+    NoUnicast,
+}
+
 /// Represents a connection to the kernel's Viona (VirtIO Network Adapter)
 /// driver.
 pub struct PciVirtioViona {
@@ -584,8 +626,9 @@ pub struct PciVirtioViona {
     dev_features: u64,
     mac_addr: MacAddr,
     mtu: Option<u16>,
-    /// Whether the viona device supports `VNA_IOC_SET_MAC_FILTERS`
-    /// ([`viona_api::ApiVersion::V7`]).
+    /// Whether the viona device supports the MAC filtering ioctls of
+    /// [`viona_api::ApiVersion::V7`]: `VNA_IOC_SET_MAC_FILTERS` and
+    /// `VNA_IOC_SET_MAC_ADDR`.
     kernel_mac_filters: bool,
     /// Promiscuity pinned at construction, when the host supports ALL_VLAN.
     /// Falcon links may carry VLAN-tagged frames for the emulated fabric,
@@ -821,8 +864,13 @@ impl PciVirtioViona {
 
                 self.set_mac_filters(unicast, multicast)
             }
-            // We do not advertise `VIRTIO_NET_F_CTRL_MAC_ADDR`
-            MacCmd::AddrSet => return Err(()),
+            MacCmd::AddrSet => {
+                let mut mac = MacAddr::default();
+                if !chain.read(&mut mac, mem) {
+                    return Err(());
+                }
+                self.set_mac_override(mac)
+            }
         }
     }
 
@@ -868,7 +916,10 @@ impl PciVirtioViona {
 
     fn net_cfg_read(&self, id: &NetReg, ro: &mut ReadOp) {
         match id {
-            NetReg::Mac => ro.write_bytes(&self.mac_addr.0),
+            NetReg::Mac => {
+                let state = self.inner.lock().unwrap();
+                ro.write_bytes(&self.current_mac(&state).0);
+            }
             NetReg::Status => {
                 // Always report link up
                 ro.write_u16(VIRTIO_NET_S_LINK_UP);
@@ -1127,6 +1178,95 @@ impl PciVirtioViona {
         }
     }
 
+    /// Replace the device's active unicast MAC address on behalf of a
+    /// driver's `VIRTIO_NET_CTRL_MAC_ADDR_SET` command.
+    ///
+    /// The comments below distinguish the nominal address, the
+    /// [`PciVirtioViona::mac_addr`] the device was created with, from a
+    /// driver-installed override.
+    fn set_mac_override(&self, mac: MacAddr) -> Result<(), ()> {
+        if (self.virtio_state.negotiated_features()
+            & VIRTIO_NET_F_CTRL_MAC_ADDR)
+            == 0
+            || !mac.is_unicast()
+        {
+            return Err(());
+        }
+
+        let mut state = self.inner.lock().unwrap();
+        if mac == self.current_mac(&state) {
+            return Ok(());
+        }
+
+        // The kernel removes the current address (and with it, the installed
+        // multicast filters) before installing the replacement, meaning that
+        // full promiscuity (or the superset pin) must cover delivery across the
+        // swap.
+        let cover = self.pinned_promisc().unwrap_or(PromiscLevel::All);
+        if self.set_promisc(cover, &mut state).is_err() {
+            return Err(());
+        }
+
+        let res = match self.hdl.set_mac_addr(mac) {
+            // A clean swap reinstalled the multicast table as well. Only
+            // the promiscuity level remains to be reconciled below.
+            Ok(()) => {
+                state.mac_override = Some(mac);
+                Ok(())
+            }
+            // The new address is active, but the table behind it was only
+            // partially reinstalled. We mark it dirty so the reconciliation
+            // below reissues it.
+            Err(MacSwapError::McastRestore) => {
+                state.mac_override = Some(mac);
+                state.mac_filters_dirty = state.mac_filters_installed;
+                Ok(())
+            }
+            // The command failed and the previous address, nominal or
+            // override, is still installed, so `mac_override` is left
+            // as-is.
+            //
+            // A failed swap can still shed table entries, as the kernel
+            // removes and reinstalls the table around restoring the
+            // previous address, and entries refused during reinstallation
+            // are dropped without report.
+            //
+            // Hence, we reissue the table.
+            Err(MacSwapError::Unchanged) => {
+                state.mac_filters_dirty = state.mac_filters_installed;
+                Err(())
+            }
+            // The client holds no unicast address, which only the full
+            // promiscuity raised above covers, and config space now names
+            // an address the kernel lost.
+            //
+            // We record the override even though the kernel holds nothing: the
+            // restore path of device_reset engages only when one is tracked, and
+            // reissuing the nominal address there recovers a client without
+            // one.
+            //
+            // Leave the raised level in force and demand a reset.
+            Err(MacSwapError::NoUnicast) => {
+                state.mac_override = Some(mac);
+                state.mac_filters_dirty = state.mac_filters_installed;
+                drop(state);
+                self.virtio_state.set_needs_reset(self);
+                return Err(());
+            }
+        };
+
+        // Reconcile promiscuity (and any dirtied table) with the filter
+        // state.
+        match self.apply_rx_config(&mut state) {
+            Ok(()) => res,
+            Err(()) => {
+                drop(state);
+                self.virtio_state.set_needs_reset(self);
+                Err(())
+            }
+        }
+    }
+
     /// Update the promisc level of the device.
     fn set_promisc(
         &self,
@@ -1144,6 +1284,12 @@ impl PciVirtioViona {
                 Err(())
             }
         }
+    }
+
+    /// The active unicast MAC address: the override installed by the guest
+    /// driver, or the nominal address the device was created with.
+    fn current_mac(&self, state: &Inner) -> MacAddr {
+        state.mac_override.unwrap_or(self.mac_addr)
     }
 
     /// The promiscuity level pinned at construction, if any.
@@ -1210,7 +1356,7 @@ impl PciVirtioViona {
             && state
                 .unicast_mac_filters
                 .iter()
-                .all(|mac| mac == &self.mac_addr);
+                .all(|mac| mac == &self.current_mac(state));
         let need_promisc =
             state.filter.contains(FilterState::PROMISCUOUS) || !filter_is_self;
 
@@ -1320,8 +1466,8 @@ impl VirtioDevice for PciVirtioViona {
                 //
                 // Technically while we are in either `Mode::Transitional`
                 // or `Mode::Legacy` the driver may write to `NetReg::Mac`
-                // in lieu of sending a `MacCmd::AddrSet`. We don't support
-                // changing the MAC address today.
+                // in lieu of sending a `MacCmd::AddrSet`. We support only
+                // the control-queue `AddrSet` today.
             }
         });
     }
@@ -1341,6 +1487,11 @@ impl VirtioDevice for PciVirtioViona {
         // Context: https://www.illumos.org/issues/13992
         if self.mtu.is_some() {
             feat |= VIRTIO_NET_F_MTU;
+        }
+        // The address swap behind `MacCmd::AddrSet` requires
+        // `VNA_IOC_SET_MAC_ADDR` ([`viona_api::ApiVersion::V7`]).
+        if self.kernel_mac_filters {
+            feat |= VIRTIO_NET_F_CTRL_MAC_ADDR;
         }
         feat |= self.dev_features;
 
@@ -1469,6 +1620,34 @@ impl VirtioDevice for PciVirtioViona {
         state.multicast_mac_filters = Box::new([]);
         state.mac_table_set = false;
         state.mac_filters_dirty = false;
+
+        // A driver-installed unicast address must not outlive the reset
+        // either. As in set_mac_override, the swap back to the nominal address
+        // runs under full promiscuity (or the superset pin), which the
+        // restore below then lowers. A failure can leave the client with no
+        // unicast address, so we keep the raised level active and flag the
+        // device, as with a failed restore.
+        if state.mac_override.is_some() {
+            let cover = self.pinned_promisc().unwrap_or(PromiscLevel::All);
+            // A partially reinstalled table (McastRestore) still leaves the
+            // nominal address active, and the table is cleared below anyway.
+            let restored = self.set_promisc(cover, &mut state).is_ok()
+                && !matches!(
+                    self.hdl.set_mac_addr(self.mac_addr),
+                    Err(MacSwapError::Unchanged | MacSwapError::NoUnicast)
+                );
+            if !restored {
+                // The nominal address may not be installed. `mac_override` is
+                // kept, as the kernel most likely still holds the override,
+                // and the raised promiscuity covers delivery either way
+                // until the demanded reset lands.
+                state.mac_filters_dirty = state.mac_filters_installed;
+                drop(state);
+                self.virtio_state.set_needs_reset(self);
+                return;
+            }
+            state.mac_override = None;
+        }
 
         // Restore the pre-CTRL_RX default of multicast promiscuity (or the
         // pinned level) before clearing any installed filter table so that
@@ -1599,6 +1778,7 @@ impl MigrateMulti for PciVirtioViona {
                 unicast_mac_filters: state.unicast_mac_filters.to_vec(),
                 multicast_mac_filters: state.multicast_mac_filters.to_vec(),
                 multicast_table_managed: Some(state.mac_table_set),
+                mac_addr: state.mac_override,
             }
         };
 
@@ -1671,6 +1851,7 @@ impl MigrateMulti for PciVirtioViona {
             unicast_mac_filters,
             multicast_mac_filters,
             multicast_table_managed,
+            mac_addr,
         } = input;
 
         let mut state = self.inner.lock().unwrap();
@@ -1693,6 +1874,40 @@ impl MigrateMulti for PciVirtioViona {
             !state.unicast_mac_filters.is_empty()
                 || !state.multicast_mac_filters.is_empty(),
         );
+
+        // A driver-installed unicast address must be active on this host
+        // as well. As in set_mac_override, full promiscuity (or the superset
+        // pin) covers the swap, and the reconciliation below settles the
+        // final level.
+        if let Some(mac) = mac_addr {
+            if !self.kernel_mac_filters {
+                return Err(MigrateStateError::ImportFailed(
+                    "cannot restore driver-installed MAC address without \
+                    VNA_IOC_SET_MAC_ADDR support"
+                        .to_string(),
+                ));
+            }
+            let cover = self.pinned_promisc().unwrap_or(PromiscLevel::All);
+            self.set_promisc(cover, &mut state).map_err(|_| {
+                MigrateStateError::ImportFailed(
+                    "could not raise promiscuity to cover MAC address \
+                    replacement"
+                        .to_string(),
+                )
+            })?;
+
+            self.hdl.set_mac_addr(mac).or_else(|e| match e {
+                // McastRestore still installs the address, as the table behind
+                // it was only partially reinstalled, and the reconciliation
+                // below reissues it from the imported (already dirty) state.
+                MacSwapError::McastRestore => Ok(()),
+                e => Err(MigrateStateError::ImportFailed(format!(
+                    "error while restoring driver-installed MAC \
+                    address: {e:?}"
+                ))),
+            })?;
+            state.mac_override = Some(mac);
+        }
 
         // Recompute the Rx configuration from the imported guest state.
         //
@@ -2006,29 +2221,121 @@ impl VionaHdl {
     /// Replace the explicit multicast MAC filter table on the underlying
     /// device. An empty table clears any installed filters.
     ///
-    /// Broadcast entries are omitted. The kernel drops them from the table,
-    /// as a MAC client is joined to broadcast for the lifetime of its unicast
-    /// address, so passing them would only waste table slots.
+    /// Broadcast entries are omitted. The kernel also drops them from the
+    /// table, as a MAC client is joined to broadcast for the lifetime of its
+    /// unicast address, so passing them would only waste table slots.
     ///
-    /// The device's primary unicast address is always programmed on the
-    /// in-kernel MAC client, so no unicast entries are passed and `vmf_nucast`
-    /// remains zero.
+    /// The table is passed out-of-band through `vmf_addrs`, so the backing
+    /// array must outlive the ioctl.
+    ///
+    /// The semantic code copied out through `vmf_err` on failure is
+    /// available but deliberately not decoded: the count is checked against
+    /// the device capacity before this call, non-multicast entries are
+    /// rejected at the control queue, and every remaining failure is
+    /// answered the same way, by falling back to multicast promiscuity in
+    /// [`PciVirtioViona::apply_rx_config`]. Diagnosis stays with the
+    /// `virtio_viona_mac_filters_err` probe below, which carries the code
+    /// and the offending address.
     ///
     /// This requires [viona_api::ApiVersion::V7] or greater.
     fn set_mac_filters(&self, multicast: &[MacAddr]) -> io::Result<()> {
         assert!(multicast.len() <= viona_api::VIONA_MAX_MCAST_FILTERS);
 
-        let mut vmf = viona_api::vioc_mac_filters::default();
-        let mut count = 0;
-        for mac in multicast.iter().filter(|mac| !mac.is_broadcast()) {
-            vmf.vmf_mcast[count] = mac.0;
-            count += 1;
-        }
-        vmf.vmf_nmcast = count as u32;
-        unsafe {
-            self.0.ioctl(viona_api::VNA_IOC_SET_MAC_FILTERS, &mut vmf)?;
-        }
+        let addrs: Vec<MacAddr> = multicast
+            .iter()
+            .filter(|mac| !mac.is_broadcast())
+            .copied()
+            .collect();
+
+        let mut vmf = viona_api::vioc_mac_filters {
+            vmf_nmcast: addrs.len() as u32,
+            // A count of zero clears the table without the kernel reading
+            // the buffer. We pass no pointer rather than a dangling one.
+            vmf_addrs: if addrs.is_empty() {
+                0
+            } else {
+                addrs.as_bytes().as_ptr() as u64
+            },
+            ..Default::default()
+        };
+
+        unsafe { self.0.ioctl(viona_api::VNA_IOC_SET_MAC_FILTERS, &mut vmf) }
+            .inspect_err(|_| {
+            probes::virtio_viona_mac_filters_err!(|| {
+                let mut addr = [0u8; size_of::<u64>()];
+                addr[size_of::<u64>() - ETHERADDRL..]
+                    .copy_from_slice(&vmf.vmf_erraddr);
+                (vmf.vmf_err, u64::from_be_bytes(addr), vmf.vmf_nmcast)
+            });
+        })?;
         Ok(())
+    }
+
+    /// Replace the unicast MAC address of the underlying MAC client, as
+    /// requested by a `VIRTIO_NET_CTRL_MAC_ADDR_SET` command.
+    ///
+    /// The caller is expected to hold `VIONA_PROMISC_ALL` across the
+    /// replacement, as the kernel may remove the current address (and any
+    /// installed multicast filters) before installing the new one, leaving a
+    /// classified delivery gap until the swap completes.
+    ///
+    /// Updating the `mac` field of virtio config space remains the device's
+    /// responsibility.
+    ///
+    /// This requires [viona_api::ApiVersion::V7] or greater.
+    fn set_mac_addr(&self, mac: MacAddr) -> Result<(), MacSwapError> {
+        let mut vma =
+            viona_api::vioc_mac_addr { vma_addr: mac.0, ..Default::default() };
+        unsafe { self.0.ioctl(viona_api::VNA_IOC_SET_MAC_ADDR, &mut vma) }
+            .map_err(|_| {
+                probes::virtio_viona_mac_swap_err!(|| (
+                    vma.vma_err,
+                    vma.vma_present
+                ));
+                match vma.vma_err {
+                    // The handler pairs every failure that reaches copyout
+                    // with a semantic code, so VMA_OK on error means the
+                    // kernel copied nothing out (an EFAULT on copyin, say)
+                    // and changed nothing.
+                    viona_api::VMA_OK => MacSwapError::Unchanged,
+                    viona_api::VMA_ERR_MCAST_RESTORE => {
+                        MacSwapError::McastRestore
+                    }
+                    _ if vma.vma_present != 0 => MacSwapError::Unchanged,
+                    _ => MacSwapError::NoUnicast,
+                }
+            })?;
+        Ok(())
+    }
+
+    /// Read the active unicast MAC address of the underlying MAC client, if
+    /// one is installed.
+    ///
+    /// This requires [viona_api::ApiVersion::V7] or greater.
+    #[cfg(test)]
+    fn get_mac_addr(&self) -> io::Result<Option<MacAddr>> {
+        let mut vma = viona_api::vioc_mac_addr::default();
+        unsafe { self.0.ioctl(viona_api::VNA_IOC_GET_MAC_ADDR, &mut vma) }?;
+        Ok((vma.vma_present != 0).then_some(MacAddr(vma.vma_addr)))
+    }
+
+    /// Read the installed multicast filter table.
+    ///
+    /// This requires [viona_api::ApiVersion::V7] or greater.
+    #[cfg(test)]
+    fn get_mac_filters(&self) -> io::Result<Vec<MacAddr>> {
+        let mut addrs =
+            vec![MacAddr::default(); viona_api::VIONA_MAX_MCAST_FILTERS];
+        let mut vmf = viona_api::vioc_mac_filters {
+            vmf_nmcast: addrs.len() as u32,
+            vmf_addrs: addrs.as_mut_bytes().as_mut_ptr() as u64,
+            ..Default::default()
+        };
+        unsafe { self.0.ioctl(viona_api::VNA_IOC_GET_MAC_FILTERS, &mut vmf) }?;
+        // The kernel rewrites the count with the installed total, which its
+        // capacity keeps within the buffer above.
+        addrs.truncate(vmf.vmf_nmcast as usize);
+        Ok(addrs)
     }
 }
 
@@ -2269,9 +2576,9 @@ mod test {
     use crate::hw::pci::Bdf;
     use crate::hw::virtio::pci::Status;
     use crate::hw::virtio::viona::{
-        control, FilterState, MacAddr, PromiscLevel, VIRTIO_NET_F_CTRL_RX,
-        VIRTIO_NET_F_CTRL_VQ, VIRTIO_NET_F_MAC, VIRTIO_NET_F_MQ,
-        VIRTIO_NET_F_STATUS,
+        control, FilterState, MacAddr, PromiscLevel,
+        VIRTIO_NET_F_CTRL_MAC_ADDR, VIRTIO_NET_F_CTRL_RX, VIRTIO_NET_F_CTRL_VQ,
+        VIRTIO_NET_F_MAC, VIRTIO_NET_F_MQ, VIRTIO_NET_F_STATUS,
     };
     use crate::hw::virtio::{PciVirtioViona, VirtioDevice};
     use crate::lifecycle::Lifecycle;
@@ -3044,6 +3351,17 @@ mod test {
             }
             self.send_ctrl_cmd(1, control::MacCmd::TableSet as u8, &payload)
         }
+
+        fn ctrl_mac_addr_set(&mut self, mac: MacAddr) -> u8 {
+            self.send_ctrl_cmd(1, control::MacCmd::AddrSet as u8, &mac.0)
+        }
+
+        /// Read the MAC address the device presents in its config space.
+        fn config_mac(&self) -> MacAddr {
+            let mut buf = [0u8; 6];
+            self.device_config.read(net_config::mac, &mut buf);
+            MacAddr(buf)
+        }
     }
 
     fn test_device_status_writes(test_ctx: TestCtx) -> TestCtx {
@@ -3378,10 +3696,14 @@ mod test {
 
         // A broadcast entry is kept in the guest-visible table but omitted
         // from the kernel filter set, as the MAC client is already joined
-        // to broadcast. Installation must still succeed.
+        // to broadcast, and the kernel compacts duplicate entries on its
+        // own.
+        //
+        // Installation must still succeed, however.
         let with_bcast = [
             MacAddr([0x33, 0x33, 0, 0, 0, 1]),
             MacAddr([0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+            MacAddr([0x33, 0x33, 0, 0, 0, 1]),
         ];
         let ack = driver.ctrl_mac_table_set(&[self_mac], &with_bcast);
         assert_eq!(ack, control::Ack::Ok as u8);
@@ -3391,10 +3713,29 @@ mod test {
             if kernel_filters {
                 assert_eq!(state.promisc, PromiscLevel::None);
                 assert!(state.mac_filters_installed);
+                // Only the first entry survives compaction: broadcast is
+                // omitted before the ioctl and the kernel drops the
+                // duplicate.
+                assert_eq!(
+                    test_ctx.dev.hdl.get_mac_filters().unwrap(),
+                    &with_bcast[..1]
+                );
             } else {
                 assert_eq!(state.promisc, PromiscLevel::AllMulti);
                 assert!(!state.mac_filters_installed);
             }
+        }
+
+        // A unicast entry in the multicast list is refused at the control
+        // queue, as is a multicast entry in the unicast list, leaving the
+        // accepted table in place.
+        for (unicast, multicast) in
+            [(vec![], vec![self_mac]), (vec![mcast[0]], vec![])]
+        {
+            let ack = driver.ctrl_mac_table_set(&unicast, &multicast);
+            assert_eq!(ack, control::Ack::Err as u8);
+            let state = test_ctx.dev.inner.lock().unwrap();
+            assert_eq!(&*state.multicast_mac_filters, &with_bcast[..]);
         }
 
         // Guest requested promiscuity changes leave an installed table in
@@ -3674,6 +4015,187 @@ mod test {
         test_ctx
     }
 
+    /// `VIRTIO_NET_CTRL_MAC_ADDR_SET` replaces the active unicast address
+    /// for the life of the driver: config space follows the replacement,
+    /// filter classification tracks it, and a reset restores the nominal
+    /// address.
+    fn control_mac_addr_replacement(test_ctx: TestCtx) -> TestCtx {
+        if test_ctx.dev.pinned_promisc().is_some() {
+            // Pinned link, see `control_rx_filtering`.
+            return test_ctx;
+        }
+
+        let nominal = test_ctx.dev.mac_addr;
+
+        // Without CTRL_MAC_ADDR negotiated the command must be rejected,
+        // regardless of kernel support.
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(
+            VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_CTRL_VQ,
+        );
+        let replacement = MacAddr([0x02, 0x08, 0x20, 0xac, 0x70, 0x55]);
+        let ack = driver.ctrl_mac_addr_set(replacement);
+        assert_eq!(ack, control::Ack::Err as u8);
+        assert_eq!(driver.config_mac(), nominal);
+        assert!(test_ctx.dev.inner.lock().unwrap().mac_override.is_none());
+
+        // The feature is only advertised with kernel support for the
+        // address swap, so the remainder needs a V7 kernel.
+        if !test_ctx.dev.kernel_mac_filters {
+            return test_ctx;
+        }
+
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(
+            VIRTIO_NET_F_MAC
+                | VIRTIO_NET_F_STATUS
+                | VIRTIO_NET_F_CTRL_VQ
+                | VIRTIO_NET_F_CTRL_RX
+                | VIRTIO_NET_F_CTRL_MAC_ADDR,
+        );
+
+        // A multicast address can never be a unicast replacement.
+        let ack = driver.ctrl_mac_addr_set(MacAddr([0x33, 0x33, 0, 0, 0, 1]));
+        assert_eq!(ack, control::Ack::Err as u8);
+        assert!(test_ctx.dev.inner.lock().unwrap().mac_override.is_none());
+
+        // Requesting the already-active address is a successful noop and
+        // installs no override.
+        let ack = driver.ctrl_mac_addr_set(nominal);
+        assert_eq!(ack, control::Ack::Ok as u8);
+        {
+            let state = test_ctx.dev.inner.lock().unwrap();
+            assert!(state.mac_override.is_none());
+            assert_eq!(state.promisc, PromiscLevel::AllMulti);
+        }
+
+        // A real replacement takes effect in config space, and the
+        // reconciliation settles back at the pre-table lower bound.
+        let ack = driver.ctrl_mac_addr_set(replacement);
+        assert_eq!(ack, control::Ack::Ok as u8);
+        assert_eq!(driver.config_mac(), replacement);
+        // The kernel view must match the tracked state, not just the ack.
+        assert_eq!(test_ctx.dev.hdl.get_mac_addr().unwrap(), Some(replacement));
+        {
+            let state = test_ctx.dev.inner.lock().unwrap();
+            assert_eq!(state.mac_override, Some(replacement));
+            assert_eq!(state.promisc, PromiscLevel::AllMulti);
+        }
+
+        // Filter classification follows the replacement: an empty unicast
+        // table plus a fitting multicast table narrows to classified
+        // delivery against the new address.
+        let mcast = [
+            MacAddr([0x33, 0x33, 0, 0, 0, 5]),
+            MacAddr([0x33, 0x33, 0, 0, 0, 6]),
+        ];
+        let ack = driver.ctrl_mac_table_set(&[], &mcast);
+        assert_eq!(ack, control::Ack::Ok as u8);
+        {
+            let state = test_ctx.dev.inner.lock().unwrap();
+            assert_eq!(state.promisc, PromiscLevel::None);
+            assert!(state.mac_filters_installed);
+        }
+        assert_eq!(test_ctx.dev.hdl.get_mac_filters().unwrap(), mcast);
+
+        // A further swap with a table installed keeps the table active
+        // behind the new address.
+        let replacement2 = MacAddr([0x02, 0x08, 0x20, 0xac, 0x70, 0x66]);
+        let ack = driver.ctrl_mac_addr_set(replacement2);
+        assert_eq!(ack, control::Ack::Ok as u8);
+        assert_eq!(driver.config_mac(), replacement2);
+        assert_eq!(
+            test_ctx.dev.hdl.get_mac_addr().unwrap(),
+            Some(replacement2)
+        );
+        {
+            let state = test_ctx.dev.inner.lock().unwrap();
+            assert_eq!(state.mac_override, Some(replacement2));
+            assert_eq!(state.promisc, PromiscLevel::None);
+            assert!(state.mac_filters_installed);
+        }
+        assert_eq!(test_ctx.dev.hdl.get_mac_filters().unwrap(), mcast);
+
+        // A guest-initiated reset restores the nominal address along with
+        // the rest of the filter state.
+        driver.write_status(Status::RESET);
+        assert_eq!(driver.config_mac(), nominal);
+        assert_eq!(test_ctx.dev.hdl.get_mac_addr().unwrap(), Some(nominal));
+        {
+            let state = test_ctx.dev.inner.lock().unwrap();
+            assert!(state.mac_override.is_none());
+            assert_eq!(state.promisc, PromiscLevel::AllMulti);
+            assert!(!state.mac_filters_installed);
+        }
+        assert!(test_ctx.dev.hdl.get_mac_filters().unwrap().is_empty());
+
+        test_ctx
+    }
+
+    /// A driver-installed unicast address must survive migration: the
+    /// payload carries the override and the target installs it in the
+    /// kernel before reapplying the Rx configuration.
+    fn control_mac_addr_migration(test_ctx: TestCtx) -> TestCtx {
+        if test_ctx.dev.pinned_promisc().is_some() {
+            // Pinned link, see `control_rx_filtering`.
+            return test_ctx;
+        }
+        if !test_ctx.dev.kernel_mac_filters {
+            // See `control_mac_addr_replacement`.
+            return test_ctx;
+        }
+
+        let nominal = test_ctx.dev.mac_addr;
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(
+            VIRTIO_NET_F_MAC
+                | VIRTIO_NET_F_STATUS
+                | VIRTIO_NET_F_CTRL_VQ
+                | VIRTIO_NET_F_CTRL_RX
+                | VIRTIO_NET_F_CTRL_MAC_ADDR,
+        );
+
+        let replacement = MacAddr([0x02, 0x08, 0x20, 0xac, 0x70, 0x77]);
+        let ack = driver.ctrl_mac_addr_set(replacement);
+        assert_eq!(ack, control::Ack::Ok as u8);
+        let mcast = [MacAddr([0x33, 0x33, 0, 0, 0, 7])];
+        let ack = driver.ctrl_mac_table_set(&[], &mcast);
+        assert_eq!(ack, control::Ack::Ok as u8);
+
+        let drv_state = driver.export();
+        let test_ctx = test_ctx.migrate();
+        let mut driver = VirtioNetDriver::import(
+            &test_ctx.machine,
+            &test_ctx.dev,
+            drv_state,
+        );
+        assert!(driver.status_ok());
+        assert_eq!(driver.config_mac(), replacement);
+        // The target kernel must hold the override and the table, not just
+        // track them.
+        assert_eq!(test_ctx.dev.hdl.get_mac_addr().unwrap(), Some(replacement));
+        assert_eq!(test_ctx.dev.hdl.get_mac_filters().unwrap(), mcast);
+        {
+            let state = test_ctx.dev.inner.lock().unwrap();
+            assert_eq!(state.mac_override, Some(replacement));
+            assert_eq!(&*state.multicast_mac_filters, &mcast[..]);
+            assert_eq!(state.promisc, PromiscLevel::None);
+            assert!(state.mac_filters_installed);
+        }
+
+        // The imported override must be live: the guest can still swap
+        // back, which installs the nominal address as an explicit override.
+        let ack = driver.ctrl_mac_addr_set(nominal);
+        assert_eq!(ack, control::Ack::Ok as u8);
+        assert_eq!(driver.config_mac(), nominal);
+        assert_eq!(
+            test_ctx.dev.inner.lock().unwrap().mac_override,
+            Some(nominal)
+        );
+
+        test_ctx
+    }
+
     // Bears an uncanny resemblance to `phd-test`...
     struct TestCase {
         name: &'static str,
@@ -3732,6 +4254,8 @@ mod test {
             testcase!(control_rx_filtering),
             testcase!(control_rx_reset_clears_filters),
             testcase!(control_rx_migration),
+            testcase!(control_mac_addr_replacement),
+            testcase!(control_mac_addr_migration),
         ];
 
         let underlying_nic = match std::env::var("VIONA_TEST_NIC") {

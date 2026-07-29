@@ -24,6 +24,7 @@ pub const VIRTIO_NET_F_CTRL_VLAN: u64 = 1 << 19;
 pub const VIRTIO_NET_F_CTRL_RX_EXTRA: u64 = 1 << 20;
 pub const VIRTIO_NET_F_GUEST_ANNOUNCE: u64 = 1 << 21;
 pub const VIRTIO_NET_F_MQ: u64 = 1 << 22;
+pub const VIRTIO_NET_F_CTRL_MAC_ADDR: u64 = 1 << 23;
 
 // virtio-block feature bits
 pub const VIRTIO_BLK_F_SIZE_MAX: u64 = 1 << 1;

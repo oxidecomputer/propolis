@@ -37,6 +37,10 @@
 #define	VNA_IOC_SET_MTU			(VNA_IOC | 0x28)
 #define	VNA_IOC_SET_NOTIFY_MMIO		(VNA_IOC | 0x29)
 #define	VNA_IOC_INTR_POLL_MQ		(VNA_IOC | 0x2a)
+#define	VNA_IOC_SET_MAC_FILTERS		(VNA_IOC | 0x2b)
+#define	VNA_IOC_GET_MAC_FILTERS		(VNA_IOC | 0x2c)
+#define	VNA_IOC_SET_MAC_ADDR		(VNA_IOC | 0x2d)
+#define	VNA_IOC_GET_MAC_ADDR		(VNA_IOC | 0x2e)
 
 #define	VNA_IOC_GET_PAIRS		(VNA_IOC | 0x30)
 #define	VNA_IOC_SET_PAIRS		(VNA_IOC | 0x31)
@@ -217,6 +221,30 @@ viona_ioctl:entry/arg1 == VNA_IOC_SET_NOTIFY_MMIO && arg2/ {
 	self->cmd = "SET_NOTIFY_MMIO";
 	mmio = (vioc_notify_mmio_t *)copyin(arg2, sizeof (vioc_notify_mmio_t));
 	printf("%s %x+%x\n", self->cmd, mmio->vim_address, mmio->vim_size);
+}
+
+viona_ioctl:entry/arg1 == VNA_IOC_SET_MAC_FILTERS/ {
+	self->cmd = "SET_MAC_FILTERS";
+	vmf = (vioc_mac_filters_t *)copyin(arg2, sizeof (vioc_mac_filters_t));
+	printf("%s n=%u\n", self->cmd, vmf->vmf_nmcast);
+}
+
+viona_ioctl:entry/arg1 == VNA_IOC_GET_MAC_FILTERS/ {
+	self->cmd = "GET_MAC_FILTERS";
+	printf("%s\n", self->cmd);
+}
+
+viona_ioctl:entry/arg1 == VNA_IOC_SET_MAC_ADDR/ {
+	self->cmd = "SET_MAC_ADDR";
+	vma = (vioc_mac_addr_t *)copyin(arg2, sizeof (vioc_mac_addr_t));
+	printf("%s %02x:%02x:%02x:%02x:%02x:%02x\n", self->cmd,
+	    vma->vma_addr[0], vma->vma_addr[1], vma->vma_addr[2],
+	    vma->vma_addr[3], vma->vma_addr[4], vma->vma_addr[5]);
+}
+
+viona_ioctl:entry/arg1 == VNA_IOC_GET_MAC_ADDR/ {
+	self->cmd = "GET_MAC_ADDR";
+	printf("%s\n", self->cmd);
 }
 
 viona_ioctl:entry/arg1 == VNA_IOC_GET_PAIRS/ {
