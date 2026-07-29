@@ -2,9 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Conversions from the initial API version ([`propolis_api_types::v1`], aka
-//! "V0" in some parts of propolis-server) instance specs in the
-//! [`propolis_api_types`] crate to the internal [`super::Spec`] representation.
+//! Conversions between [`propolis_api_types_versions::v1`] (aka "V0" in some
+//! parts of propolis-server) instance specs and the internal [`super::Spec`]
+//! representation.
 
 use std::collections::BTreeMap;
 
