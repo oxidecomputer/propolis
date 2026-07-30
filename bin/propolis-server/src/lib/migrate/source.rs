@@ -9,7 +9,6 @@ use propolis::migrate::{
     MigrateCtx, MigrateStateError, Migrator, PayloadOutputs,
 };
 use propolis::vmm;
-use propolis_api_types_versions::v1;
 use slog::{debug, error, info, trace, warn};
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -25,6 +24,7 @@ use crate::migrate::memx;
 use crate::migrate::preamble::Preamble;
 use crate::migrate::probes;
 use crate::migrate::protocol::Protocol;
+use crate::migrate::types::VersionedInstanceSpec;
 use crate::migrate::{codec, protocol};
 use crate::migrate::{
     Device, DevicePayload, MigrateError, MigratePhase, MigrateRole,
@@ -467,10 +467,10 @@ impl<T: MigrateConn> RonV0Runner<'_, T> {
 
     async fn sync(&mut self) -> Result<(), MigrateError> {
         self.update_state(MigrationState::Sync);
-        let preamble =
-            Preamble::new(v1::instance_spec::VersionedInstanceSpec::V0(
-                self.vm.lock_shared().await.instance_spec().clone().into(),
-            ));
+        let versioned = VersionedInstanceSpec::from_spec(
+            self.vm.lock_shared().await.instance_spec(),
+        )?;
+        let preamble = Preamble::new(versioned);
         let s = ron::ser::to_string(&preamble)
             .map_err(codec::ProtocolError::from)?;
         self.send_msg(codec::Message::Serialized(s)).await?;

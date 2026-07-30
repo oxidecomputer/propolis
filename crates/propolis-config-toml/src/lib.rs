@@ -106,8 +106,15 @@ pub struct Device {
 }
 
 impl Device {
+    pub fn get_toml_value<S: AsRef<str>>(
+        &self,
+        key: S,
+    ) -> Option<&toml::Value> {
+        self.options.get(key.as_ref())
+    }
+
     pub fn get_string<S: AsRef<str>>(&self, key: S) -> Option<&str> {
-        self.options.get(key.as_ref())?.as_str()
+        self.get_toml_value(key)?.as_str()
     }
 
     pub fn get<T: FromStr, S: AsRef<str>>(&self, key: S) -> Option<T> {

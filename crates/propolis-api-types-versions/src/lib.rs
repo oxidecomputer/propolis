@@ -39,3 +39,5 @@ pub mod v2;
 pub mod v3;
 #[path = "crucible_volume_info/mod.rs"]
 pub mod v5;
+#[path = "nvme_write_cache/mod.rs"]
+pub mod v6;
