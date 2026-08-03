@@ -263,6 +263,11 @@ impl DiskRequest {
                 backend_id: backend_id.clone(),
                 pci_path,
                 serial_number: nvme_serial_from_str(&self.name, b' '),
+                // TODO: `DiskRequest` implies this is the disk-side interface
+                // of a Crucible storage backend, so we report a write cache.
+                // but this probably should be configurable more directly in the
+                // limit
+                has_write_cache: true,
             }),
             _ => anyhow::bail!(
                 "invalid device type in disk request: {:?}",

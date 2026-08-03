@@ -27,7 +27,21 @@ use crate::{
 #[derive(Clone, Copy, Debug)]
 pub enum DiskInterface {
     Virtio,
-    Nvme,
+    Nvme { has_write_cache: bool },
+}
+
+impl DiskInterface {
+    pub fn virtio() -> Self {
+        DiskInterface::Virtio
+    }
+
+    pub fn nvme() -> Self {
+        // Default to reporting a write cache for the same reason as
+        // propolis-cli. Some tests want to see that we can actually tell a
+        // guest that there's no write cache, though, so it's configurable and
+        // may lie with respect to backend's actual cachefulness.
+        DiskInterface::Nvme { has_write_cache: true }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -82,7 +96,7 @@ impl<'dr> VmConfig<'dr> {
 
         config.boot_disk(
             guest_artifact,
-            DiskInterface::Nvme,
+            DiskInterface::nvme(),
             DiskBackend::File,
             4,
         );
@@ -330,21 +344,24 @@ impl<'dr> VmConfig<'dr> {
                     ),
                     pci_path,
                 }),
-                DiskInterface::Nvme => Component::NvmeDisk(NvmeDisk {
-                    backend_id: SpecKey::Name(
-                        backend_name.clone().into_string(),
-                    ),
-                    pci_path,
-                    serial_number: nvme_serial_from_str(
-                        device_name.as_str(),
-                        // Omicron supplies (or will supply, as of this writing)
-                        // 0 as the padding byte to maintain compatibility for
-                        // existing disks. Match that behavior here so that PHD
-                        // and Omicron VM configurations are as similar as
-                        // possible.
-                        0,
-                    ),
-                }),
+                DiskInterface::Nvme { has_write_cache } => {
+                    Component::NvmeDisk(NvmeDisk {
+                        backend_id: SpecKey::Name(
+                            backend_name.clone().into_string(),
+                        ),
+                        pci_path,
+                        serial_number: nvme_serial_from_str(
+                            device_name.as_str(),
+                            // Omicron supplies (or will supply, as of this writing)
+                            // 0 as the padding byte to maintain compatibility for
+                            // existing disks. Match that behavior here so that PHD
+                            // and Omicron VM configurations are as similar as
+                            // possible.
+                            0,
+                        ),
+                        has_write_cache,
+                    })
+                }
             };
 
             let _old = spec
