@@ -105,7 +105,7 @@ async fn vcr_replace_during_start_test(ctx: &TestCtx) {
     config.data_disk(
         DATA_DISK_NAME,
         DiskSource::Blank(1024 * 1024 * 1024),
-        DiskInterface::Nvme,
+        DiskInterface::nvme(),
         DiskBackend::Crucible {
             min_disk_size_gib: 1,
             block_size: BlockSize::Bytes512,
