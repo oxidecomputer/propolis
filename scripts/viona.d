@@ -227,6 +227,24 @@ viona_ioctl:entry/arg1 == VNA_IOC_SET_MAC_FILTERS/ {
 	self->cmd = "SET_MAC_FILTERS";
 	vmf = (vioc_mac_filters_t *)copyin(arg2, sizeof (vioc_mac_filters_t));
 	printf("%s n=%u\n", self->cmd, vmf->vmf_nmcast);
+	self->pending = arg1;
+}
+
+/*
+ * For both SET_MAC ioctls, semantic failures are reported through the
+ * result struct on a zero return, bypassing the generic nonzero-return
+ * clause at the bottom of this script. Print the copied-out result on
+ * every return instead.
+ */
+viona_ioctl:return/self->pending == VNA_IOC_SET_MAC_FILTERS/ {
+	self->pending = 0;
+	vmfr = (vioc_mac_filters_t *)copyin(self->dptr,
+	    sizeof (vioc_mac_filters_t));
+	printf("SET_MAC_FILTERS result err=%u n=%u ",
+	    vmfr->vmf_err, vmfr->vmf_nmcast);
+	printf("addr=%02x:%02x:%02x:%02x:%02x:%02x\n",
+	    vmfr->vmf_erraddr[0], vmfr->vmf_erraddr[1], vmfr->vmf_erraddr[2],
+	    vmfr->vmf_erraddr[3], vmfr->vmf_erraddr[4], vmfr->vmf_erraddr[5]);
 }
 
 viona_ioctl:entry/arg1 == VNA_IOC_GET_MAC_FILTERS/ {
@@ -240,6 +258,15 @@ viona_ioctl:entry/arg1 == VNA_IOC_SET_MAC_ADDR/ {
 	printf("%s %02x:%02x:%02x:%02x:%02x:%02x\n", self->cmd,
 	    vma->vma_addr[0], vma->vma_addr[1], vma->vma_addr[2],
 	    vma->vma_addr[3], vma->vma_addr[4], vma->vma_addr[5]);
+	self->pending = arg1;
+}
+
+viona_ioctl:return/self->pending == VNA_IOC_SET_MAC_ADDR/ {
+	self->pending = 0;
+	vmar = (vioc_mac_addr_t *)copyin(self->dptr,
+	    sizeof (vioc_mac_addr_t));
+	printf("SET_MAC_ADDR result err=%u present=%u\n",
+	    vmar->vma_err, vmar->vma_present);
 }
 
 viona_ioctl:entry/arg1 == VNA_IOC_GET_MAC_ADDR/ {

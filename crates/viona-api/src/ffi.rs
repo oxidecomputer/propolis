@@ -174,8 +174,13 @@ pub const VMF_ERR_INSTALL: u32 = 3;
 pub const VMF_ERR_NO_UNICAST: u32 = 4;
 
 /// Complete multicast MAC filter table, passed out-of-band through
-/// [`vmf_addrs`], which holds the user address of an array of
-/// [`vmf_nmcast`] Ethernet addresses ([`ETHERADDRL`] bytes each).
+/// [`vmf_addrs`], which holds the user address of a compact array of
+/// [`vmf_nmcast`] Ethernet addresses, [`ETHERADDRL`] bytes per entry
+/// with no padding between them.
+///
+/// Both ioctls return zero whenever this result struct is copied out,
+/// with success or failure reported through [`vmf_err`]. A nonzero
+/// return means no result was returned at all.
 ///
 /// For [`VNA_IOC_SET_MAC_FILTERS`], the table replaces any previously
 /// installed one, and a count of zero clears all filters. On failure,
@@ -184,7 +189,8 @@ pub const VMF_ERR_NO_UNICAST: u32 = 4;
 ///
 /// For [`VNA_IOC_GET_MAC_FILTERS`], [`vmf_nmcast`] counts the entries the
 /// buffer at [`vmf_addrs`] can hold, and is rewritten with the installed
-/// count.
+/// count. A count of zero queries the installed count alone, with the
+/// buffer left unread.
 ///
 /// [`vmf_addrs`]: vioc_mac_filters::vmf_addrs
 /// [`vmf_nmcast`]: vioc_mac_filters::vmf_nmcast
@@ -213,9 +219,11 @@ pub const VMA_ERR_INSTALL: u32 = 2;
 pub const VMA_ERR_MCAST_RESTORE: u32 = 3;
 
 /// For [`VNA_IOC_SET_MAC_ADDR`], [`vma_addr`] carries the unicast address
-/// to install in place of the current one, with [`vma_err`] copied out on
-/// failure and [`vma_present`] reporting whether an address remains
-/// installed, as a failed restoration leaves none.
+/// to install in place of the current one. The ioctl returns zero
+/// whenever this result struct is copied out, with success or failure
+/// reported through [`vma_err`], and [`vma_present`] recording whether
+/// an address remains installed, as a failed restoration leaves none. A
+/// nonzero return means no result was returned at all.
 ///
 /// For [`VNA_IOC_GET_MAC_ADDR`], [`vma_addr`] is copied out with the
 /// active unicast address of the client, and [`vma_present`] is nonzero

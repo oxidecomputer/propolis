@@ -78,9 +78,15 @@ mod probes {
     /// A failed `VNA_IOC_SET_MAC_FILTERS`, with the semantic code from
     /// `vmf_err`, the offending address (`vmf_erraddr`, low 48 bits), and
     /// the copied-out entry count (the device capacity on `VMF_ERR_COUNT`).
+    ///
+    /// A code of zero (`VMF_OK`) means the ioctl itself failed without
+    /// returning a result, leaving the other arguments as submitted.
     fn virtio_viona_mac_filters_err(err: u32, addr: u64, nmcast: u32) {}
     /// A failed `VNA_IOC_SET_MAC_ADDR`, with the semantic code from
     /// `vma_err` and whether a unicast address remains installed.
+    ///
+    /// A code of zero (`VMA_OK`) means the ioctl itself failed without
+    /// returning a result.
     fn virtio_viona_mac_swap_err(err: u32, present: u8) {}
 }
 
@@ -607,9 +613,11 @@ enum MacSwapError {
     /// The new address is active, but the multicast filter table behind it
     /// was only partially reinstalled (`VMA_ERR_MCAST_RESTORE`).
     McastRestore,
-    /// The swap failed with the previous address left installed
-    /// (`vma_present` set), though the kernel may have shed entries from
-    /// any installed filter table along the way.
+    /// The swap failed with the previous address left installed, either
+    /// reported outright (`vma_present` set) or inferred from an ioctl
+    /// error with no result returned, meaning the kernel processed
+    /// nothing at all. The kernel may have shed entries from any
+    /// installed filter table along the way.
     Unchanged,
     /// The swap failed and no unicast address remains on the client, a
     /// state only full promiscuity can cover.
@@ -2228,14 +2236,16 @@ impl VionaHdl {
     /// The table is passed out-of-band through `vmf_addrs`, so the backing
     /// array must outlive the ioctl.
     ///
-    /// The semantic code copied out through `vmf_err` on failure is
-    /// available but deliberately not decoded: the count is checked against
-    /// the device capacity before this call, non-multicast entries are
+    /// The semantic code copied out through `vmf_err` is checked against
+    /// `VMF_OK` to detect failure, but the individual codes are
+    /// deliberately not distinguished. The count is checked against the
+    /// device capacity before this call, non-multicast entries are
     /// rejected at the control queue, and every remaining failure is
-    /// answered the same way, by falling back to multicast promiscuity in
-    /// [`PciVirtioViona::apply_rx_config`]. Diagnosis stays with the
-    /// `virtio_viona_mac_filters_err` probe below, which carries the code
-    /// and the offending address.
+    /// answered the same way: by falling back to multicast promiscuity in
+    /// [`PciVirtioViona::apply_rx_config`].
+    ///
+    /// Diagnosis stays with the `virtio_viona_mac_filters_err` probe below,
+    /// which carries the code and the offending address.
     ///
     /// This requires [viona_api::ApiVersion::V7] or greater.
     fn set_mac_filters(&self, multicast: &[MacAddr]) -> io::Result<()> {
@@ -2259,15 +2269,22 @@ impl VionaHdl {
             ..Default::default()
         };
 
+        // A zero return carries the semantic outcome in vmf_err; a nonzero
+        // return means the kernel never processed the request and copied
+        // nothing out. Either way, a failure.
         unsafe { self.0.ioctl(viona_api::VNA_IOC_SET_MAC_FILTERS, &mut vmf) }
+            .and_then(|rv| match vmf.vmf_err {
+                viona_api::VMF_OK => Ok(rv),
+                _ => Err(io::ErrorKind::InvalidInput.into()),
+            })
             .inspect_err(|_| {
-            probes::virtio_viona_mac_filters_err!(|| {
-                let mut addr = [0u8; size_of::<u64>()];
-                addr[size_of::<u64>() - ETHERADDRL..]
-                    .copy_from_slice(&vmf.vmf_erraddr);
-                (vmf.vmf_err, u64::from_be_bytes(addr), vmf.vmf_nmcast)
-            });
-        })?;
+                probes::virtio_viona_mac_filters_err!(|| {
+                    let mut addr = [0u8; size_of::<u64>()];
+                    addr[size_of::<u64>() - ETHERADDRL..]
+                        .copy_from_slice(&vmf.vmf_erraddr);
+                    (vmf.vmf_err, u64::from_be_bytes(addr), vmf.vmf_nmcast)
+                });
+            })?;
         Ok(())
     }
 
@@ -2286,17 +2303,24 @@ impl VionaHdl {
     fn set_mac_addr(&self, mac: MacAddr) -> Result<(), MacSwapError> {
         let mut vma =
             viona_api::vioc_mac_addr { vma_addr: mac.0, ..Default::default() };
+        // A zero return carries the semantic outcome in vma_err; a nonzero
+        // return means the kernel never processed the request and copied
+        // nothing out. Either way, a failure.
         unsafe { self.0.ioctl(viona_api::VNA_IOC_SET_MAC_ADDR, &mut vma) }
+            .and_then(|rv| match vma.vma_err {
+                viona_api::VMA_OK => Ok(rv),
+                _ => Err(io::ErrorKind::InvalidInput.into()),
+            })
             .map_err(|_| {
                 probes::virtio_viona_mac_swap_err!(|| (
                     vma.vma_err,
                     vma.vma_present
                 ));
                 match vma.vma_err {
-                    // The handler pairs every failure that reaches copyout
-                    // with a semantic code, so VMA_OK on error means the
-                    // kernel copied nothing out (an EFAULT on copyin, say)
-                    // and changed nothing.
+                    // vma is a stack object the kernel writes in full on
+                    // every processed request, so VMA_OK surviving a
+                    // failed ioctl means the request was never processed
+                    // and the address stands as is.
                     viona_api::VMA_OK => MacSwapError::Unchanged,
                     viona_api::VMA_ERR_MCAST_RESTORE => {
                         MacSwapError::McastRestore
