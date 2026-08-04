@@ -17,7 +17,6 @@ doctest = false
 test = false
 
 [dependencies]
-atty.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 bit_field.workspace = true

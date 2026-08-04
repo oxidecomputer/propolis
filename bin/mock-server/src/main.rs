@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -34,7 +35,7 @@ enum Args {
 }
 
 fn build_logger() -> slog::Logger {
-    let main_drain = if atty::is(atty::Stream::Stdout) {
+    let main_drain = if std::io::stdout().is_terminal() {
         let decorator = slog_term::TermDecorator::new().build();
         let drain = slog_term::FullFormat::new(decorator).build().fuse();
         slog_async::Async::new(drain)

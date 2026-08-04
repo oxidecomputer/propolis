@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::fs::File;
-use std::io::{Error, ErrorKind, Result};
+use std::io::{Error, ErrorKind, IsTerminal, Result};
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -823,7 +823,7 @@ fn open_bootrom(path: &str) -> Result<(File, usize)> {
 }
 
 fn build_log(level: slog::Level) -> slog::Logger {
-    let main_drain = if atty::is(atty::Stream::Stdout) {
+    let main_drain = if std::io::stdout().is_terminal() {
         let decorator = slog_term::TermDecorator::new().build();
         let drain = slog_term::CompactFormat::new(decorator).build().fuse();
         slog_async::Async::new(drain)
@@ -1324,6 +1324,18 @@ fn setup_instance(
                 "pci-virtio-viona" => {
                     let vnic_name =
                         dev.options.get("vnic").unwrap().as_str().unwrap();
+                    let rxqsz = match dev.options.get("rx-queue-size") {
+                        Some(toml::Value::Integer(v)) => {
+                            hw::virtio::VqSize::new(u16::try_from(*v).unwrap())
+                        }
+                        _ => hw::virtio::viona::RX_QUEUE_SIZE,
+                    };
+                    let txqsz = match dev.options.get("tx-queue-size") {
+                        Some(toml::Value::Integer(v)) => {
+                            hw::virtio::VqSize::new(u16::try_from(*v).unwrap())
+                        }
+                        _ => hw::virtio::viona::TX_QUEUE_SIZE,
+                    };
                     let bdf = bdf.unwrap();
 
                     let viona_params =
@@ -1333,11 +1345,15 @@ fn setup_instance(
                     // The viona_params here (currently just copy_data and
                     // header_pad) require `viona::ApiVersion::V3`, below
                     // Propolis' minimum of V6, so we can always set them.
-                    let viona = hw::virtio::PciVirtioViona::new(
-                        vnic_name,
-                        &hdl,
-                        viona_params,
-                    )?;
+                    let viona =
+                        hw::virtio::PciVirtioViona::new_with_queue_sizes(
+                            vnic_name,
+                            rxqsz,
+                            txqsz,
+                            hw::virtio::viona::CTL_QUEUE_SIZE,
+                            &hdl,
+                            viona_params,
+                        )?;
                     guard.inventory.register_instance(&viona, &bdf.to_string());
                     chipset_pci_attach(bdf, viona);
                 }
@@ -1355,6 +1371,11 @@ fn setup_instance(
                         .to_string();
                     let log =
                         log.new(slog::o!("dev" => format!("nvme-{}", name)));
+                    let has_write_cache = dev
+                        .options
+                        .get("has_write_cache")
+                        .map(|v| v.as_bool().unwrap())
+                        .unwrap_or(false);
                     // Limit data transfers to 1MiB (2^8 * 4k) in size
                     let mdts = Some(8);
 
@@ -1363,8 +1384,12 @@ fn setup_instance(
                     serial_number[..sz]
                         .clone_from_slice(&dev_serial.as_bytes()[..sz]);
 
-                    let nvme =
-                        hw::nvme::PciNvme::create(&serial_number, mdts, log);
+                    let nvme = hw::nvme::PciNvme::create(
+                        &serial_number,
+                        mdts,
+                        has_write_cache,
+                        log,
+                    );
 
                     guard.inventory.register_instance(&nvme, &bdf.to_string());
                     guard.inventory.register_block(&backend, name);

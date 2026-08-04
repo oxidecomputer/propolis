@@ -39,6 +39,12 @@ pci-path = "0.4.0"
 driver = "pci-virtio-viona"
 vnic = "vnic_name"
 pci-path = "0.5.0"
+
+# Override Rx queue size
+# rx-queue-size = 2048
+
+# Override Tx queue size
+# tx-queue-size = 256
 ```
 
 Propolis will not destroy the VM instance on exit.  If one exists with the
