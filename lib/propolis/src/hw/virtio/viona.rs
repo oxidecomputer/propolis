@@ -491,6 +491,15 @@ pub struct DeviceParams {
     /// This parameter requires [viona_api::ApiVersion::V3] or greater. This is
     /// before Propolis' minimum viona API version and can always be set.
     pub header_pad: u16,
+
+    /// Permit the guest to replace the device's unicast MAC address with a
+    /// unicast address of its choosing (`VIRTIO_NET_CTRL_MAC_ADDR_SET`).
+    ///
+    /// This is a propolis-side policy knob rather than a kernel parameter, as
+    /// viona performs the swap as directed and leaves validating the requested
+    /// address against host policy to its consumer. When unset, the device does
+    /// not advertise `VIRTIO_NET_F_CTRL_MAC_ADDR`.
+    pub allow_guest_mac_change: bool,
 }
 impl DeviceParams {
     #[cfg(target_os = "illumos")]
@@ -520,8 +529,9 @@ impl DeviceParams {
 impl Default for DeviceParams {
     fn default() -> Self {
         // Viona (as of V3) allocs/copies entire packet by default, with no
-        // padding added to the header.
-        Self { copy_data: true, header_pad: 0 }
+        // padding added to the header. Guest MAC replacement requires an
+        // explicit opt-in.
+        Self { copy_data: true, header_pad: 0, allow_guest_mac_change: false }
     }
 }
 
@@ -638,6 +648,10 @@ pub struct PciVirtioViona {
     /// [`viona_api::ApiVersion::V7`]: `VNA_IOC_SET_MAC_FILTERS` and
     /// `VNA_IOC_SET_MAC_ADDR`.
     kernel_mac_filters: bool,
+    /// Policy gate for guest-initiated MAC replacement.
+    ///
+    /// See [`DeviceParams::allow_guest_mac_change`].
+    allow_guest_mac_change: bool,
     /// Promiscuity pinned at construction, when the host supports ALL_VLAN.
     /// Falcon links may carry VLAN-tagged frames for the emulated fabric,
     /// which classified delivery would drop, so no guest or migration state
@@ -758,6 +772,8 @@ impl PciVirtioViona {
             mac_addr: info.mac_addr.into(),
             mtu: info.mtu,
             kernel_mac_filters: api_version >= viona_api::ApiVersion::V7,
+            allow_guest_mac_change: viona_params
+                .is_some_and(|vp| vp.allow_guest_mac_change),
             #[cfg(feature = "falcon")]
             pinned_promisc,
             hdl,
@@ -1193,9 +1209,13 @@ impl PciVirtioViona {
     /// [`PciVirtioViona::mac_addr`] the device was created with, from a
     /// driver-installed override.
     fn set_mac_override(&self, mac: MacAddr) -> Result<(), ()> {
-        if (self.virtio_state.negotiated_features()
-            & VIRTIO_NET_F_CTRL_MAC_ADDR)
-            == 0
+        // The policy is checked directly rather than through feature
+        // negotiation alone: the bit cannot be negotiated without the
+        // grant, but the swap must not depend on that indirection.
+        if !self.allow_guest_mac_change
+            || (self.virtio_state.negotiated_features()
+                & VIRTIO_NET_F_CTRL_MAC_ADDR)
+                == 0
             || !mac.is_unicast()
         {
             return Err(());
@@ -1496,12 +1516,18 @@ impl VirtioDevice for PciVirtioViona {
         if self.mtu.is_some() {
             feat |= VIRTIO_NET_F_MTU;
         }
-        // The address swap behind `MacCmd::AddrSet` requires
-        // `VNA_IOC_SET_MAC_ADDR` ([`viona_api::ApiVersion::V7`]).
-        if self.kernel_mac_filters {
-            feat |= VIRTIO_NET_F_CTRL_MAC_ADDR;
-        }
         feat |= self.dev_features;
+
+        // The address swap behind `MacCmd::AddrSet` requires
+        // `VNA_IOC_SET_MAC_ADDR` (viona API V7) and an explicit policy
+        // grant (`allow_guest_mac_change`). Apply the policy after merging
+        // kernel-advertised features so a future kernel capability cannot
+        // bypass the propolis-side opt-out.
+        if self.kernel_mac_filters && self.allow_guest_mac_change {
+            feat |= VIRTIO_NET_F_CTRL_MAC_ADDR;
+        } else {
+            feat &= !VIRTIO_NET_F_CTRL_MAC_ADDR;
+        }
 
         feat
     }
@@ -1801,6 +1827,20 @@ impl MigrateMulti for PciVirtioViona {
         <dyn PciVirtio>::import(self, offer, ctx)?;
 
         let feat = self.virtio_state.negotiated_features();
+
+        // A source that negotiated CTRL_MAC_ADDR granted its guest MAC
+        // replacement, a policy this host must extend as well because the
+        // guest keeps the negotiated bit and may issue further swaps here.
+        if (feat & VIRTIO_NET_F_CTRL_MAC_ADDR) != 0
+            && !self.allow_guest_mac_change
+        {
+            return Err(MigrateStateError::ImportFailed(
+                "source negotiated VIRTIO_NET_F_CTRL_MAC_ADDR but guest \
+                MAC replacement is not permitted on this host"
+                    .to_string(),
+            ));
+        }
+
         self.hdl.set_features(feat).map_err(|e| {
             MigrateStateError::ImportFailed(format!(
                 "error while setting viona features ({feat:x}): {e:?}"
@@ -1892,6 +1932,19 @@ impl MigrateMulti for PciVirtioViona {
                 return Err(MigrateStateError::ImportFailed(
                     "cannot restore driver-installed MAC address without \
                     VNA_IOC_SET_MAC_ADDR support"
+                        .to_string(),
+                ));
+            }
+            // An override can outlive the negotiated bit: a failed nominal
+            // restore during reset retains it after the features are
+            // cleared.
+            //
+            // The feature gate above therefore does not cover this
+            // payload, so the policy applies to it directly.
+            if !self.allow_guest_mac_change {
+                return Err(MigrateStateError::ImportFailed(
+                    "source carried a driver-installed MAC address but \
+                    guest MAC replacement is not permitted on this host"
                         .to_string(),
                 ));
             }
@@ -2600,14 +2653,15 @@ mod test {
     use crate::hw::pci::Bdf;
     use crate::hw::virtio::pci::Status;
     use crate::hw::virtio::viona::{
-        control, FilterState, MacAddr, PromiscLevel,
+        control, DeviceParams, FilterState, MacAddr, PromiscLevel,
         VIRTIO_NET_F_CTRL_MAC_ADDR, VIRTIO_NET_F_CTRL_RX, VIRTIO_NET_F_CTRL_VQ,
         VIRTIO_NET_F_MAC, VIRTIO_NET_F_MQ, VIRTIO_NET_F_STATUS,
     };
     use crate::hw::virtio::{PciVirtioViona, VirtioDevice};
     use crate::lifecycle::Lifecycle;
     use crate::migrate::{
-        MigrateCtx, MigrateMulti, PayloadOffer, PayloadOffers, PayloadOutputs,
+        MigrateCtx, MigrateMulti, MigrateStateError, PayloadOffer,
+        PayloadOffers, PayloadOutputs,
     };
     use crate::Machine;
     use std::env::VarError;
@@ -2620,6 +2674,7 @@ mod test {
         vnic_name: String,
         machine: Machine,
         dev: Arc<PciVirtioViona>,
+        params: Option<DeviceParams>,
     }
 
     impl Drop for TestCtx {
@@ -2635,6 +2690,19 @@ mod test {
         }
 
         fn migrate(self) -> TestCtx {
+            let params = self.params;
+            let (ctx, res) = self.migrate_to(params);
+            res.expect("can import PciVirtioViona");
+            ctx
+        }
+
+        /// Export this device, tear it down, and import the payload into a
+        /// fresh device built with `params`. The target is returned alongside
+        /// the import result so its state can be inspected after a rejection.
+        fn migrate_to(
+            self,
+            params: Option<DeviceParams>,
+        ) -> (TestCtx, Result<(), MigrateStateError>) {
             let mut dev_payloads = PayloadOutputs::new();
             let acc_mem =
                 self.machine.acc_mem.access().expect("machine has memory");
@@ -2681,18 +2749,23 @@ mod test {
             create_vnic(&underlying_nic, &vnic_name);
 
             let new_ctx =
-                create_test_ctx(test_name, &underlying_nic, &vnic_name);
+                create_test_ctx(test_name, &underlying_nic, &vnic_name, params);
             let acc_mem = new_ctx
                 .machine
                 .acc_mem
                 .access()
                 .expect("new machine has memory");
             let new_migrate = MigrateCtx { mem: &acc_mem };
-            <PciVirtioViona>::import(&new_ctx.dev, &mut offers, &new_migrate)
-                .expect("can import PciVirtioViona");
+            let res = <PciVirtioViona>::import(
+                &new_ctx.dev,
+                &mut offers,
+                &new_migrate,
+            );
+            // Start the target either way: a rejected import leaves the
+            // kernel state untouched, so it comes up as a cold boot would.
             Lifecycle::start(new_ctx.dev.as_ref())
                 .expect("can start viona device");
-            new_ctx
+            (new_ctx, res)
         }
     }
 
@@ -2700,6 +2773,7 @@ mod test {
         test_name: &'static str,
         underlying_nic: &str,
         vnic_name: &str,
+        params: Option<DeviceParams>,
     ) -> TestCtx {
         // Create the VM with `force: true`: if we're running tests concurrently
         // this will trample an existing test (which should then fail!). We do
@@ -2735,7 +2809,7 @@ mod test {
                 enable_pcie: false,
             },
         );
-        let viona_dev = PciVirtioViona::new(vnic_name, &machine.hdl, None)
+        let viona_dev = PciVirtioViona::new(vnic_name, &machine.hdl, params)
             .expect("can create test vnic");
 
         chipset_hb.pci_attach(i440fx::DEFAULT_HB_BDF, chipset_hb.clone(), None);
@@ -2752,6 +2826,7 @@ mod test {
             test_name,
             underlying_nic: underlying_nic.to_owned(),
             vnic_name: vnic_name.to_owned(),
+            params,
         }
     }
 
@@ -4064,7 +4139,8 @@ mod test {
         assert!(test_ctx.dev.inner.lock().unwrap().mac_override.is_none());
 
         // The feature is only advertised with kernel support for the
-        // address swap, so the remainder needs a V7 kernel.
+        // address swap and the policy grant (supplied by the test harness),
+        // so the remainder needs a V7 kernel.
         if !test_ctx.dev.kernel_mac_filters {
             return test_ctx;
         }
@@ -4220,6 +4296,51 @@ mod test {
         test_ctx
     }
 
+    /// A host that does not grant guest MAC replacement neither advertises
+    /// `VIRTIO_NET_F_CTRL_MAC_ADDR` nor imports a source that negotiated
+    /// it. Instead, the guest would keep the bit and could issue further
+    /// swaps.
+    fn control_mac_addr_policy_denied(test_ctx: TestCtx) -> TestCtx {
+        if test_ctx.dev.pinned_promisc().is_some() {
+            // Pinned link, see `control_rx_filtering`.
+            return test_ctx;
+        }
+
+        if !test_ctx.dev.kernel_mac_filters {
+            // See `control_mac_addr_replacement`.
+            return test_ctx;
+        }
+
+        // The source (with the grant) negotiates the bit and installs an
+        // override.
+        let mut driver = test_ctx.create_driver();
+        driver.modern_device_init(
+            VIRTIO_NET_F_MAC
+                | VIRTIO_NET_F_STATUS
+                | VIRTIO_NET_F_CTRL_VQ
+                | VIRTIO_NET_F_CTRL_RX
+                | VIRTIO_NET_F_CTRL_MAC_ADDR,
+        );
+        let replacement = MacAddr([0x02, 0x08, 0x20, 0xac, 0x70, 0x88]);
+        let ack = driver.ctrl_mac_addr_set(replacement);
+        assert_eq!(ack, control::Ack::Ok as u8);
+
+        // A target without the grant must reject the import.
+        let no_grant = DeviceParams {
+            allow_guest_mac_change: false,
+            ..Default::default()
+        };
+        let (test_ctx, res) = test_ctx.migrate_to(Some(no_grant));
+        let err = res.expect_err("import must fail without the policy grant");
+        assert!(matches!(err, MigrateStateError::ImportFailed(_)));
+
+        // Nor does such a host advertise the feature in the first place,
+        // (kernel support notwithstanding).
+        assert_eq!(test_ctx.dev.features() & VIRTIO_NET_F_CTRL_MAC_ADDR, 0);
+
+        test_ctx
+    }
+
     // Bears an uncanny resemblance to `phd-test`...
     struct TestCase {
         name: &'static str,
@@ -4280,6 +4401,7 @@ mod test {
             testcase!(control_rx_migration),
             testcase!(control_mac_addr_replacement),
             testcase!(control_mac_addr_migration),
+            testcase!(control_mac_addr_policy_denied),
         ];
 
         let underlying_nic = match std::env::var("VIONA_TEST_NIC") {
@@ -4318,8 +4440,18 @@ mod test {
                 create_vnic(&underlying_nic, TEST_VNIC);
 
                 let res = std::panic::catch_unwind(move || {
-                    let test_ctx =
-                        create_test_ctx(test.name, &underlying_nic, TEST_VNIC);
+                    // Grant guest MAC replacement so the `control_mac_addr_*`
+                    // tests can negotiate `VIRTIO_NET_F_CTRL_MAC_ADDR`
+                    let params = DeviceParams {
+                        allow_guest_mac_change: true,
+                        ..Default::default()
+                    };
+                    let test_ctx = create_test_ctx(
+                        test.name,
+                        &underlying_nic,
+                        TEST_VNIC,
+                        Some(params),
+                    );
                     Lifecycle::start(test_ctx.dev.as_ref())
                         .expect("can start viona device");
                     let test_ctx = (test.test_fn)(test_ctx);

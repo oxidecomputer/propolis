@@ -1032,6 +1032,8 @@ impl MachineInitializer<'_> {
                 // - Geneve: 8–16 (due to options)
                 // - (and then round up to nearest 8)
                 header_pad: 80,
+                // Remains "off" until Nexus supplies an allowed-MAC policy.
+                allow_guest_mac_change: false,
             });
 
             let viona = virtio::PciVirtioViona::new(

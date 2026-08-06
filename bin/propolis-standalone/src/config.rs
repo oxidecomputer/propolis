@@ -154,6 +154,7 @@ struct MemAsyncConfig {
 pub struct VionaDeviceParams {
     tx_copy_data: Option<bool>,
     tx_header_pad: Option<u16>,
+    allow_guest_mac_change: Option<bool>,
 }
 impl VionaDeviceParams {
     pub fn from_opts(
@@ -164,12 +165,16 @@ impl VionaDeviceParams {
         let parsed: Self = opt_deser(opts)?;
         let out = if parsed.tx_copy_data.is_some()
             || parsed.tx_header_pad.is_some()
+            || parsed.allow_guest_mac_change.is_some()
         {
             let default = DeviceParams::default();
 
             Some(DeviceParams {
                 copy_data: parsed.tx_copy_data.unwrap_or(default.copy_data),
                 header_pad: parsed.tx_header_pad.unwrap_or(default.header_pad),
+                allow_guest_mac_change: parsed
+                    .allow_guest_mac_change
+                    .unwrap_or(default.allow_guest_mac_change),
             })
         } else {
             None

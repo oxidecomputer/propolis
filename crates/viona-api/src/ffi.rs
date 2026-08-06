@@ -225,6 +225,11 @@ pub const VMA_ERR_MCAST_RESTORE: u32 = 3;
 /// an address remains installed, as a failed restoration leaves none. A
 /// nonzero return means no result was returned at all.
 ///
+/// Viona performs the swap as directed. The consumer must validate the
+/// requested address against host policy before exposing the swap to a
+/// guest, as neither the ability to issue the ioctl nor link protections
+/// such as [`mac-nospoof`] stand in for that validation.
+///
 /// For [`VNA_IOC_GET_MAC_ADDR`], [`vma_addr`] is copied out with the
 /// active unicast address of the client, and [`vma_present`] is nonzero
 /// when one is installed.
@@ -232,6 +237,7 @@ pub const VMA_ERR_MCAST_RESTORE: u32 = 3;
 /// [`vma_addr`]: vioc_mac_addr::vma_addr
 /// [`vma_present`]: vioc_mac_addr::vma_present
 /// [`vma_err`]: vioc_mac_addr::vma_err
+/// [`mac-nospoof`]: https://github.com/illumos/illumos-gate/blob/d8b08b811c1375eb45accfc2aa105f39f967d364/usr/src/lib/libdladm/common/linkprop.c#L469-L474
 #[repr(C)]
 #[derive(Default)]
 pub struct vioc_mac_addr {
