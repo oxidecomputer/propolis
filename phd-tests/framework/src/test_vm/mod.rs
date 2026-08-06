@@ -87,23 +87,19 @@ struct MigrationInfo {
 }
 
 /// Specifies the timeout to apply to an attempt to migrate.
+#[derive(Default)]
 pub enum MigrationTimeout {
     /// Time out after the specified duration.
     Explicit(std::time::Duration),
 
     /// Allow MIGRATION_SECS_PER_GUEST_GIB seconds per GiB of guest memory.
+    #[default]
     InferFromMemorySize,
 }
 
 /// The number of seconds to add to the migration timeout per GiB of memory in
 /// the migrating VM.
 const MIGRATION_SECS_PER_GUEST_GIB: u64 = 90;
-
-impl Default for MigrationTimeout {
-    fn default() -> Self {
-        Self::InferFromMemorySize
-    }
-}
 
 impl From<std::time::Duration> for MigrationTimeout {
     fn from(value: std::time::Duration) -> Self {

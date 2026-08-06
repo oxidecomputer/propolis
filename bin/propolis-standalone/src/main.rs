@@ -130,14 +130,13 @@ impl EventQueue {
         let mut inner = self.inner.lock().unwrap();
         while let Some((ev, ctx)) = inner.events.pop_front() {
             match cur {
-                Some(cur_ev) => {
-                    if cur_ev.supersedes(&ev) {
-                        // queued event is superseded by current one, so discard
-                        // it and look for another which may be relevant.
-                        continue;
-                    } else {
-                        return Some((ev, ctx));
-                    }
+                Some(cur_ev) if cur_ev.supersedes(&ev) => {
+                    // queued event is superseded by current one, so discard
+                    // it and look for another which may be relevant.
+                    continue;
+                }
+                Some(_) => {
+                    return Some((ev, ctx));
                 }
                 None => return Some((ev, ctx)),
             }
@@ -327,7 +326,7 @@ impl Instance {
         };
 
         for (vcpu, bind_cpu) in
-            machine.vcpus.iter().map(Arc::clone).zip(bind_cpus.into_iter())
+            machine.vcpus.iter().map(Arc::clone).zip(bind_cpus)
         {
             let (task, ctrl) =
                 propolis::tasks::TaskHdl::new_held(Some(vcpu.barrier_fn()));
@@ -406,14 +405,14 @@ impl Instance {
         match state {
             State::Run if first_boot => {
                 tokio::runtime::Handle::current().block_on(async {
-                    for (_name, be) in guard.inventory.block.iter() {
+                    for be in guard.inventory.block.values() {
                         be.start().await.expect("blockdev start succeeds");
                     }
                 });
             }
             State::Halt => {
                 tokio::runtime::Handle::current().block_on(async {
-                    for (_name, be) in guard.inventory.block.iter() {
+                    for be in guard.inventory.block.values() {
                         be.stop().await;
                         be.attachment().detach();
                     }
@@ -1428,11 +1427,7 @@ fn setup_instance(
                 }
                 _ => {
                     slog::error!(log, "unrecognized driver {driver}"; "name" => name);
-                    return Err(Error::new(
-                        ErrorKind::Other,
-                        "Unrecognized driver",
-                    )
-                    .into());
+                    return Err(Error::other("Unrecognized driver").into());
                 }
             };
             Ok(())
