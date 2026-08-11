@@ -815,7 +815,7 @@ fn build_machine(
             Arc::new(bhyve::BhyveGuestInterface) as Arc<dyn Enlightenment>
         }
         config::HypervisorInterface::HyperV { reference_tsc } => {
-            let mut hv_feats =
+            let hv_feats =
                 hyperv::Features { reference_tsc: *reference_tsc };
             Arc::new(hyperv::HyperV::new(log, hv_feats))
                 as Arc<dyn Enlightenment>
