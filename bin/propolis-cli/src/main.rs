@@ -18,10 +18,9 @@ use futures::{future, SinkExt};
 use newtype_uuid::{GenericUuid, TypedUuid, TypedUuidKind, TypedUuidTag};
 use propolis_client::instance_spec::{
     BlobStorageBackend, Board, Chipset, Component, CrucibleStorageBackend,
-    GuestHypervisorInterface, HyperVFeatureFlag, I440Fx, InstanceMetadata,
-    InstanceProperties, InstanceSpec, InstanceSpecGetResponse, NvmeDisk,
-    PciPath, QemuPvpanic, ReplacementComponent, SerialPort, SerialPortNumber,
-    SpecKey, VirtioDisk,
+    I440Fx, InstanceMetadata, InstanceProperties, InstanceSpec,
+    InstanceSpecGetResponse, NvmeDisk, PciPath, QemuPvpanic,
+    ReplacementComponent, SerialPort, SerialPortNumber, SpecKey, VirtioDisk,
 };
 use propolis_client::support::nvme_serial_from_str;
 use propolis_client::types::{
@@ -198,10 +197,6 @@ struct VmConfig {
     // cloud_init ISO file
     #[clap(long, action, conflicts_with = "spec")]
     cloud_init: Option<PathBuf>,
-
-    /// enable Hyper-V compatible enlightenments for this VM
-    #[clap(long, action)]
-    hyperv: bool,
 }
 
 fn add_component_to_spec(
@@ -330,21 +325,18 @@ impl VmConfig {
             })
             .transpose()?;
 
+        let guest_hv_interface = from_toml
+            .as_ref()
+            .map(|cfg| cfg.hv_interface.clone())
+            .unwrap_or_default();
+
         let mut spec = InstanceSpec {
             board: Board {
                 chipset: Chipset::I440Fx(I440Fx { enable_pcie }),
                 cpuid: cpuid_profile,
                 cpus: self.vcpus,
                 memory_mb: self.memory,
-                guest_hv_interface: if self.hyperv {
-                    GuestHypervisorInterface::HyperV {
-                        features: [HyperVFeatureFlag::ReferenceTsc]
-                            .into_iter()
-                            .collect(),
-                    }
-                } else {
-                    Default::default()
-                },
+                guest_hv_interface,
             },
             components: Default::default(),
             smbios: None,
