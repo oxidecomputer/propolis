@@ -76,22 +76,20 @@ pub fn version() -> &'static str {
             version.push_str(", ");
             match bhyve_api::api_version() {
                 Ok(v) => {
-                    write!(version, "bhyve API v{v}")
-                        .expect("writing to a string never fails");
+                    write!(version, "bhyve API v{v}").unwrap();
                 }
                 Err(_) => {
-                    version.push_str("<unknown Bhyve API version>");
+                    version.push_str("<unknown bhyve API version>");
                 }
             }
 
             version.push_str(", ");
             match viona_api::api_version() {
                 Ok(v) => {
-                    write!(version, "viona API v{v}")
-                        .expect("writing to a string never fails");
+                    write!(version, "viona API v{v}").unwrap();
                 }
                 Err(_) => {
-                    version.push_str("<unknown Bhyve API version>");
+                    version.push_str("<unknown viona API version>");
                 }
             }
 
