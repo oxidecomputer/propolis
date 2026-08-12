@@ -1625,6 +1625,8 @@ fn main() -> anyhow::Result<ExitCode> {
 
     let log = build_log(log_level);
 
+    slog::info!(log, "Running {}", propolis::version());
+
     // Check that vmm and viona device version match what we expect
     api_version_checks(&log).context("API version checks")?;
 

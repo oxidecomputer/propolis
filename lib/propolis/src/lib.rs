@@ -109,7 +109,8 @@ mod tests {
     fn print_version() {
         let v = version();
         eprintln!("propolis {v}");
-        assert!(version.contains(env!("CARGO_PKG_VERSION")));
-        assert!(version.contains("Bhyve API"));
+        assert!(v.contains(env!("CARGO_PKG_VERSION")));
+        assert!(v.contains("bhyve API"));
+        assert!(v.contains("viona API"));
     }
 }
