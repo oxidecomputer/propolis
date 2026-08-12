@@ -520,10 +520,21 @@ impl VirtQueue {
                     false => ChainBuf::Readable(GuestAddr(desc.addr), desc.len),
                 };
 
+                count += 1;
                 len += desc.len;
                 chain.push_buf(buf);
 
                 if flags.contains(DescFlag::NEXT) {
+                    // The virto spec states:
+                    //
+                    // A driver MUST NOT create a descriptor chain longer than
+                    // the Queue Size of the device
+                    if count >= self.size() {
+                        // TODO (#1190): This needs to properly signal the error
+                        // condition
+                        chain.idx = None;
+                        return None;
+                    }
                     // XXX: better error handling
                     desc = idescs.get(desc.next as usize).unwrap();
                     flags = DescFlag::from_bits_truncate(desc.flags);
