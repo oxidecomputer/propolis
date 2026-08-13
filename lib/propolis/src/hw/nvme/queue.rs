@@ -733,6 +733,14 @@ impl SubQueue {
 
     pub(super) fn export(&self) -> migrate::NvmeSubQueueV1 {
         let inner = self.state.inner.lock().unwrap();
+
+        // As `cur_head` mirrors `inner.head` but outside the lock, these must
+        // agree. We are about to forget cur_head on the expectation that they
+        // do. If they do not, the device is already broken, we just hadn't
+        // noticed yet. And if they don't match, things will be more and
+        // differently broken.
+        assert_eq!(self.cur_head.load(Ordering::Acquire), inner.head);
+
         migrate::NvmeSubQueueV1 {
             id: self.id,
             size: self.state.size,
@@ -756,6 +764,10 @@ impl SubQueue {
         let mut inner = self.state.inner.lock().unwrap();
         inner.head = state.head;
         inner.tail = state.tail;
+
+        // With queue state imported, repopulate cur_head from the canonical
+        // value behind the lock.
+        self.cur_head.store(inner.head, Ordering::Release);
 
         Ok(())
     }
