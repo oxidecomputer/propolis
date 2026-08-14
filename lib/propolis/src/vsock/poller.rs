@@ -1466,9 +1466,9 @@ mod test {
         accepted.set_nonblocking(false).unwrap();
         accepted.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
 
-        // Wait for the `VsockPacketOp::Response` packet to arrive.
-        // The poller takes a desc from the rx_avail ring and writes the packet
-        // into it, and publishes it via `push_used` updating rx_used.
+        // Wait for the RESPONSE packet to arrive. The poller takes a desc from
+        // the rx_avail ring, writes the packet into it, and publishes it via
+        // `push_used` updating rx_used.
         wait_for_condition(|| harness.rx_used_idx() >= 1, 5000);
 
         // Send enough data to exceed half the buffer capacity (64KB).
@@ -1477,14 +1477,14 @@ mod test {
         let payload = vec![0xAB_u8; chunk_size];
         let total_sent = num_chunks * chunk_size;
 
-        // This is the vsock poller copying the `VsockPacketOp::Request` data
-        // and calling `push_used` which bumps the tx ring's used index.
+        // This is the vsock poller copying the REQUEST data and calling
+        // `push_used` which bumps the tx ring's used index.
         let initial_tx_used = harness.tx_used_idx();
 
         for tx_consumed in (1u16..).take(num_chunks) {
             // Reuse descriptor slots each iteration. This is only safe because
-            // we are ensuring that all tx_avail descriptors are pushed back to
-            // us via tx_used.
+            // this test ensures that all tx_avail descriptors are pushed back
+            // to us via tx_used.
             harness.reset_tx_cursors();
 
             let mut rw_hdr = VsockPacketHeader::new();
@@ -1506,8 +1506,8 @@ mod test {
             notify.queue_notify(VSOCK_TX_QUEUE).unwrap();
 
             // Wait for the poller to release the desc chain back to us via
-            // tx_used. This is the running total of the REQUEST and n
-            // RW packets.
+            // tx_used. This is the running total of the REQUEST and n RW
+            // packets.
             wait_for_condition(
                 || harness.tx_used_idx() >= initial_tx_used + tx_consumed,
                 5000,
