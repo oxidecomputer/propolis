@@ -1064,29 +1064,6 @@ impl VsockGuestAddr {
     }
 }
 
-// TODO this can become `[VecDeque::pop_front_if]` when we update to Rust 1.93,
-// until then the impl is shamelessly borrowed.
-trait VecDequeExt<T> {
-    fn pop_front_if(
-        &mut self,
-        predicate: impl FnOnce(&mut T) -> bool,
-    ) -> Option<T>;
-}
-
-impl<T> VecDequeExt<T> for VecDeque<T> {
-    fn pop_front_if(
-        &mut self,
-        predicate: impl FnOnce(&mut T) -> bool,
-    ) -> Option<T> {
-        let first = self.front_mut()?;
-        if predicate(first) {
-            self.pop_front()
-        } else {
-            None
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
     use std::io::{Read, Write};
@@ -1495,9 +1472,8 @@ mod test {
         let num_chunks = (CONN_TX_BUF_SIZE / 2) / chunk_size + 1;
         let payload = vec![0xAB_u8; chunk_size];
         let total_sent = num_chunks * chunk_size;
-        let mut tx_consumed = 1u16; // REQUEST was consumed
 
-        for _ in 0..num_chunks {
+        for tx_consumed in (1u16..).take(num_chunks) {
             // Reuse descriptor slots each iteration
             harness.reset_tx_cursors();
 
@@ -1519,7 +1495,6 @@ mod test {
             harness.publish_tx(d_hdr);
             notify.queue_notify(VSOCK_TX_QUEUE).unwrap();
 
-            tx_consumed += 1;
             wait_for_condition(|| harness.tx_used_idx() >= tx_consumed, 5000);
         }
 
