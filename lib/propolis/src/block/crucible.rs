@@ -33,6 +33,7 @@ pub struct CrucibleBackend {
     block_attach: block::BackendAttachment,
     state: Arc<WorkerState>,
     workers: TaskGroup,
+    log: slog::Logger,
 }
 struct WorkerState {
     volume: Volume,
@@ -176,6 +177,7 @@ impl CrucibleBackend {
         // them, due to...you know, being read-only. So just don't do that.
         if !opts.is_read_only() && volume.has_read_only_parent() {
             let vclone = volume.clone();
+            let log = log.clone();
             tokio::spawn(async move {
                 let volume_id = vclone.get_uuid().await.unwrap();
 
@@ -235,6 +237,7 @@ impl CrucibleBackend {
                 skip_flush: opts.skip_flush.unwrap_or(false),
             }),
             workers: TaskGroup::new(),
+            log: log.clone(),
         }))
     }
 
@@ -266,7 +269,7 @@ impl CrucibleBackend {
             block_size,
             size as usize,
         ));
-        let mut builder = VolumeBuilder::new(block_size, log);
+        let mut builder = VolumeBuilder::new(block_size, log.clone());
         builder
             .add_subvolume(mem_disk)
             .await
@@ -287,6 +290,7 @@ impl CrucibleBackend {
                 skip_flush: opts.skip_flush.unwrap_or(false),
             }),
             workers: TaskGroup::new(),
+            log: log.clone(),
         }))
     }
 
@@ -394,6 +398,10 @@ impl block::Backend for CrucibleBackend {
     async fn stop(&self) -> () {
         self.block_attach.stop();
         self.workers.join_all().await;
+        // TODO(luiz): log instead of panic
+        info!(self.log, "deactivating volume");
+        self.state.volume.deactivate().await.unwrap();
+        info!(self.log, "deactivated volume");
     }
     fn as_any(&self) -> &dyn std::any::Any {
         self

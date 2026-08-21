@@ -41,6 +41,8 @@ pub mod instance_spec {
 // the server they want to talk to.
 pub use crucible_client_types::{CrucibleOpts, VolumeConstructionRequest};
 
+include!(concat!(env!("OUT_DIR"), "/codegen.rs"));
+/*
 progenitor::generate_api!(
     spec = "../../openapi/propolis-server/propolis-server-latest.json",
     interface = Builder,
@@ -53,6 +55,7 @@ progenitor::generate_api!(
         InstanceProperties = propolis_api_types_versions::latest::instance::InstanceProperties,
         InstanceMetadata = propolis_api_types_versions::latest::instance::InstanceMetadata,
         InstanceSpecGetResponse = propolis_api_types_versions::latest::instance_spec::InstanceSpecGetResponse,
+        Component = propolis_api_types_versions::latest::instance_spec::Component,
         SmbiosType1Input = propolis_api_types_versions::latest::instance_spec::SmbiosType1Input,
         VersionedInstanceSpec = propolis_api_types_versions::latest::instance_spec::VersionedInstanceSpec,
         CpuidEntry = propolis_api_types_versions::latest::components::board::CpuidEntry,
@@ -68,5 +71,6 @@ progenitor::generate_api!(
         SpecKey = { derives = [ PartialEq, Eq, Ord, PartialOrd, Hash ] },
     }
 );
+*/
 
 pub mod support;

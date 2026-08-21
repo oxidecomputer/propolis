@@ -48,32 +48,6 @@ pub trait PropolisServerApi {
 
     #[endpoint {
         method = PUT,
-        path = "/instance/attach_disk",
-        versions = VERSION_DISK_HOTPLUG..
-    }]
-    async fn instance_disk_attach(
-        rqctx: RequestContext<Self::Context>,
-        request: TypedBody<latest::instance::InstanceDiskAttachRequest>,
-    ) -> Result<
-        HttpResponseOk<latest::instance::InstanceDiskAttachResponse>,
-        HttpError,
-    >;
-
-    #[endpoint {
-        method = PUT,
-        path = "/instance/detach_disk",
-        versions = VERSION_DISK_HOTPLUG..
-    }]
-    async fn instance_disk_detach(
-        rqctx: RequestContext<Self::Context>,
-        request: TypedBody<latest::instance::InstanceDiskDetachRequest>,
-    ) -> Result<
-        HttpResponseOk<latest::instance::InstanceDiskDetachResponse>,
-        HttpError,
-    >;
-
-    #[endpoint {
-        method = PUT,
         path = "/instance",
         versions = VERSION_ADD_VSOCK..
     }]
@@ -279,6 +253,32 @@ pub trait PropolisServerApi {
         rqctx: RequestContext<Self::Context>,
     ) -> Result<
         HttpResponseOk<latest::migration::InstanceMigrateStatusResponse>,
+        HttpError,
+    >;
+
+    #[endpoint {
+        method = POST,
+        path = "/instance/disk",
+        versions = VERSION_DISK_HOTPLUG..
+    }]
+    async fn instance_disk_attach(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<latest::instance::InstanceDiskAttachRequest>,
+    ) -> Result<
+        HttpResponseOk<latest::instance::InstanceDiskAttachResponse>,
+        HttpError,
+    >;
+
+    #[endpoint {
+        method = DELETE,
+        path = "/instance/disk/{id}",
+        versions = VERSION_DISK_HOTPLUG..
+    }]
+    async fn instance_disk_detach(
+        rqctx: RequestContext<Self::Context>,
+        path_params: Path<latest::instance::InstanceDiskDetachPathParams>,
+    ) -> Result<
+        HttpResponseOk<latest::instance::InstanceDiskDetachResponse>,
         HttpError,
     >;
 

@@ -141,7 +141,7 @@ impl Aml for PciHotplugDevices {
     fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
         let mut dvnt = Vec::new();
 
-        for i in 3..self.devices {
+        for i in 2..self.devices {
             let name = format!("S{:02X}_", i * 8);
             PciHotplugDevice::new(name.clone(), i).to_aml_bytes(sink);
             dvnt.push(PciHotplugDeviceNotify::new(name.clone(), i));

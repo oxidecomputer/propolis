@@ -36,7 +36,7 @@ use propolis_api_types::instance_spec::{
 use propolis_api_types::instance_spec::{
     Component, InstanceSpec, SmbiosType1Input,
 };
-use propolis_api_types_versions::{v1, v2};
+use propolis_api_types_versions::{v1, v2, v3};
 use thiserror::Error;
 
 #[cfg(feature = "failure-injection")]
@@ -261,6 +261,29 @@ impl TryFrom<v1::instance_spec::Component> for StorageDevice {
     }
 }
 
+impl From<StorageDevice> for v3::instance_spec::Component {
+    fn from(value: StorageDevice) -> Self {
+        match value {
+            StorageDevice::Virtio(d) => Self::VirtioDisk(d),
+            StorageDevice::Nvme(d) => Self::NvmeDisk(d),
+        }
+    }
+}
+
+impl TryFrom<v3::instance_spec::Component> for StorageDevice {
+    type Error = ComponentTypeMismatch;
+
+    fn try_from(
+        value: v3::instance_spec::Component,
+    ) -> Result<Self, Self::Error> {
+        match value {
+            v3::instance_spec::Component::VirtioDisk(d) => Ok(Self::Virtio(d)),
+            v3::instance_spec::Component::NvmeDisk(d) => Ok(Self::Nvme(d)),
+            _ => Err(ComponentTypeMismatch),
+        }
+    }
+}
+
 /// Describes the backend half of a [`Disk`].
 #[derive(Clone, Debug)]
 pub enum StorageBackend {
@@ -311,6 +334,37 @@ impl TryFrom<v1::instance_spec::Component> for StorageBackend {
                 Ok(Self::File(be))
             }
             v1::instance_spec::Component::BlobStorageBackend(be) => {
+                Ok(Self::Blob(be))
+            }
+            _ => Err(ComponentTypeMismatch),
+        }
+    }
+}
+
+impl From<StorageBackend> for v3::instance_spec::Component {
+    fn from(value: StorageBackend) -> Self {
+        match value {
+            StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),
+            StorageBackend::File(be) => Self::FileStorageBackend(be),
+            StorageBackend::Blob(be) => Self::BlobStorageBackend(be),
+        }
+    }
+}
+
+impl TryFrom<v3::instance_spec::Component> for StorageBackend {
+    type Error = ComponentTypeMismatch;
+
+    fn try_from(
+        value: v3::instance_spec::Component,
+    ) -> Result<Self, Self::Error> {
+        match value {
+            v3::instance_spec::Component::CrucibleStorageBackend(be) => {
+                Ok(Self::Crucible(be))
+            }
+            v3::instance_spec::Component::FileStorageBackend(be) => {
+                Ok(Self::File(be))
+            }
+            v3::instance_spec::Component::BlobStorageBackend(be) => {
                 Ok(Self::Blob(be))
             }
             _ => Err(ComponentTypeMismatch),

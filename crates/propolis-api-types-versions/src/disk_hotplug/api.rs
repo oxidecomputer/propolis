@@ -6,9 +6,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::v1::instance_spec::Component;
-use crate::v1::instance_spec::SpecKey;
-use crate::v3::instance_spec::InstanceSpec;
+use crate::latest::instance_spec::Component;
+use crate::latest::instance_spec::InstanceSpec;
+use crate::latest::instance_spec::SpecKey;
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceDiskAttachRequest {
@@ -21,8 +21,8 @@ pub struct InstanceDiskAttachResponse {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-pub struct InstanceDiskDetachRequest {
-    pub device_id: SpecKey,
+pub struct InstanceDiskDetachPathParams {
+    pub id: SpecKey,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]

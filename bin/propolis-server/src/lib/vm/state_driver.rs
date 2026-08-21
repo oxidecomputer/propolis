@@ -936,6 +936,9 @@ impl StateDriver {
         device_id: &SpecKey,
         disk: Disk,
     ) -> super::InstancePlugDiskResult {
+        info!(self.log, "plugging disk");
+        // TODO(luiz): Check if disk is already attached.
+
         let backend: Arc<dyn Backend> = match &disk.backend_spec {
             StorageBackend::File(spec) => {
                 let workers: NonZeroUsize = match spec.workers {
@@ -1049,6 +1052,8 @@ impl StateDriver {
         device_id: &SpecKey,
         disk: Disk,
     ) -> super::InstanceUnplugDiskResult {
+        info!(self.log, "unplugging disk");
+
         let mut objects = self.objects.lock_exclusive().await;
         let pci_path = disk.device_spec.pci_path();
 
@@ -1066,7 +1071,9 @@ impl StateDriver {
 
         let backend_id = disk.device_spec.backend_id();
         let backend = objects.block_backend_map().get(backend_id).unwrap();
+        info!(self.log, "stopping backend");
         backend.stop().await;
+        info!(self.log, "stopped backend");
         backend.attachment().detach();
 
         assert!(objects.device_map_mut().remove(device_id).is_some());

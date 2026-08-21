@@ -43,7 +43,7 @@ use propolis_api_types::disk::{
 };
 use propolis_api_types::instance::{
     ErrorCode, Instance, InstanceDiskAttachRequest, InstanceDiskAttachResponse,
-    InstanceDiskDetachRequest, InstanceDiskDetachResponse,
+    InstanceDiskDetachPathParams, InstanceDiskDetachResponse,
     InstanceEnsureRequest, InstanceEnsureResponse, InstanceGetResponse,
     InstanceInitializationMethod, InstanceStateMonitorRequest,
     InstanceStateMonitorResponse, InstanceStateRequested,
@@ -300,9 +300,9 @@ impl PropolisServerApi for PropolisServerImpl {
 
     async fn instance_disk_detach(
         rqctx: RequestContext<Self::Context>,
-        request: TypedBody<InstanceDiskDetachRequest>,
+        path_params: Path<InstanceDiskDetachPathParams>,
     ) -> Result<HttpResponseOk<InstanceDiskDetachResponse>, HttpError> {
-        let device_id = request.into_inner().device_id;
+        let device_id = path_params.into_inner().id;
 
         let vm = rqctx
             .context()
