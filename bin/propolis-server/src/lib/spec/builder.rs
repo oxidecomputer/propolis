@@ -11,7 +11,7 @@ use propolis_api_types::instance_spec::{
         board::Board as InstanceSpecBoard,
         devices::{PciPciBridge, SerialPortNumber},
     },
-    PciPath, SpecKey,
+    PciPath, SmbiosType1Input, SpecKey,
 };
 use thiserror::Error;
 
@@ -389,6 +389,11 @@ impl SpecBuilder {
         let _old = self.spec.softnpu.ports.insert(port_name, port);
         assert!(_old.is_none());
         Ok(self)
+    }
+
+    /// Sets the SMBIOS type 1 table contents to expose to the guest.
+    pub fn set_smbios_type1_input(&mut self, input: SmbiosType1Input) {
+        self.spec.smbios_type1_input = Some(input);
     }
 
     /// Yields the completed spec, consuming the builder.
