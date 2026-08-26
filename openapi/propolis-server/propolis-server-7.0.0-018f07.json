@@ -7,7 +7,7 @@
       "url": "https://oxide.computer",
       "email": "api@oxide.computer"
     },
-    "version": "6.0.0"
+    "version": "7.0.0"
   },
   "paths": {
     "/instance": {
@@ -399,7 +399,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/InstanceStateRequested"
+                "$ref": "#/components/schemas/InstanceStateChange"
               }
             }
           },
@@ -1654,6 +1654,24 @@
           "Destroyed"
         ]
       },
+      "InstanceStateChange": {
+        "description": "Requested state of an Instance.",
+        "type": "object",
+        "properties": {
+          "acpi_timeout_secs": {
+            "nullable": true,
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/InstanceStateRequested"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
       "InstanceStateMonitorRequest": {
         "type": "object",
         "properties": {
@@ -1692,7 +1710,6 @@
         "type": "string",
         "enum": [
           "Run",
-          "ACPIShutdown",
           "Stop",
           "Reboot"
         ]
