@@ -346,27 +346,29 @@ impl PciVirtioSoftNpuPort {
             }
             push_used = true;
 
-            let pkt = packet_in::new(&frame[..n]);
+            let mut pkt = packet_in::new(&frame[..n]);
 
-            let mut pipeline = match self.pipeline.lock() {
-                Ok(pipe) => pipe,
-                Err(e) => {
-                    error!(self.log, "failed to lock pipeline: {}", e);
-                    break;
+            // As on the ingress path: process locked, forward unlocked.
+            let outs = {
+                let mut pipeline = match self.pipeline.lock() {
+                    Ok(pipe) => pipe,
+                    Err(e) => {
+                        error!(self.log, "failed to lock pipeline: {}", e);
+                        break;
+                    }
+                };
+                match &mut *pipeline {
+                    Some(ref mut x) => x.1.process_packet(0, &mut pkt),
+                    None => {
+                        // This just means no P4 program has been set by the
+                        // guest.
+                        break;
+                    }
                 }
             };
-            let pl: &mut Box<dyn Pipeline> = match &mut *pipeline {
-                Some(ref mut x) => &mut x.1,
-                None => {
-                    // This just means no P4 program has been set by the guest.
-                    break;
-                }
-            };
-
-            PacketHandler::process_guest_packet(
-                pkt,
+            PacketHandler::forward_guest_packets(
+                outs,
                 &self.data_handles,
-                pl,
                 &self.log,
             );
         }
@@ -506,37 +508,32 @@ impl PacketHandler {
             //
 
             // TODO pipeline should not need to be mutable for packet handling?
-            let pkt = packet_in::new(&msg[..n]);
-            let mut p = pipeline.lock().unwrap();
-            let pl = match &mut *p {
-                Some(ref mut pl) => &mut pl.1,
-                None => continue, // no program is loaded
-            };
+            let mut pkt = packet_in::new(&msg[..n]);
 
-            Self::process_external_packet(
-                index + 1,
-                pkt,
-                &data_handles,
-                &virtio,
-                pl,
-                &log,
-            )
+            // Process under the pipeline lock; forward with it dropped, so
+            // no syscall runs inside the critical section.
+            let outs = {
+                let mut p = pipeline.lock().unwrap();
+                match &mut *p {
+                    Some(ref mut pl) => {
+                        pl.1.process_packet((index + 1) as u16, &mut pkt)
+                    }
+                    None => continue, // no program is loaded
+                }
+            };
+            Self::forward_packets(outs, &data_handles, &virtio, &log)
         }
     }
 
-    /// Run a packet coming into the ASIC from an external port through the
-    /// loaded pipeline and forward it on to its destination.
-    fn process_external_packet(
-        index: usize,
-        mut pkt: packet_in<'_>,
+    /// Forward pipeline output for a packet that came in on an external port.
+    /// Runs with the pipeline lock dropped; see run_ingress_packet_handler.
+    fn forward_packets(
+        outs: Vec<(packet_out<'_>, u16)>,
         data_handles: &Vec<dlpi::DlpiHandle>,
         virtio: &Arc<PortVirtioState>,
-        pipeline: &mut Box<dyn Pipeline>,
         log: &Logger,
     ) {
-        for (mut out_pkt, port) in
-            pipeline.process_packet(index as u16, &mut pkt)
-        {
+        for (mut out_pkt, port) in outs {
             // packet is going to CPU port
             if port == 0 {
                 Self::send_packet_to_cpu_port(&mut out_pkt, virtio, &log);
@@ -553,17 +550,15 @@ impl PacketHandler {
         }
     }
 
-    /// Run a packet coming into the ASIC from the guest pci port through the
-    /// loaded pipeline and forward it on to its destination.
-    fn process_guest_packet(
-        mut pkt: packet_in<'_>,
+    /// Forward pipeline output for a packet that came in on the guest pci
+    /// port. Runs with the pipeline lock dropped.
+    fn forward_guest_packets(
+        outs: Vec<(packet_out<'_>, u16)>,
         data_handles: &Vec<dlpi::DlpiHandle>,
-        pipeline: &mut Box<dyn Pipeline>,
         log: &Logger,
     ) {
-        for (mut out_pkt, port) in pipeline.process_packet(0, &mut pkt) {
+        for (mut out_pkt, port) in outs {
             if port == 0 {
-                // no looping packets back to the guest
                 return;
             }
             if port == SOFTNPU_CPU_AUX_PORT {
@@ -672,10 +667,9 @@ fn handle_management_message(
     radix: usize,
     log: Logger,
 ) {
-    let mut pl_opt = pipeline.lock().unwrap();
-
     match msg {
         ManagementRequest::TableAdd(tm) => {
+            let mut pl_opt = pipeline.lock().unwrap();
             let pl = match &mut *pl_opt {
                 Some(pl) => pl,
                 None => return,
@@ -689,6 +683,7 @@ fn handle_management_message(
             );
         }
         ManagementRequest::TableRemove(tm) => {
+            let mut pl_opt = pipeline.lock().unwrap();
             let pl = match &mut *pl_opt {
                 Some(pl) => pl,
                 None => return,
@@ -714,7 +709,9 @@ fn handle_management_message(
         }
         ManagementRequest::DumpRequest => {
             info!(log, "dumping state");
+            // Collect under the lock; write the reply with it dropped.
             let result = {
+                let mut pl_opt = pipeline.lock().unwrap();
                 let pl = match &mut *pl_opt {
                     Some(pl) => &pl.1,
                     None => return,
@@ -726,7 +723,8 @@ fn handle_management_message(
 
                 for id in pl.get_table_ids() {
                     let entries = pl.get_table_entries(id);
-                    result.insert(id, entries);
+                    // Owned keys: the reply outlives the pipeline lock.
+                    result.insert(id.to_string(), entries);
                 }
                 result
             };
