@@ -271,13 +271,18 @@ struct StrIoctl {
 }
 
 fn strioc<T>(fd: i32, cmd: i32, arg: &mut T) -> Result<()> {
+    #[cfg(target_os = "illumos")]
+    let rq = libc::I_STR;
+    #[cfg(not(target_os = "illumos"))]
+    let rq = panic!("softnpu only runs on illumos");
+
     let mut si = StrIoctl {
         ic_cmd: cmd,
         ic_timout: -1,
         ic_len: std::mem::size_of::<T>() as i32,
         ic_dp: arg as *mut T as *mut libc::c_char,
     };
-    if unsafe { libc::ioctl(fd, libc::I_STR, &mut si as *mut StrIoctl) } < 0 {
+    if unsafe { libc::ioctl(fd, rq, &mut si as *mut StrIoctl) } < 0 {
         return Err(Error::last_os_error());
     }
     Ok(())
@@ -317,7 +322,11 @@ fn set_rx_buffer_size(h: dlpi::DlpiHandle, size: u32) -> Result<()> {
     let mut zero = libc::timeval { tv_sec: 0, tv_usec: 0 };
 
     // Push the STREAMS module
-    if unsafe { libc::ioctl(fd, libc::I_PUSH, b"bufmod\0".as_ptr()) } < 0 {
+    #[cfg(target_os = "illumos")]
+    let rq = libc::I_PUSH;
+    #[cfg(not(target_os = "illumos"))]
+    let rq = panic!("softnpu only runs on illumos");
+    if unsafe { libc::ioctl(fd, rq, b"bufmod\0".as_ptr()) } < 0 {
         return Err(Error::last_os_error());
     }
 
