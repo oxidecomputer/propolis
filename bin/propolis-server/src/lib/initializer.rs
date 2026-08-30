@@ -1256,6 +1256,15 @@ impl MachineInitializer<'_> {
                 smbios.serial_number.try_into().unwrap_or_default();
             smb_type1.version =
                 smbios.version.to_string().try_into().unwrap_or_default();
+            // Unset SKU number and family leave the table's default (empty)
+            // strings so the emitted bytes match pre-v7 behavior.
+            if let Some(sku_number) = smbios.sku_number {
+                smb_type1.sku_number =
+                    sku_number.try_into().unwrap_or_default();
+            }
+            if let Some(smb_family) = smbios.family {
+                smb_type1.family = smb_family.try_into().unwrap_or_default();
+            }
         } else {
             smb_type1.manufacturer = "Oxide".try_into().unwrap();
             smb_type1.product_name = "OxVM".try_into().unwrap();

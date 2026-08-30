@@ -255,6 +255,8 @@ mod test {
                 product_name: "913-0000019".to_string(),
                 serial_number: "2FAKE000".to_string(),
                 version: 2,
+                sku_number: Some("913-0000019".to_string()),
+                family: Some("Gimlet".to_string()),
             }),
         };
 
@@ -265,5 +267,7 @@ mod test {
         assert_eq!(smbios.product_name, "913-0000019");
         assert_eq!(smbios.serial_number, "2FAKE000");
         assert_eq!(smbios.version, 2);
+        assert_eq!(smbios.sku_number.as_deref(), Some("913-0000019"));
+        assert_eq!(smbios.family.as_deref(), Some("Gimlet"));
     }
 }

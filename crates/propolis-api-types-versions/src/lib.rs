@@ -41,3 +41,5 @@ pub mod v3;
 pub mod v5;
 #[path = "nvme_write_cache/mod.rs"]
 pub mod v6;
+#[path = "smbios_sku_family/mod.rs"]
+pub mod v7;

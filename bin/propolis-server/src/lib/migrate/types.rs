@@ -89,12 +89,14 @@
 use serde::{Deserialize, Serialize};
 
 use propolis_api_types_versions::v1::instance::ReplacementComponent;
-use propolis_api_types_versions::{v1, v2, v3, v6};
+use propolis_api_types_versions::{v1, v2, v3, v6, v7};
 
 use std::collections::BTreeMap;
 
 use crate::migrate::MigrateError;
-use crate::spec::{api_spec_v1, api_spec_v2, api_spec_v3, api_spec_v6, Spec};
+use crate::spec::{
+    api_spec_v1, api_spec_v2, api_spec_v3, api_spec_v6, api_spec_v7, Spec,
+};
 
 /// A wrapper for one of any supported `InstanceSpec` that describe a
 /// to-be-migrated VM.
@@ -113,6 +115,7 @@ pub(crate) enum VersionedInstanceSpec {
     V2(v2::instance_spec::InstanceSpec),
     V3(v3::instance_spec::InstanceSpec),
     V6(v6::instance_spec::InstanceSpec),
+    V7(v7::instance_spec::InstanceSpec),
 }
 
 impl VersionedInstanceSpec {
@@ -142,9 +145,13 @@ impl VersionedInstanceSpec {
             TryInto::<v3::instance_spec::InstanceSpec>::try_into(spec.clone())
         {
             VersionedInstanceSpec::V3(v3_spec)
+        } else if let Ok(v6_spec) =
+            TryInto::<v6::instance_spec::InstanceSpec>::try_into(spec.clone())
+        {
+            VersionedInstanceSpec::V6(v6_spec)
         } else {
-            VersionedInstanceSpec::V6(
-                Into::<v6::instance_spec::InstanceSpec>::into(spec.clone()),
+            VersionedInstanceSpec::V7(
+                Into::<v7::instance_spec::InstanceSpec>::into(spec.clone()),
             )
         };
         Ok(versioned)
@@ -183,6 +190,13 @@ impl VersionedInstanceSpec {
                 api_spec_v6::amend(&mut source_spec, replacements)?;
 
                 api_spec_v6::v6_to_spec_builder(source_spec)
+                    .map_err(|e| MigrateError::PreambleParse(e.to_string()))?
+                    .finish()
+            }
+            VersionedInstanceSpec::V7(mut source_spec) => {
+                api_spec_v7::amend(&mut source_spec, replacements)?;
+
+                api_spec_v7::v7_to_spec_builder(source_spec)
                     .map_err(|e| MigrateError::PreambleParse(e.to_string()))?
                     .finish()
             }

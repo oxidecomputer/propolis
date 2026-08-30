@@ -7,7 +7,7 @@
       "url": "https://oxide.computer",
       "email": "api@oxide.computer"
     },
-    "version": "6.0.0"
+    "version": "7.0.0"
   },
   "paths": {
     "/instance": {
@@ -1991,6 +1991,12 @@
       "SmbiosType1Input": {
         "type": "object",
         "properties": {
+          "family": {
+            "nullable": true,
+            "description": "The Family string in the emitted table. Unset means empty.",
+            "default": null,
+            "type": "string"
+          },
           "manufacturer": {
             "type": "string"
           },
@@ -1998,6 +2004,12 @@
             "type": "string"
           },
           "serial_number": {
+            "type": "string"
+          },
+          "sku_number": {
+            "nullable": true,
+            "description": "The SKU Number string in the emitted table. Unset means empty.",
+            "default": null,
             "type": "string"
           },
           "version": {

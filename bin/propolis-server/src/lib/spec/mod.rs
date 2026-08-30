@@ -70,6 +70,7 @@ pub(crate) mod api_spec_v1;
 pub(crate) mod api_spec_v2;
 pub(crate) mod api_spec_v3;
 pub(crate) mod api_spec_v6;
+pub(crate) mod api_spec_v7;
 pub(crate) mod builder;
 
 /// An error that can arise in converting
@@ -127,7 +128,7 @@ impl TryFrom<InstanceSpec> for Spec {
     type Error = ApiSpecError;
 
     fn try_from(value: InstanceSpec) -> Result<Self, Self::Error> {
-        Ok(api_spec_v6::v6_to_spec_builder(value)?.finish())
+        Ok(api_spec_v7::v7_to_spec_builder(value)?.finish())
     }
 }
 
