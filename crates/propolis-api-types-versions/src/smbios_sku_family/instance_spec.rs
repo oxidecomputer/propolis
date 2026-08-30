@@ -16,6 +16,8 @@ use crate::v2;
 use crate::v6;
 use crate::v6::instance_spec::Component;
 
+/// Input for the guest SMBIOS type 1 (System Information) table, defined in
+/// section 7.2 of the SMBIOS spec (DSP0134): <https://www.dmtf.org/standards/smbios>
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SmbiosType1Input {

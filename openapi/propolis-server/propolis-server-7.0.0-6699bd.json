@@ -1989,6 +1989,7 @@
         ]
       },
       "SmbiosType1Input": {
+        "description": "Input for the guest SMBIOS type 1 (System Information) table, defined in section 7.2 of the SMBIOS spec (DSP0134): <https://www.dmtf.org/standards/smbios>",
         "type": "object",
         "properties": {
           "family": {
