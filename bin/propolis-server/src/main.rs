@@ -73,7 +73,7 @@ fn parse_log_level(s: &str) -> anyhow::Result<slog::Level> {
 }
 
 #[derive(Debug, Parser)]
-#[clap(about, version)]
+#[clap(about, version = propolis::version())]
 /// An HTTP server providing access to Propolis
 enum Args {
     /// Runs the Propolis server.
@@ -121,6 +121,8 @@ fn run_server(
     log: slog::Logger,
 ) -> anyhow::Result<()> {
     use propolis::api_version;
+
+    slog::info!(log, "Running {}", propolis::version());
 
     // Check that devices conform to expected API version
     if let Err(e) = api_version::check() {
