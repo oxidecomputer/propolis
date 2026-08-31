@@ -91,13 +91,15 @@ fn main() {
         // We expose our own copy for now for us as a constraint.
         "VM_MAXCPU" => true,
 
-        // Do not bother checking the version definition define if we are
-        // assuming the source is from a different version.
-        "VMM_CURRENT_INTERFACE_VERSION"
-            if !ver_eq(VMM_CURRENT_INTERFACE_VERSION) =>
-        {
-            true
-        }
+        // The bhyve interface is generally backwards-compatible; headers may be newer
+        // than Propolis knows about. In service of additive changes, ignore the
+        // interface version from headers.
+        //
+        // If items (structs, ioctl numbers) we know about changed, header-check
+        // will find and report those specifically. If items were removed, we
+        // may need to conditionally `skip_const` or `skip_field` based on the
+        // version Propolis knows about.
+        "VMM_CURRENT_INTERFACE_VERSION" => true,
 
         // API V11 saw the removal of several time-realted VMM_ARCH defines
         "VAI_TSC_BOOT_OFFSET" | "VAI_BOOT_HRTIME" | "VAI_TSC_FREQ"
