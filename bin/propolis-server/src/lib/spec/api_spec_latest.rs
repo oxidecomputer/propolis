@@ -270,4 +270,40 @@ mod test {
         assert_eq!(smbios.sku_number.as_deref(), Some("913-0000019"));
         assert_eq!(smbios.family.as_deref(), Some("Gimlet"));
     }
+
+    // Empty SKU and family strings normalize to unset at ingress, so a
+    // pre-v7 view of such a spec stays expressible.
+    #[test]
+    fn empty_smbios_strings_normalize_to_unset() {
+        let api_spec = latest::instance_spec::InstanceSpec {
+            board: Board {
+                cpus: 4,
+                memory_mb: 512,
+                chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
+                guest_hv_interface: GuestHypervisorInterface::Bhyve,
+                // Explicit values keep the builder from querying bhyve for
+                // its default guest CPUID set, which needs VMM device access
+                // the test runner may lack.
+                cpuid: Some(Cpuid {
+                    entries: vec![],
+                    vendor: CpuidVendor::Amd,
+                }),
+            },
+            components: Default::default(),
+            smbios: Some(SmbiosType1Input {
+                manufacturer: "a4x2".to_string(),
+                product_name: "913-0000019".to_string(),
+                serial_number: "2FAKE000".to_string(),
+                version: 2,
+                sku_number: Some(String::new()),
+                family: Some(String::new()),
+            }),
+        };
+
+        let spec = latest_to_spec_builder(api_spec).unwrap().finish();
+        let smbios =
+            spec.smbios_type1_input.expect("SMBIOS type 1 input preserved");
+        assert_eq!(smbios.sku_number, None);
+        assert_eq!(smbios.family, None);
+    }
 }

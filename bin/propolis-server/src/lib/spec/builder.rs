@@ -392,7 +392,11 @@ impl SpecBuilder {
     }
 
     /// Sets the SMBIOS type 1 table contents to expose to the guest.
-    pub fn set_smbios_type1_input(&mut self, input: SmbiosType1Input) {
+    pub fn set_smbios_type1_input(&mut self, mut input: SmbiosType1Input) {
+        // An empty SKU or family renders identically to unset (string index
+        // 0), so normalize at ingress and keep downgrades expressible.
+        input.sku_number = input.sku_number.filter(|s| !s.is_empty());
+        input.family = input.family.filter(|s| !s.is_empty());
         self.spec.smbios_type1_input = Some(input);
     }
 
