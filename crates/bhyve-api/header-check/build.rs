@@ -24,6 +24,7 @@ fn ver_lt(ver: u32) -> bool {
     CHECK_VERSION.load(Ordering::Relaxed) < ver
 }
 /// Source checked against has API version equal to `ver` argument
+#[allow(dead_code)]
 fn ver_eq(ver: u32) -> bool {
     CHECK_VERSION.load(Ordering::Relaxed) == ver
 }
