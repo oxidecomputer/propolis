@@ -7,18 +7,31 @@
 use std::convert::TryFrom;
 use std::env;
 use std::path::PathBuf;
+use std::str::FromStr;
+use std::sync::atomic::{AtomicU32, Ordering};
 
-static CHECK_VERSION: AtomicU32 = AtomicU32::new(VIONA_CURRENT_INTERFACE_VERSION);
+use viona_api::VIONA_CURRENT_INTERFACE_VERSION;
+
+static CHECK_VERSION: AtomicU32 =
+    AtomicU32::new(VIONA_CURRENT_INTERFACE_VERSION);
+
+// A selection of helpers to concisely manage header-check rules, below.
+//
+// These are added in expectation of future use, hence `allow(dead_code)`.
+// Remove the attributes as they become used, please.
 
 /// Source checked against has API version greater than `ver` argument
+#[allow(dead_code)]
 fn ver_gt(ver: u32) -> bool {
     CHECK_VERSION.load(Ordering::Relaxed) > ver
 }
 /// Source checked against has API version less than `ver` argument
+#[allow(dead_code)]
 fn ver_lt(ver: u32) -> bool {
     CHECK_VERSION.load(Ordering::Relaxed) < ver
 }
 /// Source checked against has API version equal to `ver` argument
+#[allow(dead_code)]
 fn ver_eq(ver: u32) -> bool {
     CHECK_VERSION.load(Ordering::Relaxed) == ver
 }
