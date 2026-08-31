@@ -1995,7 +1995,6 @@
           "family": {
             "nullable": true,
             "description": "The Family string in the emitted table. Unset means empty.",
-            "default": null,
             "type": "string"
           },
           "manufacturer": {
@@ -2010,7 +2009,6 @@
           "sku_number": {
             "nullable": true,
             "description": "The SKU Number string in the emitted table. Unset means empty.",
-            "default": null,
             "type": "string"
           },
           "version": {

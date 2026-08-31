@@ -27,11 +27,13 @@ pub struct SmbiosType1Input {
     pub version: u64,
 
     /// The SKU Number string in the emitted table. Unset means empty.
-    #[serde(default)]
+    // Unset must serialize exactly like v6: pre-v7 deserializers deny
+    // unknown field names even when the value is null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sku_number: Option<String>,
 
     /// The Family string in the emitted table. Unset means empty.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub family: Option<String>,
 }
 
@@ -228,5 +230,9 @@ mod test {
         let input: SmbiosType1Input = serde_json::from_str(json).unwrap();
         assert_eq!(input.sku_number, None);
         assert_eq!(input.family, None);
+
+        let out = serde_json::to_string(&input).unwrap();
+        assert!(!out.contains("sku_number"));
+        assert!(!out.contains("family"));
     }
 }
