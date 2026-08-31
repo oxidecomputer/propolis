@@ -1465,6 +1465,10 @@ mod test {
         let mut accepted = listener.accept().unwrap().0;
         accepted.set_nonblocking(false).unwrap();
         accepted.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+
+        // Wait for the RESPONSE packet to arrive. The poller takes a desc from
+        // the rx_avail ring, writes the packet into it, and publishes it via
+        // `push_used` updating rx_used.
         wait_for_condition(|| harness.rx_used_idx() >= 1, 5000);
 
         // Send enough data to exceed half the buffer capacity (64KB).
@@ -1473,8 +1477,10 @@ mod test {
         let payload = vec![0xAB_u8; chunk_size];
         let total_sent = num_chunks * chunk_size;
 
-        for tx_consumed in (1u16..).take(num_chunks) {
-            // Reuse descriptor slots each iteration
+        for _ in 0..num_chunks {
+            // Reuse descriptor slots each iteration. This is only safe because
+            // this test ensures that all tx_avail descriptors are pushed back
+            // to us via tx_used.
             harness.reset_tx_cursors();
 
             let mut rw_hdr = VsockPacketHeader::new();
@@ -1491,11 +1497,18 @@ mod test {
 
             let d_hdr = harness.add_tx_readable(hdr_as_bytes(&rw_hdr));
             let d_body = harness.add_tx_readable(&payload);
+
+            // The vsock poller calls `push_used` which bumps the tx ring's
+            // used index after processing the `harness.publish_tx`.
+            let expected_tx = harness.tx_used_idx() + 1;
             harness.chain_tx(d_hdr, d_body);
             harness.publish_tx(d_hdr);
-            notify.queue_notify(VSOCK_TX_QUEUE).unwrap();
 
-            wait_for_condition(|| harness.tx_used_idx() >= tx_consumed, 5000);
+            // Wait for the poller to release the desc chain back to us via
+            // tx_used. This is the running total of the REQUEST and n RW
+            // packets.
+            notify.queue_notify(VSOCK_TX_QUEUE).unwrap();
+            wait_for_condition(|| harness.tx_used_idx() >= expected_tx, 5000);
         }
 
         // Drain the data from the accepted socket to confirm it arrived
