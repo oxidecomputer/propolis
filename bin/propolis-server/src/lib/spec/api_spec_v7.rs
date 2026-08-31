@@ -50,16 +50,6 @@ pub(crate) fn amend(
     spec: &mut v7::instance_spec::InstanceSpec,
     replacements: &BTreeMap<SpecKey, ReplacementComponent>,
 ) -> Result<(), MigrateError> {
-    for (id, replacement) in replacements {
-        let Some(to_amend) = spec.components.get_mut(id) else {
-            return Err(MigrateError::InstanceSpecsIncompatible(format!(
-                "replacement component {id} not in source spec",
-            )));
-        };
-
-        // v7 reuses the v6 component types, so the v6 amendment logic applies.
-        api_spec_v6::amend_component(id, to_amend, replacement)?;
-    }
-
-    Ok(())
+    // v7 reuses the v6 component types, so the v6 amendment logic applies.
+    api_spec_v6::amend_components(&mut spec.components, replacements)
 }

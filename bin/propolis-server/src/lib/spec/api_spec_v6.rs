@@ -93,7 +93,7 @@ pub(crate) fn v6_to_spec_builder(
     api_spec_latest::latest_to_spec_builder(v7_spec)
 }
 
-pub(crate) fn amend_component(
+fn amend_component(
     id: &SpecKey,
     to_amend: &mut v6::instance_spec::Component,
     replacement: &ReplacementComponent,
@@ -143,12 +143,14 @@ pub(crate) fn amend_component(
     Ok(())
 }
 
-pub(crate) fn amend(
-    spec: &mut v6::instance_spec::InstanceSpec,
+/// Applies `replacements` to `components`; shared by the v6 and v7 amend
+/// paths, which use the same component type.
+pub(crate) fn amend_components(
+    components: &mut BTreeMap<SpecKey, v6::instance_spec::Component>,
     replacements: &BTreeMap<SpecKey, ReplacementComponent>,
 ) -> Result<(), MigrateError> {
     for (id, replacement) in replacements {
-        let Some(to_amend) = spec.components.get_mut(id) else {
+        let Some(to_amend) = components.get_mut(id) else {
             return Err(MigrateError::InstanceSpecsIncompatible(format!(
                 "replacement component {id} not in source spec",
             )));
@@ -158,4 +160,11 @@ pub(crate) fn amend(
     }
 
     Ok(())
+}
+
+pub(crate) fn amend(
+    spec: &mut v6::instance_spec::InstanceSpec,
+    replacements: &BTreeMap<SpecKey, ReplacementComponent>,
+) -> Result<(), MigrateError> {
+    amend_components(&mut spec.components, replacements)
 }
