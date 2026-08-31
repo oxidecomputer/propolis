@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use propolis_api_types::instance_spec::SpecKey;
 use propolis_api_types_versions::{
-    v1, v1::instance::ReplacementComponent, v2, v3, v7,
+    v1, v1::instance::ReplacementComponent, v2, v3,
 };
 
 use super::{builder::SpecBuilder, LegacyApiSpecError, Spec};
@@ -28,14 +28,8 @@ impl TryFrom<Spec> for v2::instance_spec::InstanceSpec {
         // make V2 by adding the SMBIOS table input back in, or we wouldn't be
         // able to get to a V2 InstanceSpec either way. The input itself must
         // also downgrade: v7 added fields to it that V2 cannot express.
-        let smbios = val
-            .smbios_type1_input
-            .take()
-            .map(TryInto::try_into)
-            .transpose()
-            .map_err(|e: v7::instance_spec::SmbiosDowngradeError| {
-                LegacyApiSpecError::IncompatibleComponent(e.to_string())
-            })?;
+        let smbios =
+            val.smbios_type1_input.take().map(TryInto::try_into).transpose()?;
 
         let v1::instance_spec::InstanceSpec { board, components } =
             val.try_into()?;

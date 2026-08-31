@@ -118,6 +118,12 @@ pub(crate) enum LegacyApiSpecError {
 
     #[error("spec contains v1-incompatible component: {0}")]
     IncompatibleComponent(String),
+
+    #[error(transparent)]
+    SmbiosDowngrade(
+        #[from]
+        propolis_api_types_versions::v7::instance_spec::SmbiosDowngradeError,
+    ),
 }
 
 /// `propolis-server` relies on `TryInto` to convert the API-provided
