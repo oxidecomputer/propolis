@@ -27,14 +27,14 @@ pci-path = "0.5.0"
 To create and run a Propolis VM using this configuration:
 
 ```
-# propolis-cli -s <server ip> -p <port> new --config-toml <path> <VM name>
-# propolis-cli -s <server ip> -p <port> state run
+# propolis-cli -s <server ip>:<port> new --config-toml <path> <VM name>
+# propolis-cli -s <server ip>:<port> state run
 ```
 
 To connect to the VM's serial console:
 
 ```
-# propolis-cli -s <server ip> -p <port> serial
+# propolis-cli -s <server ip>:<port> serial
 ```
 
 Run `propolis-cli --help` to see the full list of supported commands and their
