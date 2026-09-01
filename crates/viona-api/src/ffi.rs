@@ -203,6 +203,9 @@ pub struct vioc_mac_filters {
     pub vmf_err: u32,
     pub vmf_erraddr: [u8; ETHERADDRL],
     pub vmf_pad: [u8; 2],
+    /// User address of the `vmf_nmcast`-entry table, carried as a `uint64_t`
+    /// rather than a `uintptr_t` so the structure layout is datamodel
+    /// independent.
     pub vmf_addrs: u64,
 }
 
