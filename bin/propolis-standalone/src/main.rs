@@ -1200,6 +1200,7 @@ fn setup_instance(
     let chipset_pm = i440fx::Piix3PM::create(
         machine.hdl.clone(),
         chipset_hb.power_pin(),
+        chipset_lpc.sci_pin(),
         log.new(slog::o!("device" => "piix3pm")),
     );
 

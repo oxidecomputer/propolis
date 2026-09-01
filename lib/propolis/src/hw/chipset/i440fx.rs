@@ -103,7 +103,6 @@ struct IrqConfig {
 
     lnk_pins: [Arc<LNKPin>; 4],
 
-    #[allow(unused)]
     // XXX: wire up SCI notifications
     sci_pin: Arc<LNKPin>,
 }

@@ -17,6 +17,7 @@ use std::net::SocketAddr;
 use std::net::SocketAddrV6;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::migrate::destination::MigrationTargetInfo;
 use crate::vm::ensure::VmInitializationMethod;
@@ -369,14 +370,21 @@ impl PropolisServerApi for PropolisServerImpl {
     ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
         let ctx = rqctx.context();
         let requested_change = request.into_inner();
-        if requested_change.acpi_timeout_secs.is_some() {
+        let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
+        if let Some(secs) = requested_change.acpi_timeout_secs {
+            if matches!(requested_change.state, InstanceStateRequested::Run) {
+                return Err(HttpError::for_client_error_with_status(
+                    Some("ACPI shutdown timeout provided for requested 'Run' state; only valid for Stop/Reboot".to_string()),
+                    ClientErrorStatusCode::BAD_REQUEST,
+                ));
+            }
+            vm.acpi_shutdown(Duration::from_secs(secs));
             todo!(
                 "enqueue ExternalRequest::acpi_shutdown() and wait in a task
                 for either the chipset-driven shutdown or given timeout before
                 vm.put_state(requested_change.state)"
             )
         }
-        let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
         let result = vm
             .put_state(requested_change.state)
             .map(|_| HttpResponseUpdatedNoContent {})

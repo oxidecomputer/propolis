@@ -364,6 +364,15 @@ struct StateDriver {
     /// True if the VM is paused.
     paused: bool,
 
+    // TODO
+    // however this is implemented, we need to not have the following happen:
+    // - queued Stop/Reboot with 2*N second timeout
+    // - user sends a force Reboot after N seconds
+    // - another N seconds pass, the instance is still up, the task forces reboot *again*
+    //
+    // feels like it could be a job for std::sync::Weak if we make the timeout wait be a task
+    expiration_date: Option<std::time::Instant>,
+
     /// State persisted from previous attempts to migrate out of this VM.
     migration_src_state: crate::migrate::source::PersistentState,
 }

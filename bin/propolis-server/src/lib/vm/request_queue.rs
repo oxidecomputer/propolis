@@ -53,17 +53,18 @@ pub(crate) enum StateChangeRequest {
     Start,
 
     /// Asks the state worker to start a migration-source task.
-    MigrateAsSource {
-        migration_id: Uuid,
-        websock: WebsocketConnection,
-    },
+    MigrateAsSource { migration_id: Uuid, websock: WebsocketConnection },
 
     /// Resets the guest by pausing all devices, resetting them to their
     /// cold-boot states, and resuming the devices. Note that this is not a
     /// graceful reboot and does not coordinate with guest software.
     Reboot,
 
-    ACPIShutdown,
+    ACPIShutdown {
+        // TODO: timeout as std::time::Instant?
+        // once we're trying to shut down, we aren't going to migrate
+        // (the MigrateAsSource request will fail as HaltPending!)
+    },
 
     /// Halts the VM. Note that this is not a graceful shutdown and does not
     /// coordinate with guest software.
