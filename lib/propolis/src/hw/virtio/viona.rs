@@ -7,7 +7,7 @@
 use std::io::{self, Error, ErrorKind};
 use std::num::NonZeroU16;
 use std::os::unix::io::{AsRawFd, RawFd};
-use std::sync::{Arc, Condvar, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
 use crate::common::{RWOp, ReadOp};
 use crate::hw::pci;
@@ -88,6 +88,13 @@ mod probes {
     /// A code of zero (`VMA_OK`) means the ioctl itself failed without
     /// returning a result.
     fn virtio_viona_mac_swap_err(err: u32, present: u8) {}
+    /// A failed `VNA_IOC_SET_PROMISC` on a running device, with the level
+    /// requested, the level recorded before the attempt, the `errno`, and
+    /// the `PromiscError` discriminant describing the revert.
+    ///
+    /// Capability detection at construction does not fire this: a host
+    /// without `VIONA_PROMISC_ALL_VLAN` is expected to refuse it there.
+    fn virtio_viona_promisc_err(req: u8, prev: u8, err: i32, outcome: u8) {}
 }
 
 /// Types and so forth for supporting the control queue.
@@ -207,10 +214,10 @@ pub mod control {
 
     /// Parse bound for a driver-provided MAC filter table.
     ///
-    /// This bounds what a driver-controlled entry count can demand of the
-    /// device before it reaches an allocation. It sits well above viona's
-    /// filter limits, so a table that saturates it still exceeds those
-    /// limits and triggers the fallback to multicast promiscuity.
+    /// This bounds the allocation a driver-controlled entry count can demand
+    /// of the device. It sits well above viona's filter limits, so a table
+    /// that saturates it still exceeds those limits and triggers the fallback
+    /// to multicast promiscuity.
     pub(super) const MAC_TABLE_MAX_ENTRIES: u32 = 1024;
 
     /// Read a MAC filter table from a control queue.
@@ -255,6 +262,9 @@ pub mod control {
     }
 
     /// Advance the chain's read position by `len` bytes without copying.
+    ///
+    /// Returns `true` when the full `len` was skipped, and `false` when the
+    /// chain held fewer readable bytes.
     fn skip_readable(chain: &mut super::Chain, len: usize) -> bool {
         let mut remain = len;
         let skipped = chain.for_remaining_type(true, |_addr, buf_len| {
@@ -278,21 +288,10 @@ pub mod migrate {
         pub multicast_mac_filters: Vec<MacAddr>,
         /// Whether the source had accepted a `MAC_TABLE_SET` since its last
         /// reset.
-        ///
-        /// This is optional for compatibility, as older sources omit it and
-        /// older destinations ignore it.
-        #[serde(default)]
-        pub multicast_table_managed: Option<bool>,
+        pub multicast_table_managed: bool,
         /// The unicast MAC address installed by the driver in place of the
         /// nominal one the device was created with, if any
         /// (`VIRTIO_NET_CTRL_MAC_ADDR_SET`).
-        ///
-        /// This is optional for compatibility, as older sources omit it.
-        ///
-        /// An older destination ignores it and reverts config space to the
-        /// nominal address, while the guest continues using the replaced
-        /// one, which that host will not classify.
-        #[serde(default)]
         pub mac_addr: Option<MacAddr>,
     }
 
@@ -431,7 +430,9 @@ struct Inner {
     ///
     /// An accepted table, including an empty one, demonstrates that the driver
     /// manages its own filtering, which releases the all-multicast lower bound
-    /// in [`PciVirtioViona::rx_config`].
+    /// in [`PciVirtioViona::rx_config`]. That bound exists for illumos vioif,
+    /// which negotiates `VIRTIO_NET_F_CTRL_RX` but never programs a multicast
+    /// table: <https://www.illumos.org/issues/18280>.
     mac_table_set: bool,
     /// The unicast MAC address installed by the driver through
     /// `VIRTIO_NET_CTRL_MAC_ADDR_SET`, when it has replaced the nominal
@@ -632,6 +633,48 @@ enum MacSwapError {
     /// The swap failed and no unicast address remains on the client, a
     /// state only full promiscuity can cover.
     NoUnicast,
+}
+
+/// Outcome of a failed promiscuity change.
+///
+/// The variants differ in whether [`Inner::promisc`] still describes the
+/// kernel or not. Only [`PromiscError::Diverged`] warrants a device reset, and
+/// the caller raises it: `set_needs_reset` takes the virtio state lock, which
+/// is held across `queue_change` while `Inner` is acquired.
+///
+/// That escalation belongs to paths serving a running device, never to
+/// [`PciVirtioViona::device_reset`]. `NEEDS_RESET` reports a fault to a driver
+/// that polls it while operating, and the generic reset path clears the status
+/// word before invoking the callback. Raising the escalation there would
+/// demand a reset the driver is already performing, and would repeat on
+/// every attempt.
+///
+/// A reset that cannot reconcile the kernel leaves the link as it stands:
+/// promiscuity above the level a fresh device would hold, a filter table still
+/// installed, and, if the swap back to the nominal address failed, an
+/// `Inner::mac_override` that config space continues to report. The first two
+/// are reconciled by the next driver's filter commands; the override is
+/// retried by the next reset, which re-enters the swap while it is set.
+///
+/// The discriminants are reported by the `virtio_viona_promisc_err` probe, so
+/// they are an observable interface and must not be renumbered.
+#[derive(Copy, Clone, Debug)]
+#[repr(u8)]
+enum PromiscError {
+    /// The requested level could not be installed and the previous one was
+    /// restored, leaving [`Inner::promisc`] accurate.
+    Reverted = 0,
+    /// Neither the requested level nor the previous one could be installed,
+    /// so [`Inner::promisc`] no longer describes the kernel.
+    Diverged = 1,
+}
+
+impl PromiscError {
+    /// Whether the recorded level no longer describes the kernel, the only
+    /// outcome a device reset resolves.
+    const fn diverged(self) -> bool {
+        matches!(self, Self::Diverged)
+    }
 }
 
 /// Represents a connection to the kernel's Viona (VirtIO Network Adapter)
@@ -1139,17 +1182,13 @@ impl PciVirtioViona {
 
         match self.apply_rx_config(&mut state) {
             Ok(()) => Ok(()),
-            Err(()) => {
+            Err(_) => {
                 state.filter = old_filter;
                 // The failure may have left a partial filter table on the
                 // MAC client, which would silently drop traffic at
                 // PromiscLevel::None. Reconcile the kernel with the restored
                 // state, and force a reset if that fails as well.
-                let needs_reset = self.apply_rx_config(&mut state).is_err();
-                drop(state);
-                if needs_reset {
-                    self.virtio_state.set_needs_reset(self);
-                }
+                let _ = self.reconcile_and_release(state);
                 Err(())
             }
         }
@@ -1183,7 +1222,7 @@ impl PciVirtioViona {
 
         match self.apply_rx_config(&mut state) {
             Ok(()) => Ok(()),
-            Err(()) => {
+            Err(_) => {
                 state.unicast_mac_filters = unicast;
                 state.multicast_mac_filters = multicast;
                 state.mac_table_set = prior_table_set;
@@ -1192,11 +1231,7 @@ impl PciVirtioViona {
                 state.mac_filters_dirty = true;
                 // Reconcile the kernel with the restored tables, as in
                 // set_filter_state above.
-                let needs_reset = self.apply_rx_config(&mut state).is_err();
-                drop(state);
-                if needs_reset {
-                    self.virtio_state.set_needs_reset(self);
-                }
+                let _ = self.reconcile_and_release(state);
                 Err(())
             }
         }
@@ -1209,9 +1244,10 @@ impl PciVirtioViona {
     /// [`PciVirtioViona::mac_addr`] the device was created with, from a
     /// driver-installed override.
     fn set_mac_override(&self, mac: MacAddr) -> Result<(), ()> {
-        // The policy is checked directly rather than through feature
-        // negotiation alone: the bit cannot be negotiated without the
-        // grant, but the swap must not depend on that indirection.
+        // `VIRTIO_NET_F_CTRL_MAC_ADDR` is advertised only when the policy
+        // permits replacement, so the negotiated bit already implies it. The
+        // policy is checked here as well so the swap does not rest on that
+        // indirection.
         if !self.allow_guest_mac_change
             || (self.virtio_state.negotiated_features()
                 & VIRTIO_NET_F_CTRL_MAC_ADDR)
@@ -1231,7 +1267,11 @@ impl PciVirtioViona {
         // full promiscuity (or the superset pin) must cover delivery across the
         // swap.
         let cover = self.pinned_promisc().unwrap_or(PromiscLevel::All);
-        if self.set_promisc(cover, &mut state).is_err() {
+        if let Err(e) = self.set_promisc(cover, &mut state) {
+            if e.diverged() {
+                drop(state);
+                self.virtio_state.set_needs_reset(self);
+            }
             return Err(());
         }
 
@@ -1285,31 +1325,46 @@ impl PciVirtioViona {
 
         // Reconcile promiscuity (and any dirtied table) with the filter
         // state.
-        match self.apply_rx_config(&mut state) {
-            Ok(()) => res,
-            Err(()) => {
-                drop(state);
-                self.virtio_state.set_needs_reset(self);
-                Err(())
-            }
-        }
+        self.reconcile_and_release(state).and(res)
     }
 
     /// Update the promisc level of the device.
+    ///
+    /// The request is issued even when it matches [`Inner::promisc`]. viona
+    /// falls back to `VIONA_PROMISC_NONE` when `mac_promisc_add` fails while
+    /// restoring receive callbacks, retaining the requested mode in
+    /// `l_promisc`. Reissuing the request, in turn, reattempts the missing
+    /// handler. A genuine no-op is elided by the kernel, which returns early
+    /// only when the active mode matches the request as well.
+    ///
+    /// See `viona_ioc_set_promisc`:
+    /// <https://github.com/oxidecomputer/illumos-gate/blob/e73f2575430340bc2ebdfcb0b5d49ef8fa72d816/usr/src/uts/intel/io/viona/viona_main.c#L1631-L1646>
     fn set_promisc(
         &self,
         level: PromiscLevel,
         state: &mut Inner,
-    ) -> Result<(), ()> {
+    ) -> Result<(), PromiscError> {
         match self.hdl.set_promisc(level) {
             Ok(_) => {
                 state.promisc = level;
                 Ok(())
             }
-            Err(_) => {
-                // Ensure that we return to the old level of promisc.
-                let _ = self.hdl.set_promisc(state.promisc);
-                Err(())
+            Err(e) => {
+                // Return to the old level of promisc, reporting whether that
+                // succeeded so the caller can escalate a divergence.
+                let outcome = match self.hdl.set_promisc(state.promisc) {
+                    Ok(_) => PromiscError::Reverted,
+                    Err(_) => PromiscError::Diverged,
+                };
+                // The VIONA_PROMISC_* constants run 0 through 3, so neither
+                // level narrows.
+                probes::virtio_viona_promisc_err!(|| (
+                    usize::from(level) as u8,
+                    usize::from(state.promisc) as u8,
+                    e.raw_os_error().unwrap_or(0),
+                    outcome as u8
+                ));
+                Err(outcome)
             }
         }
     }
@@ -1416,9 +1471,10 @@ impl PciVirtioViona {
             // classified multicast copies and delivers multicast through
             // the promiscuous callback.
             //
-            // An empty table is never installed. Classified delivery with
-            // no table covers the device MAC and broadcast, which is
-            // exactly what an empty table requests.
+            // An empty table is never installed. A multicast table names
+            // addresses in addition to the device's own MAC and broadcast,
+            // both of which classified delivery already covers. An empty
+            // one needs nothing further.
             install_filters: mcast_filterable
                 && !state.multicast_mac_filters.is_empty(),
         }
@@ -1434,7 +1490,7 @@ impl PciVirtioViona {
     /// transition, with in-kernel dedup suppressing the overlap's duplicate
     /// copies. Packets already queued for classified delivery may still be
     /// dropped under the new mode.
-    fn apply_rx_config(&self, state: &mut Inner) -> Result<(), ()> {
+    fn apply_rx_config(&self, state: &mut Inner) -> Result<(), PromiscError> {
         let target = self.rx_config(state);
 
         let update_filters = target.install_filters
@@ -1465,6 +1521,8 @@ impl PciVirtioViona {
             target.promisc
         };
 
+        // A divergence reaches the reset through this function's callers,
+        // which retry the reconciliation before escalating.
         self.set_promisc(promisc, state)?;
 
         // No table is required when it is empty, cannot be installed, or the
@@ -1483,6 +1541,26 @@ impl PciVirtioViona {
             }
         }
         Ok(())
+    }
+
+    /// Reconcile the in-kernel Rx configuration with `state` and release the
+    /// guard, raising `NEEDS_RESET` if the recorded promiscuity level no
+    /// longer describes the kernel.
+    ///
+    /// The guard is taken by value because `set_needs_reset` acquires the
+    /// virtio state lock, which is held across `queue_change` while `Inner`
+    /// is acquired, so it cannot be raised until the guard is released.
+    fn reconcile_and_release(
+        &self,
+        mut state: MutexGuard<Inner>,
+    ) -> Result<(), ()> {
+        let outcome = self.apply_rx_config(&mut state);
+        drop(state);
+        outcome.map_err(|e| {
+            if e.diverged() {
+                self.virtio_state.set_needs_reset(self);
+            }
+        })
     }
 }
 impl VirtioDevice for PciVirtioViona {
@@ -1644,10 +1722,26 @@ impl VirtioDevice for PciVirtioViona {
     }
 
     fn device_reset(&self) {
+        // Return the link to the single queue pair it was created with.
+        //
+        // A guest status reset reaches this callback without passing through
+        // `Lifecycle::reset`, so a driver that negotiated multiqueue and then
+        // unloaded would otherwise leave the kernel holding its pair count.
+        //
+        // SET_USEPAIRS precedes SET_PAIRS because `viona_link_qalloc` rejects
+        // a pair count below the in-use count. Failures are discarded: the
+        // guest must renegotiate before using the device again, and
+        // `set_features` restores both counts when it does.
+        probes::virtio_viona_mq_set_use_pairs!(|| (
+            MqSetPairsCause::Reset as u8,
+            1
+        ));
+        let _ = self.set_use_pairs(1);
+        let _ = self.hdl.set_pairs(1);
+
         // The next driver may not negotiate `VIRTIO_NET_F_CTRL_RX`, so any
         // filter state configured by the previous driver must not outlive the
-        // reset. This runs for guest status resets as well as full device
-        // resets.
+        // reset.
         let mut state = self.inner.lock().unwrap();
         state.filter = FilterState::empty();
         state.unicast_mac_filters = Box::new([]);
@@ -1658,9 +1752,7 @@ impl VirtioDevice for PciVirtioViona {
         // A driver-installed unicast address must not outlive the reset
         // either. As in set_mac_override, the swap back to the nominal address
         // runs under full promiscuity (or the superset pin), which the
-        // restore below then lowers. A failure can leave the client with no
-        // unicast address, so we keep the raised level active and flag the
-        // device, as with a failed restore.
+        // restore below then lowers.
         if state.mac_override.is_some() {
             let cover = self.pinned_promisc().unwrap_or(PromiscLevel::All);
             // A partially reinstalled table (McastRestore) still leaves the
@@ -1671,13 +1763,13 @@ impl VirtioDevice for PciVirtioViona {
                     Err(MacSwapError::Unchanged | MacSwapError::NoUnicast)
                 );
             if !restored {
-                // The nominal address may not be installed. `mac_override` is
-                // kept, as the kernel most likely still holds the override,
-                // and the raised promiscuity covers delivery either way
-                // until the demanded reset lands.
+                // The client may hold no unicast address, which only full
+                // promiscuity covers, so the raised level is kept and the
+                // restore below is skipped rather than lowering to
+                // all-multicast. `mac_override` is kept as well, as the
+                // kernel most likely still holds the override, which leaves
+                // config space reporting it until a later swap succeeds.
                 state.mac_filters_dirty = state.mac_filters_installed;
-                drop(state);
-                self.virtio_state.set_needs_reset(self);
                 return;
             }
             state.mac_override = None;
@@ -1687,14 +1779,13 @@ impl VirtioDevice for PciVirtioViona {
         // pinned level) before clearing any installed filter table so that
         // no delivery gap opens.
         //
-        // A guest reaches this path with a status write, so a failed restore
-        // must not panic. The table is left in place to keep covering delivery
-        // and the device is flagged as needing reset.
+        // A failed restore leaves the table installed to keep covering
+        // delivery. The guest's next filter command reconciles it: with the
+        // filter state cleared above, rx_config computes all-multicast, which
+        // is the level that failed here.
         let restore = self.pinned_promisc().unwrap_or(PromiscLevel::AllMulti);
         if self.set_promisc(restore, &mut state).is_err() {
             state.mac_filters_dirty = state.mac_filters_installed;
-            drop(state);
-            self.virtio_state.set_needs_reset(self);
             return;
         }
 
@@ -1713,19 +1804,6 @@ impl Lifecycle for PciVirtioViona {
     }
     fn reset(&self) {
         self.virtio_state.reset(self);
-        probes::virtio_viona_mq_set_use_pairs!(|| (
-            MqSetPairsCause::Reset as u8,
-            1
-        ));
-        // SET_PAIRS can fail while restoring the kernel's receive callbacks,
-        // and SET_USEPAIRS can fail independently. Attempt both restorations,
-        // and on failure surface NEEDS_RESET to the guest rather than
-        // panicking.
-        let use_pairs = self.set_use_pairs(1);
-        let pairs = self.hdl.set_pairs(1);
-        if use_pairs.is_err() || pairs.is_err() {
-            self.virtio_state.set_needs_reset(self);
-        }
         self.virtio_state.queues.reset_peak();
     }
     fn start(&self) -> anyhow::Result<()> {
@@ -1811,7 +1889,7 @@ impl MigrateMulti for PciVirtioViona {
                 filter: state.filter.bits(),
                 unicast_mac_filters: state.unicast_mac_filters.to_vec(),
                 multicast_mac_filters: state.multicast_mac_filters.to_vec(),
-                multicast_table_managed: Some(state.mac_table_set),
+                multicast_table_managed: state.mac_table_set,
                 mac_addr: state.mac_override,
             }
         };
@@ -1913,15 +1991,7 @@ impl MigrateMulti for PciVirtioViona {
         state.multicast_mac_filters = multicast_mac_filters.into();
         state.mac_filters_dirty = true;
 
-        // Older sources do not carry whether they had accepted a
-        // MAC_TABLE_SET. Absent this marker, a non-empty table proves that
-        // one arrived, while a guest whose accepted table was empty
-        // conservatively returns to the all-multicast lower bound until its
-        // next command.
-        state.mac_table_set = multicast_table_managed.unwrap_or(
-            !state.unicast_mac_filters.is_empty()
-                || !state.multicast_mac_filters.is_empty(),
-        );
+        state.mac_table_set = multicast_table_managed;
 
         // A driver-installed unicast address must be active on this host
         // as well. As in set_mac_override, full promiscuity (or the superset
@@ -2317,7 +2387,8 @@ impl VionaHdl {
             vmf_addrs: if addrs.is_empty() {
                 0
             } else {
-                addrs.as_bytes().as_ptr() as u64
+                u64::try_from(addrs.as_bytes().as_ptr().addr())
+                    .expect("usize fits in u64 on 64-bit targets")
             },
             ..Default::default()
         };
@@ -2405,7 +2476,8 @@ impl VionaHdl {
             vec![MacAddr::default(); viona_api::VIONA_MAX_MCAST_FILTERS];
         let mut vmf = viona_api::vioc_mac_filters {
             vmf_nmcast: addrs.len() as u32,
-            vmf_addrs: addrs.as_mut_bytes().as_mut_ptr() as u64,
+            vmf_addrs: u64::try_from(addrs.as_mut_bytes().as_mut_ptr().addr())
+                .expect("usize fits in u64 on 64-bit targets"),
             ..Default::default()
         };
         unsafe { self.0.ioctl(viona_api::VNA_IOC_GET_MAC_FILTERS, &mut vmf) }?;
