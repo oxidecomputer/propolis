@@ -1197,8 +1197,9 @@ mod test {
         let scaffold = Scaffold::new();
         let log = Logger::root(Discard, slog::o!());
         let power_pin = Arc::new(NoOpPin {});
+        let sci_pin = Arc::new(NoOpPin {});
 
-        let pm = Piix3PM::create(hdl, power_pin, log);
+        let pm = Piix3PM::create(hdl, power_pin, sci_pin, log);
         let _bus = setup_attach(&scaffold, pm.clone());
 
         cfg_read(pm.as_ref() as &dyn Endpoint);
@@ -1210,8 +1211,9 @@ mod test {
         let scaffold = Scaffold::new();
         let log = Logger::root(Discard, slog::o!());
         let power_pin = Arc::new(NoOpPin {});
+        let sci_pin = Arc::new(NoOpPin {});
 
-        let pm = Piix3PM::create(hdl, power_pin, log);
+        let pm = Piix3PM::create(hdl, power_pin, sci_pin, log);
         let _bus = setup_attach(&scaffold, pm.clone());
 
         cfg_write(pm.as_ref() as &dyn Endpoint);

@@ -21,6 +21,8 @@ use slog::{info, Logger};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::vm::SoftShutdownFate;
+
 /// Wraps a [`dropshot::WebsocketConnection`] for inclusion in an
 /// [`ExternalRequest`].
 //
@@ -53,7 +55,10 @@ pub(crate) enum StateChangeRequest {
     Start,
 
     /// Asks the state worker to start a migration-source task.
-    MigrateAsSource { migration_id: Uuid, websock: WebsocketConnection },
+    MigrateAsSource {
+        migration_id: Uuid,
+        websock: WebsocketConnection,
+    },
 
     /// Resets the guest by pausing all devices, resetting them to their
     /// cold-boot states, and resuming the devices. Note that this is not a
@@ -61,9 +66,8 @@ pub(crate) enum StateChangeRequest {
     Reboot,
 
     ACPIShutdown {
-        // TODO: timeout as std::time::Instant?
-        // once we're trying to shut down, we aren't going to migrate
-        // (the MigrateAsSource request will fail as HaltPending!)
+        fate: SoftShutdownFate,
+        timeout: std::time::Duration,
     },
 
     /// Halts the VM. Note that this is not a graceful shutdown and does not
@@ -80,7 +84,11 @@ impl std::fmt::Debug for StateChangeRequest {
                 .field("migration_id", migration_id)
                 .finish(),
             Self::Reboot => write!(f, "Reboot"),
-            Self::ACPIShutdown => write!(f, "ACPI Shutdown"),
+            Self::ACPIShutdown { fate, timeout } => f
+                .debug_struct("ACPIShutdown")
+                .field("fate", fate)
+                .field("timeout", timeout)
+                .finish(),
             Self::Stop => write!(f, "Stop"),
         }
     }
@@ -136,8 +144,11 @@ impl ExternalRequest {
         Self::State(StateChangeRequest::Start)
     }
 
-    pub const fn acpi_shutdown() -> Self {
-        Self::State(StateChangeRequest::ACPIShutdown)
+    pub const fn acpi_shutdown(
+        fate: SoftShutdownFate,
+        timeout: std::time::Duration,
+    ) -> Self {
+        Self::State(StateChangeRequest::ACPIShutdown { fate, timeout })
     }
 
     /// Constructs a VM stop request.
@@ -208,6 +219,9 @@ pub(crate) enum RequestDeniedReason {
 
     #[error("Instance failed to start or halted due to a failure")]
     InstanceFailed,
+
+    #[error("Cannot supply shutdown timeout to a Run request")]
+    TimeoutOnRun,
 }
 
 /// A kind of request that can be popped from the queue and then completed.
@@ -382,9 +396,14 @@ impl ExternalRequestQueue {
                 assert!(!self.awaiting_reboot);
                 self.awaiting_reboot = true;
             }
-            ExternalRequest::State(StateChangeRequest::ACPIShutdown) => {
+            ExternalRequest::State(StateChangeRequest::ACPIShutdown {
+                ..
+            }) => {
                 // TODO(luiz): check if this is the right action.
                 assert!(!self.awaiting_stop);
+                // once we're trying to shut down, we aren't going to migrate
+                // (the MigrateAsSource request will fail as HaltPending
+                // with awaiting_stop true)
                 self.awaiting_stop = true;
             }
             ExternalRequest::State(StateChangeRequest::Stop) => {
@@ -477,9 +496,15 @@ impl ExternalRequestQueue {
                     }
                 }
 
-                ExternalRequest::State(StateChangeRequest::ACPIShutdown) => {
+                ExternalRequest::State(StateChangeRequest::ACPIShutdown {
+                    ..
+                }) => {
+                    if self.state == QueueState::StartPending {
+                        return Err(RequestDeniedReason::StartInProgress);
+                    } else if self.state == QueueState::NotStarted {
+                        return Err(RequestDeniedReason::InstanceNotActive);
                     // TODO(luiz): check if this is the right action.
-                    if self.awaiting_stop {
+                    } else if self.awaiting_stop || self.awaiting_reboot {
                         return Ok(false);
                     }
                 }
@@ -555,6 +580,9 @@ impl ExternalRequestQueue {
         }
     }
 
+    // TODO(lif) - for ACPI shutdown, chipset-driven shutdown *is* the externally-requested thing!
+    // what is the purpose of this subtle difference?
+    //
     /// Notifies this queue that the instance has stopped. This routine is meant
     /// to be used in cases where an instance stops for reasons other than an
     /// external request (e.g., a guest-requested chipset-driven shutdown).

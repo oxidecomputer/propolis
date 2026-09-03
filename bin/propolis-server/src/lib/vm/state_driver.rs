@@ -110,7 +110,9 @@ use crate::{
         destination::DestinationProtocol, source::SourceProtocol, MigrateRole,
     },
     spec::StorageBackend,
-    vm::{state_publisher::ExternalStateUpdate, BlockBackendMap},
+    vm::{
+        state_publisher::ExternalStateUpdate, BlockBackendMap, SoftShutdownFate,
+    },
 };
 
 use super::{
@@ -373,11 +375,6 @@ struct StateDriver {
 
     /// State persisted from previous attempts to migrate out of this VM.
     migration_src_state: crate::migrate::source::PersistentState,
-}
-
-pub enum SoftShutdownFate {
-    Stop,
-    Reboot,
 }
 
 /// Contains a state driver's terminal state and the channel it used to publish
@@ -727,9 +724,6 @@ impl StateDriver {
             };
 
             match req {
-                ExternalRequest::State(StateChangeRequest::ACPIShutdown) => {
-                    todo!() // should we do the same thing as below?
-                }
                 ExternalRequest::State(StateChangeRequest::Stop) => {
                     info!(
                         &self.log,
@@ -775,11 +769,12 @@ impl StateDriver {
                 // reported that it's fully started. Similarly, requests to
                 // start a VM that's already starting are expected to be ignored
                 // for idempotency.
-                r @ ExternalRequest::State(StateChangeRequest::Start)
-                | r @ ExternalRequest::State(
-                    StateChangeRequest::MigrateAsSource { .. },
-                )
-                | r @ ExternalRequest::State(StateChangeRequest::Reboot) => {
+                r @ ExternalRequest::State(
+                    StateChangeRequest::Start
+                    | StateChangeRequest::MigrateAsSource { .. }
+                    | StateChangeRequest::Reboot
+                    | StateChangeRequest::ACPIShutdown { .. },
+                ) => {
                     unreachable!(
                         "external request {r:?} shouldn't be queued while \
                         starting"
@@ -795,7 +790,12 @@ impl StateDriver {
         self.external_state
             .update(ExternalStateUpdate::Instance(InstanceState::Stopped));
 
-        self.input_queue.notify_stopped();
+        // TODO(lif)
+        // if external_stop_request {
+        self.input_queue.notify_request_completed(CompletedRequest::Stop);
+        // } else {
+        // self.input_queue.notify_stopped();
+        // }
 
         HandleEventOutcome::Exit { final_state: InstanceState::Destroyed }
     }
@@ -804,32 +804,29 @@ impl StateDriver {
         &mut self,
         event: GuestEvent,
     ) -> HandleEventOutcome {
-        match event {
-            // conditional match branch. if an ACPI shutdown request was
-            // in progress, we trust omicron's authority on the ultimate fate
-            // of the guest's running state -- even if e.g. guest BSoD'd during
-            // its shutdown process and tried to reboot afterward, when operator
-            // asked for the guest to be *off*.
-            GuestEvent::VcpuSuspendHalt(_when)
-            | GuestEvent::VcpuSuspendReset(_when)
-                if self.soft_off.is_some() =>
-            {
-                let Some((fate, timeout_task)) = self.soft_off.take() else {
-                    unreachable!() // if is_some, above
-                };
-                timeout_task.abort();
-                match fate {
-                    SoftShutdownFate::Stop => {
-                        info!(self.log, "Halting due to power button event",);
-                        self.stop_and_notify().await
-                    }
-                    SoftShutdownFate::Reboot => {
-                        info!(self.log, "Resetting due to power button event");
-                        self.do_reboot().await;
-                        HandleEventOutcome::Continue
-                    }
+        // if an ACPI shutdown request was in progress,
+        // we trust the control plane's authority on the ultimate fate
+        // of the guest's running state -- even if e.g. guest BSoD'd during
+        // its shutdown process and tried to reboot afterward, when operator
+        // asked for the guest to be *off*.
+        if let Some((fate, _)) = &self.soft_off {
+            return match fate {
+                SoftShutdownFate::Stop => {
+                    info!(
+                        self.log,
+                        "Halting due to {event:?} following power button event"
+                    );
+                    self.stop_and_notify().await
                 }
-            }
+                SoftShutdownFate::Reboot => {
+                    info!(self.log, "Resetting due to {event:?} following power button event");
+                    self.do_reboot().await;
+                    HandleEventOutcome::Continue
+                }
+            };
+        }
+
+        match event {
             GuestEvent::VcpuSuspendHalt(_when) => {
                 info!(self.log, "Halting due to VM suspend event",);
                 self.stop_and_notify().await
@@ -864,12 +861,18 @@ impl StateDriver {
         request: ExternalRequest,
     ) -> HandleEventOutcome {
         match request {
-            ExternalRequest::State(StateChangeRequest::ACPIShutdown) => {
-                // if timeout already in progress, ignore further soft-offs
+            ExternalRequest::State(StateChangeRequest::ACPIShutdown {
+                fate,
+                timeout,
+            }) => {
+                // if timeout already in progress, ignore further soft-off reqs
                 if self.soft_off.is_none() {
                     let guard = self.objects.lock_exclusive().await;
                     let chipset = guard.chipset();
+
                     chipset.acpi_shutdown();
+                    // TODO: watch for OSPM clearing the status bit to see
+                    // if guest acknowledges the button press?
 
                     // timeout to hard-stop/reset if guest takes too long
                     let input_queue_weak = Arc::downgrade(&self.input_queue);
@@ -877,14 +880,22 @@ impl StateDriver {
                         SoftShutdownFate::Stop => ExternalRequest::stop(),
                         SoftShutdownFate::Reboot => ExternalRequest::reboot(),
                     };
+                    let log = self.log.clone();
                     self.soft_off = Some((
                         fate,
                         tokio::spawn(async move {
-                            tokio::time::sleep(timeout_duration).await;
+                            tokio::time::sleep(timeout).await;
                             if let Some(input_queue) =
                                 input_queue_weak.upgrade()
                             {
-                                input_queue.queue_external_request(exreq);
+                                if let Err(e) =
+                                    input_queue.queue_external_request(exreq)
+                                {
+                                    slog::error!(
+                                        log,
+                                        "Failed to enqueue {fate:?}: {e}"
+                                    );
+                                }
                             }
                         }),
                     ));
@@ -909,7 +920,13 @@ impl StateDriver {
                 migration_id,
                 websock,
             }) => {
-                if self
+                if let Some((fate, _)) = &self.soft_off {
+                    slog::warn!(
+                        self.log,
+                        "Ignored MigrateAsSource while ACPI {fate:?} in progress"
+                    );
+                    HandleEventOutcome::Continue
+                } else if self
                     .migrate_as_source(migration_id, websock.into_inner())
                     .await
                     .is_ok()

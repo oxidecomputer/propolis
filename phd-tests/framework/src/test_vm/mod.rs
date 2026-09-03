@@ -37,7 +37,7 @@ use propolis_client::{
         InstanceEnsureRequest, InstanceGetResponse,
         InstanceInitializationMethod, InstanceMigrateStatusResponse,
         InstanceSerialConsoleHistoryResponse, InstanceState,
-        InstanceStateRequested, MigrationState,
+        InstanceStateChange, InstanceStateRequested, MigrationState,
     },
 };
 use propolis_client::{Client, ResponseValue};
@@ -578,7 +578,11 @@ impl TestVm {
         state: InstanceStateRequested,
     ) -> PropolisClientResult<()> {
         info!(?state, "Requesting instance state change");
-        self.client.instance_state_put().body(state).send().await
+        self.client
+            .instance_state_put()
+            .body(InstanceStateChange { state, acpi_timeout_secs: None })
+            .send()
+            .await
     }
 
     /// Issues a Propolis client `instance_get` request.
@@ -1195,7 +1199,10 @@ async fn try_ensure_vm_destroyed(client: &Client) {
     debug!("trying to ensure Propolis server VM is destroyed");
     if let Err(error) = client
         .instance_state_put()
-        .body(InstanceStateRequested::Stop)
+        .body(InstanceStateChange {
+            state: InstanceStateRequested::Stop,
+            acpi_timeout_secs: None,
+        })
         .send()
         .await
     {
