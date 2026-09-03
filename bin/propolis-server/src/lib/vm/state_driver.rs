@@ -792,9 +792,9 @@ impl StateDriver {
 
         // TODO(lif)
         // if external_stop_request {
-        self.input_queue.notify_request_completed(CompletedRequest::Stop);
+        // self.input_queue.notify_request_completed(CompletedRequest::Stop);
         // } else {
-        // self.input_queue.notify_stopped();
+        self.input_queue.notify_stopped();
         // }
 
         HandleEventOutcome::Exit { final_state: InstanceState::Destroyed }

@@ -295,6 +295,9 @@ pub(super) struct ExternalRequestQueue {
     /// completed by the state driver.
     awaiting_stop: bool,
 
+    // TODO doc
+    awaiting_shutdown: bool,
+
     /// The queue's logger.
     log: Logger,
 }
@@ -322,6 +325,7 @@ impl ExternalRequestQueue {
             awaiting_reboot: false,
             awaiting_migration_out: false,
             awaiting_stop: false,
+            awaiting_shutdown: false,
             log,
         }
     }
@@ -399,12 +403,9 @@ impl ExternalRequestQueue {
             ExternalRequest::State(StateChangeRequest::ACPIShutdown {
                 ..
             }) => {
-                // TODO(luiz): check if this is the right action.
-                assert!(!self.awaiting_stop);
-                // once we're trying to shut down, we aren't going to migrate
-                // (the MigrateAsSource request will fail as HaltPending
-                // with awaiting_stop true)
-                self.awaiting_stop = true;
+                // FIXME: subsequent reboots fail! need to notify_request_completed(ACPI)
+                assert!(!self.awaiting_shutdown);
+                self.awaiting_shutdown = true;
             }
             ExternalRequest::State(StateChangeRequest::Stop) => {
                 assert!(!self.awaiting_stop);
@@ -451,7 +452,7 @@ impl ExternalRequestQueue {
                 // Interpret start requests as requests to reach the Running
                 // state.
                 ExternalRequest::State(StateChangeRequest::Start) => {
-                    if self.awaiting_stop {
+                    if self.awaiting_stop || self.awaiting_shutdown {
                         return Err(RequestDeniedReason::HaltPending);
                     } else if self.state != QueueState::NotStarted {
                         return Ok(false);
@@ -468,7 +469,7 @@ impl ExternalRequestQueue {
                         return Err(
                             RequestDeniedReason::AlreadyMigrationSource,
                         );
-                    } else if self.awaiting_stop {
+                    } else if self.awaiting_stop || self.awaiting_shutdown {
                         return Err(RequestDeniedReason::HaltPending);
                     } else if self.state == QueueState::NotStarted {
                         return Err(RequestDeniedReason::InstanceNotActive);
