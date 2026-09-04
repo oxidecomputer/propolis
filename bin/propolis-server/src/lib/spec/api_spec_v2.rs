@@ -73,3 +73,75 @@ pub(crate) fn amend(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod test {
+    use propolis_api_types_versions::latest::components::board::{
+        Board, Chipset, Cpuid, GuestHypervisorInterface, I440Fx,
+    };
+    use propolis_api_types_versions::latest::{
+        self,
+        instance_spec::{CpuidVendor, SmbiosType1Input},
+    };
+    use propolis_api_types_versions::{v1, v2, v3, v6};
+
+    #[test]
+    fn smbios_type1() {
+        let smbios_input = SmbiosType1Input {
+            manufacturer: "a4x2".to_string(),
+            product_name: "913-0000019".to_string(),
+            serial_number: "2FAKE000".to_string(),
+            version: 2,
+        };
+
+        let api_spec = latest::instance_spec::InstanceSpec {
+            board: Board {
+                cpus: 4,
+                memory_mb: 512,
+                chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
+                guest_hv_interface: GuestHypervisorInterface::Bhyve,
+                // Providing *any* CPUID settings keeps Propolis from querying
+                // bhyve for defaults to use instead, which requires .. byhve
+                // *and* VMM access. Provide a (useless) empty CPUID set so this
+                // test can run on non-illumos test systems.
+                cpuid: Some(Cpuid {
+                    entries: vec![],
+                    vendor: CpuidVendor::Amd,
+                }),
+            },
+            components: Default::default(),
+            smbios: Some(smbios_input.clone()),
+        };
+
+        let spec =
+            crate::spec::api_spec_latest::latest_to_spec_builder(api_spec)
+                .unwrap()
+                .finish();
+        let smbios = spec
+            .smbios_type1_input
+            .as_ref()
+            .expect("SMBIOS type 1 input preserved");
+        assert_eq!(&smbios_input, smbios);
+
+        let v6_spec =
+            v6::instance_spec::InstanceSpec::try_from(spec.clone()).unwrap();
+        let smbios =
+            v6_spec.smbios.as_ref().expect("SMBIOS type 1 input preserved");
+        assert_eq!(&smbios_input, smbios);
+
+        let v3_spec =
+            v3::instance_spec::InstanceSpec::try_from(spec.clone()).unwrap();
+        let smbios =
+            v3_spec.smbios.as_ref().expect("SMBIOS type 1 input preserved");
+        assert_eq!(&smbios_input, smbios);
+
+        let v2_spec =
+            v2::instance_spec::InstanceSpec::try_from(spec.clone()).unwrap();
+        let smbios =
+            v2_spec.smbios.as_ref().expect("SMBIOS type 1 input preserved");
+        assert_eq!(&smbios_input, smbios);
+
+        let v1_res = v1::instance_spec::InstanceSpec::try_from(spec);
+        assert!(v1_res.is_err());
+    }
+}

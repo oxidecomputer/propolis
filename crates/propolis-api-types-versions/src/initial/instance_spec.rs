@@ -113,7 +113,7 @@ impl JsonSchema for SpecKey {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, PartialEq)]
 #[serde(
     deny_unknown_fields,
     tag = "type",

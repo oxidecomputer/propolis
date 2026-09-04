@@ -18,7 +18,7 @@ use crate::v2::instance_spec::SmbiosType1Input;
 
 pub use super::components::devices::VirtioSocket;
 
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, PartialEq)]
 #[serde(
     deny_unknown_fields,
     tag = "type",
