@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
 
 /// A Crucible storage backend.
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CrucibleStorageBackend {
     /// A serialized `[crucible_client_types::VolumeConstructionRequest]`. This
@@ -40,7 +40,7 @@ impl std::fmt::Debug for CrucibleStorageBackend {
 }
 
 /// A storage backend backed by a file in the host system's file system.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct FileStorageBackend {
     /// A path to a file that backs a disk.
@@ -58,7 +58,7 @@ pub struct FileStorageBackend {
 
 /// A storage backend for a disk whose initial contents are given explicitly
 /// by the specification.
-#[derive(Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BlobStorageBackend {
     /// The disk's initial contents, encoded as a base64 string.
@@ -78,7 +78,7 @@ impl std::fmt::Debug for BlobStorageBackend {
 }
 
 /// A network backend associated with a virtio-net (viona) VNIC on the host.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct VirtioNetworkBackend {
     /// The name of the viona VNIC to use as a backend.
@@ -86,7 +86,7 @@ pub struct VirtioNetworkBackend {
 }
 
 /// A network backend associated with a DLPI VNIC on the host.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct DlpiNetworkBackend {
     /// The name of the VNIC to use as a backend.

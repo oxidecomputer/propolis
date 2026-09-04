@@ -125,3 +125,77 @@ pub(crate) fn amend(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod test {
+    use propolis_api_types_versions::latest::components::board::{
+        Board, Chipset, Cpuid, GuestHypervisorInterface, I440Fx,
+    };
+    use propolis_api_types_versions::latest::{
+        self,
+        components::devices::VirtioSocket,
+        instance_spec::{self, CpuidVendor, SmbiosType1Input, SpecKey},
+    };
+    use propolis_api_types_versions::{v1, v2, v3, v6};
+
+    #[test]
+    fn vsock_component() {
+        let mut api_spec = latest::instance_spec::InstanceSpec {
+            board: Board {
+                cpus: 4,
+                memory_mb: 512,
+                chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
+                guest_hv_interface: GuestHypervisorInterface::Bhyve,
+                // Providing *any* CPUID settings keeps Propolis from querying
+                // bhyve for defaults to use instead, which requires .. byhve
+                // *and* VMM access. Provide a (useless) empty CPUID set so this
+                // test can run on non-illumos test systems.
+                cpuid: Some(Cpuid {
+                    entries: vec![],
+                    vendor: CpuidVendor::Amd,
+                }),
+            },
+            components: Default::default(),
+            smbios: Some(SmbiosType1Input {
+                manufacturer: "a4x2".to_string(),
+                product_name: "913-0000019".to_string(),
+                serial_number: "2FAKE000".to_string(),
+                version: 2,
+            }),
+        };
+
+        let vsock_id: SpecKey = SpecKey::Name("vsock-id".to_string());
+        let test_vsock: VirtioSocket = VirtioSocket {
+            guest_cid: 0,
+            pci_path: instance_spec::PciPath::new(0, 4, 0).unwrap(),
+        };
+
+        let vsock_comp = instance_spec::Component::VirtioSocket(test_vsock);
+
+        api_spec.components.insert(vsock_id.clone(), vsock_comp.clone());
+
+        let spec =
+            crate::spec::api_spec_latest::latest_to_spec_builder(api_spec)
+                .unwrap()
+                .finish();
+        assert!(spec.vsock.is_some());
+
+        let v6_spec =
+            v6::instance_spec::InstanceSpec::try_from(spec.clone()).unwrap();
+        let v6_comp: v6::instance_spec::Component =
+            vsock_comp.clone().try_into().unwrap();
+        assert_eq!(v6_spec.components.get(&vsock_id), Some(&v6_comp));
+
+        let v3_spec =
+            v3::instance_spec::InstanceSpec::try_from(spec.clone()).unwrap();
+        let v3_comp: v3::instance_spec::Component =
+            vsock_comp.clone().try_into().unwrap();
+        assert_eq!(v3_spec.components.get(&vsock_id), Some(&v3_comp));
+
+        let v2_res = v2::instance_spec::InstanceSpec::try_from(spec.clone());
+        assert!(v2_res.is_err());
+
+        let v1_res = v1::instance_spec::InstanceSpec::try_from(spec);
+        assert!(v1_res.is_err());
+    }
+}
