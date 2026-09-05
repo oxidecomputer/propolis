@@ -2,6 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+// device-independent features
+pub const VIRTIO_F_EVENT_IDX: u64 = 1 << 29;
+
 // virtio-net feature bits
 pub const VIRTIO_NET_F_CSUM: u64 = 1 << 0;
 pub const VIRTIO_NET_F_GUEST_CSUM: u64 = 1 << 1;
