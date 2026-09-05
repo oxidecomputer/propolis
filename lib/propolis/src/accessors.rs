@@ -31,12 +31,12 @@
 //! accessor's API; only a wrapper that derefs as `T`.
 //!
 //! Accessor structures being the sole access mechanism to a guarded resource
-//! ensures that the resource can be added or removed *almost*[1] arbitrarily.
+//! ensures that the resource can be added or removed *almost*\[1\] arbitrarily.
 //! [`MsiAccessor`] is an example of double-duty here; on one hand, a PCI bridge
 //! can have MSI enabled or disabled, as well as the functions behind that
 //! bridge. On the other hand, the MSI accessor is mostly just an `Arc<VmmHdl>`,
 //! and it would be unfortunate to have stray `Arc<VmmHdl>` littered across
-//! device emulation[2].
+//! device emulation\[2\].
 //!
 //! 1: A user of Propolis should only change the guarded resource for devices that
 //! are in the initial (pre-run) state, paused, or halted.  Removing a guarded
@@ -675,7 +675,7 @@ impl<T: AccessedResource> Accessor<T> {
     /// Will return [None] if any ancestor node disables access, or if the node
     /// is not attached to a hierarchy containing a valid resource.
     ///
-    /// Unlike [`Accesor::access()`], this returns a wrapped MutexGuard for this
+    /// Unlike [`Accessor::access()`], this returns a wrapped MutexGuard for this
     /// accessor node; callers must carefully consider lock ordering when
     /// holding this guard across other operations.  As with any other mutex,
     /// perfer holding this guard for as small a window as permitted.

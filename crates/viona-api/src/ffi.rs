@@ -39,6 +39,8 @@ pub const VNA_IOC_GET_MTU: i32 = vna_ioc(0x27);
 pub const VNA_IOC_SET_MTU: i32 = vna_ioc(0x28);
 pub const VNA_IOC_SET_NOTIFY_MMIO: i32 = vna_ioc(0x29);
 pub const VNA_IOC_INTR_POLL_MQ: i32 = vna_ioc(0x2a);
+pub const VNA_IOC_SET_MAC_FILTERS: i32 = vna_ioc(0x2b);
+pub const VNA_IOC_GET_MAC_FILTERS: i32 = vna_ioc(0x2c);
 
 /// VirtIO 1.2 queue pair support.
 pub const VNA_IOC_GET_PAIRS: i32 = vna_ioc(0x30);
@@ -49,10 +51,33 @@ pub const VNA_IOC_SET_USEPAIRS: i32 = vna_ioc(0x33);
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::mem::{align_of, offset_of, size_of};
 
     #[test]
     fn test_vna_ioc() {
         assert_eq!(vna_ioc(0x22), 0x00_56_43_22);
+    }
+
+    #[test]
+    fn test_mac_filters_abi_values() {
+        assert_eq!(VNA_IOC_SET_MAC_FILTERS, 0x00_56_43_2b);
+        assert_eq!(VNA_IOC_GET_MAC_FILTERS, 0x00_56_43_2c);
+        assert_eq!(VMF_OK, 0);
+        assert_eq!(VMF_ERR_COUNT, 1);
+        assert_eq!(VMF_ERR_NOT_MCAST, 2);
+        assert_eq!(VMF_ERR_INSTALL, 3);
+        assert_eq!(VMF_ERR_NO_UNICAST, 4);
+    }
+
+    #[test]
+    fn test_vioc_mac_filters_layout() {
+        assert_eq!(size_of::<vioc_mac_filters>(), 24);
+        assert_eq!(align_of::<vioc_mac_filters>(), 8);
+        assert_eq!(offset_of!(vioc_mac_filters, vmf_nmcast), 0);
+        assert_eq!(offset_of!(vioc_mac_filters, vmf_err), 4);
+        assert_eq!(offset_of!(vioc_mac_filters, vmf_erraddr), 8);
+        assert_eq!(offset_of!(vioc_mac_filters, vmf_pad), 14);
+        assert_eq!(offset_of!(vioc_mac_filters, vmf_addrs), 16);
     }
 }
 
@@ -151,10 +176,80 @@ pub struct vioc_set_params {
     pub vsp_error_sz: size_t,
 }
 
+/// Number of bytes in an Ethernet address (per `sys/ethernet.h`).
+pub const ETHERADDRL: usize = 6;
+
+/// The kernel's current multicast filter capacity.
+///
+/// This is not part of the fixed ABI. The kernel may report a different
+/// capacity at runtime through [`vmf_nmcast`] on [`VMF_ERR_COUNT`].
+///
+/// [`vmf_nmcast`]: vioc_mac_filters::vmf_nmcast
+/// [`VMF_ERR_COUNT`]: VMF_ERR_COUNT
+pub const VIONA_MAX_MCAST_FILTERS: usize = 64;
+
+/// Semantic error codes reported through [`vmf_err`]
+/// (`vioc_mac_filter_err_t`).
+///
+/// [`vmf_err`]: vioc_mac_filters::vmf_err
+pub const VMF_OK: u32 = 0;
+/// Entry count exceeds device capacity (rewritten into [`vmf_nmcast`]).
+///
+/// [`vmf_nmcast`]: vioc_mac_filters::vmf_nmcast
+pub const VMF_ERR_COUNT: u32 = 1;
+/// Entry (in [`vmf_erraddr`]) is not a multicast address.
+///
+/// [`vmf_erraddr`]: vioc_mac_filters::vmf_erraddr
+pub const VMF_ERR_NOT_MCAST: u32 = 2;
+/// MAC layer rejected installation of the entry (in [`vmf_erraddr`]).
+///
+/// [`vmf_erraddr`]: vioc_mac_filters::vmf_erraddr
+pub const VMF_ERR_INSTALL: u32 = 3;
+/// Client holds no unicast address (after a failed restoration).
+pub const VMF_ERR_NO_UNICAST: u32 = 4;
+
+/// A complete multicast MAC filter table passed out-of-band through
+/// [`vmf_addrs`], which holds the userspace address of an array of
+/// [`vmf_nmcast`] Ethernet addresses ([`ETHERADDRL`] bytes per entry with no
+/// padding between them).
+///
+/// Both ioctls return nonzero only when no complete result is returned.
+/// In this case, the request either failed outright before processing or could
+/// have succeeded, but the copying of the result may have failed.
+///
+/// For [`VNA_IOC_SET_MAC_FILTERS`], `vmf_nmcast` is the number of entries
+/// to install. Failures before installation leave the existing table
+/// untouched. [`VMF_ERR_INSTALL`] is the exception, however. Obsolete entries
+/// may already have been removed and earlier new entries installed, leaving a
+/// consistent yet partial table.
+///
+/// For [`VNA_IOC_GET_MAC_FILTERS`], [`vmf_nmcast`] is the capacity of the
+/// output buffer at [`vmf_addrs`]. The kernel copies up to that number of
+/// installed entries and rewrites [`vmf_nmcast`] with this total number
+/// of installed entries. A count of zero queries the installed entries
+/// without copying entries out.
+///
+/// [`vmf_addrs`]: vioc_mac_filters::vmf_addrs
+/// [`vmf_nmcast`]: vioc_mac_filters::vmf_nmcast
+/// [`vmf_err`]: vioc_mac_filters::vmf_err
+/// [`vmf_erraddr`]: vioc_mac_filters::vmf_erraddr
+#[repr(C)]
+#[derive(Default)]
+pub struct vioc_mac_filters {
+    pub vmf_nmcast: u32,
+    pub vmf_err: u32,
+    pub vmf_erraddr: [u8; ETHERADDRL],
+    pub vmf_pad: [u8; 2],
+    /// Userspace address of the filter table. This is a `uint64_t`, rather
+    /// than a `uintptr_t`, giving the ioctl structure the same layout for
+    /// 32-bit and 64-bit callers.
+    pub vmf_addrs: u64,
+}
+
 /// This is the viona interface version which viona_api expects to operate
 /// against.  All constants and structs defined by the crate are done so in
 /// terms of that specific version.
-pub const VIONA_CURRENT_INTERFACE_VERSION: u32 = 6;
+pub const VIONA_CURRENT_INTERFACE_VERSION: u32 = 7;
 
 /// Maximum size of packed nvlists used in viona parameter ioctls
 pub const VIONA_MAX_PARAM_NVLIST_SZ: usize = 4096;

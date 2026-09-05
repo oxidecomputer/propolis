@@ -197,9 +197,9 @@ pub mod methods {
 }
 
 /// Device ID and Plug and Play (`PNP`) device codes used throughout ACPI tables.
-/// UEFI and ACPI use standardized IDs as described in https://uefi.org/PNP_ACPI_Registry,
+/// UEFI and ACPI use standardized IDs as described in <https://uefi.org/PNP_ACPI_Registry>,
 /// which itself points to reserved device IDs at
-/// https://uefi.org/sites/default/files/resources/devids%20%285%29.txt
+/// <https://uefi.org/sites/default/files/resources/devids%20%285%29.txt>
 pub mod devids {
     // --Interrupt Controllers--
     pub const AT_INT_CONTROLLER: &'static str = "PNP0000";

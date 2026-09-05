@@ -1421,9 +1421,9 @@ pub mod formats {
     /// Adapted from <https://docs.kernel.org/firmware-guide/acpi/namespace.html>
     ///
     /// These addresses are only know at boot time, so each reference has a
-    /// corresponding [`AddPointerCommand`] that the firmware executes on boot.
+    /// corresponding `AddPointerCommand` that the firmware executes on boot.
     /// And since the table has been modified, they also need a
-    /// [`AddChecksumCommand`] to recalculate the final table checksum.
+    /// `AddChecksumCommand` to recalculate the final table checksum.
     pub struct AcpiTablesBuilder<'a> {
         config: &'a AcpiConfig<'a>,
         tables: Vec<u8>,
