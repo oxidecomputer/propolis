@@ -110,6 +110,12 @@ impl VirtioState {
         self.msix_queue_vec.fill(VIRTIO_MSI_NO_VECTOR);
     }
 
+    fn negotiation_closed(&self) -> bool {
+        self.status.intersects(
+            Status::FEATURES_OK | Status::DRIVER_OK | Status::NEEDS_RESET,
+        )
+    }
+
     fn witness_config_generation(&mut self) {
         self.config_generation_seen = true;
     }
@@ -644,6 +650,22 @@ impl PciVirtioState {
                     };
                     let offered = (u64::from(wo.read_u32()) << shift) | current;
                     let negotiated = self.features_supported(dev) & offered;
+
+                    // Once negotiation is closed, only the accepted feature
+                    // mask is still valid.
+                    //
+                    // - A write that produces the same mask is a no-op.
+                    // - A different mask requires a reset. NEEDS_RESET closes
+                    //   the gate after a failed feature call.
+                    //
+                    // Note: VirtIO 1.2 (§ 2.2, "Feature Bits") states that
+                    // renegotiation requires a device reset.
+                    if state.negotiation_closed() {
+                        if negotiated != state.negotiated_features {
+                            self.needs_reset_locked(dev, &mut state);
+                        }
+                        return;
+                    }
                     state.negotiated_features = negotiated;
                 }
             }
@@ -992,6 +1014,22 @@ impl PciVirtioState {
                 let offered = u64::from(wo.read_u32());
                 let negotiated = self.features_supported(dev) & offered;
                 let mut state = self.state.lock().unwrap();
+
+                // Once negotiation is closed, only the accepted feature
+                // mask is still valid.
+                //
+                // - A write that produces the same mask is a no-op.
+                // - A different mask requires a reset. NEEDS_RESET closes
+                //   the gate after a failed feature call.
+                //
+                // Note: VirtIO 1.2 (§ 2.2, "Feature Bits") states that
+                // renegotiation requires a device reset.
+                if state.negotiation_closed() {
+                    if negotiated != state.negotiated_features {
+                        self.needs_reset_locked(dev, &mut state);
+                    }
+                    return;
+                }
                 match dev.set_features(negotiated) {
                     Ok(_) => {
                         state.negotiated_features = negotiated;
@@ -1096,6 +1134,10 @@ impl PciVirtioState {
         let new_bits = status.difference(state.status);
 
         if new_bits.contains(Status::FEATURES_OK) {
+            if state.status.contains(Status::NEEDS_RESET) {
+                return;
+            }
+
             // From VirtIO 1.2 section 2.1:
             //
             // > FEATURES_OK (8) Indicates that the driver has acknowledged
@@ -1107,10 +1149,9 @@ impl PciVirtioState {
             // ("The only way to renegotiate is to reset the device."). The
             // features provided are the ones we should enable.
             if dev.set_features(state.negotiated_features) == Err(()) {
-                // Those requested features were not tolerable. We *must not*
-                // reflect FEATURES_OK in status. Additionally, set NEEDS_RESET
-                // in the hopes that the guset might see the issue and attempt
-                // operating in a less-featureful mode.
+                // Those requested features were not tolerable. We do not
+                // reflect FEATURES_OK in status. The device must be reset
+                // before feature negotiation can be attempted again.
                 self.needs_reset_locked(dev, state);
                 return;
             }
@@ -1851,5 +1892,457 @@ pub mod migrate {
         fn id() -> SchemaId {
             ("pci-virtio", 1)
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    use std::sync::atomic::AtomicUsize;
+
+    use crate::hw::virtio::queue::VirtQueue;
+    use crate::lifecycle::Lifecycle;
+
+    const MOCK_DEV_FEATURES: u64 = 0x3;
+
+    #[derive(Default)]
+    struct MockDevice {
+        calls: AtomicUsize,
+        last: Mutex<Option<u64>>,
+        fail: AtomicBool,
+    }
+
+    impl Lifecycle for MockDevice {
+        fn type_name(&self) -> &'static str {
+            "mock"
+        }
+    }
+
+    impl VirtioDevice for MockDevice {
+        fn rw_dev_config(&self, _rwo: RWOp) {}
+
+        fn mode(&self) -> virtio::Mode {
+            virtio::Mode::Transitional
+        }
+
+        fn features(&self) -> u64 {
+            MOCK_DEV_FEATURES
+        }
+
+        fn set_features(&self, feat: u64) -> Result<(), ()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail.load(Ordering::SeqCst) {
+                return Err(());
+            }
+            *self.last.lock().unwrap() = Some(feat);
+            Ok(())
+        }
+
+        fn queue_notify(&self, _vq: &VirtQueue) {}
+    }
+
+    fn setup() -> (PciVirtioState, pci::DeviceState, MockDevice) {
+        let queues = VirtQueues::new(&[VqSize::new(64), VqSize::new(64)]);
+        let (virtio_state, device_state) = PciVirtioState::new(
+            virtio::Mode::Transitional,
+            queues,
+            None,
+            virtio::DeviceId::Network,
+            0x20,
+        );
+        (virtio_state, device_state, MockDevice::default())
+    }
+
+    fn write_legacy_features(
+        virtio_state: &PciVirtioState,
+        pci_state: &pci::DeviceState,
+        dev: &dyn VirtioDevice,
+        val: u32,
+    ) {
+        let buf = val.to_le_bytes();
+        let mut write_op = WriteOp::from_buf(0, &buf);
+        virtio_state.legacy_write(
+            pci_state,
+            dev,
+            &LegacyConfigReg::DriverFeature,
+            &mut write_op,
+        );
+    }
+
+    fn read_legacy_features(
+        virtio_state: &PciVirtioState,
+        dev: &dyn VirtioDevice,
+    ) -> u32 {
+        let mut buf = [0u8; 4];
+        let mut read_op = ReadOp::from_buf(0, &mut buf);
+        virtio_state.legacy_read(
+            dev,
+            &LegacyConfigReg::DriverFeature,
+            &mut read_op,
+        );
+        u32::from_le_bytes(buf)
+    }
+
+    fn read_status(
+        virtio_state: &PciVirtioState,
+        dev: &dyn VirtioDevice,
+    ) -> Status {
+        let mut buf = [0u8; 1];
+        let mut read_op = ReadOp::from_buf(0, &mut buf);
+        virtio_state.legacy_read(
+            dev,
+            &LegacyConfigReg::DeviceStatus,
+            &mut read_op,
+        );
+        Status::from_bits_truncate(buf[0])
+    }
+
+    fn write_common(
+        virtio_state: &PciVirtioState,
+        pci_state: &pci::DeviceState,
+        dev: &dyn VirtioDevice,
+        id: CommonConfigReg,
+        val: u32,
+    ) {
+        let buf = val.to_le_bytes();
+        let mut write_op = WriteOp::from_buf(0, &buf);
+        virtio_state.common_write(pci_state, dev, &id, &mut write_op);
+    }
+
+    fn write_common_features(
+        virtio_state: &PciVirtioState,
+        pci_state: &pci::DeviceState,
+        dev: &dyn VirtioDevice,
+        features: u64,
+    ) {
+        let wc = |id, val| write_common(virtio_state, pci_state, dev, id, val);
+        for (select, val) in
+            [(0, features as u32), (1, (features >> 32) as u32)]
+        {
+            wc(CommonConfigReg::DriverFeatureSelect, select);
+            wc(CommonConfigReg::DriverFeature, val);
+        }
+    }
+
+    fn read_common_features(
+        virtio_state: &PciVirtioState,
+        pci_state: &pci::DeviceState,
+        dev: &dyn VirtioDevice,
+    ) -> u64 {
+        let read = |id| {
+            let mut buf = [0u8; 4];
+            let mut read_op = ReadOp::from_buf(0, &mut buf);
+            virtio_state.common_read(dev, &id, &mut read_op);
+            u32::from_le_bytes(buf)
+        };
+        let selected = read(CommonConfigReg::DriverFeatureSelect);
+        let mut features = 0u64;
+        for bank in 0..2 {
+            write_common(
+                virtio_state,
+                pci_state,
+                dev,
+                CommonConfigReg::DriverFeatureSelect,
+                bank,
+            );
+            features |=
+                u64::from(read(CommonConfigReg::DriverFeature)) << (bank * 32);
+        }
+        write_common(
+            virtio_state,
+            pci_state,
+            dev,
+            CommonConfigReg::DriverFeatureSelect,
+            selected,
+        );
+        features
+    }
+
+    #[test]
+    fn legacy_feature_rewrite_before_driver_ok_flag() {
+        let (virtio_state, pci_state, dev) = setup();
+        write_legacy_features(&virtio_state, &pci_state, &dev, 0x1);
+        write_legacy_features(
+            &virtio_state,
+            &pci_state,
+            &dev,
+            MOCK_DEV_FEATURES as u32,
+        );
+
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(*dev.last.lock().unwrap(), Some(MOCK_DEV_FEATURES));
+        assert_eq!(
+            read_legacy_features(&virtio_state, &dev),
+            MOCK_DEV_FEATURES as u32
+        );
+        assert_eq!(read_status(&virtio_state, &dev), Status::RESET);
+    }
+
+    #[test]
+    fn legacy_feature_rewrite_after_driver_ok_flag() {
+        let (virtio_state, pci_state, dev) = setup();
+        write_legacy_features(&virtio_state, &pci_state, &dev, 0x1);
+        let status = Status::ACK | Status::DRIVER | Status::DRIVER_OK;
+        virtio_state.set_status(&dev, status.bits());
+        write_legacy_features(
+            &virtio_state,
+            &pci_state,
+            &dev,
+            MOCK_DEV_FEATURES as u32,
+        );
+
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(*dev.last.lock().unwrap(), Some(0x1));
+        assert_eq!(read_legacy_features(&virtio_state, &dev), 0x1);
+        assert_eq!(
+            read_status(&virtio_state, &dev),
+            status | Status::NEEDS_RESET
+        );
+    }
+
+    #[test]
+    fn legacy_feature_noop_rewrite_after_driver_ok_flag() {
+        let (virtio_state, pci_state, dev) = setup();
+        write_legacy_features(&virtio_state, &pci_state, &dev, 0x1);
+        let status = Status::ACK | Status::DRIVER | Status::DRIVER_OK;
+        virtio_state.set_status(&dev, status.bits());
+        write_legacy_features(&virtio_state, &pci_state, &dev, 0x1);
+
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(read_legacy_features(&virtio_state, &dev), 0x1);
+        assert_eq!(read_status(&virtio_state, &dev), status);
+    }
+
+    #[test]
+    fn legacy_feature_rewrite_after_features_ok_flag() {
+        let (virtio_state, pci_state, dev) = setup();
+        let negotiated = queue::Features::VERSION_1.bits() | MOCK_DEV_FEATURES;
+        write_common_features(&virtio_state, &pci_state, &dev, negotiated);
+        let status = Status::ACK | Status::DRIVER | Status::FEATURES_OK;
+        virtio_state.set_status(&dev, status.bits());
+
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(*dev.last.lock().unwrap(), Some(negotiated));
+
+        write_legacy_features(
+            &virtio_state,
+            &pci_state,
+            &dev,
+            MOCK_DEV_FEATURES as u32,
+        );
+
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            read_common_features(&virtio_state, &pci_state, &dev),
+            negotiated
+        );
+        assert_eq!(
+            read_status(&virtio_state, &dev),
+            status | Status::NEEDS_RESET
+        );
+
+        virtio_state.set_status(&dev, 0);
+        assert_eq!(read_status(&virtio_state, &dev), Status::RESET);
+
+        write_legacy_features(&virtio_state, &pci_state, &dev, 0x1);
+
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(*dev.last.lock().unwrap(), Some(0x1));
+        assert_eq!(read_legacy_features(&virtio_state, &dev), 0x1);
+    }
+
+    #[test]
+    fn legacy_feature_write_device_error_flag() {
+        let (virtio_state, pci_state, dev) = setup();
+        dev.fail.store(true, Ordering::SeqCst);
+        write_legacy_features(&virtio_state, &pci_state, &dev, 0x1);
+
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(*dev.last.lock().unwrap(), None);
+        assert_eq!(read_legacy_features(&virtio_state, &dev), 0);
+        assert_eq!(read_status(&virtio_state, &dev), Status::NEEDS_RESET);
+
+        dev.fail.store(false, Ordering::SeqCst);
+        for offered in [0, 0x1] {
+            write_legacy_features(&virtio_state, &pci_state, &dev, offered);
+
+            assert_eq!(dev.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(*dev.last.lock().unwrap(), None);
+            assert_eq!(read_legacy_features(&virtio_state, &dev), 0);
+            assert_eq!(read_status(&virtio_state, &dev), Status::NEEDS_RESET);
+        }
+
+        virtio_state.set_status(&dev, 0);
+
+        assert_eq!(read_status(&virtio_state, &dev), Status::RESET);
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 1);
+
+        write_legacy_features(&virtio_state, &pci_state, &dev, 0x1);
+
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(*dev.last.lock().unwrap(), Some(0x1));
+        assert_eq!(read_legacy_features(&virtio_state, &dev), 0x1);
+        assert_eq!(read_status(&virtio_state, &dev), Status::RESET);
+    }
+
+    fn common_rewrite_case(select: u32, changed: u32) {
+        let (virtio_state, pci_state, dev) = setup();
+        let wc =
+            |id, val| write_common(&virtio_state, &pci_state, &dev, id, val);
+        let features = queue::Features::VERSION_1.bits() | 0x1;
+        write_common_features(&virtio_state, &pci_state, &dev, features);
+        let status = Status::ACK | Status::DRIVER | Status::FEATURES_OK;
+        virtio_state.set_status(&dev, status.bits());
+
+        wc(CommonConfigReg::DriverFeatureSelect, select);
+        wc(CommonConfigReg::DriverFeature, 0x1);
+
+        assert_eq!(read_status(&virtio_state, &dev), status);
+        assert_eq!(
+            read_common_features(&virtio_state, &pci_state, &dev),
+            features
+        );
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 1);
+
+        wc(CommonConfigReg::DriverFeature, changed);
+
+        assert_eq!(
+            read_status(&virtio_state, &dev),
+            status | Status::NEEDS_RESET
+        );
+        assert_eq!(
+            read_common_features(&virtio_state, &pci_state, &dev),
+            features
+        );
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(*dev.last.lock().unwrap(), Some(features));
+    }
+
+    #[test]
+    fn common_feature_rewrite_after_features_ok_flag() {
+        common_rewrite_case(0, MOCK_DEV_FEATURES as u32);
+        common_rewrite_case(1, 0x0);
+    }
+
+    #[test]
+    fn common_feature_rewrite_after_driver_ok_flag() {
+        let (virtio_state, pci_state, dev) = setup();
+        write_legacy_features(&virtio_state, &pci_state, &dev, 0x1);
+        let status = Status::ACK | Status::DRIVER | Status::DRIVER_OK;
+        virtio_state.set_status(&dev, status.bits());
+
+        write_common(
+            &virtio_state,
+            &pci_state,
+            &dev,
+            CommonConfigReg::DriverFeature,
+            MOCK_DEV_FEATURES as u32,
+        );
+
+        assert_eq!(
+            read_status(&virtio_state, &dev),
+            status | Status::NEEDS_RESET
+        );
+        assert_eq!(read_common_features(&virtio_state, &pci_state, &dev), 0x1);
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(*dev.last.lock().unwrap(), Some(0x1));
+    }
+
+    #[test]
+    fn common_feature_renegotiate_after_reset_flag() {
+        let (virtio_state, pci_state, dev) = setup();
+        let features = queue::Features::VERSION_1.bits() | 0x1;
+        write_common_features(&virtio_state, &pci_state, &dev, features);
+        let status = Status::ACK | Status::DRIVER | Status::FEATURES_OK;
+        virtio_state.set_status(&dev, status.bits());
+
+        let changed = queue::Features::VERSION_1.bits() | MOCK_DEV_FEATURES;
+        write_common_features(&virtio_state, &pci_state, &dev, changed);
+        assert_eq!(
+            read_status(&virtio_state, &dev),
+            status | Status::NEEDS_RESET
+        );
+
+        virtio_state.set_status(&dev, 0);
+
+        assert_eq!(read_status(&virtio_state, &dev), Status::RESET);
+        assert_eq!(read_common_features(&virtio_state, &pci_state, &dev), 0);
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 1);
+
+        write_common_features(&virtio_state, &pci_state, &dev, changed);
+
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 1);
+        virtio_state.set_status(&dev, status.bits());
+        assert_eq!(read_status(&virtio_state, &dev), status);
+        assert_eq!(
+            read_common_features(&virtio_state, &pci_state, &dev),
+            changed
+        );
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(*dev.last.lock().unwrap(), Some(changed));
+    }
+
+    #[test]
+    fn common_feature_retry_after_device_error_flag() {
+        let (virtio_state, pci_state, dev) = setup();
+        let features = queue::Features::VERSION_1.bits() | MOCK_DEV_FEATURES;
+        let status = Status::ACK | Status::DRIVER;
+        virtio_state.set_status(&dev, status.bits());
+        write_common_features(&virtio_state, &pci_state, &dev, features);
+        dev.fail.store(true, Ordering::SeqCst);
+        virtio_state.set_status(&dev, (status | Status::FEATURES_OK).bits());
+
+        let failed_status = status | Status::NEEDS_RESET;
+        assert_eq!(read_status(&virtio_state, &dev), failed_status);
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(*dev.last.lock().unwrap(), None);
+        assert_eq!(
+            read_common_features(&virtio_state, &pci_state, &dev),
+            features
+        );
+
+        dev.fail.store(false, Ordering::SeqCst);
+        virtio_state
+            .set_status(&dev, (failed_status | Status::FEATURES_OK).bits());
+
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(read_status(&virtio_state, &dev), failed_status);
+
+        let fewer_features = queue::Features::VERSION_1.bits() | 0x1;
+        write_common_features(&virtio_state, &pci_state, &dev, fewer_features);
+
+        assert_eq!(
+            read_common_features(&virtio_state, &pci_state, &dev),
+            features
+        );
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(*dev.last.lock().unwrap(), None);
+        assert_eq!(read_status(&virtio_state, &dev), failed_status);
+
+        virtio_state.set_status(&dev, 0);
+
+        assert_eq!(read_status(&virtio_state, &dev), Status::RESET);
+        assert_eq!(read_common_features(&virtio_state, &pci_state, &dev), 0);
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 1);
+
+        virtio_state.set_status(&dev, status.bits());
+        write_common_features(&virtio_state, &pci_state, &dev, fewer_features);
+        let status = status | Status::FEATURES_OK;
+        virtio_state.set_status(&dev, status.bits());
+
+        assert_eq!(read_status(&virtio_state, &dev), status);
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(*dev.last.lock().unwrap(), Some(fewer_features));
+        assert_eq!(
+            read_common_features(&virtio_state, &pci_state, &dev),
+            fewer_features
+        );
+
+        let status = status | Status::DRIVER_OK;
+        virtio_state.set_status(&dev, status.bits());
+
+        assert_eq!(read_status(&virtio_state, &dev), status);
+        assert_eq!(dev.calls.load(Ordering::SeqCst), 2);
     }
 }
