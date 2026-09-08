@@ -38,6 +38,11 @@ pub(crate) fn latest_to_spec_builder(
     value: latest::instance_spec::InstanceSpec,
 ) -> Result<SpecBuilder, ApiSpecError> {
     let mut builder = SpecBuilder::with_instance_spec_board(value.board)?;
+
+    if let Some(smbios) = value.smbios {
+        builder.set_smbios_type1_input(smbios);
+    }
+
     let mut devices: Vec<(SpecKey, latest::instance_spec::Component)> = vec![];
     let mut boot_settings = None;
     let mut storage_backends: BTreeMap<SpecKey, StorageBackend> =
