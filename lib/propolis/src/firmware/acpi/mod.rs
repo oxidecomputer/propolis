@@ -16,7 +16,7 @@
 //! currently focused on retaining compatibility with the original static EDK2
 //! tables. The original tables can be found in the EDK2 fork repository.
 //!
-//! <https://github.com/oxidecomputer/edk2/tree/propolis/edk2-stable202105/OvmfPkg/AcpiTables>
+//! https://github.com/oxidecomputer/edk2/tree/propolis/edk2-stable202105/OvmfPkg/AcpiTables
 
 use serde::{Deserialize, Serialize};
 

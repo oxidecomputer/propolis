@@ -4,7 +4,7 @@
 
 //! Generates the same SSDT table as the original EDK2 static tables.
 //!
-//! The [`SsdtEdk2`] struct implements the `Aml` trait of the `acpi_tables` crate
+//! The [`Ssdt`] struct implements the `Aml` trait of the `acpi_tables` crate
 //! and can write the AML bytecode to any AmlSink, like a `Vec<u8>`.
 
 // This SSDT table is kept the same as the original EDK2 static table.
