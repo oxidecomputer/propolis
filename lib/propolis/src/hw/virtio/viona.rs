@@ -51,7 +51,7 @@ pub const fn max_num_queues() -> usize {
     PROPOLIS_MAX_MQ_PAIRS as usize * 2
 }
 
-/// The index of the control queue when multiqueue ([`VIRTIO_NET_F_MQ`]) has
+/// The index of the control queue when multiqueue (`VIRTIO_NET_F_MQ`) has
 /// not been negotiated.
 ///
 /// In this case, the driver will behave as though we have allocated only one
@@ -425,7 +425,7 @@ pub enum PromiscLevel {
     /// The device should receive only packets for its installed MAC
     /// filters.
     ///
-    /// Today this allows solely [`PciVirtioViona::mac_addr`].
+    /// Today this allows solely `PciVirtioViona::mac_addr`.
     #[default]
     None,
     /// The device should receive all multicast traffic in addition
