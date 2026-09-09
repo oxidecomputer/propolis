@@ -97,7 +97,7 @@ impl Aml for Fadt {
     /// the individual fields.
     ///
     /// The current values are retained from the original EDK2 static tables.
-    /// https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiTables/Platform.h#L25-L56
+    /// <https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiTables/Platform.h#L25-L56>
     ///
     /// fwts reports 1 high failure for this table:
     ///   - fadt: FADT X_GPE0_BLK Access width 0x00 but it should be 1 (byte access).
