@@ -78,6 +78,29 @@ pub struct Main {
     /// Default: V0
     #[serde(default)]
     pub acpi_variant: AcpiVariant,
+
+    /// The kind of hypervisor interface to present to guests
+    ///
+    /// Default: Bhyve
+    #[serde(default)]
+    pub hv_interface: HypervisorInterface,
+}
+
+/// The hypervisor interface to present to guest OSes.
+///
+/// The variants here correspond to implementations of `Enlightenment`, which
+/// may influence many aspects of a VM. Most immediately, different interfaces
+/// have different CPUID leaves, but can also support para-virtualized features
+/// such as additional hypercalls and MSRs.
+#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum HypervisorInterface {
+    #[default]
+    Bhyve,
+
+    HyperV {
+        reference_tsc: bool,
+    },
 }
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]

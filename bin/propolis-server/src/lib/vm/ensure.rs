@@ -95,6 +95,7 @@ use oximeter::types::ProducerRegistry;
 use oximeter_instruments::kstat::KstatSampler;
 use propolis::common::DeviceMetadataMap;
 use propolis::enlightenment::{
+    self,
     bhyve::BhyveGuestInterface,
     hyperv::{Features as HyperVFeatures, HyperV},
     Enlightenment,
@@ -496,28 +497,26 @@ async fn initialize_vm_objects(
 
     let vmm_log = log.new(slog::o!("component" => "vmm"));
 
-    let (guest_hv_interface, guest_hv_lifecycle) =
-        match &spec.board.guest_hv_interface {
-            GuestHypervisorInterface::Bhyve => {
-                let bhyve = Arc::new(BhyveGuestInterface);
-                let lifecycle = bhyve.clone();
-                (bhyve as Arc<dyn Enlightenment>, lifecycle.as_lifecycle())
-            }
-            GuestHypervisorInterface::HyperV { features } => {
-                let mut hv_features = HyperVFeatures::default();
-                for f in features {
-                    match f {
-                        HyperVFeatureFlag::ReferenceTsc => {
-                            hv_features.reference_tsc = true
-                        }
+    let guest_hv_interface = match &spec.board.guest_hv_interface {
+        GuestHypervisorInterface::Bhyve => {
+            Arc::new(BhyveGuestInterface) as Arc<dyn Enlightenment>
+        }
+        GuestHypervisorInterface::HyperV { features } => {
+            let mut hv_features = HyperVFeatures::default();
+            for f in features {
+                match f {
+                    HyperVFeatureFlag::ReferenceTsc => {
+                        hv_features.reference_tsc = true
                     }
                 }
-
-                let hyperv = Arc::new(HyperV::new(&vmm_log, hv_features));
-                let lifecycle = hyperv.clone();
-                (hyperv as Arc<dyn Enlightenment>, lifecycle.as_lifecycle())
             }
-        };
+
+            let hv = HyperV::new(&vmm_log, hv_features);
+            Arc::new(hv) as Arc<dyn Enlightenment>
+        }
+    };
+    let guest_hv_lifecycle =
+        enlightenment::as_lifecycle(Arc::clone(&guest_hv_interface));
 
     // Set up the 'shell' instance into which the rest of this routine will
     // add components.
