@@ -200,6 +200,10 @@ struct NvmeCtrl {
     /// Doorbell Buffer Config state
     doorbell_buf: Option<queue::DoorbellBuffer>,
 
+    /// Async Event Requests parked until an event is posted or the
+    /// controller is reset (see the AsyncEventReq admin command handling).
+    parked_aers: Vec<queue::Permit>,
+
     /// MSI-X Interrupt Handle to signal VM
     msix_hdl: Option<pci::MsixHdl>,
 
@@ -538,6 +542,12 @@ impl NvmeCtrl {
         // Sets CC.EN=0 and CSTS.RDY=0
         self.ctrl.cc = Configuration(0);
         self.ctrl.csts = Status(0);
+
+        // Parked Async Event Requests are implicitly aborted by the reset;
+        // their queues are already torn down so there is nothing to complete.
+        for permit in self.parked_aers.drain(..) {
+            permit.abandon();
+        }
 
         // Other bits which are cleared on reset
         self.doorbell_buf = None;
@@ -925,6 +935,7 @@ impl PciNvme {
             device_id: DeviceId::new(),
             ctrl: CtrlState { cap, vs, cc, csts, ..Default::default() },
             doorbell_buf: None,
+            parked_aers: Vec::new(),
             msix_hdl: None,
             cqs: Default::default(),
             sqs: Default::default(),
@@ -1044,22 +1055,21 @@ impl PciNvme {
                 ro.write_u32(state.ctrl.csts.0);
             }
             CtrlrReg::AdminQueueAttr => {
+                // These registers may only be modified while the controller
+                // is disabled, but reads must always return the last value
+                // written (NVMe 1.0e Section 3.1; e.g. Windows Server 2025's
+                // stornvme reads ASQ back after enabling the controller and
+                // treats a mismatch as a fatal adapter error).
                 let state = self.state.lock().unwrap();
-                if !state.ctrl.cc.enabled() {
-                    ro.write_u32(state.ctrl.aqa.0);
-                }
+                ro.write_u32(state.ctrl.aqa.0);
             }
             CtrlrReg::AdminSubQAddr => {
                 let state = self.state.lock().unwrap();
-                if !state.ctrl.cc.enabled() {
-                    ro.write_u64(state.ctrl.admin_sq_base);
-                }
+                ro.write_u64(state.ctrl.admin_sq_base);
             }
             CtrlrReg::AdminCompQAddr => {
                 let state = self.state.lock().unwrap();
-                if !state.ctrl.cc.enabled() {
-                    ro.write_u64(state.ctrl.admin_cq_base);
-                }
+                ro.write_u64(state.ctrl.admin_cq_base);
             }
             CtrlrReg::Reserved => {
                 ro.fill(0);
@@ -1361,16 +1371,14 @@ impl PciNvme {
                     state.acmd_delete_io_sq(sqid, self)
                 }
                 AdminCmd::AsyncEventReq => {
-                    // async event requests do not appear to be an optional
-                    // feature but are not yet supported. The only
-                    // command-specific error we could return is "async event
-                    // limit exceeded".
-                    //
-                    // qemu's emulated NVMe also does not support async events
-                    // but returns invalid opcode with the do-not-retry flag
-                    // set. Do the same so that guest drivers that check for
-                    // this can detect it and stop posting async events.
-                    cmds::Completion::generic_err(bits::STS_INVAL_OPC).dnr()
+                    // Async Event Requests remain outstanding until an event
+                    // occurs (which we never post) or the controller is
+                    // reset; they do not receive an immediate completion.
+                    // Completing them with an error instead sends some
+                    // guests (e.g. Windows Server 2025's stornvme) into a
+                    // tight resubmit loop, despite the do-not-retry flag.
+                    state.parked_aers.push(permit);
+                    continue;
                 }
                 AdminCmd::DoorbellBufCfg(cmd) => {
                     state.acmd_doorbell_buf_cfg(&cmd)
