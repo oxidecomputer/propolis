@@ -14,7 +14,7 @@ use crate::v1::components::board;
 use crate::v1::instance::{InstanceProperties, InstanceState};
 use crate::v1::instance_spec::{Component, SpecKey};
 
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SmbiosType1Input {
     pub manufacturer: String,

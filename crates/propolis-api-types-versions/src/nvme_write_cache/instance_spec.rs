@@ -19,7 +19,7 @@ use crate::v3::instance_spec::Component as V3Component;
 
 pub use super::components::devices::NvmeDisk;
 
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, PartialEq)]
 #[serde(
     deny_unknown_fields,
     tag = "type",
