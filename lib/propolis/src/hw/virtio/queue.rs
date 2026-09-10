@@ -464,7 +464,6 @@ impl VirtQueue {
             },
             avail_idx: avail.cur_avail_idx.0,
             used_idx: used.used_idx.0,
-            last_chk_uidx: used.last_chk_uidx.0,
         }
     }
 
@@ -482,7 +481,7 @@ impl VirtQueue {
         used.valid = info.mapping.valid;
         avail.cur_avail_idx = Wrapping(info.avail_idx);
         used.used_idx = Wrapping(info.used_idx);
-        used.last_chk_uidx = Wrapping(info.last_chk_uidx);
+        used.last_chk_uidx = Wrapping(info.used_idx);
     }
 
     /// Accummulates a sequence of available descriptors into a `Chain`.
@@ -1162,7 +1161,6 @@ pub struct Info {
     pub mapping: MapInfo,
     pub avail_idx: u16,
     pub used_idx: u16,
-    pub last_chk_uidx: u16,
 }
 
 pub struct VirtQueues {
