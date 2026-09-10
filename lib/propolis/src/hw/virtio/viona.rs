@@ -624,7 +624,9 @@ impl PciVirtioViona {
                 .intr_poll(self.virtio_state.queues.len(), |vq_idx| {
                     self.hdl.ring_intr_clear(vq_idx).unwrap();
                     let vq = self.virtio_state.queues.get(vq_idx).unwrap();
-                    vq.send_intr(&mem);
+                    if vq.needs_intr(&mem) {
+                        vq.send_intr();
+                    }
                 })
                 .unwrap();
         }
@@ -632,19 +634,32 @@ impl PciVirtioViona {
 
     fn ctl_queue_notify(&self, vq: &VirtQueue) {
         if let Some(mem) = self.pci_state.acc_mem.access() {
-            while !vq.avail_is_empty(&mem) {
-                let mut chain = Chain::with_capacity(4);
-                let intrs_en = vq.disable_intr(&mem);
-                while let Some((_idx, _len)) = vq.pop_avail(&mut chain, &mem) {
-                    let res = match self.ctl_msg(&mut chain, &mem) {
-                        Ok(_) => control::Ack::Ok,
-                        Err(_) => control::Ack::Err,
-                    } as u8;
-                    chain.write(&res, &mem);
-                    vq.push_used(&mut chain, &mem);
+            loop {
+                vq.disable_intr(&mem);
+
+                while !vq.avail_is_empty(&mem) {
+                    let mut chain = Chain::with_capacity(4);
+
+                    while let Some((_idx, _len)) =
+                        vq.pop_avail(&mut chain, &mem)
+                    {
+                        let res = match self.ctl_msg(&mut chain, &mem) {
+                            Ok(_) => control::Ack::Ok,
+                            Err(_) => control::Ack::Err,
+                        } as u8;
+                        chain.write(&res, &mem);
+                        vq.push_used(&mut chain, &mem);
+                    }
                 }
-                if intrs_en {
-                    vq.enable_intr(&mem);
+
+                vq.enable_intr(&mem);
+
+                crate::hw::virtio::membar_enter();
+
+                // Check if enabling the interrupt raced with the
+                // driver publishing new entries to avail.
+                if vq.avail_is_empty(&mem) {
+                    break;
                 }
             }
         }
@@ -1101,6 +1116,13 @@ impl VirtioDevice for PciVirtioViona {
     fn set_features(&self, feat: u64) -> Result<(), ()> {
         self.hdl.set_features(feat).map_err(|_| ())?;
 
+        eprintln!("set_features: {:?}", feat);
+
+        if (feat & VIRTIO_F_EVENT_IDX) != 0 {
+            eprintln!("set f_event_idx on all queues");
+            self.virtio_state.queues.set_f_event_idx(true);
+        }
+
         // Any remaining setup is for control-queue based features.
         let control_queue = if (feat & VIRTIO_NET_F_CTRL_VQ) == 0 {
             None
@@ -1439,6 +1461,7 @@ impl From<&VirtQueue> for viona_api::vioc_ring_state {
         let used_addr = state.mapping.used_addr;
         let avail_idx = state.avail_idx;
         let used_idx = state.used_idx;
+        let last_chk_uidx = state.last_chk_uidx;
         viona_api::vioc_ring_state {
             vrs_index: id,
             vrs_qsize: size,
@@ -1446,6 +1469,7 @@ impl From<&VirtQueue> for viona_api::vioc_ring_state {
             vrs_qaddr_avail: avail_addr,
             vrs_qaddr_used: used_addr,
             vrs_used_idx: used_idx,
+            vrs_last_chk_uidx: last_chk_uidx,
             vrs_avail_idx: avail_idx,
         }
     }
@@ -1562,6 +1586,7 @@ impl VionaHdl {
             },
             avail_idx: cfg.vrs_avail_idx,
             used_idx: cfg.vrs_used_idx,
+            last_chk_uidx: cfg.vrs_last_chk_uidx,
         })
     }
     fn ring_cfg_msi(
