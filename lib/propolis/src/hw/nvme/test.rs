@@ -467,6 +467,8 @@ enum TestOperation {
     CreateCQ(u16),
     DeleteSQ(u16),
     DeleteCQ(u16),
+    SubmitRead { queue: u16 },
+    SubmitWrite { queue: u16 },
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -493,6 +495,8 @@ fn fuzzy() -> Result<(), NvmeError> {
         // should ever be used. Queue ID 0 is for admin queues, and is fully
         // unused here.
         submission_queues: [bool; 17],
+        avail_ids: [Vec<u16>; 17],
+        outstanding_ids: [Bitmap<1024>; 17],
         completion_queues: [bool; 17],
     }
 
