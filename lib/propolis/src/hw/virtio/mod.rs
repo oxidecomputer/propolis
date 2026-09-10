@@ -210,8 +210,8 @@ pub trait VirtioDevice: Send + Sync + 'static + Lifecycle {
 
     /// Sets the device-specific virtio feature bits
     ///
-    /// Returns `Err` if an error occurred while setting the features. The
-    /// VirtIO transport reports `NEEDS_RESET` when this happens.
+    /// Returns `Err` if an error occurred while setting the features.  Doing so
+    /// will transition the device to the Failed state.
     fn set_features(&self, feat: u64) -> Result<(), ()>;
 
     /// Service driver notification for a given virtqueue
