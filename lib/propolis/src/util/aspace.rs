@@ -49,9 +49,9 @@ impl<T> ASpace<T> {
     ///
     /// # Panics
     ///
-    /// - Panics if start >= end.
-    pub fn new(start: usize, end: usize) -> ASpace<T> {
-        assert!(start < end);
+    /// - Panics if start > end.
+    pub const fn new(start: usize, end: usize) -> ASpace<T> {
+        assert!(start <= end);
         Self { start, end, map: BTreeMap::new() }
     }
 
@@ -171,6 +171,8 @@ impl<T> ASpace<T> {
     }
 }
 
+// Compute the end of the inclusive range beginning at `start` and covering
+// `len` address space.
 fn safe_end(start: usize, len: usize) -> Option<usize> {
     if len == 0 {
         None
@@ -179,6 +181,25 @@ fn safe_end(start: usize, len: usize) -> Option<usize> {
     } else {
         (start - 1).checked_add(len)
     }
+}
+
+#[test]
+fn safe_end_bounds() {
+    // An inclusive region of size zero is nonsense.
+    assert_eq!(safe_end(0, 0), None);
+    assert_eq!(safe_end(1, 0), None);
+
+    // An inclusive region of size one can exist anywhere.
+    assert_eq!(safe_end(0, 1), Some(0));
+    assert_eq!(safe_end(16, 1), Some(16));
+    assert_eq!(safe_end(usize::MAX, 1), Some(usize::MAX));
+
+    // Given `[0, usize::MAX]` as possible addresses, the size of that set is
+    // actually `usize::MAX + 1`. This means:
+    // * there is no `len` that covers the entire possible span
+    // * start=0, len=usize::MAX is a span that ends at usize::MAX-1
+    assert_eq!(safe_end(0, usize::MAX), Some(usize::MAX - 1));
+    assert_eq!(safe_end(1, usize::MAX), Some(usize::MAX));
 }
 
 // Flatten the K/V nested tuple
@@ -284,9 +305,13 @@ mod test {
     use super::*;
 
     #[test]
-    #[should_panic]
-    fn create_zero_size() {
-        let _s: ASpace<u32> = ASpace::new(0, 0);
+    fn create_one_elem() {
+        let mut s: ASpace<u32> = ASpace::new(0, 0);
+        s.register(0, 1, 0xaa)
+            .expect("can register an element in one-elem ASpace");
+        assert_eq!(s.register(0, 2, 0x11), Err(Error::OutOfRange));
+        assert_eq!(s.register(1, 2, 0x22), Err(Error::OutOfRange));
+        assert_eq!(s.region_at(0), Ok((0, 1, &0xaa)));
     }
     #[test]
     fn create_max() {

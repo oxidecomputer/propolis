@@ -46,7 +46,7 @@ lazy_static! {
 }
 
 #[derive(Default, Debug)]
-#[repr(packed)]
+#[repr(C, packed)]
 struct Config {
     addr: u64,
     fourcc: u32,

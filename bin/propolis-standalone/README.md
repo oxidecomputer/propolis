@@ -6,7 +6,7 @@ prototyping, `propolis-standalone`. It uses a static toml configuration:
 ## Running
 
 ```
-# propolis-standalone <config_file>
+# pfexec propolis-standalone <config_file>
 ```
 
 Example configuration:
@@ -39,6 +39,12 @@ pci-path = "0.4.0"
 driver = "pci-virtio-viona"
 vnic = "vnic_name"
 pci-path = "0.5.0"
+
+# Override Rx queue size
+# rx-queue-size = 2048
+
+# Override Tx queue size
+# tx-queue-size = 256
 ```
 
 Propolis will not destroy the VM instance on exit.  If one exists with the
@@ -61,7 +67,7 @@ are some options to get up-and-running quickly:
 ### Guest bootrom
 
 The current recommended and tested guest bootrom is available
-[here](https://buildomat.eng.oxide.computer/public/file/oxidecomputer/edk2/image_debug/907a5fd1763ce5ddd74001261e5b52cd200a25f9/OVMF_CODE.fd).
+[here](https://buildomat.eng.oxide.computer/public/file/oxidecomputer/edk2/image_debug/bf64f45b1a58e69d126a3c6ca1e4512c88668132/OVMF_CODE.fd).
 
 Other UEFI firmware images built from the [Open Virtual Machine Firmware
 project](https://github.com/tianocore/tianocore.github.io/wiki/OVMF) may also

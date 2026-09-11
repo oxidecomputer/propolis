@@ -5,6 +5,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use phd_framework::test_vm::TestVmManualStop;
 use phd_tests::phd_testcase::{Framework, TestCase, TestOutcome};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::watch;
@@ -98,9 +99,20 @@ pub async fn run_tests_with_ctx(
         }
 
         stats.tests_not_run -= 1;
-        let test_ctx = ctx.clone();
+        let framework = ctx.clone();
         let tc = execution.tc;
         let mut sigint_rx_task = sigint_rx.clone();
+        let mut test_ctx = framework.test_ctx(tc.fully_qualified_name());
+        let mut success_tx = None;
+        if run_opts.manual_stop_on_failure {
+            let (tx, success_rx) = watch::channel(None);
+            test_ctx.set_cleanup_task_outcome_receiver(TestVmManualStop::new(
+                tc.fully_qualified_name(),
+                success_rx,
+                sigint_rx.clone(),
+            ));
+            success_tx = Some(tx);
+        }
         let test_outcome = tokio::spawn(async move {
             tokio::select! {
                 // Ensure interrupt signals are always handled instead of
@@ -116,7 +128,7 @@ pub async fn run_tests_with_ctx(
                         Some("test interrupted by SIGINT".to_string())
                     )
                 }
-                outcome = tc.run(test_ctx.as_ref()) => outcome
+                outcome = tc.run(&test_ctx) => outcome
             }
         })
         .await
@@ -142,6 +154,11 @@ pub async fn run_tests_with_ctx(
                 _ => "",
             }
         );
+
+        if let Some(tx) = success_tx {
+            let succeeded = !matches!(&test_outcome, TestOutcome::Failed(_));
+            let _: Result<_, _> = tx.send(Some(succeeded));
+        }
 
         match test_outcome {
             TestOutcome::Passed => stats.tests_passed += 1,

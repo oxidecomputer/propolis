@@ -11,7 +11,7 @@ use propolis_api_types::instance_spec::{
         board::Board as InstanceSpecBoard,
         devices::{PciPciBridge, SerialPortNumber},
     },
-    PciPath, SpecKey,
+    PciPath, SmbiosType1Input, SpecKey,
 };
 use thiserror::Error;
 
@@ -24,6 +24,7 @@ use crate::spec::SerialPortDevice;
 
 use super::{
     Board, BootOrderEntry, BootSettings, Disk, Nic, QemuPvpanic, SerialPort,
+    VirtioSocket,
 };
 
 #[cfg(feature = "failure-injection")]
@@ -50,6 +51,9 @@ pub(crate) enum SpecBuilderError {
     #[error("pvpanic device already specified")]
     PvpanicInUse,
 
+    #[error("vsock device already specified")]
+    VsockInUse,
+
     #[cfg(feature = "failure-injection")]
     #[error("migration failure injection already enabled")]
     MigrationFailureInjectionInUse,
@@ -67,6 +71,18 @@ pub(crate) enum SpecBuilderError {
     DefaultCpuidReadFailed(#[from] cpuid_utils::host::GetHostCpuidError),
 }
 
+/// A builder onto which devices and other components are added as an
+/// `InstanceSpec` is interpreted. Among other things, this services as a
+/// forcing function to canonicalize VM descriptions, where we can enforce
+/// invariants about components (such as "disk devices must reference backends
+/// that exist").
+///
+/// Note that the API type `Component` itself does not appear here: the
+/// expectation is that individual components' definitions change relatively
+/// rarely, so callers do the work of mapping components to the
+/// closer-to-internal definitions that `SpecBuilder` accepts. In theory,
+/// hopefully, this means `SpecBuilder` itself changes rarely and can be more
+/// readily audited for semantic drift.
 #[derive(Debug, Default)]
 pub(crate) struct SpecBuilder {
     spec: super::Spec,
@@ -96,6 +112,7 @@ impl SpecBuilder {
                     memory_mb: board.memory_mb,
                     chipset: board.chipset,
                     guest_hv_interface: board.guest_hv_interface,
+                    acpi_variant: propolis::firmware::acpi::AcpiVariant::V0,
                 },
                 cpuid,
                 ..Default::default()
@@ -269,6 +286,25 @@ impl SpecBuilder {
         Ok(self)
     }
 
+    pub fn add_vsock_device(
+        &mut self,
+        vsock: VirtioSocket,
+    ) -> Result<&Self, SpecBuilderError> {
+        if self.component_names.contains(&vsock.id) {
+            return Err(SpecBuilderError::ComponentNameInUse(vsock.id));
+        }
+
+        if self.spec.vsock.is_some() {
+            return Err(SpecBuilderError::VsockInUse);
+        }
+
+        self.register_pci_device(vsock.spec.pci_path)?;
+        self.component_names.insert(vsock.id.clone());
+        self.spec.vsock = Some(vsock);
+
+        Ok(self)
+    }
+
     #[cfg(feature = "failure-injection")]
     pub fn add_migration_failure_device(
         &mut self,
@@ -355,6 +391,11 @@ impl SpecBuilder {
         Ok(self)
     }
 
+    /// Sets the SMBIOS type 1 table contents to expose to the guest.
+    pub fn set_smbios_type1_input(&mut self, input: SmbiosType1Input) {
+        self.spec.smbios_type1_input = Some(input);
+    }
+
     /// Yields the completed spec, consuming the builder.
     pub fn finish(self) -> super::Spec {
         self.spec
@@ -380,6 +421,7 @@ mod test {
             memory_mb: 512,
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
             guest_hv_interface: GuestHypervisorInterface::Bhyve,
+            acpi_variant: propolis::firmware::acpi::AcpiVariant::V0,
         };
 
         SpecBuilder {

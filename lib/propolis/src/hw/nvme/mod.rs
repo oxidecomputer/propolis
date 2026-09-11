@@ -4,6 +4,8 @@
 
 use std::convert::TryInto;
 use std::mem::size_of;
+use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use crate::accessors::Guard;
@@ -13,8 +15,9 @@ use crate::hw::ids::pci::{PROPOLIS_NVME_DEV_ID, VENDOR_OXIDE};
 use crate::hw::ids::OXIDE_OUI;
 use crate::hw::pci;
 use crate::migrate::*;
+use crate::util::id::define_id;
 use crate::util::regmap::RegMap;
-use crate::vmm::MemCtx;
+use crate::vmm::MemAccessed;
 
 use futures::future::BoxFuture;
 use lazy_static::lazy_static;
@@ -30,14 +33,41 @@ mod requests;
 mod test;
 
 use bits::*;
-use queue::{CompQueue, Permit, QueueId, SubQueue};
+use queue::{CompQueue, QueueId, SubQueue};
+
+define_id! {
+    /// Identifier for which NVMe controller in the VM an operation is happening
+    /// on.
+    ///
+    /// This is mostly useful for NVMe-related DTrace probes, where otherwise a
+    /// queue number or command ID may be ambiguous across distinct NVMe
+    /// controllers in a VM.
+    #[derive(Copy, Clone)]
+    pub struct DeviceId(u32);
+}
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
-    fn nvme_doorbell(off: u64, qid: u16, is_cq: u8, val: u16) {}
+    fn nvme_doorbell(off: u64, devq_id: u64, is_cq: u8, val: u16) {}
     fn nvme_doorbell_admin_cq(val: u16) {}
     fn nvme_doorbell_admin_sq(val: u16) {}
     fn nvme_admin_cmd(opcode: u8, prp1: u64, prp2: u64) {}
+    fn nvme_block_notify(devsq_id: u64, block_devqid: u64, occupied_hint: u16) {
+    }
+}
+
+/// Combine an NVMe device and queue ID into a single u64 for probes
+pub(crate) fn devq_id(dev: DeviceId, queue: QueueId) -> u64 {
+    // We'll use the low 16 bits for the queue ID. Assert at compile time that
+    // queue IDs cannot go above that. Clippy helpfully asserts this is an
+    // absurd comparison, so silence that. If you see a rustc error here you
+    // must have changed the type of QueueId such this is no longer absurd!
+    #[allow(clippy::absurd_extreme_comparisons)]
+    {
+        static_assertions::const_assert!(QueueId::MAX <= u16::MAX);
+    }
+
+    ((dev.0 as u64) << 16) | (queue as u64)
 }
 
 /// The max number of MSI-X interrupts we support
@@ -120,6 +150,13 @@ struct CtrlState {
     /// Controller Capabilities
     cap: Capabilities,
 
+    /// Version
+    ///
+    /// A bare u32 as we expect to support specific NVMe major/minor versions
+    /// if/when we move beyond simply 1.0. The field is constant after the
+    /// controller is instantiated and returned to the guest in one read.
+    vs: u32,
+
     /// Controller Configuration
     cc: Configuration,
 
@@ -132,13 +169,15 @@ struct CtrlState {
     /// The 64-bit Guest address for the Admin Submission Queue
     ///
     /// ASQB
-    /// See NVMe 1.0e Section 3.1.8 Offset 28h: ASQ - Admin Submission Queue Base Address
+    /// See NVMe 1.0e Section 3.1.8 Offset 28h: ASQ - Admin Submission Queue
+    /// Base Address
     admin_sq_base: u64,
 
     /// The 64-bit Guest address for the Admin Completion Queue
     ///
     /// ACQB
-    /// See NVMe 1.0e Section 3.1.9 Offset 30h: ACQ - Admin Completion Queue Base Address
+    /// See NVMe 1.0e Section 3.1.9 Offset 30h: ACQ - Admin Completion Queue
+    /// Base Address
     admin_cq_base: u64,
 }
 
@@ -152,8 +191,17 @@ const MAX_NUM_IO_QUEUES: usize = MAX_NUM_QUEUES - 1;
 
 /// NVMe Controller
 struct NvmeCtrl {
+    /// A distinguishing identifier for this NVMe controller across the VM.
+    /// Useful mostly to distinguish queues and commands as seen in probes.
+    /// `device_id` is held constant across NVMe resets, but not persisted
+    /// across export and import.
+    device_id: DeviceId,
+
     /// Internal NVMe Controller state
     ctrl: CtrlState,
+
+    /// Doorbell Buffer Config state
+    doorbell_buf: Option<queue::DoorbellBuffer>,
 
     /// MSI-X Interrupt Handle to signal VM
     msix_hdl: Option<pci::MsixHdl>,
@@ -169,45 +217,65 @@ struct NvmeCtrl {
 
     /// The Identify structure returned for Identify namespace commands
     ns_ident: IdentifyNamespace,
+
+    read_only: bool,
 }
 
 impl NvmeCtrl {
     /// Creates the admin completion and submission queues.
     ///
     /// Admin queues are always created with `cqid`/`sqid` `0`.
-    fn create_admin_queues(&mut self, mem: &MemCtx) -> Result<(), NvmeError> {
+    fn create_admin_queues(&mut self, nvme: &PciNvme) -> Result<(), NvmeError> {
         // Admin CQ uses interrupt vector 0 (See NVMe 1.0e Section 3.1.9 ACQ)
         self.create_cq(
-            queue::ADMIN_QUEUE_ID,
+            queue::CreateParams {
+                id: queue::ADMIN_QUEUE_ID,
+                device_id: self.device_id,
+                base: GuestAddr(self.ctrl.admin_cq_base),
+                // Convert from 0's based
+                size: u32::from(self.ctrl.aqa.acqs()) + 1,
+            },
+            true,
             0,
-            GuestAddr(self.ctrl.admin_cq_base),
-            // Convert from 0's based
-            u32::from(self.ctrl.aqa.acqs()) + 1,
-            mem,
+            nvme,
         )?;
         self.create_sq(
+            queue::CreateParams {
+                id: queue::ADMIN_QUEUE_ID,
+                device_id: self.device_id,
+                base: GuestAddr(self.ctrl.admin_sq_base),
+                // Convert from 0's based
+                size: u32::from(self.ctrl.aqa.asqs()) + 1,
+            },
+            true,
             queue::ADMIN_QUEUE_ID,
-            queue::ADMIN_QUEUE_ID,
-            GuestAddr(self.ctrl.admin_sq_base),
-            // Convert from 0's based
-            u32::from(self.ctrl.aqa.asqs()) + 1,
-            mem,
+            nvme,
         )?;
         Ok(())
     }
 
-    /// Creates and stores a new completion queue ([`CompQueue`]) for the controller.
+    /// Creates a new [completion queue](CompQueue) for the controller.
     ///
-    /// The specified `cqid` must not already be in use by another completion queue.
+    /// The CQ ID must not already be in use.  For the admin queue, it must be
+    /// 0, while for IO queues, it must _not_ be 0.  This is explicitly enforced
+    /// through the `is_admin` argument.
     fn create_cq(
         &mut self,
-        cqid: QueueId,
+        params: queue::CreateParams,
+        is_admin: bool,
         iv: u16,
-        base: GuestAddr,
-        size: u32,
-        mem: &MemCtx,
+        nvme: &PciNvme,
     ) -> Result<Arc<CompQueue>, NvmeError> {
+        let cqid = params.id;
         if (cqid as usize) >= MAX_NUM_QUEUES {
+            return Err(NvmeError::InvalidCompQueue(cqid));
+        }
+        if is_admin {
+            // Creating admin queue(s) with wrong ID is programmer error
+            assert_eq!(cqid, 0);
+        } else if cqid == 0 {
+            // Guest requests to create an IO queue with the ID belonging to the
+            // admin queue is explicitly disallowed.
             return Err(NvmeError::InvalidCompQueue(cqid));
         }
         if self.cqs[cqid as usize].is_some() {
@@ -218,37 +286,78 @@ impl NvmeCtrl {
             .as_ref()
             .ok_or(NvmeError::MsixHdlUnavailable)?
             .clone();
-        let cq = Arc::new(CompQueue::new(cqid, iv, size, base, msix_hdl, mem)?);
+        let cq = Arc::new(CompQueue::new(
+            params,
+            iv,
+            msix_hdl,
+            nvme.pci_state.acc_mem.child(Some(format!("CompQueue-{cqid}"))),
+        )?);
+        if self.doorbell_buf.is_some() {
+            cq.set_db_buf(self.doorbell_buf, false);
+        }
         self.cqs[cqid as usize] = Some(cq.clone());
+        nvme.queues.set_cq_slot(cqid, Some(cq.clone()));
         Ok(cq)
     }
 
-    /// Creates and stores a new submission queue ([`SubQueue`]) for the controller.
+    /// Creates a new [submission queue](SubQueue) for the controller.
     ///
-    /// The specified `sqid` must not already be in use by another submission queue.
-    /// The corresponding completion queue specified (`cqid`) must already exist.
+    /// The SQ ID must not already be in use.  For the admin queue, it must be
+    /// 0, while for IO queues, it must _not_ be 0.  This is explicitly enforced
+    /// through the `is_admin` argument.  The `cqid` to which this SQ will be
+    /// associated must correspond to an existing CQ.
     fn create_sq(
         &mut self,
-        sqid: QueueId,
+        params: queue::CreateParams,
+        is_admin: bool,
         cqid: QueueId,
-        base: GuestAddr,
-        size: u32,
-        mem: &MemCtx,
+        nvme: &PciNvme,
     ) -> Result<Arc<SubQueue>, NvmeError> {
+        let sqid = params.id;
         if (sqid as usize) >= MAX_NUM_QUEUES {
             return Err(NvmeError::InvalidSubQueue(sqid));
+        }
+        if is_admin {
+            // Creating admin queue(s) with wrong ID is programmer error
+            assert_eq!(sqid, 0);
+            // So too is associating an admin SQ to an IO CQ
+            assert_eq!(cqid, 0);
+        } else {
+            if sqid == 0 {
+                // Guest requests to create an IO queue with the ID belonging to
+                // the admin queue is not allowed.
+                return Err(NvmeError::InvalidSubQueue(cqid));
+            }
+            if cqid == 0 {
+                // Guest requests to associate the to-be-created IO SQ with an
+                // admin CQ is not allowed.
+                return Err(NvmeError::InvalidCompQueue(cqid));
+            }
         }
         if self.sqs[sqid as usize].is_some() {
             return Err(NvmeError::SubQueueAlreadyExists(sqid));
         }
         let cq = self.get_cq(cqid)?;
-        let sq = SubQueue::new(sqid, cq, size, base, mem)?;
+        let sq = SubQueue::new(
+            params,
+            cq,
+            nvme.pci_state.acc_mem.child(Some(format!("SubQueue-{sqid}"))),
+        )?;
+        if self.doorbell_buf.is_some() {
+            sq.set_db_buf(self.doorbell_buf, false);
+        }
         self.sqs[sqid as usize] = Some(sq.clone());
+        nvme.queues.set_sq_slot(sqid, Some(sq.clone()));
         Ok(sq)
     }
 
-    /// Removes the [`CompQueue`] which corresponds to the given completion queue id (`cqid`).
-    fn delete_cq(&mut self, cqid: QueueId) -> Result<(), NvmeError> {
+    /// Removes the [`CompQueue`] which corresponds to the given completion
+    /// queue id (`cqid`).
+    fn delete_cq(
+        &mut self,
+        cqid: QueueId,
+        nvme: &PciNvme,
+    ) -> Result<(), NvmeError> {
         if (cqid as usize) >= MAX_NUM_QUEUES
             || self.cqs[cqid as usize].is_none()
         {
@@ -263,6 +372,7 @@ impl NvmeCtrl {
 
         // Remove it from the authoritative list of CQs
         self.cqs[cqid as usize] = None;
+        nvme.queues.set_cq_slot(cqid, None);
         Ok(())
     }
 
@@ -271,7 +381,11 @@ impl NvmeCtrl {
     /// **NOTE:** This only removes the SQ from our list of active SQ and there may still be
     ///           in-flight IO requests for this SQ. But after this call, we'll no longer
     ///           answer any new doorbell requests for this SQ.
-    fn delete_sq(&mut self, sqid: QueueId) -> Result<(), NvmeError> {
+    fn delete_sq(
+        &mut self,
+        sqid: QueueId,
+        nvme: &PciNvme,
+    ) -> Result<(), NvmeError> {
         if (sqid as usize) >= MAX_NUM_QUEUES
             || self.sqs[sqid as usize].is_none()
         {
@@ -280,6 +394,7 @@ impl NvmeCtrl {
 
         // Remove it from the authoritative list of SQs
         self.sqs[sqid as usize] = None;
+        nvme.queues.set_sq_slot(sqid, None);
         Ok(())
     }
 
@@ -307,6 +422,20 @@ impl NvmeCtrl {
     /// Returns a reference to the Admin [`SubQueue`].
     fn get_admin_sq(&self) -> Result<Arc<SubQueue>, NvmeError> {
         self.get_sq(queue::ADMIN_QUEUE_ID)
+    }
+
+    /// Perform necessary setup tasks after an IO SQ has been created.
+    fn io_sq_post_create(&self, nvme: &PciNvme, sq: Arc<SubQueue>) {
+        let sqid = sq.id();
+        assert!(sqid != 0, "attempting IO SQ setup on admin SQ");
+        sq.update_params(self.transfer_params());
+        nvme.block_attach.queue_associate(
+            queue::sqid_to_block_qid(sqid),
+            requests::NvmeBlockQueue::new(
+                sq,
+                nvme.pci_state.acc_mem.child(Some(format!("SubQueue-{sqid}"))),
+            ),
+        );
     }
 
     /// Configure Controller
@@ -365,9 +494,9 @@ impl NvmeCtrl {
     }
 
     /// Get the controller in a state ready to process requests
-    fn enable(&mut self, mem: &MemCtx) -> Result<(), NvmeError> {
+    fn enable(&mut self, nvme: &PciNvme) -> Result<(), NvmeError> {
         // Create the Admin Queues
-        self.create_admin_queues(mem)?;
+        self.create_admin_queues(nvme)?;
 
         Ok(())
     }
@@ -383,15 +512,29 @@ impl NvmeCtrl {
     /// The controller shall ensure that there is no data loss for commands
     /// that have had corresponding completion queue entries posted to an I/O
     /// Completion Queue prior to the reset operation.
-    fn reset(&mut self) {
+    fn reset(&mut self, nvme: &PciNvme) {
+        // Immediately mark the controller as disabled to prevent any inbound
+        // doorbells from being accepted on the queues we are about to delete.
+        nvme.is_enabled.store(false, Ordering::Release);
+
         // Remove our references to the Qs which should be the only strong refs
         // at this point. Any in-flight I/O commands will just implicitly be
         // aborted once they try to issue their completions.
-        for sq in &mut self.sqs {
-            *sq = None;
+        for (sqid, state_slot) in self.sqs.iter_mut().enumerate() {
+            if let Some(_sq) = state_slot.take() {
+                let sqid = sqid as QueueId;
+                if sqid != queue::ADMIN_QUEUE_ID {
+                    // TODO: cancel any existing requests?
+                    nvme.block_attach
+                        .queue_dissociate(queue::sqid_to_block_qid(sqid));
+                }
+                nvme.queues.set_sq_slot(sqid, None);
+            }
         }
-        for cq in &mut self.cqs {
-            *cq = None;
+        for (cqid, state_slot) in self.cqs.iter_mut().enumerate() {
+            if let Some(_cq) = state_slot.take() {
+                nvme.queues.set_cq_slot(cqid as QueueId, None);
+            }
         }
 
         // Clear the CC & CSTS registers
@@ -399,27 +542,23 @@ impl NvmeCtrl {
         self.ctrl.cc = Configuration(0);
         self.ctrl.csts = Status(0);
 
+        // Other bits which are cleared on reset
+        self.doorbell_buf = None;
+
         // The other registers (e.g. CAP/VS) we never modify
         // and thus don't need to do anything on reset
     }
 
-    /// Convert some number of logical blocks to bytes with the currently active LBA data size
-    fn nlb_to_size(&self, b: usize) -> usize {
-        b << (self.ns_ident.lbaf[(self.ns_ident.flbas & 0xF) as usize]).lbads
-    }
-
-    /// Check a given request transfer size against any MDTS configured on the
-    /// controller.
-    ///
-    /// Returns `true` if the size is acceptable for the MDTS.
-    fn valid_for_mdts(&self, sz: u64) -> bool {
-        match self.ctrl_ident.mdts {
-            0 => true,
-            mdts => {
-                let limit = (self.ctrl.cap.mpsmin_sz() as u64) << mdts;
-                sz <= limit
-            }
-        }
+    /// Calculate parameters for Submission Queue data transfer, derived from
+    /// the LBA configuration as well as MDTS
+    fn transfer_params(&self) -> queue::TransferParams {
+        let lba_data_size = 1u64
+            << (self.ns_ident.lbaf[(self.ns_ident.flbas & 0xF) as usize]).lbads;
+        let max_data_transfer_size = match self.ctrl_ident.mdts {
+            0 => u64::MAX,
+            mdts => (self.ctrl.cap.mpsmin_sz() as u64) << mdts,
+        };
+        queue::TransferParams { lba_data_size, max_data_transfer_size }
     }
 
     fn update_block_info(&mut self, info: block::DeviceInfo) {
@@ -432,11 +571,30 @@ impl NvmeCtrl {
             ..self.ns_ident
         };
         self.ns_ident.lbaf[0].lbads = info.block_size.trailing_zeros() as u8;
+
+        // Communicate new parameters to SQs
+        let params = self.transfer_params();
+        self.sqs
+            .iter()
+            .filter_map(Option::as_ref)
+            .for_each(|sq| sq.update_params(params));
+
+        self.read_only = info.read_only;
+    }
+
+    /// Get Memory Page Size (MPS), expressed in bytes
+    fn get_mps(&self) -> u64 {
+        // "The memory page size is (2 ^ (12 + MPS))"
+        1u64 << (12 + self.ctrl.cc.mps())
     }
 
     fn export(&self) -> migrate::NvmeCtrlV1 {
         let cqs = self.cqs.iter().flatten().map(|cq| cq.export()).collect();
         let sqs = self.sqs.iter().flatten().map(|sq| sq.export()).collect();
+        let (dbbuf_shadow, dbbuf_evtidx) = self
+            .doorbell_buf
+            .map(|buf| (buf.shadow.0, buf.eventidx.0))
+            .unwrap_or_else(Default::default);
         migrate::NvmeCtrlV1 {
             cap: self.ctrl.cap.0,
             cc: self.ctrl.cc.0,
@@ -444,6 +602,8 @@ impl NvmeCtrl {
             aqa: self.ctrl.aqa.0,
             acq_base: self.ctrl.admin_cq_base,
             asq_base: self.ctrl.admin_sq_base,
+            dbbuf_shadow,
+            dbbuf_evtidx,
             cqs,
             sqs,
         }
@@ -452,8 +612,14 @@ impl NvmeCtrl {
     fn import(
         &mut self,
         state: migrate::NvmeCtrlV1,
-        mem: &MemCtx,
+        nvme: &PciNvme,
     ) -> Result<(), MigrateStateError> {
+        // TODO: verify that controller state is consistent with SQ/CQs defined
+        // in the payload
+
+        // If any queues exist, clear them out first through a reset.
+        self.reset(nvme);
+
         // TODO: bitstruct doesn't have a validation routine?
         self.ctrl.cap.0 = state.cap;
         self.ctrl.cc.0 = state.cc;
@@ -463,29 +629,157 @@ impl NvmeCtrl {
         self.ctrl.admin_cq_base = state.acq_base;
         self.ctrl.admin_sq_base = state.asq_base;
 
-        for cq in state.cqs {
-            self.create_cq(cq.id, cq.iv, GuestAddr(cq.base), cq.size, mem)
-                .map_err(|e| {
-                    MigrateStateError::ImportFailed(format!(
-                        "NVMe: failed to create CQ: {}",
-                        e
-                    ))
-                })?
-                .import(cq)?;
+        // Begin with empty DoorbellBuffer state, so it is not automatically
+        // configured as we are creating CQs & SQs.
+        self.doorbell_buf = None;
+
+        for cqi in state.cqs {
+            let is_admin_queue = cqi.id == 0;
+            self.create_cq(
+                queue::CreateParams {
+                    id: cqi.id,
+                    device_id: self.device_id,
+                    base: GuestAddr(cqi.base),
+                    size: cqi.size,
+                },
+                is_admin_queue,
+                cqi.iv,
+                nvme,
+            )
+            .map_err(|e| {
+                MigrateStateError::ImportFailed(format!(
+                    "NVMe: failed to create CQ: {}",
+                    e
+                ))
+            })?
+            .import(cqi)?;
         }
 
-        for sq in state.sqs {
-            self.create_sq(sq.id, sq.cq_id, GuestAddr(sq.base), sq.size, mem)
+        for sqi in state.sqs {
+            let is_admin_queue = sqi.id == 0;
+            let sq = self
+                .create_sq(
+                    queue::CreateParams {
+                        id: sqi.id,
+                        device_id: self.device_id,
+                        base: GuestAddr(sqi.base),
+                        size: sqi.size,
+                    },
+                    is_admin_queue,
+                    sqi.cq_id,
+                    nvme,
+                )
                 .map_err(|e| {
                     MigrateStateError::ImportFailed(format!(
                         "NVMe: failed to create SQ: {}",
                         e
                     ))
-                })?
-                .import(sq)?;
+                })?;
+            if !is_admin_queue {
+                self.io_sq_post_create(nvme, sq.clone());
+            }
+            sq.import(sqi)?;
         }
 
+        // With the queues created, we can inject any Doorbell Buffer state.
+        //
+        // When a guest enables this feature, it results in a write to the
+        // buffer page with the current state.  We explicitly skip that step
+        // (specifying `is_import = true`) since copying of the guest memory
+        // pages will have migrated that state already.
+        if state.dbbuf_shadow != 0 && state.dbbuf_evtidx != 0 {
+            self.doorbell_buf = Some(queue::DoorbellBuffer {
+                shadow: GuestAddr(state.dbbuf_shadow),
+                eventidx: GuestAddr(state.dbbuf_evtidx),
+            });
+            for cq in self.cqs.iter().flatten() {
+                cq.set_db_buf(self.doorbell_buf, true);
+            }
+            for sq in self.sqs.iter().flatten() {
+                sq.set_db_buf(self.doorbell_buf, true);
+            }
+        };
+
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct NvmeQueues {
+    sqs: [Mutex<Option<Arc<SubQueue>>>; MAX_NUM_QUEUES],
+    cqs: [Mutex<Option<Arc<CompQueue>>>; MAX_NUM_QUEUES],
+}
+impl NvmeQueues {
+    /// Replace the contents of a [SubQueue] slot.
+    fn set_sq_slot(&self, sqid: QueueId, queue: Option<Arc<SubQueue>>) {
+        let replace_some = queue.is_some();
+
+        let old = std::mem::replace(
+            &mut *self
+                .sqs
+                .get(sqid as usize)
+                .expect("sqid should be valid")
+                .lock()
+                .unwrap(),
+            queue,
+        );
+
+        // We should either be filling an empty slot with a new SQ (during queue
+        // creation) or vacating a populated slot (during queue deletion).
+        //
+        // Swapping an existing SQ for a differing one in a single step would be
+        // an unexpected operation.
+        if replace_some {
+            assert!(old.is_none(), "SQ slot should be empty");
+        } else {
+            assert!(old.is_some(), "SQ slot should be occupied");
+        }
+    }
+
+    /// Replace the contents of a [CompQueue] slot.
+    fn set_cq_slot(&self, cqid: QueueId, queue: Option<Arc<CompQueue>>) {
+        let replace_some = queue.is_some();
+
+        let old = std::mem::replace(
+            &mut *self
+                .cqs
+                .get(cqid as usize)
+                .expect("cqid should be valid")
+                .lock()
+                .unwrap(),
+            queue,
+        );
+
+        // Same justification in set_sq_slot() above applies to CQs as well
+        if replace_some {
+            assert!(old.is_none(), "CQ slot should be empty");
+        } else {
+            assert!(old.is_some(), "CQ slot should be occupied");
+        }
+    }
+
+    /// Get the slot guard for a given `sqid`, but only if that slot is already
+    /// occupied by a [SubQueue].
+    ///
+    /// (A returned `Some(guard)`  implies `guard.is_some()`)
+    fn get_sq(
+        &self,
+        sqid: QueueId,
+    ) -> Option<MutexGuard<'_, Option<Arc<SubQueue>>>> {
+        let guard = self.sqs.get(sqid as usize)?.lock().unwrap();
+        guard.is_some().then_some(guard)
+    }
+
+    /// Get the slot guard for a given `cqid`, but only if that slot is already
+    /// occupied by a [CompQueue].
+    ///
+    /// (A returned `Some(guard)`  implies `guard.is_some()`)
+    fn get_cq(
+        &self,
+        cqid: QueueId,
+    ) -> Option<MutexGuard<'_, Option<Arc<CompQueue>>>> {
+        let guard = self.cqs.get(cqid as usize)?.lock().unwrap();
+        guard.is_some().then_some(guard)
     }
 }
 
@@ -494,12 +788,29 @@ pub struct PciNvme {
     /// NVMe Controller
     state: Mutex<NvmeCtrl>,
 
+    /// Duplicate of the controller-enabled (`CC.EN`) state, but not requiring
+    /// locking [NvmeCtrl] to read.  It is used to gate per-queue doorbell
+    /// accesses without stacking them up behind one central lock.
+    is_enabled: AtomicBool,
+
+    /// Duplicate of the controller NVMe device ID, but not requiring locking
+    /// [NvmeCtrl] to read.  This is used to provide additional context in
+    /// NVMe-related probes.
+    device_id: DeviceId,
+
+    /// Access to NVMe Submission and Completion queues.
+    ///
+    /// These are protected with per-slot (queue ID) locks, so actions taken on
+    /// a single queue will not contend with others.  The queue references
+    /// contained within are kept in sync with those housed in the [NvmeCtrl]
+    /// state.
+    queues: NvmeQueues,
+
     /// PCI device state
     pci_state: pci::DeviceState,
 
-    block_attach: block::DeviceAttachment,
-
-    block_tracking: block::tracking::Tracking<Permit>,
+    /// Block attachment point
+    pub block_attach: block::DeviceAttachment,
 
     /// Logger resource
     log: slog::Logger,
@@ -510,6 +821,7 @@ impl PciNvme {
     pub fn create(
         serial_number: &[u8; 20],
         mdts: Option<u8>,
+        has_write_cache: bool,
         log: slog::Logger,
     ) -> Arc<Self> {
         let builder = pci::Builder::new(pci::Ident {
@@ -517,8 +829,8 @@ impl PciNvme {
             device_id: PROPOLIS_NVME_DEV_ID,
             sub_vendor_id: VENDOR_OXIDE,
             sub_device_id: PROPOLIS_NVME_DEV_ID,
-            class: pci::bits::CLASS_STORAGE,
-            subclass: pci::bits::SUBCLASS_STORAGE_NVM,
+            device_class: pci::bits::CLASS_STORAGE,
+            device_subclass: pci::bits::SUBCLASS_STORAGE_NVM,
             prog_if: pci::bits::PROGIF_ENTERPRISE_NVME,
             ..Default::default()
         });
@@ -530,6 +842,24 @@ impl PciNvme {
         let cqes = size_of::<CompletionQueueEntry>().trailing_zeros() as u8;
         let sqes = size_of::<SubmissionQueueEntry>().trailing_zeros() as u8;
 
+        // The controller's supported NVMe version is not (yet) configurable,
+        // but making it available to ourselves is useful to ensure we handle
+        // new versions correctly.
+        let vs = NVME_VER_1_0;
+
+        // In NVMe 1.0e, VWC defines only bit 0, the presence of a volatile
+        // write cache.
+        let vwc = if has_write_cache {
+            // XXX: Later NVMe revisions define upper bits and only allow bits
+            // 1-2 to be zero in controllers implementing older versions of
+            // NVMe. This will need more precise handling when the supported
+            // NVMe version is configurable.
+            assert!(vs == NVME_VER_1_0);
+            1
+        } else {
+            0
+        };
+
         // Initialize the Identify structure returned when the host issues
         // an Identify Controller command.
         let ctrl_ident = bits::IdentifyController {
@@ -538,15 +868,18 @@ impl PciNvme {
             sn: *serial_number,
             ieee: OXIDE_OUI,
             mdts: mdts.unwrap_or(0),
-            // We use standard Completion/Submission Queue Entry structures with no extra
-            // data, so required (minimum) == maximum
+            // We use standard Completion/Submission Queue Entry structures with
+            // no extra data, so required (minimum) == maximum
             sqes: NvmQueueEntrySize(0).with_maximum(sqes).with_required(sqes),
             cqes: NvmQueueEntrySize(0).with_maximum(cqes).with_required(cqes),
             // Supporting multiple namespaces complicates I/O dispatching,
             // so for now we limit the device to a single namespace.
             nn: 1,
-            // bit 0 indicates volatile write cache is present
-            vwc: 1,
+            // bit 2 indicates support for the Dataset Management command
+            oncs: (1 << 2),
+            vwc,
+            // bit 8 indicates Doorbell Buffer support
+            oacs: (1 << 8),
             ..Default::default()
         };
 
@@ -592,12 +925,15 @@ impl PciNvme {
         let csts = Status(0);
 
         let state = NvmeCtrl {
-            ctrl: CtrlState { cap, cc, csts, ..Default::default() },
+            device_id: DeviceId::new(),
+            ctrl: CtrlState { cap, vs, cc, csts, ..Default::default() },
+            doorbell_buf: None,
             msix_hdl: None,
             cqs: Default::default(),
             sqs: Default::default(),
             ctrl_ident,
             ns_ident,
+            read_only: false,
         };
 
         let pci_state = builder
@@ -608,14 +944,31 @@ impl PciNvme {
             .add_cap_msix(pci::BarN::BAR4, NVME_MSIX_COUNT)
             .finish();
 
-        Arc::new_cyclic(|weak| PciNvme {
-            state: Mutex::new(state),
-            pci_state,
-            block_attach: block::DeviceAttachment::new(),
-            block_tracking: block::tracking::Tracking::new(
-                weak.clone() as Weak<dyn block::Device>
-            ),
-            log,
+        let block_attach = block::DeviceAttachment::new(
+            NonZeroUsize::new(MAX_NUM_IO_QUEUES).unwrap(),
+            pci_state.acc_mem.child(Some("block backend".to_string())),
+        );
+
+        Arc::new_cyclic(move |self_weak: &Weak<PciNvme>| {
+            let this = self_weak.clone();
+            block_attach.on_attach(Box::new(move |info| {
+                if let Some(this) = Weak::upgrade(&this) {
+                    this.state.lock().unwrap().update_block_info(info);
+                }
+            }));
+
+            // Cache device ID before we move it into the Mutex below.
+            let device_id = state.device_id;
+
+            PciNvme {
+                state: Mutex::new(state),
+                is_enabled: AtomicBool::new(false),
+                device_id,
+                pci_state,
+                queues: NvmeQueues::default(),
+                block_attach,
+                log,
+            }
         })
     }
 
@@ -632,11 +985,8 @@ impl PciNvme {
         if new.enabled() && !cur.enabled() {
             slog::debug!(self.log, "Enabling controller");
 
-            let mem = self.mem_access();
-            let mem = mem.ok_or(NvmeError::MemoryInaccessible)?;
-
             // Get the controller ready to service requests
-            if let Err(e) = state.enable(&mem) {
+            if let Err(e) = state.enable(self) {
                 // Couldn't enable controller, set Controller Fail Status
                 state.ctrl.csts.set_cfs(true);
                 return Err(e);
@@ -645,12 +995,13 @@ impl PciNvme {
                 // Set CC.EN=1 and CSTS.RDY=1
                 state.ctrl.cc.set_enabled(true);
                 state.ctrl.csts.set_ready(true);
+                self.is_enabled.store(true, Ordering::Release);
             }
         } else if !new.enabled() && cur.enabled() {
             slog::debug!(self.log, "Disabling controller");
 
             // Reset controller state which will set CC.EN=0 and CSTS.RDY=0
-            state.reset();
+            state.reset(self);
         }
 
         let shutdown = new.shn() != ShutdownNotification::None;
@@ -678,7 +1029,8 @@ impl PciNvme {
                 ro.write_u64(state.ctrl.cap.0);
             }
             CtrlrReg::Version => {
-                ro.write_u32(NVME_VER_1_0);
+                let state = self.state.lock().unwrap();
+                ro.write_u32(state.ctrl.vs);
             }
 
             CtrlrReg::IntrMaskSet | CtrlrReg::IntrMaskClear => {
@@ -810,7 +1162,7 @@ impl PciNvme {
                 // We may have skipped pulling entries off the admin sq
                 // due to no available completion entry permit, so just
                 // kick it here again in case.
-                if admin_cq.kick() {
+                if admin_cq.kick().is_some() {
                     let admin_sq = state.get_admin_sq()?;
                     self.process_admin_queue(state, admin_sq)?;
                 }
@@ -825,58 +1177,141 @@ impl PciNvme {
                 // See NVMe 1.0e Section 3.1.10 & 3.1.11
                 //
                 // But note that we only support CAP.DSTRD = 0
+                //
+                // NOTE: Normally the `wo.offset()` would be relative to the
+                // beginning of the RegMap-ed register, but writes to the
+                // doorbells have a special fast path via PciNvme::bar_write().
                 let off = wo.offset() - 0x1000;
+
                 let is_cq = (off >> 2) & 0b1 == 0b1;
                 let qid = if is_cq { (off - 4) >> 3 } else { off >> 3 };
 
-                // Queue IDs should be 16-bit and we know `off <= CONTROLLER_REG_SZ (0x4000)`
+                // Queue IDs should be 16-bit and we know
+                // `off <= CONTROLLER_REG_SZ (0x4000)`
                 let qid = qid.try_into().unwrap();
-
-                let state = self.state.lock().unwrap();
-                if !state.ctrl.cc.enabled() {
-                    slog::warn!(
-                        self.log,
-                        "Doorbell write while controller is disabled"
-                    );
-                    return Err(if is_cq {
-                        NvmeError::InvalidCompQueue(qid)
-                    } else {
-                        NvmeError::InvalidSubQueue(qid)
-                    });
-                }
 
                 // 32-bit register but ignore reserved top 16-bits
                 let val = wo.read_u32() as u16;
+
+                // Mix in the device ID for probe purposes
+                let devq_id = devq_id(self.device_id, qid);
+
                 probes::nvme_doorbell!(|| (
                     off as u64,
-                    qid,
+                    devq_id,
                     u8::from(is_cq),
                     val
                 ));
-                if is_cq {
-                    // Completion Queue y Head Doorbell
-                    let cq = state.get_cq(qid)?;
-                    cq.notify_head(val)?;
-                } else {
-                    // Submission Queue y Tail Doorbell
-                    let sq = state.get_sq(qid)?;
-                    sq.notify_tail(val)?;
-                }
-
-                // Poke block backend to service new requests
-                //
-                // This is done for CQs in addition to SQs, since we may have
-                // skipped pulling entries off some SQ due to CQs having no
-                // available entry slots.
-                //
-                // The state lock must be released before issuing the
-                // notification to avoid deadlocking with the block backend
-                // attempting to fetch new requests.
-                drop(state);
-                self.block_attach.notify();
+                self.ring_doorbell(qid, is_cq, val)?;
             }
         }
 
+        Ok(())
+    }
+
+    /// Perform the actual work of a doorbell ring
+    fn ring_doorbell(
+        &self,
+        qid: QueueId,
+        is_cq: bool,
+        val: u16,
+    ) -> Result<(), NvmeError> {
+        if !self.is_enabled.load(Ordering::Acquire) {
+            slog::debug!(
+                self.log,
+                "Doorbell write while controller is disabled"
+            );
+            return Err(if is_cq {
+                NvmeError::InvalidCompQueue(qid)
+            } else {
+                NvmeError::InvalidSubQueue(qid)
+            });
+        }
+
+        // Note:
+        //
+        // When notifying SQs as part of a doorbell ring, it is necessary to
+        // drop the locks required to access said SQs.
+        //
+        // Without the protection of those locks, it is possible that racing
+        // guest operations to destroy/create IO queues could cause the SQIDs on
+        // which we are notifying to be "stale".  This is not a concern, as
+        // spurious notifications to the block layer do not have ill effects.
+
+        if is_cq {
+            // Completion Queue y Head Doorbell
+            let guard = self
+                .queues
+                .get_cq(qid)
+                .ok_or(NvmeError::InvalidCompQueue(qid))?;
+            let cq = guard.as_ref().unwrap();
+
+            cq.notify_head(val)?;
+
+            // If this CQ was previously full, SQs may have become corked while
+            // trying to get permits.  Notify them that there may now be
+            // capacity.
+            let Some(to_notify) = cq.kick() else {
+                // No associated SQs to notify about
+                return Ok(());
+            };
+
+            // Querying of SQs (for number of entries available to block layer)
+            // and delivery of said notifications must be done with neither CQ
+            // or SQ locks held.
+            drop(guard);
+
+            for (sqid, num_occupied) in
+                to_notify.into_iter().filter_map(|sqid| {
+                    assert_ne!(
+                        sqid,
+                        queue::ADMIN_QUEUE_ID,
+                        "IO queues should not associate with Admin queue IDs"
+                    );
+                    let sq_guard = self.queues.get_sq(sqid)?;
+                    let sq = sq_guard.as_ref().unwrap();
+                    Some((sqid, sq.num_occupied()))
+                })
+            {
+                let block_qid = queue::sqid_to_block_qid(sqid);
+                let devsq_id = devq_id(self.device_id, sqid);
+                let block_devqid =
+                    block::devq_id(self.block_attach.device_id(), block_qid);
+                probes::nvme_block_notify!(|| (
+                    devsq_id,
+                    block_devqid,
+                    num_occupied
+                ));
+                self.block_attach.notify(
+                    block_qid,
+                    NonZeroUsize::new(num_occupied as usize),
+                );
+            }
+        } else {
+            // Submission Queue y Tail Doorbell
+            let guard = self
+                .queues
+                .get_sq(qid)
+                .ok_or(NvmeError::InvalidSubQueue(qid))?;
+            let sq = guard.as_ref().unwrap();
+
+            let num_occupied = sq.notify_tail(val)?;
+            let devsq_id = sq.devq_id();
+            // Notification to block layer cannot be issued with SQ lock held
+            drop(guard);
+
+            assert_ne!(qid, queue::ADMIN_QUEUE_ID);
+            let block_qid = queue::sqid_to_block_qid(qid);
+            let block_devqid =
+                block::devq_id(self.block_attach.device_id(), block_qid);
+            probes::nvme_block_notify!(|| (
+                devsq_id,
+                block_devqid,
+                num_occupied
+            ));
+            self.block_attach
+                .notify(block_qid, NonZeroUsize::new(num_occupied as usize));
+        };
         Ok(())
     }
 
@@ -895,7 +1330,7 @@ impl PciNvme {
         }
         let mem = mem.unwrap();
 
-        while let Some((sub, permit, _idx)) = sq.pop(&mem) {
+        while let Some((sub, permit, _idx)) = sq.pop() {
             use cmds::AdminCmd;
 
             probes::nvme_admin_cmd!(|| (sub.opcode(), sub.prp1, sub.prp2));
@@ -911,10 +1346,10 @@ impl PciNvme {
             let comp = match cmd {
                 AdminCmd::Abort(cmd) => state.acmd_abort(&cmd),
                 AdminCmd::CreateIOCompQ(cmd) => {
-                    state.acmd_create_io_cq(&cmd, &mem)
+                    state.acmd_create_io_cq(&cmd, self)
                 }
                 AdminCmd::CreateIOSubQ(cmd) => {
-                    state.acmd_create_io_sq(&cmd, &mem)
+                    state.acmd_create_io_sq(&cmd, self)
                 }
                 AdminCmd::GetLogPage(cmd) => {
                     state.acmd_get_log_page(&cmd, &mem)
@@ -922,8 +1357,12 @@ impl PciNvme {
                 AdminCmd::Identify(cmd) => state.acmd_identify(&cmd, &mem),
                 AdminCmd::GetFeatures(cmd) => state.acmd_get_features(&cmd),
                 AdminCmd::SetFeatures(cmd) => state.acmd_set_features(&cmd),
-                AdminCmd::DeleteIOCompQ(cqid) => state.acmd_delete_io_cq(cqid),
-                AdminCmd::DeleteIOSubQ(sqid) => state.acmd_delete_io_sq(sqid),
+                AdminCmd::DeleteIOCompQ(cqid) => {
+                    state.acmd_delete_io_cq(cqid, self)
+                }
+                AdminCmd::DeleteIOSubQ(sqid) => {
+                    state.acmd_delete_io_sq(sqid, self)
+                }
                 AdminCmd::AsyncEventReq => {
                     // async event requests do not appear to be an optional
                     // feature but are not yet supported. The only
@@ -936,12 +1375,15 @@ impl PciNvme {
                     // this can detect it and stop posting async events.
                     cmds::Completion::generic_err(bits::STS_INVAL_OPC).dnr()
                 }
+                AdminCmd::DoorbellBufCfg(cmd) => {
+                    state.acmd_doorbell_buf_cfg(&cmd)
+                }
                 AdminCmd::Unknown(_) => {
                     cmds::Completion::generic_err(bits::STS_INTERNAL_ERR)
                 }
             };
 
-            permit.complete(comp, Some(&mem));
+            permit.complete(comp);
         }
 
         // Notify for any newly added completions
@@ -950,7 +1392,7 @@ impl PciNvme {
         Ok(())
     }
 
-    fn mem_access(&self) -> Option<Guard<'_, MemCtx>> {
+    fn mem_access(&self) -> Option<Guard<'_, MemAccessed>> {
         self.pci_state.acc_mem.access()
     }
 }
@@ -973,12 +1415,12 @@ impl pci::Device for PciNvme {
             }
         };
 
-        if rwo.offset() >= CONTROLLER_REGS.1 {
+        if rwo.offset() >= CONTROLLER_REGS.db_offset {
             // This is an I/O DoorBell op, so skip RegMaps's process
             f(&CtrlrReg::IOQueueDoorBells, rwo);
         } else {
             // Otherwise deal with every other register as normal
-            CONTROLLER_REGS.0.process(&mut rwo, f)
+            CONTROLLER_REGS.map.process(&mut rwo, f)
         }
     }
 
@@ -1018,7 +1460,7 @@ impl MigrateMulti for PciNvme {
         let input: migrate::NvmeCtrlV1 = offer.take()?;
 
         let mut ctrl = self.state.lock().unwrap();
-        ctrl.import(input, ctx.mem)?;
+        ctrl.import(input, self)?;
         drop(ctrl);
 
         MigrateMulti::import(&self.pci_state, offer, ctx)?;
@@ -1034,7 +1476,7 @@ impl Lifecycle for PciNvme {
 
     fn reset(&self) {
         let mut ctrl = self.state.lock().unwrap();
-        ctrl.reset();
+        ctrl.reset(self);
         self.pci_state.reset(self);
     }
 
@@ -1047,7 +1489,7 @@ impl Lifecycle for PciNvme {
     }
 
     fn paused(&self) -> BoxFuture<'static, ()> {
-        Box::pin(self.block_tracking.none_outstanding())
+        Box::pin(self.block_attach.none_processing())
     }
 
     fn migrate(&self) -> Migrator<'_> {
@@ -1071,6 +1513,9 @@ pub mod migrate {
 
         pub acq_base: u64,
         pub asq_base: u64,
+
+        pub dbbuf_shadow: u64,
+        pub dbbuf_evtidx: u64,
 
         pub cqs: Vec<NvmeCompQueueV1>,
         pub sqs: Vec<NvmeSubQueueV1>,
@@ -1152,8 +1597,12 @@ enum CtrlrReg {
 /// See NVMe 1.0e Section 2.1.10 Offset 10h: MLBAR (BAR0) - Memory Register Base Address, lower 32 bits
 const CONTROLLER_REG_SZ: usize = 0x4000;
 
+struct CtrlRegs {
+    map: RegMap<CtrlrReg>,
+    db_offset: usize,
+}
 lazy_static! {
-    static ref CONTROLLER_REGS: (RegMap<CtrlrReg>, usize) = {
+    static ref CONTROLLER_REGS: CtrlRegs = {
         let mut layout = [
             (CtrlrReg::CtrlrCaps, 8),
             (CtrlrReg::Version, 4),
@@ -1188,10 +1637,13 @@ lazy_static! {
             .map(|&(_, sz)| sz)
             .sum();
 
-        (RegMap::create_packed(
-            CONTROLLER_REG_SZ,
-            &layout,
-            Some(CtrlrReg::Reserved),
-        ), db_offset)
+        CtrlRegs {
+            map: RegMap::create_packed(
+                CONTROLLER_REG_SZ,
+                &layout,
+                Some(CtrlrReg::Reserved),
+            ),
+            db_offset,
+        }
     };
 }

@@ -8,27 +8,40 @@ use anyhow::Context;
 use cpuid_utils::CpuidIdent;
 use propolis_client::{
     instance_spec::{
-        Board, BootOrderEntry, BootSettings, Chipset, ComponentV0, Cpuid,
-        CpuidEntry, CpuidVendor, GuestHypervisorInterface, InstanceSpecV0,
-        MigrationFailureInjector, NvmeDisk, PciPath, SerialPort,
-        SerialPortNumber, SpecKey, VirtioDisk,
+        Board, BootOrderEntry, BootSettings, Chipset, Component, Cpuid,
+        CpuidEntry, CpuidVendor, GuestHypervisorInterface, InstanceMetadata,
+        InstanceSpec, MigrationFailureInjector, NvmeDisk, PciPath, SerialPort,
+        SerialPortNumber, SpecKey, VirtioDisk, VirtioSocket,
     },
     support::nvme_serial_from_str,
-    types::InstanceMetadata,
 };
 use uuid::Uuid;
 
 use crate::{
     disk::{DeviceName, DiskConfig, DiskSource},
     test_vm::spec::VmSpec,
-    Framework,
+    TestCtx,
 };
 
 /// The disk interface to use for a given guest disk.
 #[derive(Clone, Copy, Debug)]
 pub enum DiskInterface {
     Virtio,
-    Nvme,
+    Nvme { has_write_cache: bool },
+}
+
+impl DiskInterface {
+    pub fn virtio() -> Self {
+        DiskInterface::Virtio
+    }
+
+    pub fn nvme() -> Self {
+        // Default to reporting a write cache for the same reason as
+        // propolis-cli. Some tests want to see that we can actually tell a
+        // guest that there's no write cache, though, so it's configurable and
+        // may lie with respect to backend's actual cachefulness.
+        DiskInterface::Nvme { has_write_cache: true }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -57,6 +70,7 @@ pub struct VmConfig<'dr> {
     disks: Vec<DiskRequest<'dr>>,
     migration_failure: Option<MigrationFailureInjector>,
     guest_hv_interface: Option<GuestHypervisorInterface>,
+    vsock: Option<VirtioSocket>,
 }
 
 impl<'dr> VmConfig<'dr> {
@@ -77,11 +91,12 @@ impl<'dr> VmConfig<'dr> {
             disks: Vec::new(),
             migration_failure: None,
             guest_hv_interface: None,
+            vsock: None,
         };
 
         config.boot_disk(
             guest_artifact,
-            DiskInterface::Nvme,
+            DiskInterface::nvme(),
             DiskBackend::File,
             4,
         );
@@ -119,6 +134,12 @@ impl<'dr> VmConfig<'dr> {
         interface: GuestHypervisorInterface,
     ) -> &mut Self {
         self.guest_hv_interface = Some(interface);
+        self
+    }
+
+    pub fn vsock(&mut self, guest_cid: u64, pci_device_num: u8) -> &mut Self {
+        let pci_path = PciPath::new(0, pci_device_num, 0).unwrap();
+        self.vsock = Some(VirtioSocket { guest_cid, pci_path });
         self
     }
 
@@ -208,10 +229,7 @@ impl<'dr> VmConfig<'dr> {
         self
     }
 
-    pub async fn vm_spec(
-        &self,
-        framework: &Framework,
-    ) -> anyhow::Result<VmSpec> {
+    pub async fn vm_spec(&self, ctx: &TestCtx) -> anyhow::Result<VmSpec> {
         let VmConfig {
             vm_name,
             cpus,
@@ -222,8 +240,9 @@ impl<'dr> VmConfig<'dr> {
             disks,
             migration_failure,
             guest_hv_interface,
+            vsock,
         } = self;
-
+        let framework = &ctx.framework;
         let bootrom_path = framework
             .artifact_store
             .get_bootrom(bootrom_artifact)
@@ -273,7 +292,7 @@ impl<'dr> VmConfig<'dr> {
         let mut disk_handles = Vec::new();
         for disk in disks.iter() {
             disk_handles.push(
-                make_disk(disk.name.to_owned(), framework, disk)
+                make_disk(disk.name.to_owned(), ctx, disk)
                     .await
                     .context("creating disk")?,
             );
@@ -287,7 +306,7 @@ impl<'dr> VmConfig<'dr> {
                 )
             })?;
 
-        let mut spec = InstanceSpecV0 {
+        let mut spec = InstanceSpec {
             board: Board {
                 cpus: *cpus,
                 memory_mb: *memory_mib,
@@ -305,6 +324,7 @@ impl<'dr> VmConfig<'dr> {
                     .unwrap_or_default(),
             },
             components: Default::default(),
+            smbios: None,
         };
 
         // Iterate over the collection of disks and handles and add spec
@@ -318,27 +338,30 @@ impl<'dr> VmConfig<'dr> {
             let device_name = hdl.device_name().clone();
             let backend_name = device_name.clone().into_backend_name();
             let device_spec = match req.interface {
-                DiskInterface::Virtio => ComponentV0::VirtioDisk(VirtioDisk {
+                DiskInterface::Virtio => Component::VirtioDisk(VirtioDisk {
                     backend_id: SpecKey::Name(
                         backend_name.clone().into_string(),
                     ),
                     pci_path,
                 }),
-                DiskInterface::Nvme => ComponentV0::NvmeDisk(NvmeDisk {
-                    backend_id: SpecKey::Name(
-                        backend_name.clone().into_string(),
-                    ),
-                    pci_path,
-                    serial_number: nvme_serial_from_str(
-                        device_name.as_str(),
-                        // Omicron supplies (or will supply, as of this writing)
-                        // 0 as the padding byte to maintain compatibility for
-                        // existing disks. Match that behavior here so that PHD
-                        // and Omicron VM configurations are as similar as
-                        // possible.
-                        0,
-                    ),
-                }),
+                DiskInterface::Nvme { has_write_cache } => {
+                    Component::NvmeDisk(NvmeDisk {
+                        backend_id: SpecKey::Name(
+                            backend_name.clone().into_string(),
+                        ),
+                        pci_path,
+                        serial_number: nvme_serial_from_str(
+                            device_name.as_str(),
+                            // Omicron supplies (or will supply, as of this writing)
+                            // 0 as the padding byte to maintain compatibility for
+                            // existing disks. Match that behavior here so that PHD
+                            // and Omicron VM configurations are as similar as
+                            // possible.
+                            0,
+                        ),
+                        has_write_cache,
+                    })
+                }
             };
 
             let _old = spec
@@ -351,16 +374,24 @@ impl<'dr> VmConfig<'dr> {
             assert!(_old.is_none());
         }
 
-        let _old = spec.components.insert(
-            "com1".into(),
-            ComponentV0::SerialPort(SerialPort { num: SerialPortNumber::Com1 }),
-        );
-        assert!(_old.is_none());
+        // Create the same serial ports as Omicron and propolis-cli to generate
+        // consistent ACPI tables.
+        for (name, port) in [
+            ("com1", SerialPortNumber::Com1),
+            ("com2", SerialPortNumber::Com2),
+            ("com3", SerialPortNumber::Com3),
+            ("com4", SerialPortNumber::Com4),
+        ] {
+            let _old = spec.components.insert(
+                name.into(),
+                Component::SerialPort(SerialPort { num: port }),
+            );
+        }
 
         if let Some(boot_order) = boot_order.as_ref() {
             let _old = spec.components.insert(
                 "boot-settings".into(),
-                ComponentV0::BootSettings(BootSettings {
+                Component::BootSettings(BootSettings {
                     order: boot_order
                         .iter()
                         .map(|item| BootOrderEntry {
@@ -372,10 +403,17 @@ impl<'dr> VmConfig<'dr> {
             assert!(_old.is_none());
         }
 
+        if let Some(vsock) = vsock {
+            let _old = spec
+                .components
+                .insert("vsock".into(), Component::VirtioSocket(*vsock));
+            assert!(_old.is_none());
+        }
+
         if let Some(mig) = migration_failure.as_ref() {
             let _old = spec.components.insert(
                 "migration-failure".into(),
-                ComponentV0::MigrationFailureInjector(mig.clone()),
+                Component::MigrationFailureInjector(mig.clone()),
             );
             assert!(_old.is_none());
         }
@@ -404,10 +442,11 @@ impl<'dr> VmConfig<'dr> {
 
 async fn make_disk(
     device_name: String,
-    framework: &Framework,
+    ctx: &TestCtx,
     req: &DiskRequest<'_>,
 ) -> anyhow::Result<Arc<dyn DiskConfig>> {
     let device_name = DeviceName::new(device_name);
+    let framework = &ctx.framework;
 
     Ok(match req.backend {
         DiskBackend::File => framework
@@ -424,6 +463,7 @@ async fn make_disk(
                 &req.source,
                 min_disk_size_gib,
                 block_size,
+                &ctx.output_dir,
             )
             .await
             .with_context(|| {

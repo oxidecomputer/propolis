@@ -35,7 +35,7 @@ propolis$target:::nvme_write_enqueue
 
 propolis$target:::nvme_read_complete,
 propolis$target:::nvme_write_complete
-/io[args[0]].ts != 0/
+/io[args[1]].ts != 0/
 {
     this->cid = args[1];
     this->elapsed = timestamp - io[this->cid].ts;

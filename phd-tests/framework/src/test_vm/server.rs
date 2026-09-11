@@ -8,11 +8,12 @@ use std::{
     fmt::Debug,
     net::{SocketAddr, SocketAddrV4},
     os::unix::process::CommandExt,
+    time::SystemTime,
 };
 
 use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::log_config::LogConfig;
 
@@ -24,9 +25,9 @@ pub struct ServerProcessParameters<'a> {
     /// The path to the server binary to launch.
     pub server_path: Utf8PathBuf,
 
-    /// The directory in which to find or place files that are read or written
-    /// by this server process.
-    pub data_dir: &'a Utf8Path,
+    /// The directory in which to place files that are written by this server
+    /// process.
+    pub output_dir: &'a Utf8Path,
 
     /// The address at which the server should serve.
     pub server_addr: SocketAddrV4,
@@ -44,6 +45,7 @@ pub struct ServerProcessParameters<'a> {
 pub struct PropolisServer {
     server: Option<std::process::Child>,
     address: SocketAddrV4,
+    output_dir: Utf8PathBuf,
 }
 
 impl PropolisServer {
@@ -54,7 +56,7 @@ impl PropolisServer {
     ) -> Result<Self> {
         let ServerProcessParameters {
             server_path,
-            data_dir,
+            output_dir,
             server_addr,
             metrics_addr,
             vnc_addr,
@@ -69,7 +71,7 @@ impl PropolisServer {
         );
 
         let (server_stdout, server_stderr) =
-            log_config.output_mode.get_handles(&data_dir, vm_name)?;
+            log_config.output_mode.get_handles(&output_dir, vm_name)?;
 
         let mut args = vec![server_path.into_string(), "run".to_string()];
 
@@ -117,6 +119,9 @@ impl PropolisServer {
         let server = PropolisServer {
             server: Some(server_cmd.spawn()?),
             address: server_addr,
+            // Stash the same output directory in case the framework has to
+            // write any files on behalf of the test run.
+            output_dir: output_dir.to_owned(),
         };
 
         info!(
@@ -128,6 +133,38 @@ impl PropolisServer {
 
     pub(crate) fn server_addr(&self) -> SocketAddrV4 {
         self.address
+    }
+
+    /// Collect a core of this server process, placing it in the same output
+    /// directory as other artifacts of this test.
+    pub(super) fn core(&self) {
+        let Some(server_proc) = self.server.as_ref() else {
+            warn!("Tried to produce a core without a propolis-server?");
+            return;
+        };
+
+        let core_name = format!(
+            "core-{}",
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("Time is gone, the song is over")
+                .as_millis()
+        );
+        let core_path = self.output_dir.join(core_name);
+
+        std::process::Command::new("pfexec")
+            .args([
+                "gcore".as_ref(),
+                "-o".as_ref(),
+                core_path.as_os_str(),
+                server_proc.id().to_string().as_ref(),
+            ])
+            .spawn()
+            .expect("can try to gcore a process")
+            .wait()
+            .expect("can gcore a propolis-server we spawned");
+
+        warn!("core written to {}", core_path);
     }
 
     /// Kills this server process if it hasn't been killed already.

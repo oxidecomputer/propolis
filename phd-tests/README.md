@@ -227,7 +227,7 @@ the adapter to provide the correct credentials.
 ## Authoring tests
 
 PHD's test cases live in the `tests` crate. To write a new test, add a function
-of the form `fn my_test(ctx: &Framework)` and tag it with the
+of the form `fn my_test(ctx: &TestCtx)` and tag it with the
 `#[phd_testcase]` attribute macro. The framework will automatically register the
 test into the crate's test inventory for the runner to discover.
 

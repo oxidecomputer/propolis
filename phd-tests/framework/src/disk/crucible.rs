@@ -13,7 +13,7 @@ use std::{
 
 use anyhow::Context;
 use propolis_client::{
-    instance_spec::{ComponentV0, CrucibleStorageBackend},
+    instance_spec::{Component, CrucibleStorageBackend},
     CrucibleOpts, VolumeConstructionRequest,
 };
 use rand::{rngs::StdRng, RngCore, SeedableRng};
@@ -92,6 +92,7 @@ impl CrucibleDisk {
         read_only_parent: Option<&impl AsRef<Path>>,
         guest_os: Option<GuestOsKind>,
         log_config: LogConfig,
+        output_dir: &impl AsRef<Path>,
     ) -> anyhow::Result<Self> {
         Ok(Self {
             device_name,
@@ -105,6 +106,7 @@ impl CrucibleDisk {
                 data_dir_root,
                 read_only_parent,
                 log_config,
+                output_dir,
             )?),
         })
     }
@@ -159,7 +161,7 @@ impl super::DiskConfig for CrucibleDisk {
         &self.device_name
     }
 
-    fn backend_spec(&self) -> ComponentV0 {
+    fn backend_spec(&self) -> Component {
         self.inner.lock().unwrap().backend_spec(self.disk_id)
     }
 
@@ -209,6 +211,7 @@ impl Inner {
         data_dir_root: &impl AsRef<Path>,
         read_only_parent: Option<&impl AsRef<Path>>,
         log_config: LogConfig,
+        output_dir: &impl AsRef<Path>,
     ) -> anyhow::Result<Self> {
         // To create a region, Crucible requires a block size, an extent size
         // given as a number of blocks, and an extent count. Compute the latter
@@ -320,7 +323,7 @@ impl Inner {
         // Spawn the downstairs processes that will serve requests from guest
         // VMs.
         let mut downstairs_instances = vec![];
-        for (port, dir) in downstairs_ports.iter().zip(data_dirs.into_iter()) {
+        for (port, dir) in downstairs_ports.iter().zip(data_dirs) {
             let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), *port);
             let dir_arg = dir.path.to_string_lossy();
             let crucible_args = [
@@ -334,12 +337,12 @@ impl Inner {
             ];
 
             // NOTE: `log_format` is ignored here because Crucible determines
-            // Bunyan or plain formatting based on `atty::is()`. In practice
+            // Bunyan or plain formatting based on `is_terminal()`. In practice
             // this is fine, and matches what we want right now, but it might be
             // nice to connect this more directly to the output desire expressed
             // by the test runner.
             let (stdout, stderr) = log_config.output_mode.get_handles(
-                data_dir_root,
+                output_dir,
                 &format!("crucible_{disk_uuid}_{port}"),
             )?;
 
@@ -378,10 +381,10 @@ impl Inner {
         })
     }
 
-    fn backend_spec(&self, disk_id: Uuid) -> ComponentV0 {
+    fn backend_spec(&self, disk_id: Uuid) -> Component {
         let vcr = self.vcr(disk_id);
 
-        ComponentV0::CrucibleStorageBackend(CrucibleStorageBackend {
+        Component::CrucibleStorageBackend(CrucibleStorageBackend {
             request_json: serde_json::to_string(&vcr)
                 .expect("VolumeConstructionRequest should serialize"),
             readonly: false,
@@ -414,7 +417,7 @@ impl Inner {
                     control: None,
                     read_only: false,
                 },
-                r#gen: self.generation,
+                generation: self.generation,
             }],
             read_only_parent: self.read_only_parent.as_ref().map(|p| {
                 Box::new(VolumeConstructionRequest::File {

@@ -5,15 +5,22 @@
 use std::mem::size_of;
 
 use crate::common::{GuestAddr, GuestRegion, PAGE_SIZE};
+use crate::hw::nvme;
 use crate::vmm::MemCtx;
 
 use super::bits::*;
-use super::queue::{QueueId, ADMIN_QUEUE_ID};
-use super::{cmds, NvmeCtrl, NvmeError, MAX_NUM_IO_QUEUES, MAX_NUM_QUEUES};
+use super::queue::{
+    sqid_to_block_qid, DoorbellBuffer, QueueId, ADMIN_QUEUE_ID,
+};
+use super::{
+    cmds, NvmeCtrl, NvmeError, PciNvme, MAX_NUM_IO_QUEUES, MAX_NUM_QUEUES,
+};
+
+use zerocopy::IntoBytes;
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
-    fn nvme_abort(cid: u16, sqid: u16) {}
+    fn nvme_abort(cid: u16, devsq_id: u64) {}
 }
 
 impl NvmeCtrl {
@@ -21,7 +28,8 @@ impl NvmeCtrl {
     ///
     /// See NVMe 1.0e Section 5.1 Abort command
     pub(super) fn acmd_abort(&self, cmd: &cmds::AbortCmd) -> cmds::Completion {
-        probes::nvme_abort!(|| (cmd.cid, cmd.sqid));
+        let devsq_id = nvme::devq_id(self.device_id, cmd.sqid);
+        probes::nvme_abort!(|| (cmd.cid, devsq_id));
 
         // Verify the SQ in question currently exists
         let sqid = cmd.sqid as usize;
@@ -44,7 +52,7 @@ impl NvmeCtrl {
     pub(super) fn acmd_create_io_cq(
         &mut self,
         cmd: &cmds::CreateIOCQCmd,
-        mem: &MemCtx,
+        nvme: &PciNvme,
     ) -> cmds::Completion {
         // If the host hasn't specified an IOCQES, fail this request
         if self.ctrl.cc.iocqes() == 0 {
@@ -68,11 +76,15 @@ impl NvmeCtrl {
 
         // Finally, create the Completion Queue
         match self.create_cq(
-            cmd.qid,
+            super::queue::CreateParams {
+                id: cmd.qid,
+                device_id: self.device_id,
+                base: GuestAddr(cmd.prp),
+                size: cmd.qsize,
+            },
+            false,
             cmd.intr_vector,
-            GuestAddr(cmd.prp),
-            cmd.qsize,
-            mem,
+            nvme,
         ) {
             Ok(_) => cmds::Completion::success(),
             Err(
@@ -93,7 +105,7 @@ impl NvmeCtrl {
     pub(super) fn acmd_create_io_sq(
         &mut self,
         cmd: &cmds::CreateIOSQCmd,
-        mem: &MemCtx,
+        nvme: &PciNvme,
     ) -> cmds::Completion {
         // If the host hasn't specified an IOSQES, fail this request
         if self.ctrl.cc.iosqes() == 0 {
@@ -110,13 +122,20 @@ impl NvmeCtrl {
 
         // Finally, create the Submission Queue
         match self.create_sq(
-            cmd.qid,
+            super::queue::CreateParams {
+                id: cmd.qid,
+                device_id: self.device_id,
+                base: GuestAddr(cmd.prp),
+                size: cmd.qsize,
+            },
+            false,
             cmd.cqid,
-            GuestAddr(cmd.prp),
-            cmd.qsize,
-            mem,
+            nvme,
         ) {
-            Ok(_) => cmds::Completion::success(),
+            Ok(sq) => {
+                self.io_sq_post_create(nvme, sq);
+                cmds::Completion::success()
+            }
             Err(NvmeError::InvalidCompQueue(_)) => {
                 cmds::Completion::specific_err(
                     StatusCodeType::CmdSpecific,
@@ -141,6 +160,7 @@ impl NvmeCtrl {
     pub(super) fn acmd_delete_io_cq(
         &mut self,
         cqid: QueueId,
+        nvme: &PciNvme,
     ) -> cmds::Completion {
         // Not allowed to delete the Admin Completion Queue
         if cqid == ADMIN_QUEUE_ID {
@@ -153,7 +173,7 @@ impl NvmeCtrl {
         // Remove the CQ from our list of active CQs.
         // At this point, all associated SQs should've been deleted
         // otherwise we'll return an error.
-        match self.delete_cq(cqid) {
+        match self.delete_cq(cqid, nvme) {
             Ok(()) => cmds::Completion::success(),
             Err(NvmeError::InvalidCompQueue(_)) => {
                 cmds::Completion::specific_err(
@@ -177,6 +197,7 @@ impl NvmeCtrl {
     pub(super) fn acmd_delete_io_sq(
         &mut self,
         sqid: QueueId,
+        nvme: &PciNvme,
     ) -> cmds::Completion {
         // Not allowed to delete the Admin Submission Queue
         if sqid == ADMIN_QUEUE_ID {
@@ -194,8 +215,12 @@ impl NvmeCtrl {
         // Note: The NVMe 1.0e spec says "The command causes all commands
         //       submitted to the indicated Submission Queue that are still in
         //       progress to be aborted."
-        match self.delete_sq(sqid) {
-            Ok(()) => cmds::Completion::success(),
+        match self.delete_sq(sqid, nvme) {
+            Ok(()) => {
+                nvme.block_attach.queue_dissociate(sqid_to_block_qid(sqid));
+                // TODO: wait until requests are done?
+                cmds::Completion::success()
+            }
             Err(NvmeError::InvalidSubQueue(_)) => {
                 cmds::Completion::specific_err(
                     StatusCodeType::CmdSpecific,
@@ -380,6 +405,19 @@ impl NvmeCtrl {
                 )
             }
 
+            cmds::FeatureIdent::OxideDeviceFeatures => {
+                if cmd.cdw11 != 0 {
+                    // We don't currently accept any parameters for this feature
+                    cmds::Completion::generic_err(STS_INVAL_FIELD)
+                } else {
+                    cmds::Completion::success_val(
+                        cmds::OxideDeviceFeatures(0)
+                            .with_read_only(self.read_only)
+                            .0,
+                    )
+                }
+            }
+
             cmds::FeatureIdent::Reserved
             | cmds::FeatureIdent::LbaRangeType
             | cmds::FeatureIdent::SoftwareProgressMarker
@@ -434,10 +472,40 @@ impl NvmeCtrl {
             | cmds::FeatureIdent::WriteAtomicity
             | cmds::FeatureIdent::AsynchronousEventConfiguration
             | cmds::FeatureIdent::SoftwareProgressMarker
+            | cmds::FeatureIdent::OxideDeviceFeatures
             | cmds::FeatureIdent::Vendor(_) => {
                 cmds::Completion::generic_err(STS_INVAL_FIELD).dnr()
             }
         }
+    }
+
+    pub(super) fn acmd_doorbell_buf_cfg(
+        &mut self,
+        cmd: &cmds::DoorbellBufCfgCmd,
+    ) -> cmds::Completion {
+        let mps_mask = self.get_mps() - 1;
+
+        if cmd.shadow_doorbell_buffer & mps_mask != 0
+            || cmd.eventidx_buffer & mps_mask != 0
+        {
+            return cmds::Completion::generic_err(STS_INVAL_FIELD);
+        }
+
+        let db_buf = DoorbellBuffer {
+            shadow: GuestAddr(cmd.shadow_doorbell_buffer),
+            eventidx: GuestAddr(cmd.eventidx_buffer),
+        };
+
+        self.doorbell_buf = Some(db_buf);
+
+        for cq in self.cqs.iter().flatten() {
+            cq.set_db_buf(Some(db_buf), false);
+        }
+        for sq in self.sqs.iter().flatten() {
+            sq.set_db_buf(Some(db_buf), false);
+        }
+
+        cmds::Completion::success()
     }
 
     /// Write result data from an admin command into host memory
@@ -445,7 +513,7 @@ impl NvmeCtrl {
     /// The `data` type must be `repr(packed(1))`
     ///
     /// Returns `Some(())` if successful, else None
-    fn write_admin_result<T: Copy>(
+    fn write_admin_result<T: Copy + IntoBytes>(
         prp: cmds::PrpIter,
         data: &T,
         mem: &MemCtx,

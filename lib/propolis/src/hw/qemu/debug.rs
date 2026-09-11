@@ -8,7 +8,7 @@ use crate::chardev::{BlockingSource, BlockingSourceConsumer, ConsumerCell};
 use crate::common::*;
 use crate::pio::{PioBus, PioFn};
 
-const QEMU_DEBUG_IOPORT: u16 = 0x0402;
+pub const QEMU_DEBUG_IOPORT: u16 = 0x0402;
 const QEMU_DEBUG_IDENT: u8 = 0xe9;
 
 pub struct QemuDebugPort {

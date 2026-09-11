@@ -2,7 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use super::bits::{self, StatusCodeType, SubmissionQueueEntry};
+use super::bits::{
+    self, DatasetManagementRangeDefinition, StatusCodeType,
+    SubmissionQueueEntry,
+};
 use super::queue::{QueueCreateErr, QueueId};
 use crate::block;
 use crate::common::*;
@@ -28,6 +31,10 @@ pub enum ParseErr {
     /// An invalid value was specified in the FUSE bits of `CDW0`.
     #[error("reserved FUSE value specified")]
     ReservedFuse,
+
+    /// A reserved field was set to a non-zero value.
+    #[error("reserved field value specified")]
+    Reserved,
 }
 
 /// A parsed Admin Command
@@ -53,6 +60,8 @@ pub enum AdminCmd {
     GetFeatures(GetFeaturesCmd),
     /// Asynchronous Event Request Command
     AsyncEventReq,
+    /// Doorbell Buffer Config Command
+    DoorbellBufCfg(DoorbellBufCfgCmd),
     /// An unknown admin command
     Unknown(#[allow(dead_code)] GuestData<SubmissionQueueEntry>),
 }
@@ -130,6 +139,12 @@ impl AdminCmd {
                 })
             }
             bits::ADMIN_OPC_ASYNC_EVENT_REQ => AdminCmd::AsyncEventReq,
+            bits::ADMIN_OPC_DOORBELL_BUF_CFG => {
+                AdminCmd::DoorbellBufCfg(DoorbellBufCfgCmd {
+                    shadow_doorbell_buffer: raw.prp1,
+                    eventidx_buffer: raw.prp2,
+                })
+            }
             _ => AdminCmd::Unknown(raw),
         };
         let _fuse = match (raw.cdw0 >> 8) & 0b11 {
@@ -378,6 +393,13 @@ pub struct SetFeaturesCmd {
     pub cdw11: u32,
 }
 
+/// Doorbell Buffer Config Comannd Parameters
+#[derive(Debug)]
+pub struct DoorbellBufCfgCmd {
+    pub shadow_doorbell_buffer: u64,
+    pub eventidx_buffer: u64,
+}
+
 /// Feature Identifiers
 ///
 /// See NVMe 1.0e Section 5.12.1, Figure 73 Set Features - Feature Identifiers
@@ -437,7 +459,12 @@ pub enum FeatureIdent {
     /// This feature is persistent across power states.
     /// See NVMe 1.0e Section 7.6.1.1 Software Progress Marker
     SoftwareProgressMarker,
-    /// Vendor specific feature.
+
+    // Vendor specific features.
+    /// Oxide-specific feature - returns relevant device features.
+    OxideDeviceFeatures,
+
+    /// All other vendor specific features.
     Vendor(#[allow(dead_code)] u8),
 }
 
@@ -461,6 +488,7 @@ impl From<u8> for FeatureIdent {
             0xC..=0x7F => Reserved,
             0x80 => SoftwareProgressMarker,
             0x81..=0xBF => Reserved,
+            FEAT_ID_OXIDE_DEVICE_FEATURES => OxideDeviceFeatures,
             0xC0..=0xFF => Vendor(fid),
         }
     }
@@ -636,6 +664,17 @@ impl From<FeatInterruptVectorConfig> for u32 {
     }
 }
 
+bitstruct! {
+    pub struct OxideDeviceFeatures(pub u32) {
+        /// Indicates the device is read-only and will complete all attempted
+        /// writes with `STS_WRITE_READ_ONLY_RANGE`.
+        pub read_only: bool = 0;
+
+        /// Reserved
+        reserved: u32 = 1..32;
+    }
+}
+
 /// A parsed NVM Command
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -646,6 +685,8 @@ pub enum NvmCmd {
     Write(WriteCmd),
     /// Read data and metadata
     Read(ReadCmd),
+    /// Dataset Management Command
+    DatasetManagement(DatasetManagementCmd),
     /// An unknown NVM command
     Unknown(GuestData<SubmissionQueueEntry>),
 }
@@ -677,6 +718,22 @@ impl NvmCmd {
                 prp1: raw.prp1,
                 prp2: raw.prp2,
             }),
+            bits::NVM_OPC_DATASET_MANAGEMENT => {
+                if (raw.cdw11 & !0b111) != 0 {
+                    // Only the lowest 3 bits of CDW11 are used for Dataset
+                    // Management, so reject if any other bits are set.
+                    return Err(ParseErr::Reserved);
+                }
+                NvmCmd::DatasetManagement(DatasetManagementCmd {
+                    prp1: raw.prp1,
+                    prp2: raw.prp2,
+                    // Convert from 0's based value
+                    nr: (raw.cdw10 & 0xFF) as u16 + 1,
+                    ad: raw.cdw11 & (1 << 2) != 0,
+                    _idw: raw.cdw11 & (1 << 1) != 0,
+                    _idr: raw.cdw11 & (1 << 0) != 0,
+                })
+            }
             _ => NvmCmd::Unknown(raw),
         };
         Ok(cmd)
@@ -744,6 +801,94 @@ impl ReadCmd {
     /// Returns an Iterator that yields [`GuestRegion`]'s to write the data to transfer in.
     pub fn data<'a>(&self, sz: u64, mem: &'a MemCtx) -> PrpIter<'a> {
         PrpIter::new(sz, self.prp1, self.prp2, mem)
+    }
+}
+
+/// Dataset Management Command Parameters
+#[derive(Debug)]
+pub struct DatasetManagementCmd {
+    /// PRP Entry 1 (PRP1)
+    ///
+    /// Indicates a data buffer that contains the LBA range information.
+    prp1: u64,
+
+    /// PRP Entry 2 (PRP2)
+    ///
+    /// Indicates a second data buffer that contains LBA range information.  It may not be a PRP
+    /// List.
+    prp2: u64,
+
+    /// Number of Ranges (NR)
+    ///
+    /// Indicates the number of 16 byte range sets that are specified in the command.
+    pub nr: u16,
+
+    /// Attribute – Deallocate (AD)
+    ///
+    /// If set to ‘1’ then the NVM subsystem may deallocate all provided ranges. If a read occurs
+    /// to a deallocated range, the NVM Express subsystem shall return all zeros, all ones, or
+    /// the last data written to the associated LBA.
+    ///
+    /// Note: The operation of the Deallocate function is similar to the ATA DATA SET MANAGEMENT
+    /// with Trim feature described in ACS-2 and SCSI UNMAP command described in SBC-3.
+    ad: bool,
+
+    /// Attribute – Integral Dataset for Write (IDW)
+    ///
+    /// If set to ‘1’ then the dataset should be optimized for write access as an integral unit.
+    /// The host expects to perform operations on all ranges provided as an integral unit for
+    /// writes, indicating that if a portion of the dataset is written it is expected that all of
+    /// the ranges in the dataset are going to be written.
+    ///
+    /// Note: this field is advisory, and we ignore it.
+    _idw: bool,
+
+    /// Attribute – Integral Dataset for Read (IDR)
+    ///
+    /// If set to ‘1’ then the dataset should be optimized for read access as an integral unit.
+    /// The host expects to perform operations on all ranges provided as an integral unit for
+    /// reads, indicating that if a portion of the dataset is read it is expected that all of the
+    /// ranges in the dataset are going to be read.
+    ///
+    /// Note: this field is advisory, and we ignore it.
+    _idr: bool,
+}
+
+impl DatasetManagementCmd {
+    /// Returns an Iterator that yields [`GuestRegion`]'s which contain the array of LBA ranges.
+    pub fn data<'a>(&self, mem: &'a MemCtx) -> PrpIter<'a> {
+        PrpIter::new(
+            // given that self.nr is at most 256, the multiplication here cannot overflow a u64
+            u64::from(self.nr)
+                * size_of::<DatasetManagementRangeDefinition>() as u64,
+            self.prp1,
+            self.prp2,
+            mem,
+        )
+    }
+
+    /// Returns an Iterator that yields the LBA ranges specified in this command.  If any of the
+    /// ranges cannot be read from guest memory, yields an error for that range instead.
+    pub fn ranges<'a>(
+        &self,
+        mem: &'a MemCtx,
+    ) -> impl Iterator<
+        Item = Result<DatasetManagementRangeDefinition, &'static str>,
+    > + 'a {
+        self.data(mem).flat_map(|region| {
+            if let Some(Ok(defs)) = mem
+                .readable_region(&region)
+                .map(|mapping| mapping.read_many_owned())
+            {
+                defs.into_iter().map(Ok).collect::<Vec<_>>().into_iter()
+            } else {
+                vec![Err("Failed to read LBA range")].into_iter()
+            }
+        })
+    }
+
+    pub fn is_deallocate(&self) -> bool {
+        self.ad
     }
 }
 
@@ -836,7 +981,7 @@ impl PrpIter<'_> {
                     // The first PRP List entry:
                     // - shall be Qword aligned, and
                     // - may also have a non-zero offset within the memory page.
-                    if (self.prp2 % 8) != 0 {
+                    if !self.prp2.is_multiple_of(8) {
                         return Err("PRP2 not Qword aligned!");
                     }
 
@@ -1060,23 +1205,24 @@ impl From<block::Result> for Completion {
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
-
+    use crate::accessors::MemAccessor;
     use crate::common::*;
-    use crate::vmm::mem::{MemCtx, PhysMap};
+    use crate::hw::nvme::bits::DatasetManagementRangeDefinition;
+    use crate::hw::nvme::cmds::DatasetManagementCmd;
+    use crate::vmm::mem::PhysMap;
 
     use super::PrpIter;
 
     const VM_SIZE: usize = 256 * PAGE_SIZE;
     const PRP_PER_PAGE: usize = PAGE_SIZE / 8;
 
-    fn setup() -> (PhysMap, Arc<MemCtx>) {
+    fn setup() -> (PhysMap, MemAccessor) {
         let mut pmap = PhysMap::new_test(VM_SIZE);
         pmap.add_test_mem("lowmem".to_string(), 0, VM_SIZE)
             .expect("lowmem seg creation should succeed");
 
-        let memctx = pmap.memctx();
-        (pmap, memctx)
+        let acc_mem = pmap.finalize();
+        (pmap, acc_mem)
     }
 
     // Simple helpers to make math below more terse
@@ -1089,7 +1235,8 @@ mod test {
 
     #[test]
     fn test_prp_single() {
-        let (_pmap, memctx) = setup();
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
 
         // Basic single page
         let mut iter = PrpIter::new(pages(1), 0x1000, 0, &memctx);
@@ -1110,7 +1257,8 @@ mod test {
 
     #[test]
     fn test_prp_dual() {
-        let (_pmap, memctx) = setup();
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
 
         // Basic dual page
         let mut iter = PrpIter::new(pages(2), 0x1000, 0x2000, &memctx);
@@ -1137,7 +1285,9 @@ mod test {
     #[test]
     fn test_prp_list() {
         // Basic triple page (aligned prplist)
-        let (_pmap, memctx) = setup();
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
+
         let listprps: [u64; 2] = [0x2000, 0x3000];
         let listaddr = 0x80000;
         memctx.write(GuestAddr(listaddr), &listprps);
@@ -1148,7 +1298,9 @@ mod test {
         assert_eq!(iter.next(), None);
 
         // Basic triple page (offset prplist)
-        let (_pmap, memctx) = setup();
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
+
         let listprps: [u64; 2] = [0x2000, 0x3000];
         let listaddr = 0x80010;
         memctx.write(GuestAddr(listaddr), &listprps);
@@ -1159,7 +1311,9 @@ mod test {
         assert_eq!(iter.next(), None);
 
         // Offset triple page
-        let (_pmap, memctx) = setup();
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
+
         let listprps: [u64; 3] = [0x2000, 0x3000, 0x4000];
         let listaddr = 0x80000;
         let off = 0x200;
@@ -1175,7 +1329,9 @@ mod test {
     #[test]
     fn test_prp_list_offset_last() {
         // List with offset, where last entry covers less than one page
-        let (_pmap, memctx) = setup();
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
+
         let listaddr = 0x80000u64;
         let mut prps: Vec<u64> = Vec::with_capacity(PRP_PER_PAGE);
         let mut bufaddr = 0x2000u64;
@@ -1214,7 +1370,9 @@ mod test {
     #[test]
     fn test_prp_multiple() {
         // Basic multiple-page prplist
-        let (_pmap, memctx) = setup();
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
+
         let listaddrs = [0x80000u64, 0x81000u64];
         let mut prps: Vec<u64> = Vec::with_capacity(PRP_PER_PAGE);
         let mut bufaddr = 0x2000u64;
@@ -1254,5 +1412,128 @@ mod test {
             bufaddr += pages(1);
         }
         assert_eq!(iter.next(), None);
+    }
+
+    static RANGES: [DatasetManagementRangeDefinition; 3] = [
+        DatasetManagementRangeDefinition {
+            context_attributes: 0,
+            starting_lba: 0x1000,
+            number_logical_blocks: 0x10,
+        },
+        DatasetManagementRangeDefinition {
+            context_attributes: 0,
+            starting_lba: 0x2000,
+            number_logical_blocks: 0x20,
+        },
+        DatasetManagementRangeDefinition {
+            context_attributes: 0,
+            starting_lba: 0x3000,
+            number_logical_blocks: 0x30,
+        },
+    ];
+
+    #[test]
+    fn test_dsmgmt_ranges() {
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
+
+        let listaddr = 0x80000u64;
+        memctx.write_many(GuestAddr(listaddr), &RANGES);
+
+        let cmd = DatasetManagementCmd {
+            prp1: listaddr,
+            prp2: 0,
+            nr: RANGES.len() as u16,
+            ad: true,
+            _idw: false,
+            _idr: false,
+        };
+
+        let mut iter = cmd.ranges(&memctx);
+        for expected in &RANGES {
+            assert_eq!(
+                iter.next(),
+                Some(Ok(*expected)),
+                "bad range definition"
+            );
+        }
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_dsmgmt_ranges_dual() {
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
+
+        let listaddr1 = 0x80FF0u64;
+        let listaddr2 = 0x90000u64;
+        memctx.write_many(GuestAddr(listaddr1), &RANGES[0..1]);
+        memctx.write_many(GuestAddr(listaddr2), &RANGES[1..]);
+
+        let cmd = DatasetManagementCmd {
+            prp1: listaddr1,
+            prp2: listaddr2,
+            nr: RANGES.len() as u16,
+            ad: true,
+            _idw: false,
+            _idr: false,
+        };
+
+        let mut iter = cmd.ranges(&memctx);
+        for expected in &RANGES {
+            assert_eq!(
+                iter.next(),
+                Some(Ok(*expected)),
+                "bad range definition"
+            );
+        }
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_dsmgmt_ranges_bad_dual() {
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
+
+        let listaddr1 = 0x80FF8u64;
+        let listaddr2 = 0x90000u64;
+        memctx.write_many(GuestAddr(listaddr1), &RANGES[0..1]);
+        memctx.write_many(GuestAddr(listaddr2), &RANGES[1..]);
+
+        let cmd = DatasetManagementCmd {
+            prp1: listaddr1,
+            prp2: listaddr2,
+            nr: RANGES.len() as u16,
+            ad: true,
+            _idw: false,
+            _idr: false,
+        };
+
+        let mut iter = cmd.ranges(&memctx);
+        match iter.next() {
+            Some(Err(_)) => {}
+            other => panic!("expected alignment error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_dsmgmt_ranges_bad_address() {
+        let (_pmap, acc_mem) = setup();
+        let memctx = acc_mem.access().unwrap();
+
+        let cmd = DatasetManagementCmd {
+            prp1: VM_SIZE as u64, // out of bounds
+            prp2: 0,
+            nr: 1,
+            ad: true,
+            _idw: false,
+            _idr: false,
+        };
+
+        let mut iter = cmd.ranges(&memctx);
+        match iter.next() {
+            Some(Err(_)) => {}
+            other => panic!("expected alignment error, got {other:?}"),
+        }
     }
 }

@@ -13,6 +13,23 @@
 //! wire-format types in the [`propolis_api_types`] crate. This, in turn, allows
 //! [`Spec`] and its component types to take forms that might otherwise be hard
 //! to change in a backward-compatible way.
+//!
+//! Types and operations here are copied as-needed into new version-specific
+//! modules, as new versions of the `propolis-server` HTTP API are added.
+//!
+//! ## New Versions
+//!
+//! When adding a new API version, particularly when those API versions inclue a
+//! new defintion for `InstanceSpec`, you will probably want to:
+//!
+//! * add a new `api_spec_vN` module for the new version, with conversions from
+//!   `Spec` to the `vN::instance_spec::InstanceSpec` via the previous version
+//!   and from `vN::instance_spec::InstanceSpec` to `Spec` via
+//!   `latest_to_spec_builder()`
+//! * adjust the formerly-latest module's `vN_to_spec_builder` to call
+//!   `vN_to_spec_builder` and (try) converting `InstanceSpec` upwards to match.
+//! * adjust the formerly-latest module's `Spec` to `InstanceSpec` conversion to
+//!   be fallible, using `LegacyApiSpecError` instead of `ApiSpecError`
 
 use std::collections::BTreeMap;
 
@@ -27,25 +44,92 @@ use propolis_api_types::instance_spec::{
         devices::{
             NvmeDisk, PciPciBridge, QemuPvpanic as QemuPvpanicDesc,
             SerialPortNumber, VirtioDisk, VirtioNic,
+            VirtioSocket as VirtioSocketDesc,
         },
     },
-    v0::ComponentV0,
     PciPath, SpecKey,
 };
+use propolis_api_types::instance_spec::{
+    Component, InstanceSpec, SmbiosType1Input,
+};
+use propolis_api_types_versions::latest;
 use thiserror::Error;
 
 #[cfg(feature = "failure-injection")]
 use propolis_api_types::instance_spec::components::devices::MigrationFailureInjector;
 
+use propolis::firmware::acpi::AcpiVariant;
 #[cfg(feature = "falcon")]
 use propolis_api_types::instance_spec::components::{
     backends::DlpiNetworkBackend,
     devices::{P9fs, SoftNpuP9, SoftNpuPciPort},
 };
 
-// mod api_request;
-pub(crate) mod api_spec_v0;
+pub(crate) mod api_spec_latest;
+pub(crate) mod api_spec_v1;
+pub(crate) mod api_spec_v2;
+pub(crate) mod api_spec_v3;
+pub(crate) mod api_spec_v6;
 pub(crate) mod builder;
+
+/// An error that can arise in converting
+/// `propolis_api_types::instance_spec::InstanceSpec` to a propolis-server
+/// `Spec`. To date, this is a subset of the errors that can arise in converting
+/// older versions of `InstanceSpec` as well.
+///
+/// When adding a new `api_spec_v*`, it may be appropriate to either move this
+/// error type into the formerly-latest module and add a new top-level type, or
+/// to simply rename uses of this error in the formerly-latest module to
+/// `LegacyApiSpecError`. Whichever is appropriate depends on how similar the
+/// errors in the newly version are to the errors described here.
+#[derive(Debug, Error)]
+pub(crate) enum ApiSpecError {
+    #[error(transparent)]
+    Builder(#[from] builder::SpecBuilderError),
+
+    #[error("storage backend {backend} not found for device {device}")]
+    StorageBackendNotFound { backend: SpecKey, device: SpecKey },
+
+    #[error("network backend {backend} not found for device {device}")]
+    NetworkBackendNotFound { backend: SpecKey, device: SpecKey },
+
+    #[allow(dead_code)]
+    #[error("support for component {component} compiled out via {feature}")]
+    FeatureCompiledOut { component: SpecKey, feature: &'static str },
+
+    #[error("backend {0} not used by any device")]
+    BackendNotUsed(SpecKey),
+}
+
+/// An error that can arise in converting any older versions of `InstanceSpec`
+/// to a propolis-server `Spec`. To date, this may be any of the errors that can
+/// occur in converting the most recent version of the spec, plus errors in
+/// converting components to older API forms.
+///
+/// This type, as well as `ApiSpecError` are best-effort attempts to describe
+/// the error space as we've seen it so far; if the "legacy" kinds of errors end
+/// up variable it may make sense to revisit even having a "shared" error type
+/// for these conversions.
+#[derive(Debug, Error)]
+pub(crate) enum LegacyApiSpecError {
+    #[error(transparent)]
+    SpecError(#[from] ApiSpecError),
+
+    #[error("spec contains v1-incompatible component: {0}")]
+    IncompatibleComponent(String),
+}
+
+/// `propolis-server` relies on `TryInto` to convert the API-provided
+/// `InstanceSpec` to an internal `Spec`. When adding a new API version to
+/// `propolis-server` you will probably want to take this implementation and
+/// copy it into the no-longer-latest `api_spec_v*` module.
+impl TryFrom<InstanceSpec> for Spec {
+    type Error = ApiSpecError;
+
+    fn try_from(value: InstanceSpec) -> Result<Self, Self::Error> {
+        Ok(api_spec_v6::v6_to_spec_builder(value)?.finish())
+    }
+}
 
 #[derive(Debug, Error)]
 #[error("input component type can't convert to output type")]
@@ -60,6 +144,14 @@ pub struct ComponentTypeMismatch;
 /// device paths, etc.). When constructing a new spec, use the
 /// [`builder::SpecBuilder`] struct to catch requests that violate these
 /// invariants.
+///
+/// ### Relationship to migration
+///
+/// As Propolis' internal representation of a VM, conversion to/from `Spec` is a
+/// front-and-center concern for migrating from a current Propolis to some other
+/// newer or older `propolis-server`. See the module comment in
+/// [`lib/migrate/mod.rs`](crate::lib::migrate) for more about the relationships
+/// between these types.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Spec {
     pub board: Board,
@@ -73,11 +165,28 @@ pub(crate) struct Spec {
     pub pci_pci_bridges: BTreeMap<SpecKey, PciPciBridge>,
     pub pvpanic: Option<QemuPvpanic>,
 
+    pub vsock: Option<VirtioSocket>,
+
     #[cfg(feature = "failure-injection")]
     pub migration_failure: Option<MigrationFailure>,
 
     #[cfg(feature = "falcon")]
     pub softnpu: SoftNpu,
+
+    // This is an option because in v1::instance_spec::InstanceSpec the defaults
+    // `None` would imply came from the data outside the `InstanceSpec` itself;
+    // instance properties, for the instance's UUID, in particular. Two
+    // options here are to have `Builder` take the instance's UUID at all times
+    // and only sometimes synthesize `SmbiosType1Input` if nothing else is
+    // provided, or allow this to be `None` and interpret that in "the old way"
+    // when instantiating the SMBIOS tables. We've gone with the latter.
+    // Alternatively, we could scratch `Builder` entirely and have open-coded
+    // functions to translate `InstanceSpec` to a `Spec`, and have v1 of *those*
+    // take the requisite ancillary data.
+    //
+    // If (when!) we remove `v1` types - they are wholly from before any kind of
+    // live migration was supported - this can be de-Option'd.
+    pub smbios_type1_input: Option<SmbiosType1Input>,
 }
 
 /// The VM's mainboard.
@@ -93,6 +202,9 @@ pub(crate) struct Board {
     pub memory_mb: u64,
     pub chipset: Chipset,
     pub guest_hv_interface: GuestHypervisorInterface,
+
+    // XXX: expose via the API once more variants are implemented.
+    pub acpi_variant: AcpiVariant,
 }
 
 impl Default for Board {
@@ -102,6 +214,7 @@ impl Default for Board {
             memory_mb: 0,
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
             guest_hv_interface: GuestHypervisorInterface::Bhyve,
+            acpi_variant: AcpiVariant::V0,
         }
     }
 }
@@ -166,7 +279,7 @@ impl StorageDevice {
     }
 }
 
-impl From<StorageDevice> for ComponentV0 {
+impl From<StorageDevice> for latest::instance_spec::Component {
     fn from(value: StorageDevice) -> Self {
         match value {
             StorageDevice::Virtio(d) => Self::VirtioDisk(d),
@@ -175,13 +288,13 @@ impl From<StorageDevice> for ComponentV0 {
     }
 }
 
-impl TryFrom<ComponentV0> for StorageDevice {
+impl TryFrom<Component> for StorageDevice {
     type Error = ComponentTypeMismatch;
 
-    fn try_from(value: ComponentV0) -> Result<Self, Self::Error> {
+    fn try_from(value: Component) -> Result<Self, Self::Error> {
         match value {
-            ComponentV0::VirtioDisk(d) => Ok(Self::Virtio(d)),
-            ComponentV0::NvmeDisk(d) => Ok(Self::Nvme(d)),
+            Component::VirtioDisk(d) => Ok(Self::Virtio(d)),
+            Component::NvmeDisk(d) => Ok(Self::Nvme(d)),
             _ => Err(ComponentTypeMismatch),
         }
     }
@@ -213,7 +326,7 @@ impl StorageBackend {
     }
 }
 
-impl From<StorageBackend> for ComponentV0 {
+impl From<StorageBackend> for Component {
     fn from(value: StorageBackend) -> Self {
         match value {
             StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),
@@ -223,14 +336,14 @@ impl From<StorageBackend> for ComponentV0 {
     }
 }
 
-impl TryFrom<ComponentV0> for StorageBackend {
+impl TryFrom<Component> for StorageBackend {
     type Error = ComponentTypeMismatch;
 
-    fn try_from(value: ComponentV0) -> Result<Self, Self::Error> {
+    fn try_from(value: Component) -> Result<Self, Self::Error> {
         match value {
-            ComponentV0::CrucibleStorageBackend(be) => Ok(Self::Crucible(be)),
-            ComponentV0::FileStorageBackend(be) => Ok(Self::File(be)),
-            ComponentV0::BlobStorageBackend(be) => Ok(Self::Blob(be)),
+            Component::CrucibleStorageBackend(be) => Ok(Self::Crucible(be)),
+            Component::FileStorageBackend(be) => Ok(Self::File(be)),
+            Component::BlobStorageBackend(be) => Ok(Self::Blob(be)),
             _ => Err(ComponentTypeMismatch),
         }
     }
@@ -283,6 +396,12 @@ pub struct QemuPvpanic {
     #[allow(dead_code)]
     pub id: SpecKey,
     pub spec: QemuPvpanicDesc,
+}
+
+#[derive(Clone, Debug)]
+pub struct VirtioSocket {
+    pub id: SpecKey,
+    pub spec: VirtioSocketDesc,
 }
 
 #[cfg(feature = "failure-injection")]

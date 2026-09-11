@@ -21,6 +21,7 @@ use crate::hw::pci::{
     self, Bdf, INTxPinID, LintrCfg, PcieCfgDecoder, PioCfgDecoder,
 };
 use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin, NoOpPin};
+use crate::lifecycle;
 use crate::migrate::*;
 use crate::mmio::MmioFn;
 use crate::pio::{PioBus, PioFn};
@@ -132,14 +133,14 @@ impl IrqConfig {
     }
 }
 
-const PIR_OFFSET: usize = 0x60;
-const PIR_LEN: usize = 4;
-const PIR_END: usize = PIR_OFFSET + PIR_LEN;
+pub const PIR_OFFSET: usize = 0x60;
+pub const PIR_LEN: usize = 4;
+pub const PIR_END: usize = PIR_OFFSET + PIR_LEN;
 
-const PIR_MASK_DISABLE: u8 = 0x80;
+pub const PIR_MASK_DISABLE: u8 = 0x80;
 const PIR_MASK_IRQ: u8 = 0x0f;
 
-const SCI_IRQ: u8 = 0x9;
+pub const SCI_IRQ: u8 = 0x9;
 
 fn valid_pir_irq(irq: u8) -> bool {
     // Existing ACPI tables allow 3-7, 9-12, 14-15
@@ -155,6 +156,7 @@ pub struct Opts {
 
 pub struct I440FxHostBridge {
     pci_state: pci::DeviceState,
+    indicator: lifecycle::Indicator,
 
     pci_topology: Arc<pci::topology::Topology>,
     pci_cfg: PioCfgDecoder,
@@ -173,8 +175,8 @@ impl I440FxHostBridge {
             device_id: PIIX4_HB_DEV_ID,
             sub_vendor_id: VENDOR_OXIDE,
             sub_device_id: PIIX4_HB_SUB_DEV_ID,
-            class: pci::bits::CLASS_BRIDGE,
-            subclass: pci::bits::SUBCLASS_BRIDGE_HOST,
+            device_class: pci::bits::CLASS_BRIDGE,
+            device_subclass: pci::bits::SUBCLASS_BRIDGE_HOST,
             ..Default::default()
         })
         .finish();
@@ -189,6 +191,7 @@ impl I440FxHostBridge {
 
         Arc::new(Self {
             pci_state,
+            indicator: Default::default(),
 
             pci_topology,
             pci_cfg,
@@ -276,6 +279,19 @@ impl Lifecycle for I440FxHostBridge {
     fn reset(&self) {
         self.pci_state.reset(self);
     }
+    fn start(&self) -> anyhow::Result<()> {
+        self.indicator.start();
+        Ok(())
+    }
+    fn pause(&self) {
+        self.indicator.pause();
+    }
+    fn resume(&self) {
+        self.indicator.resume();
+    }
+    fn halt(&self) {
+        self.indicator.halt();
+    }
     fn migrate(&self) -> Migrator<'_> {
         Migrator::Multi(self)
     }
@@ -347,8 +363,8 @@ impl Piix3Lpc {
             device_id: PIIX3_ISA_DEV_ID,
             sub_vendor_id: VENDOR_OXIDE,
             sub_device_id: PIIX3_ISA_SUB_DEV_ID,
-            class: pci::bits::CLASS_BRIDGE,
-            subclass: pci::bits::SUBCLASS_BRIDGE_ISA,
+            device_class: pci::bits::CLASS_BRIDGE,
+            device_subclass: pci::bits::SUBCLASS_BRIDGE_ISA,
             ..Default::default()
         })
         .add_custom_cfg(PIR_OFFSET as u8, PIR_LEN as u8)
@@ -537,8 +553,8 @@ impl MigrateMulti for Piix3Lpc {
 const PMCFG_OFFSET: usize = 0x40;
 const PMCFG_LEN: usize = 0x98;
 
-const PMBASE_DEFAULT: u16 = 0xb000;
-const PMBASE_LEN: u16 = 0x40;
+pub const PMBASE_DEFAULT: u16 = 0xb000;
+pub const PMBASE_LEN: u16 = 0x40;
 const SMBBASE_DEFAULT: u16 = 0xb100;
 // const SMBBASE_LEN: u16 = 0x40;
 
@@ -800,8 +816,8 @@ impl Piix3PM {
             device_id: PIIX4_PM_DEV_ID,
             sub_vendor_id: VENDOR_OXIDE,
             sub_device_id: PIIX4_PM_SUB_DEV_ID,
-            class: pci::bits::CLASS_BRIDGE,
-            subclass: pci::bits::SUBCLASS_BRIDGE_OTHER,
+            device_class: pci::bits::CLASS_BRIDGE,
+            device_subclass: pci::bits::SUBCLASS_BRIDGE_OTHER,
             // Linux will complain about the PM-timer being potentially slow if
             // it detects the ACPI device exposing a revision prior to 0x3.
             revision_id: 0x3,

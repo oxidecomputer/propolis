@@ -3,6 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 pub mod aspace;
+pub mod bitmap;
+pub mod id;
 pub mod regmap;
 
 mod ioctl {

@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::fs::File;
-use std::io::{Error, ErrorKind, Result};
+use std::io::{Error, ErrorKind, IsTerminal, Result};
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,18 +16,19 @@ use anyhow::Context;
 use clap::Parser;
 use futures::future::BoxFuture;
 use propolis::hw::qemu::pvpanic::QemuPvpanic;
+use propolis::vsock::GuestCid;
 use propolis_types::{CpuidIdent, CpuidValues, CpuidVendor};
 use slog::{o, Drain};
 use strum::IntoEnumIterator;
 use tokio::runtime;
 
 use propolis::chardev::{BlockingSource, Sink, Source, UDSock};
-use propolis::common::{GB, MB};
-use propolis::firmware::smbios;
+use propolis::common::{DeviceMetadataMap, GB, MB};
+use propolis::firmware::{acpi, smbios};
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ps2::ctrl::PS2Ctrl;
 use propolis::hw::qemu::fwcfg;
-use propolis::hw::uart::LpcUart;
+use propolis::hw::uart::{LpcUart, LpcUartMetadata};
 use propolis::hw::{ibmpc, qemu};
 use propolis::intr_pins::FuncPin;
 use propolis::usdt::register_probes;
@@ -42,6 +43,15 @@ mod snapshot;
 const PAGE_OFFSET: u64 = 0xfff;
 // Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
+
+/// End address of the 32-bit PCI MMIO window.
+///
+// Value inherited from the original EDK2 static tables.
+// https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/PlatformPei/Platform.c#L180-L192
+//
+// It should be updated to match the actual memory regions registered in the
+// instance.
+const PCI_MMIO32_END: usize = 0xfeef_ffff;
 
 const MIN_RT_THREADS: usize = 8;
 const BASE_RT_THREADS: usize = 4;
@@ -120,14 +130,13 @@ impl EventQueue {
         let mut inner = self.inner.lock().unwrap();
         while let Some((ev, ctx)) = inner.events.pop_front() {
             match cur {
-                Some(cur_ev) => {
-                    if cur_ev.supersedes(&ev) {
-                        // queued event is superseded by current one, so discard
-                        // it and look for another which may be relevant.
-                        continue;
-                    } else {
-                        return Some((ev, ctx));
-                    }
+                Some(cur_ev) if cur_ev.supersedes(&ev) => {
+                    // queued event is superseded by current one, so discard
+                    // it and look for another which may be relevant.
+                    continue;
+                }
+                Some(_) => {
+                    return Some((ev, ctx));
                 }
                 None => return Some((ev, ctx)),
             }
@@ -234,7 +243,7 @@ impl Inventory {
     fn destroy(&mut self) {
         // Detach all block backends from their devices
         for backend in self.block.values() {
-            let _ = backend.attachment().detach();
+            backend.attachment().detach();
         }
 
         // Drop all refs in the hopes that things can clean up after themselves
@@ -257,6 +266,7 @@ struct InstInner {
     eq: Arc<EventQueue>,
     cv: Condvar,
     config: config::Config,
+    com1_sock: Arc<UDSock>,
 }
 
 struct Instance(Arc<InstInner>);
@@ -266,6 +276,7 @@ impl Instance {
         config: config::Config,
         from_restore: bool,
         log: slog::Logger,
+        com1_sock: Arc<UDSock>,
     ) -> Self {
         let this = Self(Arc::new(InstInner {
             state: Mutex::new(InstState {
@@ -279,6 +290,7 @@ impl Instance {
             eq: EventQueue::new(),
             cv: Condvar::new(),
             config,
+            com1_sock,
         }));
 
         // Some gymnastics required for the split borrow through the MutexGuard
@@ -286,7 +298,36 @@ impl Instance {
         let state = &mut *state_guard;
         let machine = state.machine.as_ref().unwrap();
 
-        for vcpu in machine.vcpus.iter().map(Arc::clone) {
+        let bind_cpus = match this.0.config.main.cpu_binding {
+            Some(config::BindingStrategy::UpperHalf) => {
+                let total_cpus =
+                    pbind::online_cpus().expect("can get processor count");
+                let vcpu_count: i32 = machine
+                    .vcpus
+                    .len()
+                    .try_into()
+                    .expect("vCPU count <= MAXCPU < i32::MAX");
+
+                let first_bound_cpu = total_cpus - vcpu_count;
+                let bind_cpus =
+                    (first_bound_cpu..total_cpus).map(Some).collect();
+                slog::info!(
+                    &log,
+                    "Explicit CPU binding requested";
+                    "last_cpu" => total_cpus,
+                    "first_cpu" => first_bound_cpu,
+                    "vcpu_count" => vcpu_count,
+                );
+                bind_cpus
+            }
+            Some(config::BindingStrategy::Any) | None => {
+                vec![None; machine.vcpus.len()]
+            }
+        };
+
+        for (vcpu, bind_cpu) in
+            machine.vcpus.iter().map(Arc::clone).zip(bind_cpus)
+        {
             let (task, ctrl) =
                 propolis::tasks::TaskHdl::new_held(Some(vcpu.barrier_fn()));
 
@@ -295,6 +336,9 @@ impl Instance {
             let _ = std::thread::Builder::new()
                 .name(format!("vcpu-{}", vcpu.id))
                 .spawn(move || {
+                    if bind_cpu.is_some() {
+                        pbind::bind_lwp(bind_cpu).expect("can bind vcpu");
+                    }
                     Instance::vcpu_loop(inner, vcpu.as_ref(), &task, task_log)
                 })
                 .unwrap();
@@ -321,7 +365,7 @@ impl Instance {
         state: State,
         guard: &MutexGuard<InstState>,
         first_boot: bool,
-        log: &slog::Logger,
+        _log: &slog::Logger,
     ) {
         for (name, device) in guard.inventory.devs.iter() {
             match state {
@@ -361,23 +405,16 @@ impl Instance {
         match state {
             State::Run if first_boot => {
                 tokio::runtime::Handle::current().block_on(async {
-                    for (_name, be) in guard.inventory.block.iter() {
+                    for be in guard.inventory.block.values() {
                         be.start().await.expect("blockdev start succeeds");
                     }
                 });
             }
             State::Halt => {
                 tokio::runtime::Handle::current().block_on(async {
-                    for (name, be) in guard.inventory.block.iter() {
+                    for be in guard.inventory.block.values() {
                         be.stop().await;
-                        if let Err(err) = be.detach() {
-                            slog::error!(
-                                log,
-                                "Error during detach of block backend {}: {:?}",
-                                name,
-                                err
-                            );
-                        }
+                        be.attachment().detach();
                     }
                 });
             }
@@ -523,6 +560,9 @@ impl Instance {
                 State::Destroy => {
                     // Drop the machine
                     let _ = guard.machine.take().unwrap();
+
+                    // Abort any pending serial connection
+                    inner.com1_sock.shutdown();
 
                     // Clean up the inventory as well
                     guard.inventory.destroy();
@@ -782,7 +822,7 @@ fn open_bootrom(path: &str) -> Result<(File, usize)> {
 }
 
 fn build_log(level: slog::Level) -> slog::Logger {
-    let main_drain = if atty::is(atty::Stream::Stdout) {
+    let main_drain = if std::io::stdout().is_terminal() {
         let decorator = slog_term::TermDecorator::new().build();
         let drain = slog_term::CompactFormat::new(decorator).build().fuse();
         slog_async::Async::new(drain)
@@ -1039,6 +1079,47 @@ fn generate_bootorder(
     Ok(Some(order.finish()))
 }
 
+fn generate_acpi_tables(
+    acpi_variant: acpi::AcpiVariant,
+    num_cpus: u8,
+    lowmem: usize,
+    inventory: &Inventory,
+    device_metadata: &DeviceMetadataMap,
+    log: &slog::Logger,
+) -> anyhow::Result<fwcfg::formats::AcpiTables> {
+    slog::info!(log, "Generating ACPI tables with variant {:?}", acpi_variant);
+
+    let generators: Vec<_> = inventory
+        .devs
+        .values()
+        .filter_map(|dev| dev.as_dsdt_generator())
+        .collect();
+
+    // The values for pci_window_32 and pci_window_64 are set based on the
+    // original EDK2 ACPI tables, and currently don't exactly match the
+    // ranges defined in build_machined().
+    //
+    // Propolis doesn't verify if an MMIO operation happens in an address
+    // reserved for MMIO, so this doesn't cause problems for now, but the
+    // PCI windows should be updated to match what's reserved in
+    // build_machine().
+    let pci_window_32 =
+        fwcfg::formats::PciWindow::new(lowmem as u64, PCI_MMIO32_END as u64)
+            .context("invalid PCI window range")?;
+
+    let config = &fwcfg::formats::AcpiConfig {
+        acpi_variant,
+        num_cpus,
+        pci_window_32,
+        pci_window_64: fwcfg::formats::PciWindow::empty(),
+        dsdt_generators: &generators,
+        device_metadata,
+    };
+    let acpi_tables = fwcfg::formats::AcpiTablesBuilder::new(config);
+
+    Ok(acpi_tables.build())
+}
+
 fn setup_instance(
     config: config::Config,
     from_restore: bool,
@@ -1073,14 +1154,20 @@ fn setup_instance(
         cpus, lowmem, highmem;);
     let machine = build_machine(vm_name, cpus, lowmem, highmem, use_reservoir)
         .context("Failed to create VM Machine")?;
-    let inst =
-        Instance::new(machine, config.clone(), from_restore, log.clone());
+    let com1_sock =
+        UDSock::bind(Path::new("./ttya")).context("Cannot open UD socket")?;
+    let inst = Instance::new(
+        machine,
+        config.clone(),
+        from_restore,
+        log.clone(),
+        com1_sock.clone(),
+    );
+    let mut device_metadata = DeviceMetadataMap::new();
     slog::info!(log, "VM created"; "name" => vm_name);
 
     let (romfp, rom_len) =
         open_bootrom(&config.main.bootrom).context("Cannot open bootrom")?;
-    let com1_sock =
-        UDSock::bind(Path::new("./ttya")).context("Cannot open UD socket")?;
 
     // Get necessary access to innards, now that it is nestled in `Instance`
     let mut inst_guard = inst.lock().unwrap();
@@ -1163,14 +1250,30 @@ fn setup_instance(
     com4.set_autodiscard(true);
 
     let pio = &machine.bus_pio;
-    LpcUart::attach(&com1, pio, ibmpc::PORT_COM1);
-    LpcUart::attach(&com2, pio, ibmpc::PORT_COM2);
-    LpcUart::attach(&com3, pio, ibmpc::PORT_COM3);
-    LpcUart::attach(&com4, pio, ibmpc::PORT_COM4);
+    com1.attach(pio, ibmpc::PORT_COM1);
+    com2.attach(pio, ibmpc::PORT_COM2);
+    com3.attach(pio, ibmpc::PORT_COM3);
+    com4.attach(pio, ibmpc::PORT_COM4);
     guard.inventory.register_instance(&com1, "com1");
+    device_metadata.insert(
+        &com1,
+        Box::new(LpcUartMetadata::new(1, ibmpc::PORT_COM1, ibmpc::IRQ_COM1)),
+    );
     guard.inventory.register_instance(&com2, "com2");
+    device_metadata.insert(
+        &com2,
+        Box::new(LpcUartMetadata::new(2, ibmpc::PORT_COM2, ibmpc::IRQ_COM2)),
+    );
     guard.inventory.register_instance(&com3, "com3");
+    device_metadata.insert(
+        &com3,
+        Box::new(LpcUartMetadata::new(3, ibmpc::PORT_COM3, ibmpc::IRQ_COM3)),
+    );
     guard.inventory.register_instance(&com4, "com4");
+    device_metadata.insert(
+        &com4,
+        Box::new(LpcUartMetadata::new(4, ibmpc::PORT_COM4, ibmpc::IRQ_COM4)),
+    );
 
     // PS/2
     let ps2_ctrl = PS2Ctrl::create();
@@ -1213,34 +1316,43 @@ fn setup_instance(
                         .register_instance(&vioblk, &bdf.to_string());
                     guard.inventory.register_block(&backend, name);
 
-                    block::attach(vioblk.clone(), backend).unwrap();
+                    block::attach(&vioblk.block_attach, backend.attachment())
+                        .unwrap();
                     chipset_pci_attach(bdf, vioblk);
                 }
                 "pci-virtio-viona" => {
                     let vnic_name =
                         dev.options.get("vnic").unwrap().as_str().unwrap();
+                    let rxqsz = match dev.options.get("rx-queue-size") {
+                        Some(toml::Value::Integer(v)) => {
+                            hw::virtio::VqSize::new(u16::try_from(*v).unwrap())
+                        }
+                        _ => hw::virtio::viona::RX_QUEUE_SIZE,
+                    };
+                    let txqsz = match dev.options.get("tx-queue-size") {
+                        Some(toml::Value::Integer(v)) => {
+                            hw::virtio::VqSize::new(u16::try_from(*v).unwrap())
+                        }
+                        _ => hw::virtio::viona::TX_QUEUE_SIZE,
+                    };
                     let bdf = bdf.unwrap();
 
                     let viona_params =
                         config::VionaDeviceParams::from_opts(&dev.options)
                             .expect("viona params are valid");
 
-                    if viona_params.is_some()
-                        && hw::virtio::viona::api_version()
-                            .expect("can query viona version")
-                            < hw::virtio::viona::ApiVersion::V3
-                    {
-                        // lazy cop-out for now
-                        panic!("can't set viona params on too-old version");
-                    }
-
-                    let viona = hw::virtio::PciVirtioViona::new(
-                        vnic_name,
-                        0x0800.try_into().unwrap(),
-                        0x0100.try_into().unwrap(),
-                        &hdl,
-                        viona_params,
-                    )?;
+                    // The viona_params here (currently just copy_data and
+                    // header_pad) require `viona::ApiVersion::V3`, below
+                    // Propolis' minimum of V6, so we can always set them.
+                    let viona =
+                        hw::virtio::PciVirtioViona::new_with_queue_sizes(
+                            vnic_name,
+                            rxqsz,
+                            txqsz,
+                            hw::virtio::viona::CTL_QUEUE_SIZE,
+                            &hdl,
+                            viona_params,
+                        )?;
                     guard.inventory.register_instance(&viona, &bdf.to_string());
                     chipset_pci_attach(bdf, viona);
                 }
@@ -1258,6 +1370,11 @@ fn setup_instance(
                         .to_string();
                     let log =
                         log.new(slog::o!("dev" => format!("nvme-{}", name)));
+                    let has_write_cache = dev
+                        .options
+                        .get("has_write_cache")
+                        .map(|v| v.as_bool().unwrap())
+                        .unwrap_or(false);
                     // Limit data transfers to 1MiB (2^8 * 4k) in size
                     let mdts = Some(8);
 
@@ -1266,13 +1383,18 @@ fn setup_instance(
                     serial_number[..sz]
                         .clone_from_slice(&dev_serial.as_bytes()[..sz]);
 
-                    let nvme =
-                        hw::nvme::PciNvme::create(&serial_number, mdts, log);
+                    let nvme = hw::nvme::PciNvme::create(
+                        &serial_number,
+                        mdts,
+                        has_write_cache,
+                        log,
+                    );
 
                     guard.inventory.register_instance(&nvme, &bdf.to_string());
                     guard.inventory.register_block(&backend, name);
 
-                    block::attach(nvme.clone(), backend).unwrap();
+                    block::attach(&nvme.block_attach, backend.attachment())
+                        .unwrap();
                     chipset_pci_attach(bdf, nvme);
                 }
                 qemu::pvpanic::DEVICE_NAME => {
@@ -1289,13 +1411,23 @@ fn setup_instance(
                         guard.inventory.register(&pvpanic);
                     }
                 }
+                "pci-virtio-socket" => {
+                    let config = config::VsockDevice::from_opts(&dev.options)?;
+                    let bdf = bdf.unwrap();
+                    let guest_cid = GuestCid::try_from(config.guest_cid)
+                        .context("guest cid")?;
+                    let vsock = hw::virtio::PciVirtioSock::new(
+                        512,
+                        guest_cid,
+                        log.new(slog::o!("dev" => "vsock")),
+                        config.port_mappings,
+                    );
+                    guard.inventory.register(&vsock);
+                    chipset_pci_attach(bdf, vsock);
+                }
                 _ => {
                     slog::error!(log, "unrecognized driver {driver}"; "name" => name);
-                    return Err(Error::new(
-                        ErrorKind::Other,
-                        "Unrecognized driver",
-                    )
-                    .into());
+                    return Err(Error::other("Unrecognized driver").into());
                 }
             };
             Ok(())
@@ -1380,6 +1512,25 @@ fn setup_instance(
     let e820_entry = generate_e820(machine, log).expect("can build E820 table");
     fwcfg.insert_named("etc/e820", e820_entry).unwrap();
 
+    let acpi_entries = generate_acpi_tables(
+        config.main.acpi_variant,
+        cpus,
+        lowmem,
+        &guard.inventory,
+        &device_metadata,
+        log,
+    )
+    .expect("can build ACPI tables");
+    fwcfg
+        .insert_named("etc/acpi/tables", acpi_entries.tables)
+        .context("Failed to insert ACPI tables")?;
+    fwcfg
+        .insert_named("etc/acpi/rsdp", acpi_entries.rsdp)
+        .context("Failed to insert ACPI RSDP")?;
+    fwcfg
+        .insert_named("etc/table-loader", acpi_entries.table_loader)
+        .context("Failed to insert ACPI table-loader")?;
+
     fwcfg.attach(pio, &machine.acc_mem);
 
     guard.inventory.register(&fwcfg);
@@ -1427,18 +1578,12 @@ fn api_version_checks(log: &slog::Logger) -> std::io::Result<()> {
         }
         Err(VersionCheckError {
             component,
+            err: source @ Error::TooLow { .. },
             path: _,
-            err: Error::Mismatch(act, exp),
         }) => {
             // Make noise about version mismatch, but soldier on and let the
             // user decide if they want to quit
-            slog::error!(
-                log,
-                "{} API version mismatch {} != {}",
-                component,
-                act,
-                exp
-            );
+            slog::error!(log, "{component}: {source}");
             Ok(())
         }
         Ok(_) => Ok(()),
@@ -1446,6 +1591,7 @@ fn api_version_checks(log: &slog::Logger) -> std::io::Result<()> {
 }
 
 #[derive(clap::Parser)]
+#[clap(version = propolis::version())]
 /// Propolis command-line frontend for running a VM.
 struct Args {
     /// Either the VM config file or a previously captured snapshot image.
@@ -1478,6 +1624,8 @@ fn main() -> anyhow::Result<ExitCode> {
     register_probes().context("Failed to setup USDT probes")?;
 
     let log = build_log(log_level);
+
+    slog::info!(log, "Running {}", propolis::version());
 
     // Check that vmm and viona device version match what we expect
     api_version_checks(&log).context("API version checks")?;
@@ -1534,14 +1682,14 @@ fn main() -> anyhow::Result<ExitCode> {
 
     // Wait until someone connects to ttya
     slog::info!(log, "Waiting for a connection to ttya");
-    com1_sock.wait_for_connect();
-
-    // Let the VM start and we're off to the races
-    slog::info!(log, "Starting instance...");
-    inst.eq().push(
-        InstEvent::ReqStart,
-        EventCtx::User("UDS connection".to_string()),
-    );
+    if com1_sock.wait_for_connect() {
+        // Let the VM start and we're off to the races
+        slog::info!(log, "Starting instance...");
+        inst.eq().push(
+            InstEvent::ReqStart,
+            EventCtx::User("UDS connection".to_string()),
+        );
+    }
 
     // wait for instance to be destroyed
     Ok(inst.wait_destroyed())

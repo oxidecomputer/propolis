@@ -2,10 +2,13 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+use std::any::Any;
+use std::collections::BTreeMap;
 use std::ops::{Add, BitAnd};
 use std::ops::{Bound::*, RangeBounds};
 use std::slice::SliceIndex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::vmm::SubMapping;
 
@@ -497,6 +500,113 @@ impl BitAnd<usize> for GuestAddr {
 
 pub use crate::lifecycle::Lifecycle;
 
+/// Trait that devices can implement to store metadata into a
+/// [DeviceMetadataMap].
+pub trait DeviceMetadata: Lifecycle {
+    type Metadata;
+}
+
+/// Storage for arbitrary information about devices attached to a machine.
+/// Devices must implement [DeviceMetadata].
+pub struct DeviceMetadataMap {
+    map: BTreeMap<*const (), Box<dyn Any>>,
+}
+impl DeviceMetadataMap {
+    pub fn new() -> Self {
+        Self { map: BTreeMap::new() }
+    }
+
+    /// Inserts a device and its metadata into storage.
+    ///
+    /// It differs from the standard `insert` API, where the old value is
+    /// returned if present, to avoid downcasting errors in the unlikely case a
+    /// different device metadata type is inserted into an existing key.
+    pub fn insert<T: 'static + DeviceMetadata>(
+        &mut self,
+        k: &Arc<T>,
+        v: Box<T::Metadata>,
+    ) {
+        self.map.insert(Arc::as_ptr(k) as *const (), v);
+    }
+
+    /// Retrieves metadata for a device.
+    ///
+    /// The device is referenced by its address and so the exact same device
+    /// needs to be used to access the metadata.
+    ///
+    /// Returns `None` if the device is not present in storage.
+    ///
+    /// Panics if the device metadata can't be downcasted.
+    pub fn get<T: 'static + DeviceMetadata>(
+        &self,
+        k: &T,
+    ) -> Option<&T::Metadata> {
+        // Double cast key to ensure the raw pointer is the same as the one
+        // used on inert. A pointer to Lifecycle includes additional metadata
+        // that can be different, even if they point to the same address. A
+        // pointer to T requires knowing the type for T::Metadata.
+        let k_ptr = (k as *const dyn Lifecycle) as *const ();
+
+        // Value type is enforced on insert, so the downcasting is not expected
+        // to fail.
+        Some(self.map.get(&k_ptr)?.as_ref().downcast_ref().unwrap())
+    }
+}
+
+#[cfg(test)]
+mod device_metadata_test {
+    use super::*;
+
+    struct MockDevice {}
+    impl<'a> MockDevice {
+        fn metadata(
+            &'a self,
+            device_metadata: &'a DeviceMetadataMap,
+        ) -> Option<&'a MockDeviceMetadata> {
+            device_metadata.get(self)
+        }
+    }
+    impl Lifecycle for MockDevice {
+        fn type_name(&self) -> &'static str {
+            "mock"
+        }
+    }
+    impl DeviceMetadata for MockDevice {
+        type Metadata = MockDeviceMetadata;
+    }
+
+    struct MockDeviceMetadata {
+        data: u8,
+    }
+
+    #[test]
+    fn device_metadata_test() {
+        let mut map = DeviceMetadataMap::new();
+
+        // Insert and retrieve metadata.
+        let d1 = Arc::new(MockDevice {});
+        map.insert(&d1, Box::new(MockDeviceMetadata { data: 1 }));
+
+        // Retrieve metadata from the device.
+        let metadata = d1.metadata(&map).unwrap();
+        assert_eq!(metadata.data, 1);
+
+        // Retrieve metadata from the Arc.
+        let metadata = map.get(&*d1).unwrap();
+        assert_eq!(metadata.data, 1);
+
+        // Replace metadata.
+        map.insert(&d1, Box::new(MockDeviceMetadata { data: 2 }));
+        let metadata = map.get(&*d1).unwrap();
+        assert_eq!(metadata.data, 2);
+
+        // Try to read non-existing metadata.
+        let d2 = Arc::new(MockDevice {});
+        let metadata = d2.metadata(&map);
+        assert!(metadata.is_none());
+    }
+}
+
 pub const PAGE_SIZE: usize = 0x1000;
 pub const PAGE_OFFSET: usize = 0xfff;
 pub const PAGE_MASK: usize = usize::MAX - PAGE_OFFSET;
@@ -527,22 +637,18 @@ mod test {
         let mut buf = [0u8; 8];
         let mut ro8 = ReadOp::from_buf(0, &mut buf[0..1]);
         ro8.write_u8(1);
-        drop(ro8);
         assert_eq!(buf, [1, 0, 0, 0, 0, 0, 0, 0]);
 
         let mut ro16 = ReadOp::from_buf(0, &mut buf[0..2]);
         ro16.write_u16(0x2000);
-        drop(ro16);
         assert_eq!(buf, [0, 0x20, 0, 0, 0, 0, 0, 0]);
 
         let mut ro32 = ReadOp::from_buf(0, &mut buf[0..4]);
         ro32.write_u32(0x4000_0000);
-        drop(ro32);
         assert_eq!(buf, [0, 0, 0, 0x40, 0, 0, 0, 0]);
 
         let mut ro64 = ReadOp::from_buf(0, &mut buf);
         ro64.write_u64(0x8000_0000_0000_0000);
-        drop(ro64);
         assert_eq!(buf, [0, 0, 0, 0, 0, 0, 0, 0x80]);
     }
 
@@ -551,19 +657,15 @@ mod test {
         let buf = [0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80];
         let mut wo8 = WriteOp::from_buf(0, &buf[0..1]);
         assert_eq!(wo8.read_u8(), 0x10);
-        drop(wo8);
 
         let mut wo16 = WriteOp::from_buf(0, &buf[0..2]);
         assert_eq!(wo16.read_u16(), 0x2010);
-        drop(wo16);
 
         let mut wo32 = WriteOp::from_buf(0, &buf[0..4]);
         assert_eq!(wo32.read_u32(), 0x40302010);
-        drop(wo32);
 
         let mut wo64 = WriteOp::from_buf(0, &buf);
         assert_eq!(wo64.read_u64(), 0x8070605040302010);
-        drop(wo64);
     }
 
     #[test]
@@ -588,7 +690,6 @@ mod test {
         let mut ro = ReadOp::from_buf(0, &mut buf);
         ro.write_u8(0x10);
         ro.write_u8(0x20);
-        drop(ro);
         assert_eq!(buf, [0x10, 0x20]);
     }
 

@@ -28,7 +28,7 @@ mod virtual_machine;
 #[cfg(all(not(test), target_os = "illumos"))]
 use self::network_interface::InstanceNetworkInterfaces;
 pub(crate) use self::pvpanic::PvpanicProducer;
-pub(crate) use self::virtual_disk::VirtualDiskProducer;
+pub(crate) use self::virtual_disk::{BlockMetrics, VirtualDisk};
 pub(crate) use self::virtual_machine::VirtualMachine;
 
 /// Interval on which we ask `oximeter` to poll us for metric data.

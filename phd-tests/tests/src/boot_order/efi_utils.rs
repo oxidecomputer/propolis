@@ -198,7 +198,7 @@ impl DevicePath {
             }
             (ty, subtype) => {
                 bail!(
-                    "Device path type/subtype unsupported: ({ty:#02x}/{subtype:#02x})"
+                    "Device path type/subtype unsupported: ({ty:#x}/{subtype:#x})"
                 );
             }
         }

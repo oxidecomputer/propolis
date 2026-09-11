@@ -84,12 +84,15 @@ use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, sync::Arc};
 use active::ActiveVm;
 use ensure::VmEnsureRequest;
 use oximeter::types::ProducerRegistry;
-use propolis_api_types::{
-    instance_spec::{SpecKey, VersionedInstanceSpec},
-    InstanceEnsureResponse, InstanceMigrateStatusResponse,
-    InstanceMigrationStatus, InstanceProperties, InstanceSpecGetResponse,
-    InstanceSpecStatus, InstanceState, InstanceStateMonitorResponse,
-    MigrationState,
+use propolis_api_types::instance::{
+    InstanceEnsureResponse, InstanceProperties, InstanceState,
+    InstanceStateMonitorResponse,
+};
+use propolis_api_types::instance_spec::{
+    InstanceSpec, InstanceSpecGetResponse, InstanceSpecStatus, SpecKey,
+};
+use propolis_api_types::migration::{
+    InstanceMigrateStatusResponse, InstanceMigrationStatus, MigrationState,
 };
 use slog::info;
 use state_driver::StateDriverOutput;
@@ -97,6 +100,7 @@ use state_publisher::StatePublisher;
 use tokio::sync::{oneshot, watch, RwLock, RwLockReadGuard};
 
 use crate::{server::MetricsEndpointConfig, spec::Spec, vnc::VncServer};
+use propolis::attestation::server::AttestationServerConfig;
 
 mod active;
 pub(crate) mod ensure;
@@ -221,9 +225,7 @@ impl From<MaybeSpec> for InstanceSpecStatus {
             MaybeSpec::WaitingForMigrationSource => {
                 Self::WaitingForMigrationSource
             }
-            MaybeSpec::Present(spec) => {
-                Self::Present(VersionedInstanceSpec::V0((*spec).into()))
-            }
+            MaybeSpec::Present(spec) => Self::Present((*spec).into()),
         }
     }
 }
@@ -308,6 +310,8 @@ pub(super) struct EnsureOptions {
     /// The address of this Propolis process, used by the live migration
     /// protocol to transfer serial console connections.
     pub(super) local_server_addr: SocketAddr,
+
+    pub(super) attest_config: Option<AttestationServerConfig>,
 }
 
 impl Vm {
@@ -351,11 +355,10 @@ impl Vm {
                 let spec =
                     vm.objects().lock_shared().await.instance_spec().clone();
                 let state = vm.external_state_rx.borrow().clone();
+                let external_spec: InstanceSpec = spec.into();
                 Some(InstanceSpecGetResponse {
                     properties: vm.properties.clone(),
-                    spec: InstanceSpecStatus::Present(
-                        VersionedInstanceSpec::V0(spec.into()),
-                    ),
+                    spec: InstanceSpecStatus::Present(external_spec),
                     state: state.state,
                 })
             }
@@ -367,13 +370,14 @@ impl Vm {
                     spec: spec.clone().into(),
                 })
             }
-            VmState::Rundown { vm, spec } => Some(InstanceSpecGetResponse {
-                properties: vm.properties.clone(),
-                state: vm.external_state_rx.borrow().state,
-                spec: InstanceSpecStatus::Present(VersionedInstanceSpec::V0(
-                    spec.as_ref().to_owned().into(),
-                )),
-            }),
+            VmState::Rundown { vm, spec } => {
+                let external_spec: InstanceSpec = (*spec.to_owned()).into();
+                Some(InstanceSpecGetResponse {
+                    properties: vm.properties.clone(),
+                    state: vm.external_state_rx.borrow().state,
+                    spec: InstanceSpecStatus::Present(external_spec),
+                })
+            }
         }
     }
 
@@ -609,9 +613,11 @@ impl Vm {
             };
 
             let vm_for_driver = self.clone();
+            let base_log = log.clone();
             guard.driver = Some(tokio::spawn(async move {
                 state_driver::ensure_vm_and_launch_driver(
                     log_for_driver,
+                    base_log,
                     vm_for_driver,
                     external_publisher,
                     ensure_request,

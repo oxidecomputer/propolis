@@ -10,7 +10,9 @@ use std::str::FromStr;
 use serde_derive::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub use cpuid_profile_config::CpuidProfile;
+pub use cpuid_profile_config::{
+    CpuVendor, CpuidEntry, CpuidParseError, CpuidProfile,
+};
 
 pub mod spec;
 
@@ -19,6 +21,9 @@ pub mod spec;
 // configuration will likely become more dynamic.
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Config {
+    #[serde(default, rename = "main")]
+    pub machine_settings: MachineSettings,
+
     #[serde(default, rename = "pci_bridge")]
     pub pci_bridges: Vec<PciBridge>,
 
@@ -37,6 +42,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            machine_settings: MachineSettings::default(),
             pci_bridges: Vec::new(),
             chipset: Chipset { options: BTreeMap::new() },
             devices: BTreeMap::new(),
@@ -44,6 +50,15 @@ impl Default for Config {
             cpuid_profiles: BTreeMap::new(),
         }
     }
+}
+
+/// Settings covering the VM "at large".
+///
+/// This corresponds to (and is a subset of) the `main` block understood by
+/// `propolis-standalone`
+#[derive(Serialize, Deserialize, Debug, PartialEq, Default)]
+pub struct MachineSettings {
+    pub boot_order: Option<Vec<String>>,
 }
 
 /// The instance's chipset.
@@ -91,8 +106,15 @@ pub struct Device {
 }
 
 impl Device {
+    pub fn get_toml_value<S: AsRef<str>>(
+        &self,
+        key: S,
+    ) -> Option<&toml::Value> {
+        self.options.get(key.as_ref())
+    }
+
     pub fn get_string<S: AsRef<str>>(&self, key: S) -> Option<&str> {
-        self.options.get(key.as_ref())?.as_str()
+        self.get_toml_value(key)?.as_str()
     }
 
     pub fn get<T: FromStr, S: AsRef<str>>(&self, key: S) -> Option<T> {

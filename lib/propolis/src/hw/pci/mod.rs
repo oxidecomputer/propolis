@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use crate::common::*;
 use crate::intr_pins::IntrPin;
 
-use strum::FromRepr;
+use strum::{EnumIter, FromRepr};
 
 pub mod bar;
 pub mod bits;
@@ -273,7 +273,9 @@ impl Display for Bdf {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Debug, Ord, PartialOrd, FromRepr)]
+#[derive(
+    Copy, Clone, Eq, PartialEq, Debug, Ord, PartialOrd, FromRepr, EnumIter,
+)]
 #[repr(u8)]
 pub enum BarN {
     BAR0 = 0,
@@ -282,23 +284,6 @@ pub enum BarN {
     BAR3,
     BAR4,
     BAR5,
-}
-impl BarN {
-    fn iter() -> BarIter {
-        BarIter { n: 0 }
-    }
-}
-struct BarIter {
-    n: u8,
-}
-impl Iterator for BarIter {
-    type Item = BarN;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let res = BarN::from_repr(self.n)?;
-        self.n += 1;
-        Some(res)
-    }
 }
 
 #[repr(u8)]

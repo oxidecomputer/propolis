@@ -121,33 +121,35 @@ impl Bars {
         &mut self,
         bar: BarN,
         val: u32,
-    ) -> Option<(BarDefine, u64, u64)> {
+    ) -> Option<WriteResult> {
         let idx = bar as usize;
         let ent = &mut self.entries[idx];
-        let (def, old, new) = match ent.kind {
+        let (id, def, val_old, val_new) = match ent.kind {
             EntryKind::Empty => return None,
             EntryKind::Pio(size) => {
                 let mask = u32::from(!(size - 1));
                 let old = ent.value;
                 ent.value = u64::from(val & mask);
-                (BarDefine::Pio(size), old, ent.value)
+                (bar, BarDefine::Pio(size), old, ent.value)
             }
             EntryKind::Mmio(size) => {
                 let mask = !(size - 1);
                 let old = ent.value;
                 ent.value = u64::from(val & mask);
-                (BarDefine::Mmio(size), old, ent.value)
+                (bar, BarDefine::Mmio(size), old, ent.value)
             }
             EntryKind::Mmio64(size) => {
                 let old = ent.value;
                 let mask = !(size - 1) as u32;
                 let low = val & mask;
                 ent.value = (old & (0xffffffff << 32)) | u64::from(low);
-                (BarDefine::Mmio64(size), old, ent.value)
+                (bar, BarDefine::Mmio64(size), old, ent.value)
             }
             EntryKind::Mmio64High => {
                 assert!(idx > 0);
-                let ent = &mut self.entries[idx - 1];
+                let real_idx = idx - 1;
+                let id = BarN::from_repr(real_idx as u8).unwrap();
+                let ent = &mut self.entries[real_idx];
                 let size = match ent.kind {
                     EntryKind::Mmio64(sz) => sz,
                     _ => panic!(),
@@ -156,11 +158,11 @@ impl Bars {
                 let old = ent.value;
                 let high = ((u64::from(val) << 32) & mask) & 0xffffffff00000000;
                 ent.value = high | (old & 0xffffffff);
-                (BarDefine::Mmio64(size), old, ent.value)
+                (id, BarDefine::Mmio64(size), old, ent.value)
             }
         };
-        if old != new {
-            return Some((def, old, new));
+        if val_old != val_new {
+            return Some(WriteResult { id, def, val_old, val_new });
         }
         None
     }
@@ -285,6 +287,18 @@ impl Bars {
 
         Ok(())
     }
+}
+
+/// Result from a write to a BAR
+pub struct WriteResult {
+    /// Identifier of the actual impacted BAR.
+    ///
+    /// If write was to the high word of a 64-bit BAR, this would hold the
+    /// `BarN` for the lower word.
+    pub id: BarN,
+    pub def: BarDefine,
+    pub val_old: u64,
+    pub val_new: u64,
 }
 
 pub mod migrate {

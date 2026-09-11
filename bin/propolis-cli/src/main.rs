@@ -17,16 +17,17 @@ use clap::{Args, Parser, Subcommand};
 use futures::{future, SinkExt};
 use newtype_uuid::{GenericUuid, TypedUuid, TypedUuidKind, TypedUuidTag};
 use propolis_client::instance_spec::{
-    BlobStorageBackend, Board, Chipset, ComponentV0, CrucibleStorageBackend,
-    GuestHypervisorInterface, HyperVFeatureFlag, I440Fx, InstanceSpecV0,
-    NvmeDisk, PciPath, QemuPvpanic, ReplacementComponent, SerialPort,
-    SerialPortNumber, SpecKey, VirtioDisk,
+    BlobStorageBackend, Board, Chipset, Component, CrucibleStorageBackend,
+    GuestHypervisorInterface, HyperVFeatureFlag, I440Fx, InstanceMetadata,
+    InstanceProperties, InstanceSpec, InstanceSpecGetResponse, NvmeDisk,
+    PciPath, QemuPvpanic, ReplacementComponent, SerialPort, SerialPortNumber,
+    SpecKey, VirtioDisk,
 };
 use propolis_client::support::nvme_serial_from_str;
 use propolis_client::types::{
-    InstanceEnsureRequest, InstanceInitializationMethod, InstanceMetadata,
-    InstanceSpecGetResponse,
+    InstanceEnsureRequest, InstanceInitializationMethod,
 };
+use propolis_config_toml::spec::toml_cpuid_to_spec_cpuid;
 use propolis_config_toml::spec::SpecConfig;
 use serde::{Deserialize, Serialize};
 use slog::{o, Drain, Level, Logger};
@@ -39,10 +40,7 @@ use uuid::Uuid;
 
 use propolis_client::{
     support::{InstanceSerialConsoleHelper, WSClientOffset},
-    types::{
-        InstanceProperties, InstanceStateRequested, InstanceVcrReplace,
-        MigrationState,
-    },
+    types::{InstanceStateRequested, InstanceVcrReplace, MigrationState},
     Client,
 };
 
@@ -66,6 +64,9 @@ struct Opt {
     cmd: Command,
 }
 
+// `New`, via `VmConfig`, is large enough to trip this lint. This enum is
+// created exactly once, so we don't need to be picky about the layout..
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Create a new propolis instance
@@ -180,6 +181,12 @@ struct VmConfig {
     #[clap(short, default_value = "1024", action, requires = "config_toml")]
     memory: u64,
 
+    /// CPUID profile to use.
+    ///
+    /// The named profile must be defined in `config_toml`.
+    #[clap(long, requires = "config_toml")]
+    cpuid_profile: Option<String>,
+
     /// A path to a file containing a config TOML
     #[clap(short = 't', long, action, group = "config_group", requires_all = ["vcpus", "memory"])]
     config_toml: Option<PathBuf>,
@@ -198,9 +205,9 @@ struct VmConfig {
 }
 
 fn add_component_to_spec(
-    spec: &mut InstanceSpecV0,
+    spec: &mut InstanceSpec,
     id: SpecKey,
-    component: ComponentV0,
+    component: Component,
 ) -> anyhow::Result<()> {
     use std::collections::btree_map::Entry;
     match spec.components.entry(id) {
@@ -229,7 +236,7 @@ struct DiskRequest {
 #[derive(Clone, Debug)]
 struct ParsedDiskRequest {
     device_id: SpecKey,
-    device_spec: ComponentV0,
+    device_spec: Component,
     backend_id: SpecKey,
     backend_spec: CrucibleStorageBackend,
 }
@@ -248,14 +255,19 @@ impl DiskRequest {
             format!("processing disk request {:?}", self.name)
         })?;
         let device_spec = match self.device.as_ref() {
-            "virtio" => ComponentV0::VirtioDisk(VirtioDisk {
+            "virtio" => Component::VirtioDisk(VirtioDisk {
                 backend_id: backend_id.clone(),
                 pci_path,
             }),
-            "nvme" => ComponentV0::NvmeDisk(NvmeDisk {
+            "nvme" => Component::NvmeDisk(NvmeDisk {
                 backend_id: backend_id.clone(),
                 pci_path,
                 serial_number: nvme_serial_from_str(&self.name, b' '),
+                // TODO: `DiskRequest` implies this is the disk-side interface
+                // of a Crucible storage backend, so we report a write cache.
+                // but this probably should be configurable more directly in the
+                // limit
+                has_write_cache: true,
             }),
             _ => anyhow::bail!(
                 "invalid device type in disk request: {:?}",
@@ -280,7 +292,7 @@ impl DiskRequest {
 }
 
 impl VmConfig {
-    fn instance_spec(&self) -> anyhow::Result<InstanceSpecV0> {
+    fn instance_spec(&self) -> anyhow::Result<InstanceSpec> {
         // If the configuration specifies an instance spec path, just read the
         // spec from that path and return it. Otherwise, construct a spec from
         // this configuration's component parts.
@@ -288,22 +300,40 @@ impl VmConfig {
             return parse_json_file(path);
         }
 
-        let from_toml = &self
+        let parsed_toml = self
             .config_toml
             .as_ref()
             .map(propolis_config_toml::parse)
-            .transpose()?
-            .as_ref()
-            .map(SpecConfig::try_from)
             .transpose()?;
+
+        let from_toml =
+            parsed_toml.as_ref().map(SpecConfig::try_from).transpose()?;
 
         let enable_pcie =
             from_toml.as_ref().map(|cfg| cfg.enable_pcie).unwrap_or(false);
 
-        let mut spec = InstanceSpecV0 {
+        let cpuid_profile = parsed_toml
+            .as_ref()
+            .and_then(|cfg| {
+                self.cpuid_profile.as_ref().map(|profile| {
+                    let profile =
+                        cfg.cpuid_profiles.get(profile).ok_or_else(|| {
+                            anyhow!(
+                                "CPUID profile not defined in {}: {profile}",
+                                self.config_toml.as_ref().unwrap().display()
+                            )
+                        })?;
+
+                    toml_cpuid_to_spec_cpuid(profile)
+                        .map_err(Into::<anyhow::Error>::into)
+                })
+            })
+            .transpose()?;
+
+        let mut spec = InstanceSpec {
             board: Board {
                 chipset: Chipset::I440Fx(I440Fx { enable_pcie }),
-                cpuid: None,
+                cpuid: cpuid_profile,
                 cpus: self.vcpus,
                 memory_mb: self.memory,
                 guest_hv_interface: if self.hyperv {
@@ -317,6 +347,7 @@ impl VmConfig {
                 },
             },
             components: Default::default(),
+            smbios: None,
         };
 
         if let Some(from_toml) = from_toml {
@@ -347,7 +378,7 @@ impl VmConfig {
             add_component_to_spec(
                 &mut spec,
                 backend_id,
-                ComponentV0::CrucibleStorageBackend(backend_spec),
+                Component::CrucibleStorageBackend(backend_spec),
             )?;
         }
 
@@ -363,7 +394,7 @@ impl VmConfig {
             add_component_to_spec(
                 &mut spec,
                 SpecKey::Name(CLOUD_INIT_NAME.to_owned()),
-                ComponentV0::VirtioDisk(VirtioDisk {
+                Component::VirtioDisk(VirtioDisk {
                     backend_id: SpecKey::Name(
                         CLOUD_INIT_BACKEND_NAME.to_owned(),
                     ),
@@ -374,7 +405,7 @@ impl VmConfig {
             add_component_to_spec(
                 &mut spec,
                 SpecKey::Name(CLOUD_INIT_BACKEND_NAME.to_owned()),
-                ComponentV0::BlobStorageBackend(BlobStorageBackend {
+                Component::BlobStorageBackend(BlobStorageBackend {
                     base64: bytes,
                     readonly: true,
                 }),
@@ -389,7 +420,7 @@ impl VmConfig {
             add_component_to_spec(
                 &mut spec,
                 SpecKey::Name(name.to_owned()),
-                ComponentV0::SerialPort(SerialPort { num: port }),
+                Component::SerialPort(SerialPort { num: port }),
             )?;
         }
 
@@ -397,12 +428,12 @@ impl VmConfig {
         if !spec
             .components
             .iter()
-            .any(|(_, c)| matches!(c, ComponentV0::SoftNpuPort(_)))
+            .any(|(_, c)| matches!(c, Component::SoftNpuPort(_)))
         {
             add_component_to_spec(
                 &mut spec,
                 SpecKey::Name("com4".to_owned()),
-                ComponentV0::SerialPort(SerialPort {
+                Component::SerialPort(SerialPort {
                     num: SerialPortNumber::Com4,
                 }),
             )?;
@@ -411,7 +442,7 @@ impl VmConfig {
         add_component_to_spec(
             &mut spec,
             SpecKey::Name("pvpanic".to_owned()),
-            ComponentV0::QemuPvpanic(QemuPvpanic { enable_isa: true }),
+            Component::QemuPvpanic(QemuPvpanic { enable_isa: true }),
         )?;
 
         Ok(spec)
@@ -491,7 +522,7 @@ async fn new_instance(
     client: &Client,
     name: String,
     id: Uuid,
-    spec: InstanceSpecV0,
+    spec: InstanceSpec,
     metadata: InstanceMetadata,
 ) -> anyhow::Result<()> {
     let properties = InstanceProperties {
@@ -863,7 +894,9 @@ async fn monitor(addr: SocketAddr) -> anyhow::Result<()> {
         // known to Propolis.
         let response = client
             .instance_state_monitor()
-            .body(propolis_client::types::InstanceStateMonitorRequest { gen })
+            .body(propolis_client::types::InstanceStateMonitorRequest {
+                gen_: gen,
+            })
             .send()
             .await
             .with_context(|| anyhow!("failed to get new instance state"))?;
@@ -876,7 +909,7 @@ async fn monitor(addr: SocketAddr) -> anyhow::Result<()> {
 
         // Update the generation number we're asking for, to ensure the
         // Propolis will only return more recent values.
-        gen = response.gen + 1;
+        gen = response.gen_ + 1;
     }
 }
 

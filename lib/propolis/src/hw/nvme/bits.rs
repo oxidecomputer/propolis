@@ -4,8 +4,9 @@
 
 #![allow(dead_code)]
 
+use crate::block::{ByteLen, ByteOffset};
 use bitstruct::bitstruct;
-use zerocopy::FromBytes;
+use zerocopy::{FromBytes, IntoBytes};
 
 /// A Submission Queue Entry as represented in memory.
 ///
@@ -105,7 +106,7 @@ impl SubmissionQueueEntry {
 /// A Completion Queue Entry as represented in memory.
 ///
 /// See NVMe 1.0e Section 4.5 Completion Queue Entry
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone, IntoBytes)]
 #[repr(C, packed(1))]
 pub struct CompletionQueueEntry {
     /// Dword 0 (DW0)
@@ -173,6 +174,50 @@ impl CompletionQueueEntry {
             true => self.status_phase |= 0b1,
             false => self.status_phase &= !0b1,
         }
+    }
+}
+
+/// A Dataset Management Range Definition as represented in memory.
+///
+/// See NVMe 1.0e Section 6.6 Figure 114: Dataset Management – Range Definition
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, FromBytes, IntoBytes)]
+#[repr(C, packed(1))]
+pub struct DatasetManagementRangeDefinition {
+    /// The context attributes specified for each range provides information about how the range
+    /// is intended to be used by host software. The use of this information is optional and the
+    /// controller is not required to perform any specific action.
+    pub context_attributes: u32,
+
+    pub number_logical_blocks: u32,
+
+    pub starting_lba: u64,
+}
+impl DatasetManagementRangeDefinition {
+    pub fn new(
+        context_attributes: u32,
+        number_logical_blocks: u32,
+        starting_lba: u64,
+    ) -> Self {
+        Self { context_attributes, number_logical_blocks, starting_lba }
+    }
+
+    pub fn offset_len(
+        &self,
+        lba_data_size: u64,
+    ) -> Result<(ByteOffset, ByteLen), &'static str> {
+        // Check for overflow in the byte offset calculation
+        let byte_offset = self.starting_lba.checked_mul(lba_data_size).ok_or(
+            "Starting LBA and LBA data size multiplication overflowed",
+        )?;
+        // Check for overflow in the byte length calculation
+        let byte_len = (u64::from(self.number_logical_blocks))
+                .checked_mul(lba_data_size)
+                .ok_or("Number of logical blocks and LBA data size multiplication overflowed")?;
+        // Check for overflow of offset + length
+        byte_offset
+            .checked_add(byte_len)
+            .ok_or("Byte offset and byte length addition overflowed")?;
+        Ok((byte_offset as ByteOffset, byte_len as ByteLen))
     }
 }
 
@@ -527,6 +572,8 @@ pub const ADMIN_OPC_SET_FEATURES: u8 = 0x09;
 pub const ADMIN_OPC_GET_FEATURES: u8 = 0x0A;
 /// Asynchronous Event Request Command Opcode
 pub const ADMIN_OPC_ASYNC_EVENT_REQ: u8 = 0x0c;
+/// Doorbell Buffer Config
+pub const ADMIN_OPC_DOORBELL_BUF_CFG: u8 = 0x7c;
 
 // NVM Command Opcodes
 // See NVMe 1.0e Section 6, Figure 99 Opcodes for NVM Commands
@@ -537,6 +584,8 @@ pub const NVM_OPC_FLUSH: u8 = 0x00;
 pub const NVM_OPC_WRITE: u8 = 0x01;
 /// Read Command Opcode
 pub const NVM_OPC_READ: u8 = 0x02;
+/// Dataset Mangement Command Opcode
+pub const NVM_OPC_DATASET_MANAGEMENT: u8 = 0x09;
 
 // Generic Command Status values
 // See NVMe 1.0e Section 4.5.1.2.1, Figure 17 Status Code - Generic Command Status Values
@@ -697,6 +746,15 @@ pub const FEAT_ID_WRITE_ATOMIC: u8 = 0x0A;
 /// See NVMe 1.0e Section 5.12.1.11 Asynchronous Event Configuration (Feature Identifier 0Bh)
 pub const FEAT_ID_ASYNC_EVENT_CFG: u8 = 0x0B;
 
+/// Oxide-specific feature.
+///
+/// Provides device-specific features beyond the standard NVMe capabilities as
+/// a single Dword result:
+///   Bit 0 [ReadOnly] - If set, the device will complete all writes with
+///                      STS_WRITE_READ_ONLY_RANGE.
+///   Bits 31-1        - Reserved.
+pub const FEAT_ID_OXIDE_DEVICE_FEATURES: u8 = 0xF0;
+
 // Identify CNS values
 
 /// Identify - Namespace Structure
@@ -728,7 +786,7 @@ pub enum StatusCodeType {
 /// Describes the characteristics of a specific power state.
 ///
 /// See NVMe 1.0e Section 5.11, Figure 67 Identify - Power State Descriptor Data Structure
-#[derive(Default, Copy, Clone)]
+#[derive(Default, Copy, Clone, IntoBytes)]
 #[repr(C, packed(1))]
 pub struct PowerStateDescriptor {
     /// Maximum Power
@@ -786,7 +844,7 @@ bitstruct! {
     /// Queue Entry Size Required & Maximum (both Completion & Submission)
     ///
     /// Defines the required and maximum Queue entry sizes when using the NVM Command Set.
-    #[derive(Copy, Clone)]
+    #[derive(Copy, Clone, IntoBytes)]
     pub struct NvmQueueEntrySize(pub u8) {
         /// The required (minimum) Queue Entry Size.
         ///
@@ -807,7 +865,7 @@ bitstruct! {
 /// Describes the characteristics of the controller.
 ///
 /// See NVMe 1.0e Section 5.11, Figure 66 Identify - Identify Controller Data Structure
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, IntoBytes)]
 #[repr(C, packed(1))]
 pub struct IdentifyController {
     // bytes 0-255 - Controller Capabilities and Features
@@ -1039,7 +1097,7 @@ impl Default for IdentifyController {
 ///
 /// Describes a specific Logical Block Address (LBA) format.
 /// See NVMe 1.0e Section 5.11, Figure 69 Identify - LBA Format Data Structure, NVM Command Set Specific
-#[derive(Default, Copy, Clone)]
+#[derive(Default, Copy, Clone, IntoBytes)]
 #[repr(C, packed(1))]
 pub struct LbaFormat {
     /// Metadata Size (MS)
@@ -1068,7 +1126,7 @@ pub struct LbaFormat {
 /// Describes the characteristics of a namespace.
 ///
 /// See NVMe 1.0e Section 5.11, Figure 68 Identify - Identify Namespace Data Structure, NVM Command Set Specific
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, IntoBytes)]
 #[repr(C, packed(1))]
 pub struct IdentifyNamespace {
     /// Namespace Size (NSZE)
@@ -1184,5 +1242,6 @@ mod test {
         assert_eq!(size_of::<IdentifyController>(), 4096);
         assert_eq!(size_of::<LbaFormat>(), 4);
         assert_eq!(size_of::<IdentifyNamespace>(), 4096);
+        assert_eq!(size_of::<DatasetManagementRangeDefinition>(), 16);
     }
 }

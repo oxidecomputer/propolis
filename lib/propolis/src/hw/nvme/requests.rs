@@ -2,31 +2,52 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use crate::{
-    accessors::MemAccessor,
-    block::{
-        self, tracking::CompletionCallback, Operation, Request,
-        Result as BlockResult,
-    },
-    hw::nvme::{bits, cmds::Completion},
-    vmm::mem::MemCtx,
-};
+use itertools::Itertools;
+use std::sync::Arc;
+use std::time::Instant;
 
 use super::{cmds::NvmCmd, queue::Permit, PciNvme};
+use crate::accessors::MemAccessor;
+use crate::block::{self, Operation, Request};
+use crate::hw::nvme::cmds::ParseErr;
+use crate::hw::nvme::{bits, cmds::Completion, queue::SubQueue};
 
 #[usdt::provider(provider = "propolis")]
 mod probes {
-    fn nvme_read_enqueue(qid: u16, idx: u16, cid: u16, off: u64, sz: u64) {}
-    fn nvme_read_complete(qid: u16, cid: u16, res: u8) {}
+    // Note that unlike the probes in `queue.rs`, the probes here provide a
+    // `devsq_id` for completion as well as enqueuement. The submission queue is
+    // the one the command was originally submitted on.
+    //
+    // As long as queues are not destroyed (and the device is not reset), a
+    // `(devsq_id, cid)` tuple seen in an `nvme_*_enqueue` probably will not be
+    // reused before that same tuple is used in a corresponding
+    // `nvme_*_complete` probe. It is possible, but such a case is a
+    // guest error and unlikely. From the NVM Express Base Specification:
+    //
+    // > The Command Identifier field in the SQE shall be unique among all
+    // > outstanding commands associated with that queue.
+    fn nvme_read_enqueue(devsq_id: u64, idx: u16, cid: u16, off: u64, sz: u64) {
+    }
+    fn nvme_read_complete(devsq_id: u64, cid: u16, res: u8) {}
 
-    fn nvme_write_enqueue(qid: u16, idx: u16, cid: u16, off: u64, sz: u64) {}
-    fn nvme_write_complete(qid: u16, cid: u16, res: u8) {}
+    fn nvme_write_enqueue(
+        devsq_id: u64,
+        idx: u16,
+        cid: u16,
+        off: u64,
+        sz: u64,
+    ) {
+    }
+    fn nvme_write_complete(devsq_id: u64, cid: u16, res: u8) {}
 
-    fn nvme_flush_enqueue(qid: u16, idx: u16, cid: u16) {}
-    fn nvme_flush_complete(qid: u16, cid: u16, res: u8) {}
+    fn nvme_discard_enqueue(devsq_id: u64, idx: u16, cid: u16, nr: u16) {}
+    fn nvme_discard_complete(devsq_id: u64, cid: u16, res: u8) {}
+
+    fn nvme_flush_enqueue(devsq_id: u64, idx: u16, cid: u16) {}
+    fn nvme_flush_complete(devsq_id: u64, cid: u16, res: u8) {}
 
     fn nvme_raw_cmd(
-        qid: u16,
+        devsq_id: u64,
         cdw0nsid: u64,
         prp1: u64,
         prp2: u64,
@@ -39,146 +60,190 @@ impl block::Device for PciNvme {
     fn attachment(&self) -> &block::DeviceAttachment {
         &self.block_attach
     }
-
-    fn on_attach(&self, info: block::DeviceInfo) {
-        self.state.lock().unwrap().update_block_info(info);
-    }
-
-    fn next(&self) -> Option<Request> {
-        let (req, permit) = self.next_req()?;
-        Some(self.block_tracking.track(req, permit))
-    }
-
-    fn complete(&self, res: BlockResult, id: block::ReqId) {
-        let (op, permit) = self.block_tracking.complete(id, res);
-        self.complete_req(op, res, permit);
-    }
-
-    fn on_completion(&self, cb: Box<dyn CompletionCallback>) -> bool {
-        self.block_tracking.set_completion_callback(cb)
-    }
-
-    fn accessor_mem(&self) -> MemAccessor {
-        self.pci_state.acc_mem.child(Some("block backend".to_string()))
-    }
 }
 
-impl PciNvme {
-    /// Pop an available I/O request off of a Submission Queue to begin
-    /// processing by the underlying Block Device.
-    fn next_req(&self) -> Option<(Request, Permit)> {
-        let state = self.state.lock().unwrap();
+pub(super) struct NvmeBlockQueue {
+    sq: Arc<SubQueue>,
+    acc_mem: MemAccessor,
+}
+impl NvmeBlockQueue {
+    pub(super) fn new(sq: Arc<SubQueue>, acc_mem: MemAccessor) -> Arc<Self> {
+        Arc::new(Self { sq, acc_mem })
+    }
+}
+impl block::DeviceQueue for NvmeBlockQueue {
+    type Token = Permit;
 
-        let mem = self.mem_access()?;
+    /// Pop an available I/O request off of the Submission Queue for hand-off to
+    /// the underlying block backend
+    fn next_req(&self) -> Option<(Request, Self::Token, Option<Instant>)> {
+        let sq = &self.sq;
+        let mem = self.acc_mem.access_locked()?;
+        let mem = mem.view();
+        let params = self.sq.params();
 
-        // Go through all the queues (skip admin as we just want I/O queues)
-        // looking for a request to service
-        for sq in state.sqs.iter().skip(1).flatten() {
-            while let Some((sub, permit, idx)) = sq.pop(&mem) {
-                let qid = sq.id();
-                probes::nvme_raw_cmd!(|| {
-                    (
-                        qid,
-                        u64::from(sub.cdw0) | (u64::from(sub.nsid) << 32),
-                        sub.prp1,
-                        sub.prp2,
-                        (u64::from(sub.cdw10) | (u64::from(sub.cdw11) << 32)),
-                    )
-                });
-                let cid = sub.cid();
-                let cmd = NvmCmd::parse(sub);
+        while let Some((sub, permit, idx)) = sq.pop() {
+            let devsq_id = sq.devq_id();
+            probes::nvme_raw_cmd!(|| {
+                (
+                    devsq_id,
+                    u64::from(sub.cdw0) | (u64::from(sub.nsid) << 32),
+                    sub.prp1,
+                    sub.prp2,
+                    (u64::from(sub.cdw10) | (u64::from(sub.cdw11) << 32)),
+                )
+            });
+            let cid = sub.cid();
+            let cmd = NvmCmd::parse(sub);
 
-                fn fail_mdts(permit: Permit, mem: &MemCtx) {
-                    permit.complete(
-                        Completion::generic_err(bits::STS_INVAL_FIELD).dnr(),
-                        Some(&mem),
-                    );
+            match cmd {
+                Ok(NvmCmd::Write(cmd)) => {
+                    let off = params.lba_data_size * cmd.slba;
+                    let size = params.lba_data_size * (cmd.nlb as u64);
+
+                    if size > params.max_data_transfer_size {
+                        permit.complete(
+                            Completion::generic_err(bits::STS_INVAL_FIELD)
+                                .dnr(),
+                        );
+                        continue;
+                    }
+
+                    probes::nvme_write_enqueue!(|| (
+                        sq.devq_id(),
+                        idx,
+                        cid,
+                        off,
+                        size
+                    ));
+
+                    let bufs = cmd.data(size, &mem).collect();
+                    let req =
+                        Request::new_write(off as usize, size as usize, bufs);
+                    return Some((req, permit, None));
                 }
+                Ok(NvmCmd::Read(cmd)) => {
+                    let off = params.lba_data_size * cmd.slba;
+                    let size = params.lba_data_size * (cmd.nlb as u64);
 
-                match cmd {
-                    Ok(NvmCmd::Write(cmd)) => {
-                        let off = state.nlb_to_size(cmd.slba as usize) as u64;
-                        let size = state.nlb_to_size(cmd.nlb as usize) as u64;
-
-                        if !state.valid_for_mdts(size) {
-                            fail_mdts(permit, &mem);
-                            continue;
-                        }
-
-                        probes::nvme_write_enqueue!(|| (
-                            qid, idx, cid, off, size
-                        ));
-
-                        let bufs = cmd.data(size, &mem).collect();
-                        let req = Request::new_write(
-                            off as usize,
-                            size as usize,
-                            bufs,
+                    if size > params.max_data_transfer_size {
+                        permit.complete(
+                            Completion::generic_err(bits::STS_INVAL_FIELD)
+                                .dnr(),
                         );
-                        return Some((req, permit));
+                        continue;
                     }
-                    Ok(NvmCmd::Read(cmd)) => {
-                        let off = state.nlb_to_size(cmd.slba as usize) as u64;
-                        let size = state.nlb_to_size(cmd.nlb as usize) as u64;
 
-                        if !state.valid_for_mdts(size) {
-                            fail_mdts(permit, &mem);
-                            continue;
-                        }
+                    probes::nvme_read_enqueue!(|| (
+                        sq.devq_id(),
+                        idx,
+                        cid,
+                        off,
+                        size
+                    ));
 
-                        probes::nvme_read_enqueue!(|| (
-                            qid, idx, cid, off, size
-                        ));
-
-                        let bufs = cmd.data(size, &mem).collect();
-                        let req = Request::new_read(
-                            off as usize,
-                            size as usize,
-                            bufs,
+                    let bufs = cmd.data(size, &mem).collect();
+                    let req =
+                        Request::new_read(off as usize, size as usize, bufs);
+                    return Some((req, permit, None));
+                }
+                Ok(NvmCmd::DatasetManagement(cmd)) => {
+                    // We only support the "deallocate" (discard/trim) operation of Dataset
+                    // Management.
+                    if !cmd.is_deallocate() {
+                        permit.complete(
+                            Completion::generic_err(bits::STS_INVAL_FIELD)
+                                .dnr(),
                         );
-                        return Some((req, permit));
+                        continue;
                     }
-                    Ok(NvmCmd::Flush) => {
-                        probes::nvme_flush_enqueue!(|| (qid, idx, cid));
-                        let req = Request::new_flush();
-                        return Some((req, permit));
-                    }
-                    Ok(NvmCmd::Unknown(_)) | Err(_) => {
-                        // For any other unrecognized or malformed command,
-                        // just immediately complete it with an error
-                        let comp =
-                            Completion::generic_err(bits::STS_INTERNAL_ERR);
-                        permit.complete(comp, Some(&mem));
-                    }
+                    probes::nvme_discard_enqueue!(|| (
+                        sq.devq_id(),
+                        idx,
+                        cid,
+                        cmd.nr,
+                    ));
+                    let Ok(ranges): Result<Vec<_>, _> =
+                        cmd.ranges(&mem).try_collect()
+                    else {
+                        // If we couldn't read the ranges, fail the command
+                        permit.complete(
+                            Completion::generic_err(bits::STS_DATA_XFER_ERR)
+                                .dnr(),
+                        );
+                        continue;
+                    };
+                    let Ok(ranges) = ranges
+                        .into_iter()
+                        .map(|r| r.offset_len(params.lba_data_size))
+                        .try_collect()
+                    else {
+                        // If the ranges were invalid (e.g. arithmetic overflow), fail the command
+                        permit.complete(
+                            Completion::generic_err(bits::STS_INVAL_FIELD)
+                                .dnr(),
+                        );
+                        continue;
+                    };
+
+                    let req = Request::new_discard(ranges);
+                    return Some((req, permit, None));
+                }
+                Ok(NvmCmd::Flush) => {
+                    probes::nvme_flush_enqueue!(|| (sq.devq_id(), idx, cid));
+                    let req = Request::new_flush();
+                    return Some((req, permit, None));
+                }
+                Err(ParseErr::ReservedFuse) | Err(ParseErr::Reserved) => {
+                    // For commands that fail parsing due to reserved fields being set,
+                    // complete with an invalid field error
+                    let comp =
+                        Completion::generic_err(bits::STS_INVAL_FIELD).dnr();
+                    permit.complete(comp);
+                }
+                Ok(NvmCmd::Unknown(_)) | Err(_) => {
+                    // For any other unrecognized or malformed command,
+                    // just immediately complete it with an error
+                    let comp = Completion::generic_err(bits::STS_INTERNAL_ERR);
+                    permit.complete(comp);
                 }
             }
         }
-
         None
     }
 
     /// Place the operation result (success or failure) onto the corresponding
     /// Completion Queue.
-    fn complete_req(&self, op: Operation, res: BlockResult, permit: Permit) {
-        let qid = permit.sqid();
+    fn complete(
+        &self,
+        op: block::Operation,
+        result: block::Result,
+        permit: Self::Token,
+    ) {
+        let devsq_id = permit.devsq_id();
         let cid = permit.cid();
-        let resnum = res as u8;
+        let resnum = result as u8;
         match op {
             Operation::Read(..) => {
-                probes::nvme_read_complete!(|| (qid, cid, resnum));
+                probes::nvme_read_complete!(|| (devsq_id, cid, resnum));
             }
             Operation::Write(..) => {
-                probes::nvme_write_complete!(|| (qid, cid, resnum));
+                probes::nvme_write_complete!(|| (devsq_id, cid, resnum));
             }
             Operation::Flush => {
-                probes::nvme_flush_complete!(|| (qid, cid, resnum));
+                probes::nvme_flush_complete!(|| (devsq_id, cid, resnum));
             }
             Operation::Discard(..) => {
-                unreachable!("discard not supported in NVMe for now");
+                probes::nvme_discard_complete!(|| (devsq_id, cid, resnum));
             }
         }
 
-        let guard = self.mem_access();
-        permit.complete(Completion::from(res), guard.as_deref());
+        permit.complete(Completion::from(result));
+    }
+
+    /// In the unlikely case we must give up on an in-flight I/O, tear it down
+    /// without triggering the no-drop check on NVMe request permits.
+    fn abandon(&self, token: Self::Token) {
+        token.abandon();
     }
 }

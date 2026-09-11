@@ -19,7 +19,6 @@ doctest = false
 test = false
 
 [dependencies]
-atty.workspace = true
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 base64.workspace = true
@@ -28,6 +27,7 @@ futures.workspace = true
 hyper.workspace = true
 serde.workspace = true
 propolis_api_types.workspace = true
+propolis-api-types-versions.workspace = true
 propolis_types.workspace = true
 semver.workspace = true
 serde_json.workspace = true

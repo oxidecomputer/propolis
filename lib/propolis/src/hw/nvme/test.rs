@@ -477,6 +477,15 @@ struct TestAction {
     result: Expected,
 }
 
+/// The bitmap of outstanding requests on an NVMe submission queue.
+///
+/// Each bit corresponds to possible Command IDs used in SQEs for submitted
+/// operations, hence the map is sized for at least 65536 bits.
+//
+// `GenericBitmap` is parameterized on a number of u64 bitmap words, hence
+// `65536 / 64 == 1024` as the parameter here.
+struct CidBitmap(GenericBitmap<1024>);
+
 #[test]
 fn fuzzy() -> Result<(), NvmeError> {
     let log = Logger::root(Discard, slog::o!());

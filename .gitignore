@@ -4,3 +4,8 @@
 debug.out
 core
 out/
+
+# Ignore all binary and decompiled ACPI files except the ones used for tests.
+*.dat
+*.dsl
+!phd-tests/tests/testdata/acpi/**/*.dat

@@ -4,17 +4,15 @@
 
 //! Functions for converting a [`super::Config`] into instance spec elements.
 
-use std::{
-    collections::BTreeMap,
-    str::{FromStr, ParseBoolError},
-};
+use std::{collections::BTreeMap, str::FromStr};
 
 use propolis_client::{
     instance_spec::{
-        ComponentV0, DlpiNetworkBackend, FileStorageBackend,
-        MigrationFailureInjector, NvmeDisk, P9fs, PciPath, PciPciBridge,
-        SoftNpuP9, SoftNpuPciPort, SoftNpuPort, SpecKey, VirtioDisk,
-        VirtioNetworkBackend, VirtioNic,
+        BootOrderEntry, BootSettings, Component, Cpuid, CpuidVendor,
+        DlpiNetworkBackend, FileStorageBackend, MigrationFailureInjector,
+        NvmeDisk, P9fs, PciPath, PciPciBridge, SoftNpuP9, SoftNpuPciPort,
+        SoftNpuPort, SpecKey, VirtioDisk, VirtioNetworkBackend, VirtioNic,
+        VirtioSocket,
     },
     support::nvme_serial_from_str,
 };
@@ -54,8 +52,14 @@ pub enum TomlToSpecError {
     #[error("couldn't get path for file backend {0:?}")]
     InvalidFileBackendPath(String),
 
-    #[error("failed to parse read-only option for file backend {0:?}")]
-    FileBackendReadonlyParseFailed(String, #[source] ParseBoolError),
+    #[error("failed to parse option \"{field}\" for {name}: {error}")]
+    FieldParseError {
+        field: &'static str,
+        name: String,
+        // "String" is just a lowest common denominator for the different kinds
+        // of parse errors we might see.
+        error: String,
+    },
 
     #[error("failed to get VNIC name for device {0:?}")]
     NoVnicName(String),
@@ -65,15 +69,18 @@ pub enum TomlToSpecError {
 
     #[error("failed to get source for p9 device {0:?}")]
     NoP9Target(String),
+
+    #[error("failed to get guest_cid for vsock device {0:?}")]
+    NoVsockGuestCid(String),
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct SpecConfig {
     pub enable_pcie: bool,
-    pub components: BTreeMap<SpecKey, ComponentV0>,
+    pub components: BTreeMap<SpecKey, Component>,
 }
 
-// Inspired by `api_spec_v0.rs`'s `insert_component` and
+// Inspired by `api_spec_v1.rs`'s `insert_component` and
 // `propolis-cli/src/main.rs`'s `add_component_to_spec`. Same purpose as both of
 // them.
 //
@@ -84,7 +91,7 @@ pub struct SpecConfig {
 fn spec_component_add(
     spec: &mut SpecConfig,
     key: SpecKey,
-    component: ComponentV0,
+    component: Component,
 ) -> Result<(), TomlToSpecError> {
     if spec.components.contains_key(&key) {
         return Err(TomlToSpecError::DuplicateSpecKey(key));
@@ -135,7 +142,7 @@ impl TryFrom<&super::Config> for SpecConfig {
                 spec_component_add(
                     &mut spec,
                     SpecKey::Name(MIGRATION_FAILURE_DEVICE_NAME.to_owned()),
-                    ComponentV0::MigrationFailureInjector(
+                    Component::MigrationFailureInjector(
                         MigrationFailureInjector { fail_exports, fail_imports },
                     ),
                 )?;
@@ -174,13 +181,13 @@ impl TryFrom<&super::Config> for SpecConfig {
                     spec_component_add(
                         &mut spec,
                         device_id,
-                        ComponentV0::VirtioNic(device_spec),
+                        Component::VirtioNic(device_spec),
                     )?;
 
                     spec_component_add(
                         &mut spec,
                         backend_id,
-                        ComponentV0::VirtioNetworkBackend(backend_spec),
+                        Component::VirtioNetworkBackend(backend_spec),
                     )?;
                 }
                 "softnpu-pci-port" => {
@@ -194,9 +201,7 @@ impl TryFrom<&super::Config> for SpecConfig {
                     spec_component_add(
                         &mut spec,
                         device_id,
-                        ComponentV0::SoftNpuPciPort(SoftNpuPciPort {
-                            pci_path,
-                        }),
+                        Component::SoftNpuPciPort(SoftNpuPciPort { pci_path }),
                     )?;
                 }
                 "softnpu-port" => {
@@ -211,7 +216,7 @@ impl TryFrom<&super::Config> for SpecConfig {
                     spec_component_add(
                         &mut spec,
                         device_id,
-                        ComponentV0::SoftNpuPort(SoftNpuPort {
+                        Component::SoftNpuPort(SoftNpuPort {
                             link_name: device_name.to_string(),
                             backend_id: backend_name.clone(),
                         }),
@@ -220,7 +225,7 @@ impl TryFrom<&super::Config> for SpecConfig {
                     spec_component_add(
                         &mut spec,
                         backend_name,
-                        ComponentV0::DlpiNetworkBackend(DlpiNetworkBackend {
+                        Component::DlpiNetworkBackend(DlpiNetworkBackend {
                             vnic_name: vnic_name.to_owned(),
                         }),
                     )?;
@@ -236,14 +241,24 @@ impl TryFrom<&super::Config> for SpecConfig {
                     spec_component_add(
                         &mut spec,
                         device_id,
-                        ComponentV0::SoftNpuP9(SoftNpuP9 { pci_path }),
+                        Component::SoftNpuP9(SoftNpuP9 { pci_path }),
                     )?;
                 }
                 "pci-virtio-9p" => {
                     spec_component_add(
                         &mut spec,
                         device_id,
-                        ComponentV0::P9fs(parse_p9fs_from_config(
+                        Component::P9fs(parse_p9fs_from_config(
+                            device_name,
+                            device,
+                        )?),
+                    )?;
+                }
+                "pci-virtio-socket" => {
+                    spec_component_add(
+                        &mut spec,
+                        device_id,
+                        Component::VirtioSocket(parse_vsock_from_config(
                             device_name,
                             device,
                         )?),
@@ -269,10 +284,26 @@ impl TryFrom<&super::Config> for SpecConfig {
             spec_component_add(
                 &mut spec,
                 SpecKey::Name(format!("pci-bridge-{}", bridge.pci_path)),
-                ComponentV0::PciPciBridge(PciPciBridge {
+                Component::PciPciBridge(PciPciBridge {
                     downstream_bus: bridge.downstream_bus,
                     pci_path,
                 }),
+            )?;
+        }
+
+        if let Some(boot_order) = config.machine_settings.boot_order.as_ref() {
+            let settings = Component::BootSettings(BootSettings {
+                order: boot_order
+                    .iter()
+                    .map(|key| BootOrderEntry {
+                        id: SpecKey::Name(key.to_owned()),
+                    })
+                    .collect(),
+            });
+            spec_component_add(
+                &mut spec,
+                SpecKey::Name("boot-settings".to_string()),
+                settings,
             )?;
         }
 
@@ -283,7 +314,7 @@ impl TryFrom<&super::Config> for SpecConfig {
 fn parse_storage_device_from_config(
     name: &str,
     device: &super::Device,
-) -> Result<(ComponentV0, SpecKey), TomlToSpecError> {
+) -> Result<(Component, SpecKey), TomlToSpecError> {
     enum Interface {
         Virtio,
         Nvme,
@@ -322,13 +353,38 @@ fn parse_storage_device_from_config(
     Ok((
         match interface {
             Interface::Virtio => {
-                ComponentV0::VirtioDisk(VirtioDisk { backend_id, pci_path })
+                Component::VirtioDisk(VirtioDisk { backend_id, pci_path })
             }
-            Interface::Nvme => ComponentV0::NvmeDisk(NvmeDisk {
-                backend_id,
-                pci_path,
-                serial_number: nvme_serial_from_str(name, b' '),
-            }),
+            Interface::Nvme => {
+                let write_cache_opt = device
+                    .get_toml_value("has_write_cache")
+                    .map(|v: &toml::Value| {
+                        v.as_bool().ok_or_else(|| {
+                            TomlToSpecError::FieldParseError {
+                                field: "has_write_cache",
+                                name: name.to_owned(),
+                                error: format!(
+                                    "field must be a boolean, was {:?}",
+                                    v
+                                ),
+                            }
+                        })
+                    })
+                    .transpose()?;
+
+                // Reporting a write cache when the underlying medium does not
+                // causes unnecessary guest work, but is not a correctness
+                // issue. The converse can be. Default to reporting write caches
+                // if we're not instructed otherwise.
+                let has_write_cache = write_cache_opt.unwrap_or(true);
+
+                Component::NvmeDisk(NvmeDisk {
+                    backend_id,
+                    pci_path,
+                    serial_number: nvme_serial_from_str(name, b' '),
+                    has_write_cache,
+                })
+            }
         },
         id_to_return,
     ))
@@ -337,9 +393,9 @@ fn parse_storage_device_from_config(
 fn parse_storage_backend_from_config(
     name: &str,
     backend: &super::BlockDevice,
-) -> Result<ComponentV0, TomlToSpecError> {
+) -> Result<Component, TomlToSpecError> {
     let backend_spec = match backend.bdtype.as_str() {
-        "file" => ComponentV0::FileStorageBackend(FileStorageBackend {
+        "file" => Component::FileStorageBackend(FileStorageBackend {
             path: backend
                 .options
                 .get("path")
@@ -355,10 +411,11 @@ fn parse_storage_backend_from_config(
                 Some(toml::Value::Boolean(ro)) => Some(*ro),
                 Some(toml::Value::String(v)) => {
                     Some(v.parse::<bool>().map_err(|e| {
-                        TomlToSpecError::FileBackendReadonlyParseFailed(
-                            name.to_owned(),
-                            e,
-                        )
+                        TomlToSpecError::FieldParseError {
+                            field: "readonly",
+                            name: name.to_owned(),
+                            error: e.to_string(),
+                        }
                     })?)
                 }
                 _ => None,
@@ -429,4 +486,55 @@ fn parse_p9fs_from_config(
         chunk_size,
         pci_path,
     })
+}
+
+fn parse_vsock_from_config(
+    name: &str,
+    device: &super::Device,
+) -> Result<VirtioSocket, TomlToSpecError> {
+    let guest_cid = device
+        .get("guest_cid")
+        .ok_or_else(|| TomlToSpecError::NoVsockGuestCid(name.to_owned()))?;
+    let pci_path: PciPath = device
+        .get("pci-path")
+        .ok_or_else(|| TomlToSpecError::InvalidPciPath(name.to_owned()))?;
+
+    Ok(VirtioSocket { guest_cid, pci_path })
+}
+
+/// Translate a parsed TOML-provided `CpuidEntry` into a `propolis-server`
+/// API-style `CpuidEntry`.
+///
+/// The transformation here is trivial. Using the API-style `CpuidEntry` for the
+/// TOML definition would make for clumsier text, though, so they're defined
+/// slightly differently for the different use cases.
+fn translate_cpuid_entry(
+    toml_entry: super::CpuidEntry,
+) -> propolis_client::instance_spec::CpuidEntry {
+    let super::CpuidEntry { func, idx, values: [eax, ebx, ecx, edx] } =
+        toml_entry;
+
+    propolis_client::instance_spec::CpuidEntry {
+        leaf: func,
+        subleaf: idx,
+        eax,
+        ebx,
+        ecx,
+        edx,
+    }
+}
+
+/// Not a `TryFrom` or `TryInto` because we're re-exporting types from
+/// `cpuid-profile-config`, so they're actually defined in a foreign crate.
+pub fn toml_cpuid_to_spec_cpuid(
+    profile: &super::CpuidProfile,
+) -> Result<Cpuid, super::CpuidParseError> {
+    let entries = Vec::<super::CpuidEntry>::try_from(profile)?;
+    let entries = entries.into_iter().map(translate_cpuid_entry).collect();
+
+    let vendor = match profile.vendor {
+        super::CpuVendor::Amd => CpuidVendor::Amd,
+        super::CpuVendor::Intel => CpuidVendor::Intel,
+    };
+    Ok(Cpuid { entries, vendor })
 }

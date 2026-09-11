@@ -96,10 +96,11 @@ use std::{
 
 use anyhow::Context;
 use dropshot::HttpError;
-use propolis_api_types::{
-    instance_spec::{components::backends::CrucibleStorageBackend, SpecKey},
-    InstanceState, MigrationState,
+use propolis_api_types::instance::InstanceState;
+use propolis_api_types::instance_spec::{
+    components::backends::CrucibleStorageBackend, SpecKey,
 };
+use propolis_api_types::migration::MigrationState;
 use slog::{error, info};
 use tokio::sync::Notify;
 use uuid::Uuid;
@@ -389,6 +390,7 @@ pub(super) struct StateDriverOutput {
 /// [`StateDriverOutput`] contains appropriate state for a failed VM.
 pub(super) async fn ensure_vm_and_launch_driver(
     log: slog::Logger,
+    base_log: slog::Logger,
     vm: Arc<super::Vm>,
     mut state_publisher: StatePublisher,
     ensure_request: VmEnsureRequest,
@@ -397,7 +399,7 @@ pub(super) async fn ensure_vm_and_launch_driver(
 ) -> StateDriverOutput {
     let ensure_options = Arc::new(ensure_options);
     let activated_vm = match ensure_active_vm(
-        &log,
+        &base_log,
         &vm,
         &mut state_publisher,
         &ensure_request,

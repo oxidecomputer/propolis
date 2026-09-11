@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use cpuid_utils::CpuidSet;
+use propolis::vsock::proxy::VsockPortMapping;
 use propolis_types::CpuidIdent;
 use propolis_types::CpuidValues;
 use propolis_types::CpuidVendor;
@@ -17,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use cpuid_profile_config::*;
 use propolis::block;
+use propolis::firmware::acpi::AcpiVariant;
 use propolis::hw::pci::Bdf;
 
 use crate::cidata::build_cidata_be;
@@ -54,6 +56,9 @@ pub struct Main {
     pub memory: usize,
     pub use_reservoir: Option<bool>,
     pub cpuid_profile: Option<String>,
+    /// How vCPUs should be bound to physical processors, if at all. If not
+    /// provided, vCPUs are not bound (equivalent to setting `any`).
+    pub cpu_binding: Option<BindingStrategy>,
     /// Process exitcode to emit if/when instance halts
     ///
     /// Default: 0
@@ -67,6 +72,29 @@ pub struct Main {
 
     /// Request bootrom override boot order using the devices specified
     pub boot_order: Option<Vec<String>>,
+
+    /// ACPI table variant to use for the VM
+    ///
+    /// Default: V0
+    #[serde(default)]
+    pub acpi_variant: AcpiVariant,
+}
+
+#[derive(Copy, Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BindingStrategy {
+    /// vCPUs are not bound to any particular physical processor.
+    Any,
+    /// vCPUs are bound to the highest-numbered processors in the system, with
+    /// the first vCPU bound to CPU `last - N_vCPU` and the last vCPU bound to
+    /// the last CPU.
+    ///
+    /// An example given a system with 10 CPUs running a VM with 6 vCPUs:
+    /// ```text
+    /// host CPU number:   | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 |
+    /// guest vCPU number: |   |   |   |   | 0 | 1 | 2 | 3 | 4 | 5 |
+    /// ```
+    UpperHalf,
 }
 
 /// A hard-coded device, either enabled by default or accessible locally
@@ -150,6 +178,20 @@ impl VionaDeviceParams {
     }
 }
 
+#[derive(Deserialize)]
+pub struct VsockDevice {
+    pub guest_cid: u64,
+    pub port_mappings: Vec<VsockPortMapping>,
+}
+
+impl VsockDevice {
+    pub fn from_opts(
+        opts: &BTreeMap<String, toml::Value>,
+    ) -> Result<VsockDevice, anyhow::Error> {
+        opt_deser(opts)
+    }
+}
+
 // Try to turn unmatched flattened options into a config struct
 fn opt_deser<'de, T: Deserialize<'de>>(
     value: &BTreeMap<String, toml::Value>,
@@ -213,7 +255,8 @@ pub fn block_backend(
                 }
                 None => NonZeroUsize::new(DEFAULT_WORKER_COUNT).unwrap(),
             };
-            block::FileBackend::create(&parsed.path, opts, workers).unwrap()
+            block::FileBackend::create(&parsed.path, opts, workers, log.clone())
+                .unwrap()
         }
         "crucible" => create_crucible_backend(be, opts, log),
         "crucible-mem" => create_crucible_mem_backend(be, opts, log),
@@ -376,7 +419,7 @@ fn create_crucible_backend(
             control,
             read_only,
         },
-        gen: parsed.generation,
+        generation: parsed.generation,
     };
     info!(log, "Creating Crucible disk from request {:?}", req);
     // QUESTION: is producer_registry: None correct here?

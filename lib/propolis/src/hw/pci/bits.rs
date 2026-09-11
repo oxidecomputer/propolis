@@ -78,6 +78,20 @@ pub const LEN_PCI_CONFIG_ADDR: u16 = 4;
 pub const PORT_PCI_CONFIG_DATA: u16 = 0xcfc;
 pub const LEN_PCI_CONFIG_DATA: u16 = 4;
 
+/// I/O port used for the ACPI reset register.
+///
+/// Although not PCI-specific, the I/O port used by PIIX3 for the reset
+/// register unfortunately falls within the PCI configuration address range.
+///
+/// Refer to the following materials for more information:
+///   - ACPI sec. 5.2.9 "Fixed ACPI Description Table (FADT)".
+///   - ACPI sec. 4.8.4.6 "Reset Register".
+///   - Linux source code, functions `native_machine_emergency_restart()` and
+///     `acpi_reboot()`.
+///   - PIIX3 datasheet sec. 2.5.4.3 "RC-Reset Control Register"
+pub const PORT_ACPI_RESET_ADDR: u64 = 0xcf9;
+pub const PORT_ACPI_RESET_VALUE: u8 = 0b0110; // Reset CPU + System Reset
+
 /// The minimum number of buses a single ECAM region can address. The PCIe spec
 /// requires that at least one bit of the ECAM address space be used to specify
 /// a bus number (see PCIe base spec rev 5.0 table 7-1).

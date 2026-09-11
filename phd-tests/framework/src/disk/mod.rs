@@ -8,12 +8,13 @@
 //! They can then pass these disks to the VM factory to connect them to a
 //! specific guest VM.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
 use in_memory::InMemoryDisk;
-use propolis_client::instance_spec::ComponentV0;
+use propolis_client::instance_spec::Component;
 use thiserror::Error;
 
 use crate::{
@@ -118,7 +119,7 @@ pub trait DiskConfig: std::fmt::Debug + Send + Sync {
     fn device_name(&self) -> &DeviceName;
 
     /// Yields the backend spec for this disk's storage backend.
-    fn backend_spec(&self) -> ComponentV0;
+    fn backend_spec(&self) -> Component;
 
     /// Yields the guest OS kind of the guest image the disk was created from,
     /// or `None` if the disk was not created from a guest image.
@@ -278,6 +279,7 @@ impl DiskFactory {
         source: &DiskSource<'_>,
         mut min_disk_size_gib: u64,
         block_size: BlockSize,
+        output_dir: &impl AsRef<Path>,
     ) -> Result<Arc<CrucibleDisk>, DiskError> {
         const BYTES_PER_GIB: u64 = 1024 * 1024 * 1024;
 
@@ -326,6 +328,7 @@ impl DiskFactory {
             artifact_path.as_ref(),
             guest_os,
             self.log_config,
+            output_dir,
         )
         .map(Arc::new)
         .map_err(Into::into)

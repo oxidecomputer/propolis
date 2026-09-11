@@ -116,8 +116,8 @@ impl Bridge {
                 device_id: device,
                 sub_vendor_id: vendor,
                 sub_device_id: device,
-                class: BRIDGE_PROG_CLASS,
-                subclass: BRIDGE_PROG_SUBCLASS,
+                device_class: BRIDGE_PROG_CLASS,
+                device_subclass: BRIDGE_PROG_SUBCLASS,
                 prog_if: BRIDGE_PROG_IF,
                 ..Default::default()
             },
@@ -142,8 +142,8 @@ impl Bridge {
             BridgeReg::Common(id) => match id {
                 StdCfgReg::VendorId => ro.write_u16(self.ident.vendor_id),
                 StdCfgReg::DeviceId => ro.write_u16(self.ident.device_id),
-                StdCfgReg::Class => ro.write_u8(self.ident.class),
-                StdCfgReg::Subclass => ro.write_u8(self.ident.subclass),
+                StdCfgReg::Class => ro.write_u8(self.ident.device_class),
+                StdCfgReg::Subclass => ro.write_u8(self.ident.device_subclass),
                 StdCfgReg::SubVendorId => {
                     ro.write_u16(self.ident.sub_vendor_id)
                 }

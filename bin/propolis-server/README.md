@@ -15,7 +15,7 @@ To build and run the server:
 
 ```bash
 cargo build --bin propolis-server
-pfexec target/debug/propolis-server <path_to_bootrom> <ip:port> <vnc_ip:port>
+pfexec target/debug/propolis-server run <path_to_bootrom> <ip:port> [<vnc_ip:port>]
 ```
 
 The API will be served on `ip:port`. The easiest way to interact with the server

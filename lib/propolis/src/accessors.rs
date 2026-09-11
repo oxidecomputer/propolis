@@ -2,30 +2,76 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Hierarchical access control for emulated resources
+//! Hierarchical access control for emulated resources.
 //!
-//! Device emulation logic requires access to resources which may be
-//! subsequently moderated by intervening parts of the emulation.
+//! The structures in this module are designed to support some of our current
+//! needs, but also aspirationally for anticipated needs.
+//!
+//! First and foremost, device emulation logic requires access to resources
+//! which may be subsequently moderated by intervening parts of the emulation.
+//! Acquisition of the underlying resource is fallible for this reason.
 //!
 //! For example: A PCI device performs DMA to guest memory.  If bus-mastering is
 //! disabled on the device, or any parent bridge in its bus hierarchy, then its
 //! contained emulation should fail any DMA accesses.
+//!
+//! This also motivates the tree-like structure of the accessor.  Keeping the
+//! PCI bus mastering example, an individual endpoint can be allowed to perform
+//! bus mastering if Bus Master Enable is set.  Additionally, a PCI-PCI bridge
+//! has a Bus Master Enable bit with a similar semantic for all devices behind
+//! that bridge.
+//!
+//! There is not yet any support for bus mastering bits, but it's expected this
+//! should be straightforward on top of `Node` or `NodeEntry`.
+//!
+//! Secondly, and more relevant to how Accessor is used in Propolis today, an
+//! accessor tree provides a mechanism to provide or remove a reference to the
+//! protected resource from an entire device or machine. While the accessor tree
+//! is at heart a fancy `Arc<Mutex<Arc<T>>`, an `Arc<T>` is never exposed in the
+//! accessor's API; only a wrapper that derefs as `T`.
+//!
+//! Accessor structures being the sole access mechanism to a guarded resource
+//! ensures that the resource can be added or removed *almost*[1] arbitrarily.
+//! [`MsiAccessor`] is an example of double-duty here; on one hand, a PCI bridge
+//! can have MSI enabled or disabled, as well as the functions behind that
+//! bridge. On the other hand, the MSI accessor is mostly just an `Arc<VmmHdl>`,
+//! and it would be unfortunate to have stray `Arc<VmmHdl>` littered across
+//! device emulation[2].
+//!
+//! 1: A user of Propolis should only change the guarded resource for devices that
+//! are in the initial (pre-run) state, paused, or halted.  Removing a guarded
+//! resource during arbitrary device operation could, at worst, look to a device
+//! like it was the bus master while also losing its ownership of the bus!
+//! There is no expectation of correct operation in such a bogus state.
+//!
+//! 2: `Arc<VmmHdl>` has since found its way into device emulation in different
+//! ways, though the ownership model is simple enough there is little risk of
+//! cyclic references keeping a `VmmHdl` alive overly-long.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
-use crate::vmm::{MemCtx, VmmHdl};
+use crate::vmm::VmmHdl;
+
+pub trait AccessedResource {
+    type Root;
+    type Leaf: Clone;
+    type Target;
+
+    fn derive(root: &Self::Root) -> Self::Leaf;
+    fn deref(leaf: &Self::Leaf) -> &Self::Target;
+}
 
 /// Key type for identifying nodes referenced by `Tree`.
 #[derive(Ord, PartialOrd, Eq, PartialEq, Debug, Copy, Clone)]
-pub struct NodeKey(NonNull<Node<c_void>>);
-impl<T> From<&Arc<Node<T>>> for NodeKey {
+pub struct NodeKey(NonNull<Node<NodeKeyNull>>);
+impl<T: AccessedResource> From<&Arc<Node<T>>> for NodeKey {
     fn from(value: &Arc<Node<T>>) -> Self {
-        let raw = Arc::as_ptr(value) as *const Node<c_void>;
-        let inner = unsafe { NonNull::new_unchecked(raw as *mut Node<c_void>) };
+        let raw = Arc::as_ptr(value) as *const Node<NodeKeyNull>;
+        let inner =
+            unsafe { NonNull::new_unchecked(raw as *mut Node<NodeKeyNull>) };
         NodeKey(inner)
     }
 }
@@ -39,7 +85,20 @@ impl std::fmt::Display for NodeKey {
 // copied from, or transformed into a reference of any kind.
 unsafe impl Send for NodeKey {}
 
-struct TreeNode<T> {
+enum NodeKeyNull {}
+impl AccessedResource for NodeKeyNull {
+    type Root = ();
+    type Leaf = ();
+    type Target = ();
+    fn derive(_root: &Self::Root) -> Self::Leaf {
+        unreachable!()
+    }
+    fn deref(_derived: &Self::Root) -> &Self::Target {
+        unreachable!()
+    }
+}
+
+struct TreeNode<T: AccessedResource> {
     /// [NodeKey] of the parent to this node
     ///
     /// Holds [None] if the node is the root of the [Tree]
@@ -52,7 +111,7 @@ struct TreeNode<T> {
     /// Display name for [Tree::print()]-ing
     name: Option<String>,
 }
-impl<T> TreeNode<T> {
+impl<T: AccessedResource> TreeNode<T> {
     fn new(
         parent_key: NodeKey,
         node_ref: Weak<Node<T>>,
@@ -75,21 +134,24 @@ impl<T> TreeNode<T> {
     }
 }
 
-struct Tree<T> {
-    /// Underlying resource (if any) that this hierarchy is granting access to
-    resource_root: Option<Arc<T>>,
+struct Tree<T: AccessedResource> {
+    /// Root resource (if any) that this hierarchy is granting access to
+    res_root: Option<T::Root>,
+
     /// Key of the root node of this hierarchy
     ///
     /// Only when the tree is being initialized, should `root_key` be [None]
     root_key: Option<NodeKey>,
+
     /// Nodes within this hierarchy
     nodes: BTreeMap<NodeKey, TreeNode<T>>,
+
     /// Weak self-reference, used when building [TreeNode] entries as nodes are
     /// added to the tree.  Held as a convenience, instead of requiring it to be
     /// passed in by the caller.
     self_weak: Weak<Mutex<Tree<T>>>,
 }
-impl<T> Tree<T> {
+impl<T: AccessedResource> Tree<T> {
     /// Record a node in the tree
     fn add_child(
         &mut self,
@@ -98,7 +160,7 @@ impl<T> Tree<T> {
     ) -> Arc<Node<T>> {
         let child_node = Arc::new(Node(Mutex::new(NodeEntry {
             tree: Weak::upgrade(&self.self_weak).expect("tree ref still live"),
-            resource: self.resource_root.clone(),
+            res_leaf: self.res_root.as_ref().map(T::derive),
         })));
 
         let child_key = NodeKey::from(&child_node);
@@ -149,7 +211,7 @@ impl<T> Tree<T> {
                 {
                     let mut ent = node.0.lock().unwrap();
                     ent.tree = Arc::clone(&tree_ref);
-                    ent.resource.clone_from(&self.resource_root);
+                    ent.res_leaf = self.res_root.as_ref().map(T::derive);
                 }
 
                 if adopt_key == child_key {
@@ -216,7 +278,7 @@ impl<T> Tree<T> {
                 tnode.node_ref.upgrade().expect("node-to-orphan is still live");
             let mut guard = node.0.lock().unwrap();
             guard.tree = orphan_tree.clone();
-            guard.resource.take();
+            guard.res_leaf.take();
         }
         tnode.parent_key = None;
 
@@ -240,7 +302,7 @@ impl<T> Tree<T> {
             if let Some(node) = tnode.node_ref.upgrade() {
                 let mut ent = node.0.lock().unwrap();
                 ent.tree = orphan_tree.clone();
-                ent.resource = None;
+                ent.res_leaf = None;
 
                 needs_moved.extend(tnode.children.iter());
 
@@ -261,18 +323,26 @@ impl<T> Tree<T> {
         self.root_key() == node.into()
     }
 
-    fn poison(&mut self) -> Option<Arc<T>> {
-        // Remove the resource from the tree...
-        let resource = self.resource_root.take();
+    fn set_root_resource(
+        &mut self,
+        new_root: Option<T::Root>,
+    ) -> Option<T::Root> {
+        // Swap out the existing root resource
+        let old = std::mem::replace(&mut self.res_root, new_root);
 
-        // ... and poison all nodes too
+        // ... and invalidate all nodes too
         for tnode in self.nodes.values() {
             if let Some(node) = tnode.node_ref.upgrade() {
-                let _ = node.0.lock().unwrap().resource.take();
+                let _ = node.0.lock().unwrap().res_leaf.take();
             }
         }
 
-        resource
+        old
+    }
+
+    /// How many nodes exist in this tree hierarchy?
+    fn node_count(&self) -> usize {
+        self.nodes.len()
     }
 
     /// Traverse tree in order conducive to printing, applying a provided
@@ -316,10 +386,10 @@ impl<T> Tree<T> {
     }
 
     /// Create a [Tree] with no nodes (not even a root)
-    fn new_empty(resource: Option<Arc<T>>) -> Arc<Mutex<Tree<T>>> {
+    fn new_empty(primary: Option<T::Root>) -> Arc<Mutex<Tree<T>>> {
         Arc::new_cyclic(|self_weak| {
             Mutex::new(Tree {
-                resource_root: resource,
+                res_root: primary,
                 nodes: BTreeMap::new(),
                 root_key: None,
                 self_weak: self_weak.clone(),
@@ -328,12 +398,13 @@ impl<T> Tree<T> {
     }
 
     /// Create a [Tree] returning the root node
-    fn new(resource: Option<Arc<T>>) -> Arc<Node<T>> {
-        let tree = Self::new_empty(resource.clone());
-        let node = Node::new_root(tree.clone());
-        node.0.lock().unwrap().resource = resource;
+    fn new(res_root: Option<T::Root>) -> Arc<Node<T>> {
+        let tree = Self::new_empty(res_root);
 
+        let node = Node::new_root(tree.clone());
         let mut guard = tree.lock().unwrap();
+        let res_leaf = guard.res_root.as_ref().map(T::derive);
+        node.0.lock().unwrap().res_leaf = res_leaf;
         let root_key = NodeKey::from(&node);
         guard.root_key = Some(root_key);
         guard.nodes.insert(root_key, TreeNode::new_root(Arc::downgrade(&node)));
@@ -368,13 +439,18 @@ fn print_basic(match_node: Option<NodeKey>) -> impl Fn(PrintNode) {
 
 type TreeBackref<T> = Arc<Mutex<Tree<T>>>;
 
-struct NodeEntry<T> {
+struct NodeEntry<T: AccessedResource> {
     tree: TreeBackref<T>,
-    resource: Option<Arc<T>>,
+    /// Leaf resource for this node in the tree.
+    ///
+    /// The contents of the leaf resource may differ between nodes, as it is
+    /// effectively a cache of the [AccessedResource::derive()] output, when not
+    /// cleared as part of invalidation from the root.
+    res_leaf: Option<T::Leaf>,
     // TODO: store enable/disable state here for evaluation and propagation
 }
-struct Node<T>(Mutex<NodeEntry<T>>);
-impl<T> Node<T> {
+struct Node<T: AccessedResource>(Mutex<NodeEntry<T>>);
+impl<T: AccessedResource> Node<T> {
     /// Lock tree and entry (in that order, as required), and check if the tree
     /// we locked is the one this node is associated with.
     ///
@@ -384,14 +460,17 @@ impl<T> Node<T> {
     /// This is purely a helper function to make lifetimes clearer for
     /// [`Self::lock_tree()`]
     #[allow(clippy::type_complexity)]
-    fn try_lock_tree<'a>(
-        &'a self,
-        tree_ref: &'a TreeBackref<T>,
-    ) -> Result<MutexGuard<'a, Tree<T>>, TreeBackref<T>> {
+    fn try_lock_tree<'node, 'guard>(
+        &'node self,
+        tree_ref: &'guard TreeBackref<T>,
+    ) -> Result<
+        (MutexGuard<'guard, Tree<T>>, MutexGuard<'node, NodeEntry<T>>),
+        TreeBackref<T>,
+    > {
         let guard = tree_ref.lock().unwrap();
         let node_guard = self.0.lock().unwrap();
         if Arc::ptr_eq(tree_ref, &node_guard.tree) {
-            Ok(guard)
+            Ok((guard, node_guard))
         } else {
             Err(node_guard.tree.clone())
         }
@@ -399,49 +478,76 @@ impl<T> Node<T> {
 
     /// Safely acquire the lock to this entry, as well as the containing tree,
     /// respecting the ordering requirements.
-    fn lock_tree<R>(&self, f: impl FnOnce(MutexGuard<'_, Tree<T>>) -> R) -> R {
+    fn lock_tree<'node, F, R>(&'node self, f: F) -> R
+    where
+        F: for<'guard> FnOnce(
+            MutexGuard<'guard, Tree<T>>,
+            MutexGuard<'node, NodeEntry<T>>,
+        ) -> R,
+    {
         let mut tree = self.0.lock().unwrap().tree.clone();
-        let guard = loop {
+        let (guard, self_guard) = loop {
             let new_tree = match self.try_lock_tree(&tree) {
-                Ok(tg) => break tg,
+                Ok(guards) => break guards,
                 Err(nt) => nt,
             };
             let _ = std::mem::replace(&mut tree, new_tree);
         };
-        f(guard)
+        f(guard, self_guard)
     }
 
     fn new_root(tree: Arc<Mutex<Tree<T>>>) -> Arc<Node<T>> {
-        Arc::new(Node(Mutex::new(NodeEntry { tree, resource: None })))
+        Arc::new(Node(Mutex::new(NodeEntry { tree, res_leaf: None })))
     }
     fn new_child(self: &Arc<Node<T>>, name: Option<String>) -> Arc<Node<T>> {
-        self.lock_tree(|mut guard| guard.add_child(self.into(), name))
+        self.lock_tree(|mut guard, _| guard.add_child(self.into(), name))
     }
 
+    /// Acquire a reference to the accessed resource, if permitted.
+    ///
+    /// TODO: The guarded resource can be replaced while this guard is held.
+    /// There is no synchronization between a potential disabling of access and
+    /// outstanding guards that would be forbidden by that disablement.
     fn guard(&self) -> Option<Guard<'_, T>> {
-        let local = self.0.lock().unwrap();
-        local
-            .resource
-            .as_ref()
-            .map(|res| Guard { inner: res.clone(), _pd: PhantomData })
+        self.guard_borrow().map(|guard| {
+            let leaf_ref = guard
+                .res_leaf
+                .clone()
+                .expect("guard_borrow() only returns Some if res_leaf is Some");
+            Guard { inner: leaf_ref, _pd: PhantomData }
+        })
     }
 
-    fn poison(self: &Arc<Node<T>>) -> Option<Arc<T>> {
-        self.lock_tree(|mut guard| {
-            if !guard.node_is_root(self) {
-                drop(guard);
-                panic!("tree poisoning only allowed at root");
-            }
+    /// Lock this node's reference to the resource, if permitted.
+    ///
+    /// Take care: this returns the mutex guard, keeping this node locked.
+    /// Concurrent accesses to this node will block, and attempts to update the
+    /// resource in this tree will be blocked.
+    fn guard_borrow(&self) -> Option<MutexGuard<'_, NodeEntry<T>>> {
+        let local = self.0.lock().unwrap();
+        if let Some(_) = local.res_leaf.as_ref() {
+            Some(local)
+        } else {
+            drop(local);
+            // Attempt to (re)derive leaf resource from root
+            self.lock_tree(|tree, mut local| {
+                if let Some(root) = tree.res_root.as_ref() {
+                    let leaf = T::derive(root);
+                    local.res_leaf = Some(leaf.clone());
 
-            guard.poison()
-        })
+                    Some(local)
+                } else {
+                    None
+                }
+            })
+        }
     }
 
     fn drop_from_tree(self: &mut Arc<Node<T>>) {
         let key = NodeKey::from(&*self);
-        self.lock_tree(|mut guard| {
+        self.lock_tree(|mut guard, mut local| {
             // drop any lingering access to the resource immediately
-            let _ = self.0.lock().unwrap().resource.take();
+            let _ = local.res_leaf.take();
 
             // Since we hold the Tree lock (thus eliminating the chance of any
             // racing adopt/orphan activity to be manipulating the refcount on
@@ -456,26 +562,36 @@ impl<T> Node<T> {
     }
 }
 
-pub struct Guard<'a, T> {
-    inner: Arc<T>,
+pub struct Guard<'a, T: AccessedResource> {
+    inner: T::Leaf,
     _pd: PhantomData<&'a T>,
 }
-impl<T> std::borrow::Borrow<T> for Guard<'_, T> {
-    fn borrow(&self) -> &T {
-        &self.inner
-    }
-}
-impl<T> std::ops::Deref for Guard<'_, T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.inner
+impl<T: AccessedResource> std::ops::Deref for Guard<'_, T> {
+    type Target = T::Target;
+    fn deref(&self) -> &Self::Target {
+        T::deref(&self.inner)
     }
 }
 
-pub struct Accessor<T>(Arc<Node<T>>);
-impl<T> Accessor<T> {
+pub struct LockedView<'node, T: AccessedResource> {
+    guard: MutexGuard<'node, NodeEntry<T>>,
+}
+
+impl<'node, T: AccessedResource> LockedView<'node, T> {
+    pub fn view(&self) -> &T::Target {
+        let leaf = self
+            .guard
+            .res_leaf
+            .as_ref()
+            .expect("LockedView is returned only when res_leaf is Some()");
+        T::deref(&leaf)
+    }
+}
+
+pub struct Accessor<T: AccessedResource>(Arc<Node<T>>);
+impl<T: AccessedResource> Accessor<T> {
     /// Create a new accessor hierarchy, mediating access to `resource`.
-    pub fn new(resource: Arc<T>) -> Self {
+    pub fn new(resource: T::Root) -> Self {
         Self(Tree::new(Some(resource)))
     }
 
@@ -502,8 +618,10 @@ impl<T> Accessor<T> {
 
         assert_ne!(parent_key, child_key, "cannot adopt self");
 
-        self.0.lock_tree(|mut parent_guard| {
-            child.0.lock_tree(|mut child_guard| {
+        self.0.lock_tree(|mut parent_guard, node_guard| {
+            drop(node_guard);
+            child.0.lock_tree(|mut child_guard, node_guard| {
+                drop(node_guard);
                 if !child_guard.node_is_root(&child.0) {
                     // Drop all mutex guards prior to panic in order to allow
                     // unwinder to do its job, rather than getting tripped up by
@@ -520,35 +638,85 @@ impl<T> Accessor<T> {
         });
     }
 
-    /// Poison (remove the underlying resource) from the root node of a
-    /// hierarchy.  This is meant to provide the root holder of the resource the
-    /// means to promptly remove access to it during events such as tear-down.
+    /// Remove the underlying resource from the root node of a hierarchy.  This
+    /// is meant to provide the root holder of the resource the means to
+    /// promptly remove access to it during events such as tear-down.
     ///
     /// # Panics
     ///
     /// If this is called on a non-root node.
-    pub fn poison(&self) -> Option<Arc<T>> {
-        self.0.poison()
+    pub fn remove_resource(&self) -> Option<T::Root> {
+        self.0.lock_tree(|mut guard, node_guard| {
+            drop(node_guard);
+            if !guard.node_is_root(&self.0) {
+                drop(guard);
+                panic!("removal of root resource only allowed at root node");
+            }
+
+            guard.set_root_resource(None)
+        })
     }
 
     /// Attempt to gain access to the underlying resource.
     ///
     /// Will return [None] if any ancestor node disables access, or if the node
     /// is not attached to a hierarchy containing a valid resource.
+    ///
+    /// TODO: an outstanding `Guard` does not synchronize with changes to the
+    /// underlying resource; the resource could be changed, the tree adopted,
+    /// access disallowed, etc, but an existing `Guard` will still reference the
+    /// resource as it was at the point the access was allowed.
     pub fn access(&self) -> Option<Guard<'_, T>> {
         self.0.guard()
     }
 
+    /// Attempt to get a reference to the underlying resource.
+    ///
+    /// Will return [None] if any ancestor node disables access, or if the node
+    /// is not attached to a hierarchy containing a valid resource.
+    ///
+    /// Unlike [`Accesor::access()`], this returns a wrapped MutexGuard for this
+    /// accessor node; callers must carefully consider lock ordering when
+    /// holding this guard across other operations.  As with any other mutex,
+    /// perfer holding this guard for as small a window as permitted.
+    ///
+    /// This function exists solely to support very hot code accessing the same
+    /// resource across many processors.  When the underlying resource is an
+    /// `Arc`, `access()` implies an `Arc::clone`, which would contentously
+    /// modify the reference count to disastrous effect. `access_locked()` only
+    /// involves this (hopefully-uncontended!) node, at the cost of a more
+    /// error-prone API.  If `lock incq/lock decq` aren't in your profile, this
+    /// probably isn't helpful!
+    ///
+    /// Some examples of the added consideration with this function: holding
+    /// this guard will block other calls to this node's `access()` or
+    /// `access_locked()`, and *may* block attempts to `access()` or
+    /// `access_locked()` a child of this node. Holding this guard will block
+    /// removal of the underlying resource, potentially blocking VM teardown.
+    pub fn access_locked(&self) -> Option<LockedView<'_, T>> {
+        let guard = self.0.guard_borrow()?;
+        if guard.res_leaf.is_some() {
+            Some(LockedView { guard })
+        } else {
+            None
+        }
+    }
+
+    /// How many nodes exist in this Accessor hierarchy
+    pub fn node_count(&self) -> usize {
+        self.0.lock_tree(|guard, _| guard.node_count())
+    }
+
     /// Print the hierarchy that this node is a member of
     pub fn print(&self, highlight_self: bool) {
-        self.0.lock_tree(|tree| {
+        self.0.lock_tree(|tree, _| {
             tree.print(print_basic(
                 highlight_self.then_some(NodeKey::from(&self.0)),
             ));
         });
     }
 }
-impl<T> Drop for Accessor<T> {
+impl<T: AccessedResource> Drop for Accessor<T> {
     /// Perform necessary `Node` clean-up in the containing tree during drop of
     /// the Accessor.
     ///
@@ -569,14 +737,28 @@ impl<T> Drop for Accessor<T> {
     }
 }
 
-pub type MemAccessor = Accessor<MemCtx>;
+pub type MemAccessor = Accessor<crate::vmm::mem::MemAccessed>;
+
+enum MsiAccessed {}
+impl AccessedResource for MsiAccessed {
+    type Root = Arc<VmmHdl>;
+    type Leaf = Arc<VmmHdl>;
+    type Target = VmmHdl;
+
+    fn derive(root: &Self::Root) -> Self::Leaf {
+        root.clone()
+    }
+    fn deref(leaf: &Self::Leaf) -> &Self::Target {
+        leaf
+    }
+}
 
 // Keep the rest of VmmHdl hidden for the MSI accessor
-pub struct MsiAccessor(Accessor<VmmHdl>);
+pub struct MsiAccessor(Accessor<MsiAccessed>);
 impl MsiAccessor {
     /// See: [`Accessor::new()`]
-    pub fn new(resource: Arc<VmmHdl>) -> Self {
-        Self(Accessor::new(resource))
+    pub fn new(hdl: Arc<VmmHdl>) -> Self {
+        Self(Accessor::new(hdl))
     }
     /// See: [`Accessor::new_orphan()`]
     pub fn new_orphan() -> Self {
@@ -590,9 +772,9 @@ impl MsiAccessor {
     pub fn adopt(&self, child: &Self, name: Option<String>) {
         self.0.adopt(&child.0, name)
     }
-    /// See: [`Accessor::poison()`]
-    pub fn poison(&self) -> Option<Arc<VmmHdl>> {
-        self.0.poison()
+    /// See: [Accessor::remove_resource()]
+    pub fn remove_resource(&self) -> Option<Arc<VmmHdl>> {
+        self.0.remove_resource()
     }
 
     /// Attempt to send an MSI with the resource held by this accessor
@@ -628,20 +810,33 @@ mod test {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
+    enum AtomicRes {}
+    impl AccessedResource for AtomicRes {
+        type Root = Arc<AtomicUsize>;
+        type Leaf = Arc<AtomicUsize>;
+        type Target = AtomicUsize;
+
+        fn derive(root: &Self::Root) -> Self::Leaf {
+            root.clone()
+        }
+        fn deref(leaf: &Self::Leaf) -> &Self::Target {
+            leaf
+        }
+    }
+
     // Helpers:
 
-    fn new_root() -> Accessor<AtomicUsize> {
+    fn new_root() -> Accessor<AtomicRes> {
         Accessor::new(Arc::new(AtomicUsize::new(0)))
     }
-    fn new_orphan() -> Accessor<AtomicUsize> {
+    fn new_orphan() -> Accessor<AtomicRes> {
         Accessor::new_orphan()
     }
     fn new_depth(
         depth: usize,
-    ) -> (Accessor<AtomicUsize>, Vec<Accessor<AtomicUsize>>) {
+    ) -> (Accessor<AtomicRes>, Vec<Accessor<AtomicRes>>) {
         let root = new_root();
-        let mut children: Vec<Accessor<AtomicUsize>> =
-            Vec::with_capacity(depth);
+        let mut children: Vec<Accessor<AtomicRes>> = Vec::with_capacity(depth);
 
         for idx in 0..depth {
             let next_child = match idx {
@@ -662,7 +857,7 @@ mod test {
         let guard = guard.unwrap();
         drop(guard);
 
-        let res = root.poison();
+        let res = root.remove_resource();
         assert!(res.is_some());
 
         assert!(root.access().is_none())
@@ -682,14 +877,14 @@ mod test {
 
     #[test]
     #[should_panic]
-    fn only_root_can_poison() {
+    fn only_root_can_remove_resource() {
         let root = new_root();
         let child = root.child(None);
 
         assert!(root.access().is_some());
         assert!(child.access().is_some());
 
-        child.poison();
+        child.remove_resource();
     }
 
     #[test]
@@ -721,7 +916,7 @@ mod test {
             assert_eq!(child.access().unwrap().load(Ordering::Relaxed), tval);
         }
 
-        root.poison();
+        root.remove_resource();
         for node in children.iter() {
             assert!(node.access().is_none());
         }

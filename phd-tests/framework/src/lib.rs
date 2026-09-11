@@ -40,7 +40,8 @@ use log_config::LogConfig;
 use port_allocator::PortAllocator;
 pub use test_vm::TestVm;
 use test_vm::{
-    environment::EnvironmentSpec, spec::VmSpec, VmConfig, VmLocation,
+    environment::EnvironmentSpec, spec::VmSpec, TestVmManualStop, VmConfig,
+    VmLocation,
 };
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
@@ -57,6 +58,14 @@ mod port_allocator;
 mod serial;
 pub mod test_vm;
 pub(crate) mod zfs;
+
+/// A test context for an individual PHD test, containing a `Framework` plus
+/// test specific information.
+pub struct TestCtx {
+    pub(crate) framework: Arc<Framework>,
+    pub(crate) output_dir: Utf8PathBuf,
+    pub(crate) manual_stop: Option<TestVmManualStop>,
+}
 
 /// An instance of the PHD test framework.
 pub struct Framework {
@@ -123,117 +132,44 @@ pub enum BasePropolisSource<'a> {
     Local(&'a Utf8PathBuf),
 }
 
-// The framework implementation includes some "runner-only" functions
-// (constructing and resetting a framework) that are marked `pub`. This could be
-// improved by splitting the "test case" functions into a trait and giving test
-// cases trait objects.
-impl Framework {
-    /// Builds a brand new framework. Called from the test runner, which creates
-    /// one framework and then distributes it to tests.
-    pub async fn new(params: FrameworkParameters<'_>) -> anyhow::Result<Self> {
-        let mut artifact_store = artifacts::ArtifactStore::from_toml_path(
-            params.artifact_directory.clone(),
-            &params.artifact_toml,
-            params.max_buildomat_wait,
-        )
-        .context("creating PHD framework")?;
-
-        artifact_store
-            .add_propolis_from_local_cmd(&params.propolis_server_path)
-            .with_context(|| {
-                format!(
-                    "adding Propolis server '{}' from options",
-                    &params.propolis_server_path
-                )
-            })?;
-
-        let crucible_enabled = match params.crucible_downstairs {
-            Some(source) => {
-                artifact_store
-                    .add_crucible_downstairs(&source)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "adding Crucible downstairs {source} from options",
-                        )
-                    })?;
-                true
-            }
-            None => {
-                tracing::warn!(
-                    "Crucible disabled. Crucible tests will be skipped"
-                );
-                false
-            }
-        };
-
-        let migration_base_enabled = match params.base_propolis {
-            Some(source) => {
-                artifact_store
-                    .add_current_propolis(source)
-                    .await
-                    .with_context(|| format!("adding 'migration base' Propolis server {source} from options"))?;
-                true
-            }
-            None => {
-                tracing::warn!("No 'migration base' Propolis server provided. Migration-from-base tests will be skipped.");
-                false
-            }
-        };
-
-        let artifact_store = Arc::new(artifact_store);
-        let port_allocator = Arc::new(PortAllocator::new(params.port_range));
-        let disk_factory = DiskFactory::new(
-            &params.tmp_directory,
-            artifact_store.clone(),
-            port_allocator.clone(),
-            params.log_config,
-        );
-
-        let (cleanup_task_tx, cleanup_task_rx) =
-            tokio::sync::mpsc::unbounded_channel();
-        Ok(Self {
-            tmp_directory: params.tmp_directory,
-            log_config: params.log_config,
-            default_guest_cpus: params.default_guest_cpus,
-            default_guest_memory_mib: params.default_guest_memory_mib,
-            default_guest_os_artifact: params.default_guest_os_artifact,
-            default_bootrom_artifact: params.default_bootrom_artifact,
-            artifact_store,
-            disk_factory,
-            port_allocator,
-            crucible_enabled,
-            migration_base_enabled,
-            cleanup_task_tx,
-            cleanup_task_rx: tokio::sync::Mutex::new(cleanup_task_rx),
-        })
-    }
-
-    /// Resets the state of any stateful objects in the framework to prepare it
-    /// to run a new test case.
-    pub async fn reset(&self) {
-        self.port_allocator.reset();
-        self.wait_for_cleanup_tasks().await;
-    }
-
+impl TestCtx {
     /// Creates a new VM configuration builder using the default configuration
     /// from this framework instance.
     pub fn vm_config_builder(&self, vm_name: &str) -> VmConfig<'_> {
-        VmConfig::new(
-            vm_name,
-            self.default_guest_cpus,
-            self.default_guest_memory_mib,
-            &self.default_bootrom_artifact,
-            &self.default_guest_os_artifact,
-        )
+        self.framework.vm_config_builder(vm_name)
     }
 
     /// Yields an environment builder with default settings (run the VM on the
     /// test runner's machine using the default Propolis from the command line).
     pub fn environment_builder(&self) -> EnvironmentSpec {
-        EnvironmentSpec::new(VmLocation::Local, DEFAULT_PROPOLIS_ARTIFACT)
+        self.framework.environment_builder()
     }
 
+    /// Yields this framework instance's default guest OS artifact name. This
+    /// can be used to configure boot disks with different parameters than the
+    /// builder defaults.
+    pub fn default_guest_os_artifact(&self) -> &str {
+        self.framework.default_guest_os_artifact()
+    }
+
+    /// Yields the guest OS adapter corresponding to the default guest OS
+    /// artifact.
+    pub async fn default_guest_os_kind(&self) -> anyhow::Result<GuestOsKind> {
+        self.framework.default_guest_os_kind().await
+    }
+
+    /// Indicates whether the disk factory in this framework supports the
+    /// creation of Crucible disks. This can be used to skip tests that require
+    /// Crucible support.
+    pub fn crucible_enabled(&self) -> bool {
+        self.framework.crucible_enabled
+    }
+
+    /// Indicates whether a "migration base" Propolis server artifact is
+    /// available for migration-from-base tests.
+    pub fn migration_base_enabled(&self) -> bool {
+        self.framework.migration_base_enabled
+    }
     /// Spawns a test VM using the default configuration returned from
     /// `vm_builder` and the default environment returned from
     /// `environment_builder`.
@@ -304,6 +240,133 @@ impl Framework {
             environment.unwrap_or(&vm.environment_spec()),
         )
         .await
+    }
+
+    /// When phd-runner is configured to leave instances running on failed
+    /// tests, the watch channel whose Receiver is passed to this function is
+    /// used to indicate to the instance cleanup task that a test *has* failed.
+    pub fn set_cleanup_task_outcome_receiver(
+        &mut self,
+        manual_stop: TestVmManualStop,
+    ) {
+        self.manual_stop = Some(manual_stop);
+    }
+}
+
+// The framework implementation includes some "runner-only" functions
+// (constructing and resetting a framework) that are marked `pub`. This could be
+// improved by splitting the "test case" functions into a trait and giving test
+// cases trait objects.
+impl Framework {
+    /// Builds a brand new framework. Called from the test runner, which creates
+    /// one framework and then distributes it to tests.
+    pub async fn new(params: FrameworkParameters<'_>) -> anyhow::Result<Self> {
+        let mut artifact_store = artifacts::ArtifactStore::from_toml_path(
+            params.artifact_directory.clone(),
+            &params.artifact_toml,
+            params.max_buildomat_wait,
+        )
+        .context("creating PHD framework")?;
+
+        artifact_store
+            .add_propolis_from_local_cmd(&params.propolis_server_path)
+            .with_context(|| {
+                format!(
+                    "adding Propolis server '{}' from options",
+                    params.propolis_server_path
+                )
+            })?;
+
+        let crucible_enabled = match params.crucible_downstairs {
+            Some(source) => {
+                artifact_store
+                    .add_crucible_downstairs(&source)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "adding Crucible downstairs {source} from options",
+                        )
+                    })?;
+                true
+            }
+            None => {
+                tracing::warn!(
+                    "Crucible disabled. Crucible tests will be skipped"
+                );
+                false
+            }
+        };
+
+        let migration_base_enabled = match params.base_propolis {
+            Some(source) => {
+                artifact_store
+                    .add_current_propolis(source)
+                    .await
+                    .with_context(|| format!("adding 'migration base' Propolis server {source} from options"))?;
+                true
+            }
+            None => {
+                tracing::warn!("No 'migration base' Propolis server provided. Migration-from-base tests will be skipped.");
+                false
+            }
+        };
+
+        let artifact_store = Arc::new(artifact_store);
+        let port_allocator = Arc::new(PortAllocator::new(params.port_range));
+        let disk_factory = DiskFactory::new(
+            &params.tmp_directory,
+            artifact_store.clone(),
+            port_allocator.clone(),
+            params.log_config,
+        );
+
+        let (cleanup_task_tx, cleanup_task_rx) =
+            tokio::sync::mpsc::unbounded_channel();
+        Ok(Self {
+            tmp_directory: params.tmp_directory,
+            log_config: params.log_config,
+            default_guest_cpus: params.default_guest_cpus,
+            default_guest_memory_mib: params.default_guest_memory_mib,
+            default_guest_os_artifact: params.default_guest_os_artifact,
+            default_bootrom_artifact: params.default_bootrom_artifact,
+            artifact_store,
+            disk_factory,
+            port_allocator,
+            crucible_enabled,
+            migration_base_enabled,
+            cleanup_task_tx,
+            cleanup_task_rx: tokio::sync::Mutex::new(cleanup_task_rx),
+        })
+    }
+
+    pub fn test_ctx(self: &Arc<Self>, fully_qualified_name: String) -> TestCtx {
+        let output_dir =
+            self.tmp_directory.as_path().join(&fully_qualified_name);
+        TestCtx { framework: self.clone(), output_dir, manual_stop: None }
+    }
+
+    /// Resets the state of any stateful objects in the framework to prepare it
+    /// to run a new test case.
+    pub async fn reset(&self) {
+        self.port_allocator.reset();
+        self.wait_for_cleanup_tasks().await;
+    }
+
+    /// Creates a new VM configuration builder using the default configuration
+    /// from this framework instance.
+    pub fn vm_config_builder(&self, vm_name: &str) -> VmConfig<'_> {
+        VmConfig::new(
+            vm_name,
+            self.default_guest_cpus,
+            self.default_guest_memory_mib,
+            &self.default_bootrom_artifact,
+            &self.default_guest_os_artifact,
+        )
+    }
+    /// Yields an environment builder with default settings (run the VM on the
+    /// test runner's machine using the default Propolis from the command line).
+    pub fn environment_builder(&self) -> EnvironmentSpec {
+        EnvironmentSpec::new(VmLocation::Local, DEFAULT_PROPOLIS_ARTIFACT)
     }
 
     /// Yields this framework instance's default guest OS artifact name. This

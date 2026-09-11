@@ -3,13 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
-use itertools::Itertools;
 use phd_framework::{test_vm::MigrationTimeout, TestVm};
 use phd_testcase::*;
-use propolis_client::{
-    instance_spec::{CpuidEntry, VersionedInstanceSpec},
-    types::InstanceSpecStatus,
-};
+use propolis_client::instance_spec::{CpuidEntry, InstanceSpecStatus};
 use tracing::info;
 use uuid::Uuid;
 
@@ -25,7 +21,7 @@ fn cpuid_entry(
 }
 
 #[phd_testcase]
-async fn cpuid_instance_spec_round_trip_test(ctx: &Framework) {
+async fn cpuid_instance_spec_round_trip_test(ctx: &TestCtx) {
     // The guest isn't actually going to boot with these nonsense settings. The
     // goal is simply to verify that the ensure API properly records these
     // options and reflects them back out on request.
@@ -40,9 +36,7 @@ async fn cpuid_instance_spec_round_trip_test(ctx: &Framework) {
     vm.launch().await?;
 
     let spec_get_response = vm.get_spec().await?;
-    let InstanceSpecStatus::Present(VersionedInstanceSpec::V0(spec)) =
-        spec_get_response.spec
-    else {
+    let InstanceSpecStatus::Present(spec) = spec_get_response.spec else {
         panic!("instance spec should be present for a running VM");
     };
 
@@ -111,7 +105,7 @@ async fn verify_guest_brand_string(vm: &TestVm) -> anyhow::Result<()> {
 /// Launches a test VM with a synthetic brand string injected into its CPUID
 /// leaves.
 async fn launch_cpuid_smoke_test_vm(
-    ctx: &Framework,
+    ctx: &TestCtx,
     vm_name: &str,
 ) -> anyhow::Result<TestVm> {
     let mut host_cpuid = cpuid_utils::host::query_complete(
@@ -144,13 +138,13 @@ async fn launch_cpuid_smoke_test_vm(
 }
 
 #[phd_testcase]
-async fn cpuid_boot_test(ctx: &Framework) {
+async fn cpuid_boot_test(ctx: &TestCtx) {
     let vm = launch_cpuid_smoke_test_vm(ctx, "cpuid_boot_test").await?;
     verify_guest_brand_string(&vm).await?;
 }
 
 #[phd_testcase]
-async fn cpuid_migrate_smoke_test(ctx: &Framework) {
+async fn cpuid_migrate_smoke_test(ctx: &TestCtx) {
     let vm = launch_cpuid_smoke_test_vm(ctx, "cpuid_boot_test").await?;
     verify_guest_brand_string(&vm).await?;
 
@@ -173,9 +167,18 @@ struct LinuxGuestTopo<'a> {
     vm: &'a TestVm,
 }
 
+struct CacheInfo {
+    level: u8,
+    shared_cpu_list: String,
+}
+
 impl<'a> LinuxGuestTopo<'a> {
     fn cpu_stem(vcpu: u8) -> String {
         format!("/sys/devices/system/cpu/cpu{vcpu}/topology")
+    }
+
+    fn cache_stem(vcpu: u8, index: u8) -> String {
+        format!("/sys/devices/system/cpu/cpu{vcpu}/cache/index{index}")
     }
 
     async fn new(vm: &'a TestVm) -> Self {
@@ -198,6 +201,7 @@ impl<'a> LinuxGuestTopo<'a> {
                 "ls {}",
                 Self::cpu_stem(this.cpus().await)
             ))
+            .ignore_status()
             .await
             .expect("can run ls of a directory that doesn't exist");
         assert!(out.contains("No such file or directory"));
@@ -222,9 +226,7 @@ impl<'a> LinuxGuestTopo<'a> {
     async fn cpus(&self) -> u8 {
         let spec_get_response =
             self.vm.get_spec().await.expect("can get the instance's spec back");
-        let InstanceSpecStatus::Present(VersionedInstanceSpec::V0(spec)) =
-            spec_get_response.spec
-        else {
+        let InstanceSpecStatus::Present(spec) = spec_get_response.spec else {
             panic!("instance spec should be present for a running VM");
         };
 
@@ -280,10 +282,60 @@ impl<'a> LinuxGuestTopo<'a> {
         }
         result.into_iter()
     }
+
+    /// Returns true if the guest has SMT enabled.
+    ///
+    /// This is determined by checking if cpu0's thread_siblings has more than
+    /// one bit set.
+    async fn has_smt(&self) -> bool {
+        let siblings = self
+            .vm
+            .run_shell_command(&format!(
+                "cat {}/thread_siblings",
+                Self::cpu_stem(0)
+            ))
+            .await
+            .expect("can get thread siblings");
+        let siblings = siblings.trim();
+
+        let value = u64::from_str_radix(siblings, 16)
+            .expect("thread_siblings should be valid hex");
+        value.count_ones() > 1
+    }
+
+    async fn cache_info(&self) -> Vec<CacheInfo> {
+        let mut result = Vec::new();
+        for index in 0u8.. {
+            let stem = Self::cache_stem(0, index);
+            let level_out = self
+                .vm
+                .run_shell_command(&format!("cat {stem}/level 2>/dev/null"))
+                .await
+                .expect("can run cat");
+
+            let level_out = level_out.trim();
+            if level_out.is_empty() || level_out.contains("file not found") {
+                break;
+            }
+
+            let level: u8 = level_out.parse().expect("cache level parses");
+
+            let shared_cpu_list = self
+                .vm
+                .run_shell_command(&format!("cat {stem}/shared_cpu_list"))
+                .await
+                .expect("can read shared_cpu_list")
+                .trim()
+                .to_string();
+
+            result.push(CacheInfo { level, shared_cpu_list });
+        }
+        result
+    }
 }
 
 #[phd_testcase]
-async fn guest_cpu_topo_test(ctx: &Framework) {
+async fn guest_cpu_topo_test(ctx: &TestCtx) {
     let vm = launch_cpuid_smoke_test_vm(ctx, "guest_cpu_topo_test").await?;
 
     // The topology-checking is Linux-specific, though it should be appropriate
@@ -319,37 +371,57 @@ async fn guest_cpu_topo_test(ctx: &Framework) {
     // All cores should be in socket 0
     assert!(guest_topo.physical_package_ids().await.all(|item| item == 0));
 
-    // We currently number CPUs such that Linux numbers them as successive pairs
-    // of thread twins.
-    let siblings = guest_topo.thread_siblings().await;
-    for (idx, mut pair) in siblings.chunks(2).into_iter().enumerate() {
-        let lower = pair.next().expect("sibling pair has a pair of cores");
-        let upper = pair.next().expect("pairs have even numbers of cores");
+    let has_smt = guest_topo.has_smt().await;
 
-        // Each pair of siblings should see that they have the same siblings
-        assert_eq!(lower, upper);
-        // This character in the string should have a pair of bits for the
-        // current sibling pair under consideration.
-        let sibling_idx = idx / 4;
-        // And at that index, the character should be this hex digit
-        // (representing the pair of bits for these sibling threads). We can be
-        // looking either of the lower pairs (in which case the cores are 0b0011
-        // => 3), or the higher pairs (in which case the cores are 0b1100 => c)
-        let sibling_char = match idx % 4 {
-            0 => '3',
-            1 => '3',
-            2 => 'c',
-            3 => 'c',
-            o => {
-                panic!("bit index in hex digit is less than four? except {o}");
-            }
-        };
-        assert!(lower.chars().enumerate().all(|(i, ch)| {
-            if i != sibling_idx {
-                ch == '0'
-            } else {
-                ch == sibling_char
-            }
-        }));
+    // The thread_siblings checks only make sense when SMT is enabled.
+    if has_smt {
+        // We currently number CPUs such that Linux numbers them as successive
+        // pairs of thread twins.
+        let siblings: Vec<_> = guest_topo.thread_siblings().await.collect();
+        for (idx, pair) in siblings.chunks(2).enumerate() {
+            assert!(pair.len() == 2, "expected even number of CPUs");
+            let lower = &pair[0];
+            let upper = &pair[1];
+
+            // Each pair of siblings should see that they have the same siblings
+            assert_eq!(lower, upper);
+            // Each hex digit represents 4 CPUs. With chunks(2), idx is the pair
+            // number: idx=0 is cpus 0-1, idx=1 is cpus 2-3, etc.
+            let sibling_idx = idx / 2;
+            let sibling_char = if idx % 2 == 0 { '3' } else { 'c' };
+            assert!(lower.chars().enumerate().all(|(i, ch)| {
+                if i != sibling_idx {
+                    ch == '0'
+                } else {
+                    ch == sibling_char
+                }
+            }));
+        }
     }
+
+    // Check cache topology. With SMT, L1/L2 should be shared by SMT siblings
+    // while L3 is shared across all vCPUs.
+    let caches = guest_topo.cache_info().await;
+    let num_cpus = guest_topo.cpus().await;
+
+    for cache in &caches {
+        match cache.level {
+            1 | 2 => {
+                let expected = if has_smt { "0-1" } else { "0" };
+                assert_eq!(cache.shared_cpu_list, expected);
+            }
+            3 => {
+                let expected = format!("0-{}", num_cpus - 1);
+                assert_eq!(cache.shared_cpu_list, expected);
+            }
+            other => {
+                panic!("unexpected cache level {other}");
+            }
+        }
+    }
+
+    let l1_count = caches.iter().filter(|c| c.level == 1).count();
+    let l2_count = caches.iter().filter(|c| c.level == 2).count();
+    assert!(l1_count >= 2, "expected at least L1d and L1i caches");
+    assert!(l2_count >= 1, "expected at least one L2 cache");
 }
