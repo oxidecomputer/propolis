@@ -4,6 +4,8 @@
 
 pub use phd_testcase;
 
+// mod acpi; XXX(lif, while adding acpi_shutdown): is there a reason this wasn't here?
+mod acpi_shutdown;
 mod boot_order;
 mod cpuid;
 mod crucible;

@@ -275,6 +275,12 @@ impl InputQueue {
         guard.external_requests.notify_stopped();
     }
 
+    // TODO doc
+    fn notify_shutdown(&self) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.external_requests.notify_shutdown();
+    }
+
     /// Submits an external state change request to the queue.
     pub(super) fn queue_external_request(
         &self,
@@ -810,6 +816,7 @@ impl StateDriver {
         // its shutdown process and tried to reboot afterward, when operator
         // asked for the guest to be *off*.
         if let Some((fate, _)) = &self.soft_off {
+            self.input_queue.notify_shutdown();
             return match fate {
                 SoftShutdownFate::Stop => {
                     info!(

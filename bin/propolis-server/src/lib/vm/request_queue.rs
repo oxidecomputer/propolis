@@ -188,7 +188,16 @@ impl ExternalRequest {
     }
 
     fn is_stop(&self) -> bool {
-        matches!(self, Self::State(StateChangeRequest::Stop))
+        matches!(
+            self,
+            Self::State(
+                StateChangeRequest::Stop
+                    | StateChangeRequest::ACPIShutdown {
+                        fate: SoftShutdownFate::Stop,
+                        ..
+                    }
+            )
+        )
     }
 }
 
@@ -396,19 +405,22 @@ impl ExternalRequestQueue {
                 assert!(!self.awaiting_migration_out);
                 self.awaiting_migration_out = true;
             }
-            ExternalRequest::State(StateChangeRequest::Reboot) => {
-                assert!(!self.awaiting_reboot);
-                self.awaiting_reboot = true;
-            }
             ExternalRequest::State(StateChangeRequest::ACPIShutdown {
                 ..
             }) => {
-                // FIXME: subsequent reboots fail! need to notify_request_completed(ACPI)
+                // FIXME: subsequent reboots fail! need to notify_request_completed(ACPI)?
+                //  or just set awaiting_shutdown for Stop and Reboot...
                 assert!(!self.awaiting_shutdown);
                 self.awaiting_shutdown = true;
             }
+            ExternalRequest::State(StateChangeRequest::Reboot) => {
+                assert!(!self.awaiting_reboot);
+                self.awaiting_shutdown = false;
+                self.awaiting_reboot = true;
+            }
             ExternalRequest::State(StateChangeRequest::Stop) => {
                 assert!(!self.awaiting_stop);
+                self.awaiting_shutdown = false;
                 self.awaiting_stop = true;
             }
             ExternalRequest::Component(_) => {}
@@ -581,15 +593,23 @@ impl ExternalRequestQueue {
         }
     }
 
-    // TODO(lif) - for ACPI shutdown, chipset-driven shutdown *is* the externally-requested thing!
-    // what is the purpose of this subtle difference?
-    //
+    // TODO(lif) - for ACPI shutdown-triggered stops,
+    // chipset-driven shutdown *is* the externally-requested thing!
+    // what is the purpose of the subtle difference between this and
+    // notify_request_completed?
+
     /// Notifies this queue that the instance has stopped. This routine is meant
     /// to be used in cases where an instance stops for reasons other than an
     /// external request (e.g., a guest-requested chipset-driven shutdown).
     pub(super) fn notify_stopped(&mut self) {
         info!(&self.log, "queue notified that VM has stopped");
         self.state = QueueState::Stopped;
+    }
+
+    pub(super) fn notify_shutdown(&mut self) {
+        info!(&self.log, "queue notified that VM guest has shut down");
+        assert!(self.awaiting_shutdown);
+        self.awaiting_shutdown = false;
     }
 }
 

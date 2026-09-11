@@ -558,29 +558,56 @@ impl TestVm {
     /// Sets the VM to the running state without first sending an instance
     /// ensure request.
     pub async fn run(&self) -> PropolisClientResult<()> {
-        self.put_instance_state(InstanceStateRequested::Run).await
+        self.put_instance_state(InstanceStateRequested::Run, None).await
     }
 
     /// Stops the VM.
     pub async fn stop(&self) -> PropolisClientResult<()> {
-        self.put_instance_state(InstanceStateRequested::Stop).await
+        self.put_instance_state(InstanceStateRequested::Stop, None).await
     }
 
     /// Resets the VM by requesting the `Reboot` state from the server (as
     /// distinct from requesting a reboot from within the guest).
     pub async fn reset(&self) -> PropolisClientResult<()> {
-        self.put_instance_state(InstanceStateRequested::Reboot).await
+        self.put_instance_state(InstanceStateRequested::Reboot, None).await
+    }
+
+    /// Sends a power button press, and forcefully stops the VM after the given
+    /// timeout if the guest hasn't shut itself down by then.
+    pub async fn acpi_shutdown(
+        &self,
+        timeout_secs: u64,
+    ) -> PropolisClientResult<()> {
+        self.put_instance_state(
+            InstanceStateRequested::Stop,
+            Some(timeout_secs),
+        )
+        .await
+    }
+
+    /// Reboots the VM after a guest shutdown triggered by a power button press,
+    /// or forcefully after the given timeout if the guest does not shut down.
+    pub async fn acpi_reset(
+        &self,
+        timeout_secs: u64,
+    ) -> PropolisClientResult<()> {
+        self.put_instance_state(
+            InstanceStateRequested::Reboot,
+            Some(timeout_secs),
+        )
+        .await
     }
 
     #[instrument(skip_all, fields(vm = self.spec.vm_name, vm_id = %self.id))]
     async fn put_instance_state(
         &self,
         state: InstanceStateRequested,
+        acpi_timeout_secs: Option<u64>,
     ) -> PropolisClientResult<()> {
         info!(?state, "Requesting instance state change");
         self.client
             .instance_state_put()
-            .body(InstanceStateChange { state, acpi_timeout_secs: None })
+            .body(InstanceStateChange { state, acpi_timeout_secs })
             .send()
             .await
     }
