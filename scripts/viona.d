@@ -37,6 +37,8 @@
 #define	VNA_IOC_SET_MTU			(VNA_IOC | 0x28)
 #define	VNA_IOC_SET_NOTIFY_MMIO		(VNA_IOC | 0x29)
 #define	VNA_IOC_INTR_POLL_MQ		(VNA_IOC | 0x2a)
+#define	VNA_IOC_SET_MAC_FILTERS		(VNA_IOC | 0x2b)
+#define	VNA_IOC_GET_MAC_FILTERS		(VNA_IOC | 0x2c)
 
 #define	VNA_IOC_GET_PAIRS		(VNA_IOC | 0x30)
 #define	VNA_IOC_SET_PAIRS		(VNA_IOC | 0x31)
@@ -188,6 +190,50 @@ viona_ioctl:entry/arg1 == VNA_IOC_SET_PROMISC/ {
 	printf("%s\n", self->cmd);
 }
 
+viona_ioctl:entry/arg1 == VNA_IOC_SET_MAC_FILTERS/ {
+	self->cmd = "SET_MAC_FILTERS";
+	self->pending = arg1;
+	this->vmf = (vioc_mac_filters_t *)copyin(arg2,
+	    sizeof (vioc_mac_filters_t));
+	printf("%s (nmcast %u)\n", self->cmd, this->vmf->vmf_nmcast);
+}
+
+/*
+ * A successful ioctl copies the semantic result into vmf. If the ioctl returns
+ * nonzero, no complete result is available.
+ */
+viona_ioctl:return/self->pending == VNA_IOC_SET_MAC_FILTERS && arg1 == 0/ {
+	self->pending = 0;
+	this->vmf = (vioc_mac_filters_t *)copyin(self->dptr,
+	    sizeof (vioc_mac_filters_t));
+	printf("SET_MAC_FILTERS err %u nmcast %u addr ",
+	    this->vmf->vmf_err, this->vmf->vmf_nmcast);
+	printf("%02x:%02x:%02x:%02x:%02x:%02x\n",
+	    this->vmf->vmf_erraddr[0], this->vmf->vmf_erraddr[1],
+	    this->vmf->vmf_erraddr[2], this->vmf->vmf_erraddr[3],
+	    this->vmf->vmf_erraddr[4], this->vmf->vmf_erraddr[5]);
+}
+
+viona_ioctl:return/self->pending == VNA_IOC_SET_MAC_FILTERS/ {
+	self->pending = 0;
+}
+
+viona_ioctl:entry/arg1 == VNA_IOC_GET_MAC_FILTERS/ {
+	self->cmd = "GET_MAC_FILTERS";
+	self->pending = arg1;
+}
+
+viona_ioctl:return/self->pending == VNA_IOC_GET_MAC_FILTERS && arg1 == 0/ {
+	self->pending = 0;
+	this->vmf = (vioc_mac_filters_t *)copyin(self->dptr,
+	    sizeof (vioc_mac_filters_t));
+	printf("GET_MAC_FILTERS (installed %u)\n", this->vmf->vmf_nmcast);
+}
+
+viona_ioctl:return/self->pending == VNA_IOC_GET_MAC_FILTERS/ {
+	self->pending = 0;
+}
+
 viona_ioctl:entry/arg1 == VNA_IOC_GET_PARAMS/ {
 	self->cmd = "GET_PARAMS";
 	printf("%s\n", self->cmd);
@@ -259,4 +305,3 @@ viona_ioctl:return/self->cmd != 0 && arg1 != 0/ {
 	printf("ioctl(%s) returning 0x%x\n", self->cmd, arg1);
 	self->cmd = 0;
 }
-

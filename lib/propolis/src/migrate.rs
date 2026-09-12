@@ -149,9 +149,16 @@ impl<'a> PayloadOffers<'a> {
     /// Attempt to take a payload from the contained offers, provided that it
     /// matches the specified [`Schema`](trait@Schema).
     pub fn take<T: Schema<'a>>(&mut self) -> Result<T, MigrateStateError> {
-        self.take_schema(T::id())
-            .ok_or_else(|| MigrateStateError::DataMissing)?
-            .parse()
+        match self.take_schema(T::id()) {
+            Some(mut offer) => offer.parse(),
+            None => match self.0.iter().find(|offer| offer.kind == T::id().0) {
+                Some(offer) => Err(MigrateStateError::UnexpectedPayload(
+                    offer.kind.into(),
+                    offer.version,
+                )),
+                None => Err(MigrateStateError::DataMissing),
+            },
+        }
     }
 
     /// Returns `true` if all of the payload offers been consumed via
@@ -256,5 +263,102 @@ impl<'a, T: Schema<'a>> From<T> for PayloadOutput {
     fn from(value: T) -> Self {
         let id = T::id();
         PayloadOutput { kind: id.0, version: id.1, payload: Box::new(value) }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[derive(Debug, Deserialize, Serialize)]
+    struct TestState {
+        value: u32,
+    }
+
+    impl Schema<'_> for TestState {
+        fn id() -> SchemaId {
+            ("test-state", 1)
+        }
+    }
+
+    fn offer(
+        kind: &'static str,
+        version: u32,
+        value: u32,
+    ) -> PayloadOffer<'static> {
+        PayloadOffer {
+            kind,
+            version,
+            payload: Box::new(<dyn erased_serde::Deserializer>::erase(
+                serde_json::json!({ "value": value }),
+            )),
+        }
+    }
+
+    #[test]
+    fn test_take_exact_match() {
+        let mut offers = PayloadOffers::new([offer("test-state", 1, 42)]);
+        assert_eq!(offers.take::<TestState>().unwrap().value, 42);
+        assert!(offers.is_consumed());
+    }
+
+    #[test]
+    fn test_take_matching_version_among_offers() {
+        let mut offers = PayloadOffers::new([
+            offer("test-state", 2, 7),
+            offer("other", 1, 8),
+            offer("test-state", 1, 42),
+        ]);
+        assert_eq!(offers.take::<TestState>().unwrap().value, 42);
+        assert!(!offers.is_consumed());
+        assert_eq!(
+            offers.remaining().map(|p| (p.kind, p.version)).collect::<Vec<_>>(),
+            [("test-state", 2), ("other", 1)],
+        );
+    }
+
+    #[test]
+    fn test_take_missing_payload() {
+        for items in [vec![], vec![offer("other", 1, 7)]] {
+            let expected: Vec<_> =
+                items.iter().map(|p| (p.kind, p.version)).collect();
+            let mut offers = PayloadOffers::new(items);
+            assert!(matches!(
+                offers.take::<TestState>(),
+                Err(MigrateStateError::DataMissing)
+            ));
+            assert_eq!(
+                offers
+                    .remaining()
+                    .map(|p| (p.kind, p.version))
+                    .collect::<Vec<_>>(),
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn test_rejects_wrong_version_and_duplicates() {
+        for (items, expected_version) in [
+            (vec![offer("test-state", 2, 7)], 2),
+            (vec![offer("test-state", 1, 7), offer("test-state", 1, 8)], 1),
+        ] {
+            let expected: Vec<_> =
+                items.iter().map(|p| (p.kind, p.version)).collect();
+            let mut offers = PayloadOffers::new(items);
+            assert!(matches!(
+                offers.take::<TestState>(),
+                Err(MigrateStateError::UnexpectedPayload(kind, version))
+                    if kind == "test-state" && version == expected_version
+            ));
+            assert!(!offers.is_consumed());
+            assert_eq!(
+                offers
+                    .remaining()
+                    .map(|p| (p.kind, p.version))
+                    .collect::<Vec<_>>(),
+                expected,
+            );
+        }
     }
 }
