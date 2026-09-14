@@ -54,7 +54,7 @@ mod probes {
     fn hyperv_rdmsr_reference_time(time_units: u64) {}
 }
 
-const TYPE_NAME: &str = "guest-hyperv-interface";
+const TYPE_NAME: &str = "hyperv-guest-interface";
 
 /// A set of features that can be enabled for a given Hyper-V instance.
 #[derive(Clone, Copy, Debug, Default)]
