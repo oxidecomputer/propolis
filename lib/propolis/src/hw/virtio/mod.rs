@@ -30,11 +30,28 @@ use crate::common::RWOp;
 use crate::hw::pci as pci_hw;
 use crate::lifecycle::Lifecycle;
 use queue::VirtQueue;
+use serde::{Deserialize, Serialize};
 
 pub use block::PciVirtioBlock;
 pub use queue::VqSize;
 pub use viona::PciVirtioViona;
 pub use vsock::PciVirtioSock;
+
+#[cfg(target_os = "illumos")]
+
+mod os {
+    unsafe extern "C" {
+        pub fn membar_enter();
+    }
+}
+
+#[inline(always)]
+pub fn membar_enter() {
+    #[cfg(target_os = "illumos")]
+    unsafe {
+        os::membar_enter();
+    }
+}
 
 bitflags! {
     pub struct LegacyFeatures: u64 {
@@ -247,6 +264,7 @@ pub enum VqChange {
     IntrCfg,
 }
 
+#[derive(Debug)]
 pub enum VqIntr {
     /// Pin (lintr) interrupt
     Pin,
@@ -255,11 +273,42 @@ pub enum VqIntr {
     Msi(u64, u32, bool),
 }
 
+#[derive(Copy, Clone, Default, Deserialize, Serialize)]
+pub struct VqNeedsIntrProbeInfo {
+    used_event: u16,
+    last_chk_uidx: u16,
+    uidx: u16,
+    needed: bool,
+}
+
 #[usdt::provider(provider = "propolis")]
 mod probes {
     fn virtio_vq_notify(virtio_dev_addr: u64, virtqueue_id: u16) {}
     fn virtio_vq_pop(vq_addr: u64, desc_idx: u16, avail_idx: u16) {}
     fn virtio_vq_push(vq_addr: u64, used_idx: u16, used_len: u32) {}
+
+    fn virtio_vq_needs_intr(
+        vq_addr: u64,
+        vq_id: u16,
+        f_event_idx: u64,
+        info: crate::hw::virtio::VqNeedsIntrProbeInfo,
+    ) {
+    }
+    fn virtio_vq_send_intr(vq_addr: u64, vq_id: u16, sent: u64) {}
+    fn virtio_vq_enable_intr(
+        vq_addr: u64,
+        vq_id: u16,
+        f_event_idx: u64,
+        avail_event: u16,
+    ) {
+    }
+    fn virtio_vq_disable_intr(
+        vq_addr: u64,
+        vq_id: u16,
+        f_event_idx: u64,
+        avail_event: u16,
+    ) {
+    }
 
     fn virtio_viona_mq_set_use_pairs(cause: u8, npairs: u16) {}
 
