@@ -4,25 +4,44 @@
 
 use std::time::Duration;
 
+use phd_framework::guest_os::GuestOsKind;
 use phd_testcase::*;
+
 use propolis_client::types::InstanceState;
 
-async fn acpid_vm(
+/// start an alpine TestVm that will *not* respond to pwrbtn events.
+async fn non_acpid_vm(
     ctx: &TestCtx,
     vm_name: &str,
-) -> anyhow::Result<phd_framework::TestVm> {
+) -> phd_testcase::Result<phd_framework::TestVm> {
+    if ctx.default_guest_os_kind().await? != GuestOsKind::Alpine {
+        // other more heavyweight distros probably listen for pwrbtn events
+        phd_skip!("acpi_shutdown tests expect alpine default behaviors");
+    }
+
     let mut vm = ctx.spawn_default_vm(vm_name).await?;
     vm.launch().await?;
     vm.wait_to_boot().await?;
+    Ok(vm)
+}
+
+/// start an alpine TestVm that *will* respond to pwrbtn events.
+async fn acpid_vm(
+    ctx: &TestCtx,
+    vm_name: &str,
+) -> phd_testcase::Result<phd_framework::TestVm> {
+    let vm = non_acpid_vm(ctx, vm_name).await?;
 
     // alpine won't respond to acpi pwrbtn events without acpid running.
     vm.run_shell_command("acpid").await?;
+
     Ok(vm)
 }
 
 #[phd_testcase]
 async fn acpi_shutdown_stop(ctx: &TestCtx) {
     let vm = acpid_vm(ctx, "acpi_shutdown_stop").await?;
+
     // pwrbtn with intent to stop
     vm.acpi_shutdown(60).await?;
 
@@ -35,6 +54,7 @@ async fn acpi_shutdown_stop(ctx: &TestCtx) {
 #[phd_testcase]
 async fn acpi_shutdown_reboot(ctx: &TestCtx) {
     let vm = acpid_vm(ctx, "acpi_shutdown_reboot").await?;
+
     // pwrbtn with intent to reboot
     vm.acpi_reset(60).await?;
 
@@ -44,10 +64,8 @@ async fn acpi_shutdown_reboot(ctx: &TestCtx) {
 
 #[phd_testcase]
 async fn acpi_shutdown_interject_with_hard_stop(ctx: &TestCtx) {
-    let mut vm =
-        ctx.spawn_default_vm("acpi_shutdown_interject_with_hard_stop").await?;
-    vm.launch().await?;
-    vm.wait_to_boot().await?;
+    let vm =
+        non_acpid_vm(ctx, "acpi_shutdown_interject_with_hard_stop").await?;
 
     // note: *not* running acpid, so alpine will ignore pwrbtn.
     // sending a 'reset' request so we can be sure it was ignored when the
@@ -64,11 +82,8 @@ async fn acpi_shutdown_interject_with_hard_stop(ctx: &TestCtx) {
 
 #[phd_testcase]
 async fn acpi_shutdown_interject_with_hard_reboot(ctx: &TestCtx) {
-    let mut vm = ctx
-        .spawn_default_vm("acpi_shutdown_interject_with_hard_reboot")
-        .await?;
-    vm.launch().await?;
-    vm.wait_to_boot().await?;
+    let vm =
+        non_acpid_vm(ctx, "acpi_shutdown_interject_with_hard_reboot").await?;
 
     // note: *not* running acpid, so alpine will ignore pwrbtn.
     // sending a 'shutdown' request so we can be sure it was ignored when the
@@ -84,9 +99,7 @@ async fn acpi_shutdown_interject_with_hard_reboot(ctx: &TestCtx) {
 
 #[phd_testcase]
 async fn acpi_shutdown_timeout_stop(ctx: &TestCtx) {
-    let mut vm = ctx.spawn_default_vm("acpi_shutdown_timeout_stop").await?;
-    vm.launch().await?;
-    vm.wait_to_boot().await?;
+    let vm = non_acpid_vm(ctx, "acpi_shutdown_timeout_stop").await?;
 
     // note: *not* running acpid, so alpine should ignore pwrbtn
     // and be hard-stopped in 1 second
@@ -97,9 +110,7 @@ async fn acpi_shutdown_timeout_stop(ctx: &TestCtx) {
 
 #[phd_testcase]
 async fn acpi_shutdown_timeout_reboot(ctx: &TestCtx) {
-    let mut vm = ctx.spawn_default_vm("acpi_shutdown_timeout_reboot").await?;
-    vm.launch().await?;
-    vm.wait_to_boot().await?;
+    let vm = non_acpid_vm(ctx, "acpi_shutdown_timeout_reboot").await?;
 
     // note: *not* running acpid, so alpine should ignore pwrbtn
     // and be hard-reset in 1 second
