@@ -520,7 +520,6 @@ impl VirtQueue {
                     false => ChainBuf::Readable(GuestAddr(desc.addr), desc.len),
                 };
 
-                count += 1;
                 len += desc.len;
                 chain.push_buf(buf);
 
