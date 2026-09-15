@@ -94,7 +94,7 @@ pub(crate) struct VmObjectsLocked {
     /// A handle to the VM's attestation server.
     attest_handle: Option<attestation::server::AttestationSock>,
 
-    // TODO doc (ACPI shutdown)
+    /// A handle to the VM's mainboard chipset.
     chipset: Arc<RegisteredChipset>,
 }
 

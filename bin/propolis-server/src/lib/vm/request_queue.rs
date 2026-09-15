@@ -508,18 +508,36 @@ impl ExternalRequestQueue {
                     }
                 }
 
+                // Reject ACPI shutdown requests if the instance is not in a
+                // state where it could reasonably be expected to respond to
+                // a power button press (that is to say, Running), and also
+                // ignore further shutdown requests if one is already happening.
                 ExternalRequest::State(StateChangeRequest::ACPIShutdown {
                     ..
-                }) => {
-                    if self.state == QueueState::StartPending {
-                        return Err(RequestDeniedReason::StartInProgress);
-                    } else if self.state == QueueState::NotStarted {
-                        return Err(RequestDeniedReason::InstanceNotActive);
-                    // TODO(luiz): check if this is the right action.
-                    } else if self.awaiting_stop || self.awaiting_reboot {
-                        return Ok(false);
+                }) => match self.state {
+                    QueueState::StartPending => {
+                        return Err(RequestDeniedReason::StartInProgress)
                     }
-                }
+                    QueueState::NotStarted => {
+                        return Err(RequestDeniedReason::InstanceNotActive)
+                    }
+                    QueueState::Stopped => {
+                        return Err(RequestDeniedReason::Halted)
+                    }
+                    QueueState::Failed => {
+                        return Err(RequestDeniedReason::InstanceFailed)
+                    }
+                    QueueState::MigratedOut => {
+                        return Err(RequestDeniedReason::MigratedOut)
+                    }
+                    QueueState::Running => {
+                        if self.awaiting_stop || self.awaiting_reboot {
+                            return Err(RequestDeniedReason::HaltPending);
+                        } else if self.awaiting_shutdown {
+                            return Ok(false);
+                        }
+                    }
+                },
 
                 // Always queue requests to stop a VM unless one is already
                 // present.
