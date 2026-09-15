@@ -122,7 +122,8 @@ enum Command {
         /// The requested state
         #[clap(value_parser = parse_state)]
         state: InstanceStateRequested,
-        // TODO doc
+        /// The number of seconds to wait after sending ACPI PWRBTN_STS before
+        /// forcing stop/reset. (If omitted, stop/reset are forced immediately)
         acpi_timeout_secs: Option<u64>,
     },
 

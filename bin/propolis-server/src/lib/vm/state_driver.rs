@@ -275,7 +275,8 @@ impl InputQueue {
         guard.external_requests.notify_stopped();
     }
 
-    // TODO doc
+    /// Notifies the external request queue that the instance guest has
+    /// completed its externally-requested shutdown process.
     fn notify_shutdown(&self) {
         let mut guard = self.inner.lock().unwrap();
         guard.external_requests.notify_shutdown();
@@ -372,11 +373,10 @@ struct StateDriver {
     /// True if the VM is paused.
     paused: bool,
 
-    // TODO
-    // however this is implemented, we need to not have e.g. the following happen:
-    // - queued Stop/Reboot with T second timeout
-    // - guest sends a force Reboot after N < T seconds
-    // - another (T - N) seconds pass, the instance is "still up", the timeout task forces reboot *again*
+    /// `Some` if an ACPI shutdown has been requested.
+    /// Contains a tuple of the action to take after the guest halts its CPUs,
+    /// the timeout task that will forcibly halt the guest's CPUs if it is not
+    /// aborted.
     soft_off: Option<(SoftShutdownFate, tokio::task::JoinHandle<()>)>,
 
     /// State persisted from previous attempts to migrate out of this VM.

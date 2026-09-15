@@ -55,20 +55,18 @@ pub(crate) enum StateChangeRequest {
     Start,
 
     /// Asks the state worker to start a migration-source task.
-    MigrateAsSource {
-        migration_id: Uuid,
-        websock: WebsocketConnection,
-    },
+    MigrateAsSource { migration_id: Uuid, websock: WebsocketConnection },
 
     /// Resets the guest by pausing all devices, resetting them to their
     /// cold-boot states, and resuming the devices. Note that this is not a
     /// graceful reboot and does not coordinate with guest software.
     Reboot,
 
-    ACPIShutdown {
-        fate: SoftShutdownFate,
-        timeout: std::time::Duration,
-    },
+    /// Sends an ACPI shutdown signal to the guest, and then either stops
+    /// or reboots the instance (depending on `fate`) once the guest halts
+    /// its CPU. If this does not occur within the `timeout`, the guest is
+    /// ungracefully stopped/rebooted.
+    ACPIShutdown { fate: SoftShutdownFate, timeout: std::time::Duration },
 
     /// Halts the VM. Note that this is not a graceful shutdown and does not
     /// coordinate with guest software.
@@ -304,7 +302,8 @@ pub(super) struct ExternalRequestQueue {
     /// completed by the state driver.
     awaiting_stop: bool,
 
-    // TODO doc
+    /// True if this queue has enqueued an ACPI shutdown request that has not
+    /// been completed by the state driver.
     awaiting_shutdown: bool,
 
     /// The queue's logger.

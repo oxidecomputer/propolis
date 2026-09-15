@@ -164,7 +164,7 @@ const VMM_MIN_RT_THREADS: usize = 8;
 /// is greater.
 const VMM_BASE_RT_THREADS: usize = 4;
 
-// TODO doc
+/// The action to take after an ACPI shutdown either completes or times out.
 #[derive(Clone, Copy, Debug)]
 pub enum SoftShutdownFate {
     Stop,

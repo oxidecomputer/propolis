@@ -7,10 +7,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::v1::instance::InstanceStateRequested;
 
-/// Requested state of an Instance.
+/// Requested state change of an Instance.
 #[derive(Clone, Copy, Deserialize, Serialize, JsonSchema)]
 pub struct InstanceStateChange {
+    /// The desired state for the Instance.
     pub state: InstanceStateRequested,
-    // TODO doc
+    /// The number of seconds to wait after sending ACPI `PWRBTN_STS` before
+    /// forcing stop/reset. (If omitted, stop/reset are forced immediately,
+    /// and the ACPI signal is not sent.)
     pub acpi_timeout_secs: Option<u64>,
 }
