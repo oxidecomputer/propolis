@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// A disk that presents a virtio-block interface to the guest.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct VirtioDisk {
     /// The name of the disk's backend component.
@@ -21,7 +21,7 @@ pub struct VirtioDisk {
 }
 
 /// A disk that presents an NVMe interface to the guest.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct NvmeDisk {
     /// The name of the disk's backend component.
@@ -36,7 +36,7 @@ pub struct NvmeDisk {
 }
 
 /// A network card that presents a virtio-net interface to the guest.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct VirtioNic {
     /// The name of the device's backend.
@@ -111,7 +111,9 @@ pub struct QemuPvpanic {
 /// Settings supplied to the guest's firmware image that specify the order in
 /// which it should consider its options when selecting a device to try to boot
 /// from.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, Default)]
+#[derive(
+    Clone, Deserialize, Serialize, Debug, JsonSchema, Default, PartialEq,
+)]
 #[serde(deny_unknown_fields)]
 pub struct BootSettings {
     /// An ordered list of components to attempt to boot from.
@@ -119,7 +121,7 @@ pub struct BootSettings {
 }
 
 /// An entry in the boot order stored in a [`BootSettings`] component.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, PartialEq)]
 pub struct BootOrderEntry {
     /// The ID of another component in the spec that Propolis should try to
     /// boot from.
@@ -136,7 +138,7 @@ pub struct BootOrderEntry {
 ///
 /// This is only supported by Propolis servers compiled with the `falcon`
 /// feature.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuPciPort {
     /// The PCI path at which to attach the guest to this port.
@@ -147,7 +149,7 @@ pub struct SoftNpuPciPort {
 ///
 /// This is only supported by Propolis servers compiled with the `falcon`
 /// feature.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuPort {
     /// The data link name for this port.
@@ -162,7 +164,7 @@ pub struct SoftNpuPort {
 ///
 /// This is only supported by Propolis servers compiled with the `falcon`
 /// feature.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SoftNpuP9 {
     /// The PCI path at which to attach the guest to this port.
@@ -173,7 +175,7 @@ pub struct SoftNpuP9 {
 ///
 /// This is only supported by Propolis servers compiled with the `falcon`
 /// feature.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct P9fs {
     /// The host source path to mount into the guest.
@@ -195,7 +197,7 @@ pub struct P9fs {
 ///
 /// This is only supported by Propolis servers compiled with the
 /// `failure-injection` feature.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MigrationFailureInjector {
     /// The number of times this device should fail requests to export state.

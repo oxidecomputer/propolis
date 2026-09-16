@@ -1420,10 +1420,9 @@ pub mod formats {
     /// ```
     /// Adapted from <https://docs.kernel.org/firmware-guide/acpi/namespace.html>
     ///
-    /// These addresses are only know at boot time, so each reference has a
-    /// corresponding [`AddPointerCommand`] that the firmware executes on boot.
-    /// And since the table has been modified, they also need a
-    /// [`AddChecksumCommand`] to recalculate the final table checksum.
+    /// These addresses are only known at boot time, so a series of fixups are
+    /// recorded into the produced `TableLoader` for firmware to correct table
+    /// pointers and checksums.
     pub struct AcpiTablesBuilder<'a> {
         config: &'a AcpiConfig<'a>,
         tables: Vec<u8>,
@@ -1721,6 +1720,13 @@ pub mod formats {
     /// Stores commands that will be executed by the EDK2 firmware when the
     /// ACPI tables are loaded.
     ///
+    /// ACPI tables provided via `fw_cfg` are only placed into memory at boot
+    /// time, so inter-table pointers become invalid as EDK2 chooses where to
+    /// place individual tables. `fw_cfg` includes a small command language
+    /// analogous to a binary loader to fix up these pointers and checksums of
+    /// tables including them, the content of which is prepared through
+    /// `TableLoader` via the table-loading builder functions implemented on it.
+    ///
     /// Refer to the EDK2 source code for more information on the commands.
     ///
     /// <https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/QemuLoader.h>
@@ -1733,6 +1739,8 @@ pub mod formats {
             Self { commands: Vec::new() }
         }
 
+        /// Add a `QEMU_LOADER_ALLOCATE` command to this table loader's command
+        /// stream.
         pub fn add_allocate(
             &mut self,
             file: &str,
@@ -1749,6 +1757,8 @@ pub mod formats {
             self.write_command(CommandType::Allocate, cmd.as_bytes());
         }
 
+        /// Add a `QEMU_LOADER_ADD_POINTER` command to this table loader's
+        /// command stream.
         pub fn add_pointer(
             &mut self,
             dest_file: &str,
@@ -1767,6 +1777,8 @@ pub mod formats {
             self.write_command(CommandType::AddPointer, cmd.as_bytes());
         }
 
+        /// Add a `QEMU_LOADER_ADD_CHECKSUM` command to this table loader's
+        /// command stream.
         pub fn add_checksum(
             &mut self,
             file: &str,

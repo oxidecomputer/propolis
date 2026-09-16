@@ -93,10 +93,15 @@ impl AdminCmd {
                 })
             }
             bits::ADMIN_OPC_GET_LOG_PAGE => {
+                // Convert from 0's based dword.
+                //
+                // As of NVMe 1.0e this field is 12 bits, but beware that in
+                // later versions the Log Page Attributes' Extended Data Support
+                // bit extends this.
+                let log_dwords = ((raw.cdw10 >> 16) & 0xFFF) + 1;
                 AdminCmd::GetLogPage(GetLogPageCmd {
                     nsid: raw.nsid,
-                    // Convert from 0's based dword
-                    len: (((raw.cdw10 & 0xFFF) >> 16) + 1) * 4,
+                    len: log_dwords * 4,
                     log_page_ident: LogPageIdent::from(raw.cdw10 as u8),
                     prp1: raw.prp1,
                     prp2: raw.prp2,

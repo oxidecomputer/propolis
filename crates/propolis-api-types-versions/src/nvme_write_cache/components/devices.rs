@@ -9,7 +9,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// A disk that presents an NVMe interface to the guest.
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct NvmeDisk {
     /// The name of the disk's backend component.
