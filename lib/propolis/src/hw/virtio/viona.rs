@@ -1883,8 +1883,13 @@ use bits::*;
 pub(crate) fn check_api_version() -> Result<(), crate::api_version::Error> {
     let vers = viona_api::api_version()?;
 
-    // when setting up a vNIC, Propolis will unconditionally do the SET_PAIRS
+    // When setting up a vNIC, Propolis will unconditionally do the SET_PAIRS
     // ioctl, which requires V6.
+    //
+    // The virtio-nic implementation here is still correct on a V7 viona, where
+    // we use promiscuity exclusively to control what traffic is filtered from
+    // guests. A future change to Propolis will use the new-in-V7 filter ioctls
+    // at which point we will change "want" to match that new baseline.
     let want = viona_api::ApiVersion::V6 as u32;
 
     if vers < want {
