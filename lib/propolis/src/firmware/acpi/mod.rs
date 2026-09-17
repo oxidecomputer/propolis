@@ -19,14 +19,18 @@
 //! <https://github.com/oxidecomputer/edk2/tree/propolis/edk2-stable202105/OvmfPkg/AcpiTables>
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
+use crate::common::RWOp;
 use crate::hw::chipset::i440fx;
+use crate::pio::{PioBus, PioFn};
 
 pub mod aml;
 pub mod dsdt;
 pub mod facs;
 pub mod fadt;
 pub mod file_sink;
+pub mod gpe;
 pub mod madt;
 pub mod rsdp;
 pub mod ssdt_edk2;
@@ -89,3 +93,22 @@ const LOCAL_APIC_LEN: u32 = 0x10_0000;
 // information.
 const GPE0_BLK_ADDR: u16 = 0xafe0;
 const GPE0_BLK_LEN: u8 = 4;
+
+pub struct Acpi {
+    pub gpe: gpe::Gpe,
+}
+
+impl Acpi {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self { gpe: gpe::Gpe::new() })
+    }
+
+    pub fn attach(self: &Arc<Self>, pio: &PioBus) {
+        let this = Arc::clone(self);
+        let piofn =
+            Arc::new(move |port: u16, rwo: RWOp| this.gpe.pio_rw(port, rwo))
+                as Arc<PioFn>;
+        pio.register(GPE0_BLK_ADDR, GPE0_BLK_LEN as u16, Arc::clone(&piofn))
+            .unwrap();
+    }
+}

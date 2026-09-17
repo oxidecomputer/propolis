@@ -1237,10 +1237,13 @@ fn setup_instance(
         chipset_hb.pci_attach(bdf, pcidev, chipset_lpc.route_lintr(bdf));
     };
 
+    let acpi = acpi::Acpi::new();
+
     chipset_pci_attach(i440fx::DEFAULT_HB_BDF, chipset_hb.clone());
     chipset_pci_attach(i440fx::DEFAULT_LPC_BDF, chipset_lpc.clone());
     chipset_pci_attach(i440fx::DEFAULT_PM_BDF, chipset_pm.clone());
 
+    acpi.attach(&machine.bus_pio);
     chipset_hb.attach(machine);
     chipset_lpc.attach(&machine.bus_pio);
     chipset_pm.attach(&machine.bus_pio);
