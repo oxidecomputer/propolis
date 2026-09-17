@@ -70,15 +70,31 @@ use crate::{
 pub mod bhyve;
 pub mod hyperv;
 
+// This is a freestanding function, rather than part of `trait Enlightenment`
+// below, for boring Rust reasons. If you're inclined to try moving it, I
+// commend you! It sure feels out of place here. Below is the "why", and how it
+// ended up here:
+//
+// In some cases (propolis-standalone) we get an
+// `Arc<dyn Enlightenment>` well before registering all `Lifecycle`s in a VM. In
+// that case there is no concrete `T: Enlightenment` for even an `Arc<Self>`
+// receiver to fit. So we take `Arc<dyn Enlightenment>` specifically, as in all
+// cases at some point the callers setting up enlightenments will unify the
+// impls into some singular `dyn Enlightenment` for actual operations.
+//
+// Then, if you try to make this an associated function taking
+// `Arc<dyn Enlightenment>`, you realize this is "non-dispatchable" as
+// `Arc<dyn Enlightenment>` which is *not* `Arc<Self>` aka a concrete impl of
+// Enlightenment. Being non-dispatchable, it would require `Self: Sized`, but we
+// don't even have a `Self` to work with here. So this function would make
+// `Enlightenment` not dyn-compatible and defeat every use - and the point of! -
+// this trait..
+pub fn as_lifecycle(me: Arc<dyn Enlightenment>) -> Arc<dyn Lifecycle> {
+    me
+}
+
 /// Functionality provided by all enlightenment interfaces.
 pub trait Enlightenment: Lifecycle + Send + Sync {
-    fn as_lifecycle(self: Arc<Self>) -> Arc<dyn Lifecycle>
-    where
-        Self: Sized,
-    {
-        self
-    }
-
     /// Attaches this enlightenment stack to a VM.
     ///
     /// Users of an enlightenment stack must guarantee that this function is
