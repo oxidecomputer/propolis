@@ -1566,28 +1566,36 @@ fn setup_instance(
     guard.inventory.register(&fwcfg);
     guard.inventory.register(&ramfb);
 
+    let mut base_profile = match cpuid_profile {
+        Some(profile) => profile,
+        None => {
+            // If the config has provided no CPUID configuration, collect the
+            // default leaves from a bhyve guest and use that. We must collect
+            // this now, because we'll add hypervisor interface leaves and
+            // specialize for each vCPU below.
+            cpuid_utils::host::query_complete(
+                cpuid_utils::host::CpuidSource::BhyveDefault,
+            )
+            .context("failed to query host cpuid")?
+        }
+    };
+    machine
+        .guest_hv_interface
+        .add_cpuid(&mut base_profile)
+        .context("failed to add hypervisor cpuid leaves")?;
+
     for vcpu in machine.vcpus.iter() {
-        let mut vcpu_profile = if let Some(profile) = cpuid_profile.as_ref() {
-            propolis::cpuid::Specializer::new()
-                .with_vcpu_count(
-                    std::num::NonZeroU8::new(config.main.cpus).unwrap(),
-                    true,
-                )
-                .with_vcpuid(vcpu.id)
-                .with_cache_topo()
-                .clear_cpu_topo(cpuid::TopoKind::iter())
-                .with_cpu_topo(cpuid::TopoKind::supported())
-                .execute(profile.clone())
-                .context("failed to specialize cpuid profile")?
-        } else {
-            // An empty set will instruct the kernel to use the legacy
-            // fallback behavior
-            cpuid_utils::CpuidSet::new_host()
-        };
-        machine
-            .guest_hv_interface
-            .add_cpuid(&mut vcpu_profile)
-            .context("failed to add hypervisor cpuid leaves")?;
+        let vcpu_profile = propolis::cpuid::Specializer::new()
+            .with_vcpu_count(
+                std::num::NonZeroU8::new(config.main.cpus).unwrap(),
+                true,
+            )
+            .with_vcpuid(vcpu.id)
+            .with_cache_topo()
+            .clear_cpu_topo(cpuid::TopoKind::iter())
+            .with_cpu_topo(cpuid::TopoKind::supported())
+            .execute(base_profile.clone())
+            .context("failed to specialize cpuid profile")?;
 
         vcpu.set_cpuid(vcpu_profile)?;
         vcpu.set_default_capabs()?;
