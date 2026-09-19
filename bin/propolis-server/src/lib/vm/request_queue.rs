@@ -21,6 +21,8 @@ use slog::{info, Logger};
 use thiserror::Error;
 use uuid::Uuid;
 
+use crate::vm::SoftShutdownFate;
+
 /// Wraps a [`dropshot::WebsocketConnection`] for inclusion in an
 /// [`ExternalRequest`].
 //
@@ -60,6 +62,12 @@ pub(crate) enum StateChangeRequest {
     /// graceful reboot and does not coordinate with guest software.
     Reboot,
 
+    /// Sends an ACPI shutdown signal to the guest, and then either stops
+    /// or reboots the instance (depending on `fate`) once the guest halts
+    /// its CPU. If this does not occur within the `timeout`, the guest is
+    /// ungracefully stopped/rebooted.
+    ACPIShutdown { fate: SoftShutdownFate, timeout: std::time::Duration },
+
     /// Halts the VM. Note that this is not a graceful shutdown and does not
     /// coordinate with guest software.
     Stop,
@@ -74,6 +82,11 @@ impl std::fmt::Debug for StateChangeRequest {
                 .field("migration_id", migration_id)
                 .finish(),
             Self::Reboot => write!(f, "Reboot"),
+            Self::ACPIShutdown { fate, timeout } => f
+                .debug_struct("ACPIShutdown")
+                .field("fate", fate)
+                .field("timeout", timeout)
+                .finish(),
             Self::Stop => write!(f, "Stop"),
         }
     }
@@ -129,6 +142,13 @@ impl ExternalRequest {
         Self::State(StateChangeRequest::Start)
     }
 
+    pub const fn acpi_shutdown(
+        fate: SoftShutdownFate,
+        timeout: std::time::Duration,
+    ) -> Self {
+        Self::State(StateChangeRequest::ACPIShutdown { fate, timeout })
+    }
+
     /// Constructs a VM stop request.
     pub const fn stop() -> Self {
         Self::State(StateChangeRequest::Stop)
@@ -166,7 +186,16 @@ impl ExternalRequest {
     }
 
     fn is_stop(&self) -> bool {
-        matches!(self, Self::State(StateChangeRequest::Stop))
+        matches!(
+            self,
+            Self::State(
+                StateChangeRequest::Stop
+                    | StateChangeRequest::ACPIShutdown {
+                        fate: SoftShutdownFate::Stop,
+                        ..
+                    }
+            )
+        )
     }
 }
 
@@ -197,6 +226,9 @@ pub(crate) enum RequestDeniedReason {
 
     #[error("Instance failed to start or halted due to a failure")]
     InstanceFailed,
+
+    #[error("Cannot supply shutdown timeout to a Run request")]
+    TimeoutOnRun,
 }
 
 /// A kind of request that can be popped from the queue and then completed.
@@ -270,6 +302,10 @@ pub(super) struct ExternalRequestQueue {
     /// completed by the state driver.
     awaiting_stop: bool,
 
+    /// True if this queue has enqueued an ACPI shutdown request that has not
+    /// been completed by the state driver.
+    awaiting_shutdown: bool,
+
     /// The queue's logger.
     log: Logger,
 }
@@ -297,6 +333,7 @@ impl ExternalRequestQueue {
             awaiting_reboot: false,
             awaiting_migration_out: false,
             awaiting_stop: false,
+            awaiting_shutdown: false,
             log,
         }
     }
@@ -367,12 +404,20 @@ impl ExternalRequestQueue {
                 assert!(!self.awaiting_migration_out);
                 self.awaiting_migration_out = true;
             }
+            ExternalRequest::State(StateChangeRequest::ACPIShutdown {
+                ..
+            }) => {
+                assert!(!self.awaiting_shutdown);
+                self.awaiting_shutdown = true;
+            }
             ExternalRequest::State(StateChangeRequest::Reboot) => {
                 assert!(!self.awaiting_reboot);
+                self.awaiting_shutdown = false;
                 self.awaiting_reboot = true;
             }
             ExternalRequest::State(StateChangeRequest::Stop) => {
                 assert!(!self.awaiting_stop);
+                self.awaiting_shutdown = false;
                 self.awaiting_stop = true;
             }
             ExternalRequest::Component(_) => {}
@@ -416,7 +461,7 @@ impl ExternalRequestQueue {
                 // Interpret start requests as requests to reach the Running
                 // state.
                 ExternalRequest::State(StateChangeRequest::Start) => {
-                    if self.awaiting_stop {
+                    if self.awaiting_stop || self.awaiting_shutdown {
                         return Err(RequestDeniedReason::HaltPending);
                     } else if self.state != QueueState::NotStarted {
                         return Ok(false);
@@ -433,7 +478,7 @@ impl ExternalRequestQueue {
                         return Err(
                             RequestDeniedReason::AlreadyMigrationSource,
                         );
-                    } else if self.awaiting_stop {
+                    } else if self.awaiting_stop || self.awaiting_shutdown {
                         return Err(RequestDeniedReason::HaltPending);
                     } else if self.state == QueueState::NotStarted {
                         return Err(RequestDeniedReason::InstanceNotActive);
@@ -460,6 +505,37 @@ impl ExternalRequestQueue {
                         return Ok(false);
                     }
                 }
+
+                // Reject ACPI shutdown requests if the instance is not in a
+                // state where it could reasonably be expected to respond to
+                // a power button press (that is to say, Running), and also
+                // ignore further shutdown requests if one is already happening.
+                ExternalRequest::State(StateChangeRequest::ACPIShutdown {
+                    ..
+                }) => match self.state {
+                    QueueState::StartPending => {
+                        return Err(RequestDeniedReason::StartInProgress)
+                    }
+                    QueueState::NotStarted => {
+                        return Err(RequestDeniedReason::InstanceNotActive)
+                    }
+                    QueueState::Stopped => {
+                        return Err(RequestDeniedReason::Halted)
+                    }
+                    QueueState::Failed => {
+                        return Err(RequestDeniedReason::InstanceFailed)
+                    }
+                    QueueState::MigratedOut => {
+                        return Err(RequestDeniedReason::MigratedOut)
+                    }
+                    QueueState::Running => {
+                        if self.awaiting_stop || self.awaiting_reboot {
+                            return Err(RequestDeniedReason::HaltPending);
+                        } else if self.awaiting_shutdown {
+                            return Ok(false);
+                        }
+                    }
+                },
 
                 // Always queue requests to stop a VM unless one is already
                 // present.
@@ -513,7 +589,8 @@ impl ExternalRequestQueue {
             }
             CompletedRequest::Reboot => {
                 assert_eq!(self.state, QueueState::Running);
-                assert!(self.awaiting_reboot);
+                // (awaiting_reboot not asserted; would risk data race when a
+                // just-in-timely halt coincides with ACPI reset timeout task)
                 self.awaiting_reboot = false;
             }
             CompletedRequest::MigrationOut { succeeded } => {
@@ -538,6 +615,21 @@ impl ExternalRequestQueue {
     pub(super) fn notify_stopped(&mut self) {
         info!(&self.log, "queue notified that VM has stopped");
         self.state = QueueState::Stopped;
+    }
+
+    /// Update the queue's `awaiting_shutdown` flag when the guest has an ACPI
+    /// shutdown request outstanding and a CPU-halting guest event occurs
+    pub(super) fn notify_shutdown(&mut self) {
+        info!(&self.log, "queue notified that VM guest has shut down");
+        self.awaiting_shutdown = false;
+    }
+
+    /// Update the queue's `awaiting_reboot` flag when the guest has rebooted for reasons
+    /// other than an explicit external hard reboot request (i.e. when an ACPI
+    /// reboot was in progress as a CPU-halting guest event occurred)
+    pub(super) fn notify_rebooted(&mut self) {
+        info!(&self.log, "queue notified that VM has rebooted");
+        self.awaiting_reboot = false;
     }
 }
 
@@ -583,6 +675,8 @@ impl Drop for ExternalRequestQueue {
 
 #[cfg(test)]
 mod test {
+    use std::time::Duration;
+
     use super::*;
 
     use proptest::prelude::*;
@@ -629,6 +723,34 @@ mod test {
             assert!(
                 matches!(self, Self::State(StateChangeRequest::Reboot)),
                 "expected reboot request, got {self:?}"
+            );
+        }
+
+        #[track_caller]
+        fn assert_acpi_shutdown(&self) {
+            assert!(
+                matches!(
+                    self,
+                    Self::State(StateChangeRequest::ACPIShutdown {
+                        fate: SoftShutdownFate::Stop,
+                        ..
+                    })
+                ),
+                "expected ACPI shutdown request, got {self:?}"
+            );
+        }
+
+        #[track_caller]
+        fn assert_acpi_reboot(&self) {
+            assert!(
+                matches!(
+                    self,
+                    Self::State(StateChangeRequest::ACPIShutdown {
+                        fate: SoftShutdownFate::Reboot,
+                        ..
+                    })
+                ),
+                "expected ACPI reboot request, got {self:?}"
             );
         }
 
@@ -785,6 +907,198 @@ mod test {
         queue.pop_front().unwrap().assert_reboot();
         queue.notify_request_completed(CompletedRequest::Reboot);
         assert!(queue.try_queue(ExternalRequest::reboot()).is_err());
+    }
+
+    #[test]
+    fn acpi_shutdowns_ignored_after_first() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
+        queue.notify_request_completed(CompletedRequest::Start {
+            succeeded: true,
+        });
+
+        assert!(queue.is_empty());
+        // enqueue an ACPI shutdown request with intent to stop
+        assert!(queue
+            .try_queue(ExternalRequest::acpi_shutdown(
+                SoftShutdownFate::Stop,
+                Duration::from_secs(600)
+            ))
+            .is_ok());
+
+        // all these further ACPI shutdown requests should be ignored
+        // (with intent sent to reboot, just so we can distinguish in this test
+        // that only the first request was enqueued)
+        for _ in 0..5 {
+            assert!(queue
+                .try_queue(ExternalRequest::acpi_shutdown(
+                    SoftShutdownFate::Reboot,
+                    Duration::from_secs(600)
+                ))
+                .is_ok());
+        }
+        queue.pop_front().unwrap().assert_acpi_shutdown();
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn acpi_shutdown_overridden_by_hard_stop_request() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
+        queue.notify_request_completed(CompletedRequest::Start {
+            succeeded: true,
+        });
+
+        assert!(queue.is_empty());
+        // enqueue an ACPI shutdown request with intent to stop
+        assert!(queue
+            .try_queue(ExternalRequest::acpi_shutdown(
+                SoftShutdownFate::Stop,
+                Duration::from_secs(600)
+            ))
+            .is_ok());
+        // enqueue a hard stop
+        assert!(queue.try_queue(ExternalRequest::stop()).is_ok());
+
+        queue.pop_front().unwrap().assert_acpi_shutdown();
+        queue.pop_front().unwrap().assert_stop();
+
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn acpi_reboot_overridden_by_hard_stop_request() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
+        queue.notify_request_completed(CompletedRequest::Start {
+            succeeded: true,
+        });
+
+        assert!(queue.is_empty());
+        // enqueue an ACPI shutdown request with intent to reboot
+        assert!(queue
+            .try_queue(ExternalRequest::acpi_shutdown(
+                SoftShutdownFate::Reboot,
+                Duration::from_secs(600)
+            ))
+            .is_ok());
+        // enqueue a hard stop
+        assert!(queue.try_queue(ExternalRequest::stop()).is_ok());
+
+        queue.pop_front().unwrap().assert_acpi_reboot();
+        queue.pop_front().unwrap().assert_stop();
+
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn acpi_shutdown_overridden_by_hard_reboot_request() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
+        queue.notify_request_completed(CompletedRequest::Start {
+            succeeded: true,
+        });
+
+        assert!(queue.is_empty());
+        // enqueue an ACPI shutdown request with intent to reboot
+        assert!(queue
+            .try_queue(ExternalRequest::acpi_shutdown(
+                SoftShutdownFate::Stop,
+                Duration::from_secs(600)
+            ))
+            .is_ok());
+        // enqueue a hard stop
+        assert!(queue.try_queue(ExternalRequest::reboot()).is_ok());
+
+        queue.pop_front().unwrap().assert_acpi_shutdown();
+        queue.pop_front().unwrap().assert_reboot();
+
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn acpi_shutdown_requests_ignored_after_vm_failure() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
+
+        queue.notify_request_completed(CompletedRequest::Start {
+            succeeded: false,
+        });
+
+        assert!(queue
+            .try_queue(ExternalRequest::acpi_shutdown(
+                SoftShutdownFate::Stop,
+                Duration::from_secs(600)
+            ))
+            .is_ok());
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn acpi_shutdown_requests_disallowed_while_stopped() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
+
+        queue.notify_request_completed(CompletedRequest::Start {
+            succeeded: true,
+        });
+
+        assert!(queue.try_queue(ExternalRequest::stop()).is_ok());
+
+        // attempts to shut down while processing a hard stop are an error
+        assert!(queue
+            .try_queue(ExternalRequest::acpi_shutdown(
+                SoftShutdownFate::Stop,
+                Duration::from_secs(600)
+            ))
+            .is_err());
+
+        queue.pop_front().unwrap().assert_stop();
+        queue.notify_request_completed(CompletedRequest::Stop);
+        assert!(queue.is_empty());
+
+        // further attempts to shut down while stopped are simply ignored
+        assert!(queue
+            .try_queue(ExternalRequest::acpi_shutdown(
+                SoftShutdownFate::Stop,
+                Duration::from_secs(600)
+            ))
+            .is_ok());
+
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn acpi_shutdown_requests_disallowed_while_rebooting() {
+        let mut queue =
+            ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
+
+        queue.notify_request_completed(CompletedRequest::Start {
+            succeeded: true,
+        });
+
+        assert!(queue.try_queue(ExternalRequest::reboot()).is_ok());
+        assert!(queue
+            .try_queue(ExternalRequest::acpi_shutdown(
+                SoftShutdownFate::Stop,
+                Duration::from_secs(600)
+            ))
+            .is_err());
+
+        queue.pop_front().unwrap().assert_reboot();
+        queue.notify_request_completed(CompletedRequest::Reboot);
+
+        // allowed again after reboot is complete
+        assert!(queue
+            .try_queue(ExternalRequest::acpi_shutdown(
+                SoftShutdownFate::Stop,
+                Duration::from_secs(600)
+            ))
+            .is_ok());
+
+        queue.pop_front().unwrap().assert_acpi_shutdown();
+
+        assert!(queue.is_empty());
     }
 
     #[test]

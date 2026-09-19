@@ -5,15 +5,17 @@
 //! Implements a wrapper around an active VM.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use propolis_api_types::instance::{
-    InstanceProperties, InstanceStateRequested,
+    InstanceProperties, InstanceStateChange, InstanceStateRequested,
 };
 use propolis_api_types::instance_spec::SpecKey;
 use slog::info;
 use uuid::Uuid;
 
-use crate::vm::request_queue::ExternalRequest;
+use crate::vm::request_queue::{ExternalRequest, RequestDeniedReason};
+use crate::vm::SoftShutdownFate;
 
 use super::{
     objects::VmObjects, services::VmServices, CrucibleReplaceResultTx,
@@ -57,17 +59,31 @@ impl ActiveVm {
     /// Pushes a state change request to the VM's state change queue.
     pub(crate) fn put_state(
         &self,
-        requested: InstanceStateRequested,
+        requested: InstanceStateChange,
     ) -> Result<(), VmError> {
         info!(self.log, "requested state via API";
-              "state" => ?requested);
+              "state" => ?requested.state,
+              "timeout" => ?requested.acpi_timeout_secs);
 
-        self.state_driver_queue
-            .queue_external_request(match requested {
+        let ext_req = if let Some(secs) = requested.acpi_timeout_secs {
+            let timeout = Duration::from_secs(secs);
+            let fate = match requested.state {
+                InstanceStateRequested::Run => {
+                    return Err(RequestDeniedReason::TimeoutOnRun.into());
+                }
+                InstanceStateRequested::Stop => SoftShutdownFate::Stop,
+                InstanceStateRequested::Reboot => SoftShutdownFate::Reboot,
+            };
+            ExternalRequest::acpi_shutdown(fate, timeout)
+        } else {
+            match requested.state {
                 InstanceStateRequested::Run => ExternalRequest::start(),
                 InstanceStateRequested::Stop => ExternalRequest::stop(),
                 InstanceStateRequested::Reboot => ExternalRequest::reboot(),
-            })
+            }
+        };
+        self.state_driver_queue
+            .queue_external_request(ext_req)
             .map_err(Into::into)
     }
 
