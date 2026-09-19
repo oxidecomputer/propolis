@@ -7,7 +7,7 @@
       "url": "https://oxide.computer",
       "email": "api@oxide.computer"
     },
-    "version": "6.0.0"
+    "version": "7.0.0"
   },
   "paths": {
     "/instance": {
@@ -399,7 +399,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/InstanceStateRequested"
+                "$ref": "#/components/schemas/InstanceStateChange"
               }
             }
           },
@@ -1652,6 +1652,30 @@
           "Repairing",
           "Failed",
           "Destroyed"
+        ]
+      },
+      "InstanceStateChange": {
+        "description": "Requested state change of an Instance.",
+        "type": "object",
+        "properties": {
+          "acpi_timeout_secs": {
+            "nullable": true,
+            "description": "The number of seconds to wait after sending ACPI `PWRBTN_STS` before forcing stop/reset. (If omitted, stop/reset are forced immediately, and the ACPI signal is not sent.)",
+            "type": "integer",
+            "format": "uint64",
+            "minimum": 0
+          },
+          "state": {
+            "description": "The desired state for the Instance.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/InstanceStateRequested"
+              }
+            ]
+          }
+        },
+        "required": [
+          "state"
         ]
       },
       "InstanceStateMonitorRequest": {
