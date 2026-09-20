@@ -3,12 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use crate::accessors::MemAccessor;
-use crate::block::{self, Backend, BackendOpts, InMemoryBackend};
+use crate::block::{self, Backend, BackendOpts, Device, InMemoryBackend};
 use crate::hw::pci::{test::Scaffold, Bus, BusLocation, Endpoint};
 use crate::migrate::{
     MigrateCtx, MigrateMulti, PayloadOffer, PayloadOffers, PayloadOutputs,
 };
-use std::collection::HashMap;
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -26,6 +26,7 @@ use crate::lifecycle::Lifecycle;
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
 use slog::{Discard, Logger};
+use tokio::runtime;
 
 const MB: usize = 1024 * 1024;
 
@@ -76,6 +77,153 @@ struct FuzzCtx {
     available_sqe_idx: u16,
 }
 
+struct SqState {
+    size: u16,
+    next_id: u16,
+    base_addr: GuestAddr,
+    // TODO: phase tag on sqe too? I forget
+
+    avail_ids: Vec<u16>,
+    /// All I/Os which have been written to this submission queue and not
+    /// yet validated by the test driver yet.
+    ///
+    /// An I/O may have been written without ringing the submission queue's
+    /// doorbell, so the device may not even be aware of it yet. Conversely,
+    /// the I/O may have been completed by the device and that completion
+    /// even observed by the test driver, without removing the TestIO from
+    /// this map.
+    ///
+    /// I/Os are only "validated" at a WaitIO for that I/O, or at device
+    /// reset.
+    outstanding_ios: HashMap<u16, TestIO>,
+}
+
+impl SqState {
+    fn new(base_addr: GuestAddr) -> Self {
+        let mut avail_ids = Vec::new();
+        // We don't include 0xffff here in deference to NVMe Base
+        // Specification (at least 2.0e), which says:
+        //
+        // > The value of FFFFh should not be used as the Error Information
+        // > log page (refer to section 5.16.1.2) uses this value to
+        // > indicate an error is not associated with a particular command.
+        for i in 0..=0xfffe {
+            avail_ids.push(i);
+        }
+        Self {
+            size: FuzzCtx::IO_QUEUE_ENTRIES,
+            next_id: 0,
+            base_addr,
+            avail_ids,
+            outstanding_ios: HashMap::new()
+        }
+    }
+
+    fn write_sqe(&mut self, sqe: SubmissionQueueEntry, acc_mem: &MemAccessor) {
+        let sqe_size = std::mem::size_of::<SubmissionQueueEntry>();
+        let next_addr = GuestAddr(self.base_addr.0 + self.next_id as u64 * sqe_size as u64);
+        eprintln!("writing sqe to sq slot {}, addr {:x}", self.next_id, next_addr.0);
+
+        acc_mem.access().unwrap().write(
+            next_addr,
+            &sqe,
+        );
+
+        self.next_id += 1;
+        if self.next_id == self.size {
+            self.next_id = 0;
+        }
+    }
+
+    fn curr_idx(&self) -> u16 {
+        if self.next_id == 0 {
+            0xffff
+        } else {
+            self.next_id - 1
+        }
+    }
+
+    fn full(&self) -> bool {
+        self.outstanding_ios.len() as u16 == self.size
+    }
+
+    fn empty(&self) -> bool {
+        self.outstanding_ios.len() as u16 == 0
+    }
+
+    fn acquire_cid(&mut self) -> Option<u16> {
+        self.avail_ids.pop()
+    }
+    fn outstanding_cid(&self) -> Option<u16> {
+        self.outstanding_ios.keys().next().copied()
+    }
+    fn release_cid(&mut self, id: u16) {
+        self.outstanding_ios.remove(&id);
+    }
+}
+
+struct CqState {
+    base_addr: GuestAddr,
+    size: u16,
+    /// The status of the Phase Tag to be seen in new completions written to
+    /// this queue.
+    phase: bool,
+    /// The last index we saw a completion on this completion queue.
+    next_id: u16,
+}
+
+impl CqState {
+    fn new(base_addr: GuestAddr) -> Self {
+        Self {
+            base_addr,
+            size: FuzzCtx::IO_QUEUE_ENTRIES,
+            // > When ..  an I/O Completion Queue for the first time after
+            // > the Create I/O Completion Queue command completed for that
+            // > queue, the Phase Tag bit for that completion queue entry is
+            // > set to 1
+            phase: true,
+            next_id: 0,
+        }
+    }
+
+    fn poll_cqe(&mut self, acc_mem: &MemAccessor) -> Option<CompletionQueueEntry> {
+        let cqe_size = std::mem::size_of::<CompletionQueueEntry>();
+        let next_addr = GuestAddr(self.base_addr.0 + self.next_id as u64 * cqe_size as u64);
+        eprintln!("reading cqe from cq slot {}, addr {:x}", self.next_id, next_addr.0);
+
+        let cqe = acc_mem.access().unwrap().read::<CompletionQueueEntry>(
+            next_addr,
+        ).expect("can read cqe address");
+
+        let cqe_phase = cqe.status_phase & 1 == 1;
+        eprintln!("got cqe: {:?}", *cqe);
+        if cqe_phase != self.phase {
+            return None;
+        }
+
+        self.next_id += 1;
+        if self.next_id == self.size {
+            self.next_id = 0;
+            self.phase = !self.phase;
+        }
+
+        Some(*cqe)
+    }
+}
+
+struct TestIO {
+    /// The operation which resulted in this I/O
+    op: TestOperation,
+    /// The test device's corresponding CQE, to compare against the
+    /// requested operation and device state.
+    ///
+    /// If this is `None`, the test driver hasn't seen a completion from the
+    /// device yet. If this is `Some`, the test driver saw a completion and
+    /// stashed it here, but a specific WaitIO for this TestIO hasn't been
+    /// seen yet.
+    completion: Option<CompletionQueueEntry>,
+}
+
 impl FuzzCtx {
     /// Arbitrary 20-byte serial.
     const TEST_SERIAL: &'static [u8; 20] = b"11112222333344445555";
@@ -103,6 +251,9 @@ impl FuzzCtx {
     const IO_QUEUE_SIZE: usize =
         Self::SQE_SIZE * (Self::IO_QUEUE_ENTRIES as usize);
 
+    const IO_MEM_BASE: usize = 1 * MB;
+    const IO_MEM_END: usize = 1 * MB + 512 * 1024;
+
     fn new(log: &Logger) -> Self {
         let mut scaffold = Scaffold::new();
 
@@ -112,7 +263,7 @@ impl FuzzCtx {
         // Test RAM starts at 1 MB and is 1 MB large.
         map.add_test_mem("test-ram".to_string(), MB, MB)
             .expect("can create test memory region");
-        scaffold.acc_mem = MemAccessor::new(map.memctx());
+        scaffold.acc_mem = map.finalize();
 
         let bus = scaffold.create_bus();
 
@@ -133,11 +284,11 @@ impl FuzzCtx {
         )
         .unwrap();
 
-        let nvme = PciNvme::create(Self::TEST_SERIAL, None, log.clone());
+        let nvme = PciNvme::create(Self::TEST_SERIAL, None, true, log.clone());
 
         block::attach(
-            Arc::clone(&nvme) as Arc<dyn block::Device>,
-            Arc::clone(&backend) as Arc<dyn Backend>,
+            nvme.attachment(),
+            backend.attachment(),
         )
         .unwrap();
         bus.attach(
@@ -145,6 +296,11 @@ impl FuzzCtx {
             Arc::clone(&nvme) as Arc<dyn Endpoint>,
             None,
         );
+
+        nvme.start().unwrap();
+        use tokio::runtime;
+        let rt = runtime::Builder::new_current_thread().build().unwrap();
+        rt.block_on(&mut (backend.clone() as Arc<dyn Backend>).start()).unwrap();
 
         Self {
             nvme,
@@ -249,6 +405,14 @@ impl FuzzCtx {
             &mut WriteOp::from_buf(0, &cfg),
         )?;
 
+        use crate::hw::nvme::ReadOp;
+        use crate::hw::nvme::CtrlrReg;
+        let mut buf = [0; 4];
+        let mut read_op = ReadOp::from_buf(0, &mut buf);
+        self.nvme.reg_ctrl_read(&CtrlrReg::CtrlrStatus, &mut read_op)?;
+        eprintln!("{:x?}", buf);
+        assert!(buf[0] & 2 == 0);
+
         self.available_cid = 0;
         self.available_sqe_idx = 0;
 
@@ -330,7 +494,62 @@ impl FuzzCtx {
         self.drive_admin_sqe(delete_submission_queue)
     }
 
-    fn poll_cq(&mut self, cqid: u16) -> Result<Vec<CompletionQueueEntry>, NvmeError> {
+    fn doorbell(&mut self, qid: u16, sq_idx: u16) -> Result<(), NvmeError> {
+        let doorbell_addr = 0x1000 + ((qid as usize) << 3);
+        eprintln!("doorbell! to {:x}, val={}", qid, sq_idx);
+        let res = self.nvme.reg_ctrl_write(
+            &CtrlrReg::IOQueueDoorBells,
+            &mut WriteOp::from_buf(doorbell_addr, &(sq_idx as u32 + 1).to_le_bytes()),
+        );
+        res
+    }
+
+    fn submit_read(&mut self, sq: &mut SqState, lba: u64, memptr: usize, len: u64, cid: u16) -> Result<(), NvmeError> {
+        let lba_lo = lba as u32;
+        let lba_hi = (lba >> 32) as u32;
+        let nlb = len / 4096;
+        let cdw0 = (bits::NVM_OPC_READ as u32) | ((cid as u32) << 16);
+        let sqe = SubmissionQueueEntry {
+            cdw0,
+            cdw10: lba_lo,
+            cdw11: lba_hi,
+            cdw12: nlb as u32 - 1,
+            prp1: memptr as u64,
+            prp2: 0,
+            ..Default::default()
+        };
+
+        sq.write_sqe(sqe, &self.scaffold.acc_mem);
+
+        Ok(())
+    }
+
+    fn submit_write(&mut self, sq: &mut SqState, lba: u64, memptr: usize, len: u64, cid: u16) -> Result<(), NvmeError> {
+        let lba_lo = lba as u32;
+        let lba_hi = (lba >> 32) as u32;
+        let nlb = len / 4096;
+        let cdw0 = (bits::NVM_OPC_WRITE as u32) | ((cid as u32) << 16);
+        let sqe = SubmissionQueueEntry {
+            cdw0,
+            cdw10: lba_lo,
+            cdw11: lba_hi,
+            cdw12: nlb as u32 - 1,
+            prp1: memptr as u64,
+            prp2: 0,
+            ..Default::default()
+        };
+
+        sq.write_sqe(sqe, &self.scaffold.acc_mem);
+
+        Ok(())
+    }
+
+    fn poll_cq(&mut self, cq: &mut CqState) -> Result<Vec<CompletionQueueEntry>, NvmeError> {
+        let mut cqes = Vec::new();
+        if let Some(cqe) = cq.poll_cqe(&self.scaffold.acc_mem) {
+            cqes.push(cqe)
+        }
+        Ok(cqes)
     }
 
     /// Reset this fuzzing context to the start of the state machine: a
@@ -349,6 +568,10 @@ impl FuzzCtx {
     /// imported. This is consistent with practical uses of devices, where
     /// vCPUs are stopped while migrating out.
     fn nvme_migrate(&mut self) {
+        self.nvme.pause();
+        let rt = runtime::Builder::new_current_thread().build().unwrap();
+        rt.block_on(&mut (self.backend.clone() as Arc<dyn Backend>).stop());
+
         let mut payload_outputs = PayloadOutputs::new();
         let acc_mem = self.scaffold.acc_mem.access().unwrap();
         let migrate_ctx = MigrateCtx { mem: &acc_mem };
@@ -390,17 +613,17 @@ impl FuzzCtx {
             PayloadOffers::new(offer_iter)
         };
 
-        self.nvme = PciNvme::create(Self::TEST_SERIAL, None, self.log.clone());
+        self.nvme = PciNvme::create(Self::TEST_SERIAL, None, true, self.log.clone());
 
         // TODO: we don't have a way to detach the exported NVMe device from
         // the bus, so we'll replace the whole bus and attach the new NVMe
         // device to the new bus.
         self.bus = self.scaffold.create_bus();
 
-        self.backend.attachment().detach().unwrap();
+        self.backend.attachment().detach();
         block::attach(
-            Arc::clone(&self.nvme) as Arc<dyn block::Device>,
-            Arc::clone(&self.backend) as Arc<dyn Backend>,
+            self.nvme.attachment(),
+            self.backend.attachment(),
         )
         .unwrap();
 
@@ -413,6 +636,10 @@ impl FuzzCtx {
         self.nvme
             .import(&mut payload_offers, &migrate_ctx)
             .expect("can import");
+
+        self.nvme.start().unwrap();
+        let rt = runtime::Builder::new_current_thread().build().unwrap();
+        rt.block_on(&mut (self.backend.clone() as Arc<dyn Backend>).start()).unwrap();
     }
 }
 
@@ -473,8 +700,9 @@ enum TestOperation {
     CreateCQ(u16),
     DeleteSQ(u16),
     DeleteCQ(u16),
-    SubmitRead { queue: u16, lba: u64, memptr: u64, size: u64, fresh_cid: bool },
-    SubmitWrite { queue: u16, lba: u64, memptr: u64, size: u64, fresh_cid: bool },
+    Doorbell(u16),
+    SubmitRead { queue: u16, lba: u64, memptr: usize, size: u64, fresh_cid: bool },
+    SubmitWrite { queue: u16, lba: u64, memptr: usize, size: u64, fresh_cid: bool },
     WaitIO { queue: u16, cid: u16 },
 }
 
@@ -484,89 +712,11 @@ struct TestAction {
     result: Expected,
 }
 
-/// The bitmap of outstanding requests on an NVMe submission queue.
-///
-/// Each bit corresponds to possible Command IDs used in SQEs for submitted
-/// operations, hence the map is sized for at least 65536 bits.
-//
-// `GenericBitmap` is parameterized on a number of u64 bitmap words, hence
-// `65536 / 64 == 1024` as the parameter here.
-struct CidBitmap(GenericBitmap<1024>);
-
 #[test]
 fn fuzzy() -> Result<(), NvmeError> {
     let log = Logger::root(Discard, slog::o!());
 
     let mut fuzz_ctx = FuzzCtx::new(&log);
-
-    struct TestIO {
-        /// The operation which resulted in this I/O
-        op: TestOperation,
-        /// The test device's corresponding CQE, to compare against the
-        /// requested operation and device state.
-        ///
-        /// If this is `None`, the test driver hasn't seen a completion from the
-        /// device yet. If this is `Some`, the test driver saw a completion and
-        /// stashed it here, but a specific WaitIO for this TestIO hasn't been
-        /// seen yet.
-        completion: Option<NvmeCqe>,
-    }
-
-    struct SqState {
-        avail_ids: Vec<u16>,
-        /// All I/Os which have been written to this submission queue and not
-        /// yet validated by the test driver yet.
-        ///
-        /// An I/O may have been written without ringing the submission queue's
-        /// doorbell, so the device may not even be aware of it yet. Conversely,
-        /// the I/O may have been completed by the device and that completion
-        /// even observed by the test driver, without removing the TestIO from
-        /// this map.
-        ///
-        /// I/Os are only "validated" at a WaitIO for that I/O, or at device
-        /// reset.
-        outstanding_ios: HashMap<u16, TestIO>,
-    }
-
-    impl SqState {
-        fn new() -> Self {
-            let mut avail_ids = Vec::new();
-            // We don't include 0xffff here in deference to NVMe Base
-            // Specification (at least 2.0e), which says:
-            //
-            // > The value of FFFFh should not be used as the Error Information
-            // > log page (refer to section 5.16.1.2) uses this value to
-            // > indicate an error is not associated with a particular command.
-            for i in 0..=0xfffe {
-                avail_ids.push(i);
-            }
-            Self {
-                avail_ids,
-                outstanding_ios: HashMap::new()
-            }
-        }
-    }
-
-    struct CqState {
-        /// The status of the Phase Tag to be seen in new completions written to
-        /// this queue.
-        phase: bool,
-        /// The last index we saw a completion on this completion queue.
-        next_cqe_idx: u16,
-    }
-
-    impl CqState {
-        fn new() -> Self {
-            Self {
-                // > When ..  an I/O Completion Queue for the first time after
-                // > the Create I/O Completion Queue command completed for that
-                // > queue, the Phase Tag bit for that completion queue entry is
-                // > set to 1
-                phase: true,
-                next_cqe_idx: 0,
-            }
-        }
-    }
 
     /// Track expected device state so we take mostly-legal actions (and can
     /// tell when we take illegal actions)
@@ -597,7 +747,7 @@ fn fuzzy() -> Result<(), NvmeError> {
                 completion_queues: Vec::new(),
                 // TODO: This should be read from the device under test, but
                 // just using the constant will do for now.
-                max_queues: nvme::MAX_NUM_QUEUES,
+                max_queues: 2, //nvme::MAX_NUM_QUEUES,
                 // TODO: Should read this from `IdentifyNamespace`, but the test
                 // backend is made right up there and it's a fixed size..
                 ns_size: 64 * MB as u64,
@@ -614,6 +764,7 @@ fn fuzzy() -> Result<(), NvmeError> {
         fn apply(&mut self, fuzz_ctx: &mut FuzzCtx, action: TestAction) {
             match action.op {
                 TestOperation::Init => {
+                    eprintln!("doing init!");
                     let res = fuzz_ctx.init_controller();
 
                     action.result.check(&res);
@@ -627,6 +778,7 @@ fn fuzzy() -> Result<(), NvmeError> {
                 }
                 TestOperation::Reset => {
                     fuzz_ctx.reset();
+                    eprintln!("TestOperation::Reset");
                     *self = TestState::new();
                 }
                 TestOperation::CreateCQ(qid) => {
@@ -635,7 +787,9 @@ fn fuzzy() -> Result<(), NvmeError> {
                     action.result.check(&res);
 
                     if action.result == Expected::Ok {
-                        self.completion_queues[qid as usize] = Some(CqState::new());
+                        let cq_addr = FuzzCtx::io_cq_address(qid);
+
+                        self.completion_queues[qid as usize] = Some(CqState::new(cq_addr));
                     }
                 }
                 TestOperation::CreateSQ(qid) => {
@@ -644,7 +798,9 @@ fn fuzzy() -> Result<(), NvmeError> {
                     action.result.check(&res);
 
                     if action.result == Expected::Ok {
-                        self.submission_queues[qid as usize] = Some(SqState::new());
+                        let sq_addr = FuzzCtx::io_sq_address(qid);
+
+                        self.submission_queues[qid as usize] = Some(SqState::new(sq_addr));
                     }
                 }
                 TestOperation::DeleteCQ(qid) => {
@@ -665,56 +821,105 @@ fn fuzzy() -> Result<(), NvmeError> {
                         self.submission_queues[qid as usize] = None;
                     }
                 }
+                TestOperation::Doorbell(qid) => {
+                    let sq = self.submission_queues[qid as usize].as_ref()
+                        .expect("only ringing doorbell on queues that exist");
+
+                    assert!(self.initialized);
+
+                    let res = fuzz_ctx.doorbell(qid, sq.curr_idx());
+
+                    action.result.check(&res);
+
+                    if action.result == Expected::Ok {
+                        self.submission_queues[qid as usize] = None;
+                    }
+                }
                 TestOperation::SubmitRead { queue, lba, memptr, size, fresh_cid } => {
+                    let sq = self.submission_queues[queue as usize].as_mut()
+                        .expect("sq exists when we submit writes");
                     let command_id = if fresh_cid {
-                        self.submission_queues[queue as usize].acquire_cid()
+                        sq.acquire_cid()
+                            .expect("planner made sure a CID is available to acquire")
                     } else {
-                        self.submission_queues[queue as usize].reuse_cid()
+                        sq.outstanding_cid()
+                            .expect("planner made sure a CID is present to reuse")
                     };
-                    let res = fuzz_ctx.submit_read(queue, lba, memptr, size, command_id);
+                    eprintln!("submitting read {} q={}, mem={:x} lba={}", queue, command_id, memptr, lba);
+                    let res = fuzz_ctx.submit_read(sq, lba, memptr, size, command_id);
+
+                    sq.outstanding_ios.insert(command_id, TestIO { op: action.op, completion: None });
 
                     action.result.check(&res);
 
                     if action.result != Expected::Ok {
-                        self.submission_queues[queue as usize].release_cid(command_id);
+                        let sq = self.submission_queues[queue as usize].as_mut()
+                            .expect("sqid exists to release unused cid");
+                        sq.release_cid(command_id);
                     }
                 }
                 TestOperation::SubmitWrite { queue, lba, memptr, size, fresh_cid } => {
+                    let sq = self.submission_queues[queue as usize].as_mut()
+                        .expect("sq exists when we submit writes");
                     let command_id = if fresh_cid {
-                        self.submission_queues[queue as usize].acquire_cid()
+                        sq.acquire_cid()
+                            .expect("planner made sure a CID is available to acquire")
                     } else {
-                        self.submission_queues[queue as usize].reuse_cid()
+                        sq.outstanding_cid()
+                            .expect("planner made sure a CID is present to reuse")
                     };
-                    let res = fuzz_ctx.submit_write(queue, lba, memptr, size, command_id);
+                    eprintln!("submitting write {} q={}, mem={:x} lba={}", queue, command_id, memptr, lba);
+                    let res = fuzz_ctx.submit_write(sq, lba, memptr, size, command_id);
+
+                    sq.outstanding_ios.insert(command_id, TestIO { op: action.op, completion: None });
 
                     action.result.check(&res);
 
                     if action.result != Expected::Ok {
-                        self.submission_queues[queue as usize].release_cid(command_id);
+                        let sq = self.submission_queues[queue as usize].as_mut()
+                            .expect("sqid exists to release unused cid");
+                        sq.release_cid(command_id);
                     }
                 }
                 TestOperation::WaitIO { queue, cid } => {
                     let sq = self.submission_queues[queue as usize].as_mut()
                         .expect("WaitIO only issued for I/O queues that are fully established");
+
                     // It is a fuzz harness error for a WaitIO to be issued for
                     // qid/cid that is not actually in flight. The I/O may have
                     // been completed, though, in which case there is a
                     // completion which we're about to process.
-                    assert!(sq.outstanding_ios.contains_key(cid));
+                    assert!(sq.outstanding_ios.contains_key(&cid));
+
+                    fuzz_ctx.doorbell(queue, sq.curr_idx())
+                        .expect("doorbell");
 
                     let deadline = SystemTime::now().checked_add(Duration::from_secs(1))
                         .expect("time can go forward");
 
                     loop {
-                        if let Some(completion) = sq.outstanding_ios[cid].completion.as_ref() {
+                        let sq = self.submission_queues[queue as usize].as_mut()
+                            .expect("WaitIO only issued for I/O queues that are fully established");
+
+                        if let Some(completion) = sq.outstanding_ios[&cid].completion.as_ref() {
                             // TODO: verify the I/O completion somehow?
-                            action.result.check(&res);
-                            sq.outstanding_ios.remove(cid);
+                            action.result.check(&Ok(()));
+                            eprintln!("DONE with I/O {} on queue {}", cid, queue);
+                            sq.outstanding_ios.remove(&cid);
+                            break;
                         }
 
                         std::thread::sleep(Duration::from_millis(10));
 
-                        for completion in fuzz_ctx.poll_cq(queue)? {
+                        if SystemTime::now() > deadline {
+                            panic!("i/o never happened");
+                        }
+
+                        let cq = self.completion_queues[queue as usize].as_mut()
+                            .expect("WaitIO only issued for I/O queues that are fully established");
+
+                        for completion in fuzz_ctx.poll_cq(cq).expect("can poll cq") {
+                            eprintln!("new completion: {:?}", completion);
                             self.handle_completion(completion);
                         }
                     }
@@ -723,9 +928,11 @@ fn fuzzy() -> Result<(), NvmeError> {
         }
 
         fn handle_completion(&mut self, completion: CompletionQueueEntry) {
-            let sq = &mut self.submission_queues[completion.sqid as usize];
-            let io = sq.outstanding_ios[completion.cid].as_mut()
-                .expect("there is a submission for the completion");;
+            let sq = self.submission_queues[completion.sqid as usize]
+                .as_mut().expect("completion implies there is an sq");
+            let cid = completion.cid;
+            let io = sq.outstanding_ios.get_mut(&cid)
+                .expect("there is a submission for the completion");
             let prior_completion = io.completion.replace(completion);
 
             // If we've seen a completion for an I/O, we .. should not have seen
@@ -784,7 +991,7 @@ fn fuzzy() -> Result<(), NvmeError> {
                     res.push(TestAction::ok(DeleteCQ(qpid)));
                     res.push(TestAction::err(DeleteSQ(qpid)));
                 }
-                (Some(_cq), Some(_sq)) => {
+                (Some(_cq), Some(sq)) => {
                     if rng.random_ratio(2, 100) {
                         res.push(TestAction::err(CreateCQ(qpid)));
                         res.push(TestAction::err(CreateSQ(qpid)));
@@ -792,15 +999,34 @@ fn fuzzy() -> Result<(), NvmeError> {
                         res.push(TestAction::ok(DeleteSQ(qpid)));
                     }
 
-                    if rng.random_ratio(90, 10) {
-                        // Post an I/O of some sort.
-                        // .. the details are TODO: 
-                        /*
-                        res.push(TestAction::ok(
-                        SubmitRead { queue: u16, lba: u64, memptr: u64, size: u64, fresh_cid: bool },
-                        SubmitWrite { queue: u16, lba: u64, memptr: u64, size: u64, fresh_cid: bool },
-                        WaitIO { queue: u16, cid: u16 },
-                        */
+                    if rng.random_ratio(90, 100) {
+                        let lba = rng.random_range(0..self.ns_size) / 4096;
+                        let io_addr = FuzzCtx::IO_MEM_BASE + rng.random_range(0..128usize) * 4096;
+
+                        if !sq.full() {
+                            // TODO: different I/O sizes
+                            res.push(TestAction::ok(SubmitRead {
+                                queue: qpid,
+                                lba,
+                                memptr: io_addr,
+                                size: 4096,
+                                fresh_cid: true,
+                            }));
+                            res.push(TestAction::ok(SubmitWrite {
+                                queue: qpid,
+                                lba,
+                                memptr: io_addr,
+                                size: 4096,
+                                fresh_cid: true,
+                            }));
+                        }
+                        if let Some(pending_cid) = sq.outstanding_cid() {
+                            res.push(TestAction::ok(WaitIO { queue: qpid, cid: pending_cid }));
+                        }
+                    }
+
+                    if !sq.empty() {
+                        res.push(TestAction::ok(Doorbell(qpid)));
                     }
                 }
                 (None, Some(_sq)) => {
@@ -822,6 +1048,7 @@ fn fuzzy() -> Result<(), NvmeError> {
     for _ in 0..1_000 {
         let options = test_state.options(&mut rng);
         let next = options[rng.random_range(0..options.len())];
+//        eprintln!("operation: {:?}", next);
         test_state.apply(&mut fuzz_ctx, next);
     }
 

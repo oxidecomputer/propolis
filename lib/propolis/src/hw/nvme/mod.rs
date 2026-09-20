@@ -995,6 +995,7 @@ impl PciNvme {
                 // Set CC.EN=1 and CSTS.RDY=1
                 state.ctrl.cc.set_enabled(true);
                 state.ctrl.csts.set_ready(true);
+                eprintln!("controller enabled");
                 self.is_enabled.store(true, Ordering::Release);
             }
         } else if !new.enabled() && cur.enabled() {
@@ -1196,6 +1197,7 @@ impl PciNvme {
                 // Mix in the device ID for probe purposes
                 let devq_id = devq_id(self.device_id, qid);
 
+                eprintln!("DEVICE: doorbell rung: {} (cq? {}) val={}", qid, is_cq, val);
                 probes::nvme_doorbell!(|| (
                     off as u64,
                     devq_id,
@@ -1221,6 +1223,7 @@ impl PciNvme {
                 self.log,
                 "Doorbell write while controller is disabled"
             );
+            eprintln!("how did it get disabled");
             return Err(if is_cq {
                 NvmeError::InvalidCompQueue(qid)
             } else {
@@ -1461,6 +1464,7 @@ impl MigrateMulti for PciNvme {
 
         let mut ctrl = self.state.lock().unwrap();
         ctrl.import(input, self)?;
+        self.is_enabled.store(ctrl.ctrl.cc.enabled(), Ordering::Release);
         drop(ctrl);
 
         MigrateMulti::import(&self.pci_state, offer, ctx)?;

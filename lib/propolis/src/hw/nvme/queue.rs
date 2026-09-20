@@ -676,6 +676,9 @@ impl SubQueue {
                 let devq_id = self.devq_id();
                 state.db_buf_write(devq_id, &mem);
                 state.db_buf_read(devq_id, &mem);
+                if self.id != 0 {
+                    eprintln!("DEVICE sqid={} got sqe: idx = {}", self.id, idx);
+                }
                 return Some((ent, permit.promote(ent.cid()), idx));
             }
             // TODO: set error state on queue/ctrl if we cannot read entry
@@ -901,6 +904,10 @@ impl CompQueue {
             // TODO: mark the queue/controller in error state?
             return;
         };
+        if self.id != 0 {
+            eprintln!("DEVICE cqid={}: writing cqe: idx = {}, cid = {}, addr={:x}", self.id, idx, cid, addr.0);
+        }
+
         let mem = mem.view();
         cqe.set_phase(!phase);
         mem.write(addr, &cqe);

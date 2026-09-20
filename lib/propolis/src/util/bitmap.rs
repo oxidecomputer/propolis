@@ -2,6 +2,8 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+#![allow(dead_code)]
+
 impl Default for Bitmap {
     fn default() -> Self {
         Bitmap(GenericBitmap([0u64; 1]))
