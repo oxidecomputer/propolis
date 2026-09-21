@@ -144,17 +144,17 @@ you desire, except for the boot disk, which will be specified through the API.
 
 Create the VM using the `--crucible-disks` flag and the JSON file. For example:
 ```
-$ ./target/debug/propolis-cli -s 172.20.3.73 -p 8000 new --crucible-disks disks.json vm0
+$ ./target/debug/propolis-cli -s 172.20.3.73:8000 new --crucible-disks disks.json vm0
 ```
 
 Run the VM:
 ```
-$ ./target/debug/propolis-cli -s 172.20.3.73 -p 8000 state run
+$ ./target/debug/propolis-cli -s 172.20.3.73:8000 state run
 ```
 
 You may wish to watch the console to make sure it boots:
 ```
-$ ./target/debug/propolis-cli -s 172.20.3.73 -p 8000 serial
+$ ./target/debug/propolis-cli -s 172.20.3.73:8000 serial
 ```
 
 ### Migrate the VM to the destination server
@@ -170,7 +170,7 @@ Ensure the destination server is running. Make a copy of the JSON file you
 created above and increment the generation number. Then, from the source, run
 something like:
 ```
-$ ./target/debug/propolis-cli -s 172.20.3.73 -p 8000 migrate 172.20.3.71 -p 8000 --crucible-disks disks2.json
+$ ./target/debug/propolis-cli -s 172.20.3.73:8000 migrate 172.20.3.71:8000 --crucible-disks disks2.json
 ```
 
 If successful, you should be able to run the VM and see the serial console on
