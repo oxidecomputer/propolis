@@ -318,6 +318,12 @@ async fn multiple_migrations(ctx: &TestCtx) {
     );
 }
 
+#[phd_testcase]
+async fn migration_smoke_test(ctx: &TestCtx) {
+    let vm = ctx.spawn_default_vm("migration_smoke_test_0").await?;
+    run_smoke_test(ctx, vm).await?;
+}
+
 async fn run_smoke_test(ctx: &TestCtx, mut source: TestVm) -> Result<()> {
     source.launch().await?;
     source.wait_to_boot().await?;
@@ -325,7 +331,9 @@ async fn run_smoke_test(ctx: &TestCtx, mut source: TestVm) -> Result<()> {
         source.run_shell_command("ls foo.bar 2> /dev/null").check_err().await?;
     assert_eq!(lsout, "");
 
-    // create an empty file on the source VM.
+    // create an empty file on the source VM. `/` might be a tmpfs, and the
+    // guest may have no writable filesystem even. validation post-migration is
+    // a bit tricky, below.
     source.run_shell_command("touch ./foo.bar").await?;
     source.run_shell_command("sync ./foo.bar").await?;
 
@@ -334,6 +342,14 @@ async fn run_smoke_test(ctx: &TestCtx, mut source: TestVm) -> Result<()> {
         &[Action::MigrateToPropolis(artifacts::DEFAULT_PROPOLIS_ARTIFACT)],
         |target: &TestVm| {
             Box::pin(async {
+                // forget about any pagecache data, dentries, inodes; we want to
+                // read these from the real backing storage, because we want to
+                // make sure it still works!
+                target
+                    .run_shell_command("echo 3 > /proc/sys/vm/drop_caches")
+                    .await
+                    .expect("can drop caches");
+
                 // the file should still exist on the target VM after migration.
                 let lsout = target
                     .run_shell_command("ls foo.bar")
@@ -341,6 +357,62 @@ async fn run_smoke_test(ctx: &TestCtx, mut source: TestVm) -> Result<()> {
                     .await
                     .expect("can try to run `ls foo.bar`");
                 assert_eq!(lsout, "foo.bar");
+
+                // we have a small conundrum: it's possible that the home
+                // directory we wrote into is a tmpfs anyway. so by succeeding
+                // this much, we may have really just tested memory is intact.
+                //
+                // ensure we test *some* device emulation by at least trying to
+                // `ls` the thing we booted out. it *should* be a disk, so we'll
+                // exercise some device emulation machinery.. unfortunately
+                // finding a productive place to `ls` is a bit ridiculous:
+
+                let mount_grep = target
+                    .run_shell_command("mount | grep ' / type tmpfs '")
+                    .ignore_status()
+                    .await
+                    .expect("can check mounted filesystems and grep");
+
+                let root_is_tmpfs = !mount_grep.is_empty();
+
+                if root_is_tmpfs {
+                    // the guest is *probably* an Alpine. `/` is a figment of
+                    // its imagination; a tmpfs with the actual disk somewhere
+                    // under /media, like /media/nvme0n1. try looking there, and
+                    // if that fails we'll need to improve the test, phd, or
+                    // both.
+                    target
+                        .run_shell_command("ls /media/nvme0n1/boot")
+                        .await
+                        .expect("can ls the boot data");
+                } else {
+                    // the guest probably has a read-write root. the above, it
+                    // turns out, probably also exercised the disk. check /boot
+                    // anyway for good measure.
+                    target
+                        .run_shell_command("ls /boot")
+                        .await
+                        .expect("can ls the boot data");
+                }
+
+                // the `ls` succeeded ... eventually. it's possible the disk
+                // *was* broken, the guest realized this, reset the disk, and
+                // that brought it back. if so, there's a line about resetting
+                // the controller in dmesg. so if we see that, we've actually
+                // failed to migrate reasonably.
+                //
+                // ignore the status from `grep` because it returns 1 when the
+                // regex matches no line. we don't want to `check_err()`
+                // because it's useful for debugging to see what *did* match.
+                let disk_reset = target
+                    .run_shell_command("dmesg | grep 'reset controller'")
+                    .ignore_status()
+                    .await
+                    .expect("can grep dmesg");
+
+                if !disk_reset.is_empty() {
+                    panic!("controller reset during the test?! {}", disk_reset);
+                }
             })
         },
     )
