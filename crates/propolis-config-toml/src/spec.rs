@@ -4,15 +4,19 @@
 
 //! Functions for converting a [`super::Config`] into instance spec elements.
 
-use std::{collections::BTreeMap, str::FromStr};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    str::FromStr,
+};
 
+use crate::HypervisorInterface;
 use propolis_client::{
     instance_spec::{
         BootOrderEntry, BootSettings, Component, Cpuid, CpuidVendor,
-        DlpiNetworkBackend, FileStorageBackend, MigrationFailureInjector,
-        NvmeDisk, P9fs, PciPath, PciPciBridge, SoftNpuP9, SoftNpuPciPort,
-        SoftNpuPort, SpecKey, VirtioDisk, VirtioNetworkBackend, VirtioNic,
-        VirtioSocket,
+        DlpiNetworkBackend, FileStorageBackend, GuestHypervisorInterface,
+        HyperVFeatureFlag, MigrationFailureInjector, NvmeDisk, P9fs, PciPath,
+        PciPciBridge, SoftNpuP9, SoftNpuPciPort, SoftNpuPort, SpecKey,
+        VirtioDisk, VirtioNetworkBackend, VirtioNic, VirtioSocket,
     },
     support::nvme_serial_from_str,
 };
@@ -77,6 +81,7 @@ pub enum TomlToSpecError {
 #[derive(Clone, Debug, Default)]
 pub struct SpecConfig {
     pub enable_pcie: bool,
+    pub hv_interface: GuestHypervisorInterface,
     pub components: BTreeMap<SpecKey, Component>,
 }
 
@@ -105,6 +110,22 @@ impl TryFrom<&super::Config> for SpecConfig {
     type Error = TomlToSpecError;
 
     fn try_from(config: &super::Config) -> Result<Self, Self::Error> {
+        let hv_interface = config
+            .machine_settings
+            .hv_interface
+            .as_ref()
+            .map(|hv| match hv {
+                HypervisorInterface::Bhyve => GuestHypervisorInterface::Bhyve,
+                HypervisorInterface::HyperV { reference_tsc } => {
+                    let mut features = BTreeSet::new();
+                    if *reference_tsc {
+                        features.insert(HyperVFeatureFlag::ReferenceTsc);
+                    }
+                    GuestHypervisorInterface::HyperV { features }
+                }
+            })
+            .unwrap_or_default();
+
         let mut spec = SpecConfig {
             enable_pcie: config
                 .chipset
@@ -117,6 +138,7 @@ impl TryFrom<&super::Config> for SpecConfig {
                 })
                 .transpose()?
                 .unwrap_or(false),
+            hv_interface,
             ..Default::default()
         };
 

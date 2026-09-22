@@ -24,6 +24,7 @@ use tokio::runtime;
 
 use propolis::chardev::{BlockingSource, Sink, Source, UDSock};
 use propolis::common::{DeviceMetadataMap, GB, MB};
+use propolis::enlightenment::{bhyve, hyperv, Enlightenment};
 use propolis::firmware::{acpi, smbios};
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ps2::ctrl::PS2Ctrl;
@@ -217,6 +218,9 @@ struct Inventory {
     block: BTreeMap<String, Arc<dyn propolis::block::Backend>>,
 }
 impl Inventory {
+    fn register_dyn(&mut self, dev: Arc<dyn propolis::common::Lifecycle>) {
+        self.devs.insert(dev.type_name().into(), dev);
+    }
     fn register<D: propolis::common::Lifecycle>(&mut self, dev: &Arc<D>) {
         self.devs.insert(
             dev.type_name().into(),
@@ -297,6 +301,10 @@ impl Instance {
         let mut state_guard = this.0.state.lock().unwrap();
         let state = &mut *state_guard;
         let machine = state.machine.as_ref().unwrap();
+
+        state.inventory.register_dyn(enlightenment::as_lifecycle(Arc::clone(
+            &machine.guest_hv_interface,
+        )));
 
         let bind_cpus = match this.0.config.main.cpu_binding {
             Some(config::BindingStrategy::UpperHalf) => {
@@ -768,11 +776,13 @@ impl Instance {
 }
 
 fn build_machine(
+    log: &slog::Logger,
     name: &str,
     max_cpu: u8,
     lowmem: usize,
     highmem: usize,
     use_reservoir: bool,
+    hv_interface: &config::HypervisorInterface,
 ) -> Result<propolis::Machine> {
     let mut builder = Builder::new(
         name,
@@ -799,6 +809,18 @@ fn build_machine(
         vmm::MAX_PHYSMEM - dev64_start,
         "dev64",
     )?;
+
+    let hv = match hv_interface {
+        config::HypervisorInterface::Bhyve => {
+            Arc::new(bhyve::BhyveGuestInterface) as Arc<dyn Enlightenment>
+        }
+        config::HypervisorInterface::HyperV { reference_tsc } => {
+            let hv_feats = hyperv::Features { reference_tsc: *reference_tsc };
+            Arc::new(hyperv::HyperV::new(log, hv_feats))
+                as Arc<dyn Enlightenment>
+        }
+    };
+    builder = builder.guest_hypervisor_interface(hv);
 
     builder.finalize()
 }
@@ -1152,8 +1174,16 @@ fn setup_instance(
 
     slog::info!(log, "Creating VM with {} vCPUs, {} lowmem, {} highmem",
         cpus, lowmem, highmem;);
-    let machine = build_machine(vm_name, cpus, lowmem, highmem, use_reservoir)
-        .context("Failed to create VM Machine")?;
+    let machine = build_machine(
+        log,
+        vm_name,
+        cpus,
+        lowmem,
+        highmem,
+        use_reservoir,
+        &config.main.hv_interface,
+    )
+    .context("Failed to create VM Machine")?;
     let com1_sock =
         UDSock::bind(Path::new("./ttya")).context("Cannot open UD socket")?;
     let inst = Instance::new(
@@ -1536,24 +1566,37 @@ fn setup_instance(
     guard.inventory.register(&fwcfg);
     guard.inventory.register(&ramfb);
 
+    let mut base_profile = match cpuid_profile {
+        Some(profile) => profile,
+        None => {
+            // If the config has provided no CPUID configuration, collect the
+            // default leaves from a bhyve guest and use that. We must collect
+            // this now, because we'll add hypervisor interface leaves and
+            // specialize for each vCPU below.
+            cpuid_utils::host::query_complete(
+                cpuid_utils::host::CpuidSource::BhyveDefault,
+            )
+            .context("failed to query host cpuid")?
+        }
+    };
+    machine
+        .guest_hv_interface
+        .add_cpuid(&mut base_profile)
+        .context("failed to add hypervisor cpuid leaves")?;
+
     for vcpu in machine.vcpus.iter() {
-        let vcpu_profile = if let Some(profile) = cpuid_profile.as_ref() {
-            propolis::cpuid::Specializer::new()
-                .with_vcpu_count(
-                    std::num::NonZeroU8::new(config.main.cpus).unwrap(),
-                    true,
-                )
-                .with_vcpuid(vcpu.id)
-                .with_cache_topo()
-                .clear_cpu_topo(cpuid::TopoKind::iter())
-                .with_cpu_topo(cpuid::TopoKind::supported())
-                .execute(profile.clone())
-                .context("failed to specialize cpuid profile")?
-        } else {
-            // An empty set will instruct the kernel to use the legacy
-            // fallback behavior
-            cpuid_utils::CpuidSet::new_host()
-        };
+        let vcpu_profile = propolis::cpuid::Specializer::new()
+            .with_vcpu_count(
+                std::num::NonZeroU8::new(config.main.cpus).unwrap(),
+                true,
+            )
+            .with_vcpuid(vcpu.id)
+            .with_cache_topo()
+            .clear_cpu_topo(cpuid::TopoKind::iter())
+            .with_cpu_topo(cpuid::TopoKind::supported())
+            .execute(base_profile.clone())
+            .context("failed to specialize cpuid profile")?;
+
         vcpu.set_cpuid(vcpu_profile)?;
         vcpu.set_default_capabs()?;
     }
