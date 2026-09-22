@@ -830,10 +830,6 @@ fn fuzzy() -> Result<(), NvmeError> {
                     let res = fuzz_ctx.doorbell(qid, sq.curr_idx());
 
                     action.result.check(&res);
-
-                    if action.result == Expected::Ok {
-                        self.submission_queues[qid as usize] = None;
-                    }
                 }
                 TestOperation::SubmitRead { queue, lba, memptr, size, fresh_cid } => {
                     let sq = self.submission_queues[queue as usize].as_mut()
