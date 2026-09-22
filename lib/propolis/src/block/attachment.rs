@@ -31,6 +31,7 @@ use super::{
 };
 use crate::accessors::MemAccessor;
 use crate::block;
+use crate::util::bitmap::Bitmap;
 
 use futures::stream::FuturesUnordered;
 use futures::Stream;
@@ -1020,7 +1021,7 @@ impl WorkerCollection {
         limit: NonZeroUsize,
         qid_hint: Option<QueueId>,
     ) -> Bitmap {
-        probes::block_worker_collection_wake!(|| (wake_wids.0, limit.get()));
+        probes::block_worker_collection_wake!(|| (wake_wids.bits(), limit.get()));
 
         let mut num_woken = 0;
         let mut idle_wids = wake_wids.iter();
@@ -1041,7 +1042,7 @@ impl WorkerCollection {
 
         let remainder = idle_wids.remainder();
 
-        probes::block_worker_collection_woken!(|| (remainder.0, num_woken));
+        probes::block_worker_collection_woken!(|| (remainder.bits(), num_woken));
 
         remainder
     }
@@ -1359,87 +1360,5 @@ impl<T: Copy + Clone> Versioned<T> {
 impl<T: Copy + Clone + Default> Default for Versioned<T> {
     fn default() -> Self {
         Self::new(T::default())
-    }
-}
-
-/// Simple bitmap which facilitates iterator over bits which are asserted
-#[derive(Copy, Clone, Default)]
-pub(crate) struct Bitmap(u64);
-impl Bitmap {
-    const TOP_BIT: usize = u64::BITS as usize;
-
-    pub const ALL: Self = Self(u64::MAX);
-
-    pub fn set(&mut self, idx: usize) {
-        assert!(idx < Self::TOP_BIT);
-        self.0 |= 1u64 << idx;
-    }
-    pub fn unset(&mut self, idx: usize) {
-        assert!(idx < Self::TOP_BIT);
-        self.0 &= !(1u64 << idx);
-    }
-    pub fn set_all(&mut self, other: Bitmap) {
-        self.0 |= other.0;
-    }
-    pub fn lowest_set(&self) -> Option<usize> {
-        if self.0.count_ones() == 0 {
-            None
-        } else {
-            Some(self.0.trailing_zeros() as usize)
-        }
-    }
-    pub fn count(&self) -> usize {
-        self.0.count_ones() as usize
-    }
-    pub fn is_empty(&self) -> bool {
-        self.count() == 0
-    }
-    pub fn take(&mut self) -> Self {
-        Self(std::mem::replace(&mut self.0, 0))
-    }
-    /// Get iterator which emits indices of bits which are set in this map.
-    pub fn iter(&self) -> BitIter {
-        BitIter(*self)
-    }
-    /// Get iterator which emits indices of bits which are set in this map.
-    /// It will infinitely loop back to the first bit whenever the last bit is
-    /// reached.
-    pub fn looping_iter(&self) -> LoopIter {
-        LoopIter { orig: *self, cur: *self }
-    }
-}
-
-pub struct BitIter(Bitmap);
-impl Iterator for BitIter {
-    type Item = usize;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let idx = self.0.lowest_set()?;
-        self.0.unset(idx);
-        Some(idx)
-    }
-}
-impl BitIter {
-    fn remainder(self) -> Bitmap {
-        self.0
-    }
-}
-pub struct LoopIter {
-    cur: Bitmap,
-    orig: Bitmap,
-}
-impl Iterator for LoopIter {
-    type Item = usize;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.orig.count() == 0 {
-            return None;
-        }
-        if self.cur.count() == 0 {
-            self.cur = self.orig;
-        }
-        let idx = self.cur.lowest_set().unwrap();
-        self.cur.unset(idx);
-        Some(idx)
     }
 }

@@ -17,9 +17,10 @@ use pin_project_lite::pin_project;
 use tokio::sync::futures::Notified;
 use tokio::sync::Notify;
 
-use crate::block::attachment::Bitmap;
+// use crate::block::attachment::Bitmap;
 use crate::block::{self, devq_id, probes, Operation, Request};
 use crate::block::{DeviceId, MetricConsumer, QueueId, WorkerId};
+use crate::util::bitmap::Bitmap;
 
 /// Each emulated block device will have one or more [DeviceQueue]s which can be
 /// polled through [next_req()](DeviceQueue::next_req()) to emit IO requests.
