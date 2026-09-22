@@ -1197,7 +1197,7 @@ impl PciNvme {
                 // Mix in the device ID for probe purposes
                 let devq_id = devq_id(self.device_id, qid);
 
-                eprintln!("DEVICE: doorbell rung: {} (cq? {}) val={}", qid, is_cq, val);
+//                eprintln!("DEVICE: doorbell rung: {} (cq? {}) val={}", qid, is_cq, val);
                 probes::nvme_doorbell!(|| (
                     off as u64,
                     devq_id,
