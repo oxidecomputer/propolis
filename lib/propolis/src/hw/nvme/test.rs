@@ -766,7 +766,7 @@ fn fuzzy() -> Result<(), NvmeError> {
                 completion_queues: Vec::new(),
                 // TODO: This should be read from the device under test, but
                 // just using the constant will do for now.
-                max_queues: 17, // nvme::MAX_NUM_QUEUES,
+                max_queues: 3, // nvme::MAX_NUM_QUEUES,
                 // TODO: Should read this from `IdentifyNamespace`, but the test
                 // backend is made right up there and it's a fixed size..
                 ns_size: 64 * MB as u64,
