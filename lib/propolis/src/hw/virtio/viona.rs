@@ -1935,8 +1935,8 @@ mod test {
     use crate::hw::pci::Bdf;
     use crate::hw::virtio::pci::Status;
     use crate::hw::virtio::viona::{
-        VIRTIO_NET_F_CTRL_VQ, VIRTIO_NET_F_MAC, VIRTIO_NET_F_MQ,
-        VIRTIO_NET_F_STATUS,
+        VIRTIO_F_EVENT_IDX, VIRTIO_NET_F_CTRL_VQ, VIRTIO_NET_F_MAC,
+        VIRTIO_NET_F_MQ, VIRTIO_NET_F_STATUS,
     };
     use crate::hw::virtio::PciVirtioViona;
     use crate::lifecycle::Lifecycle;
@@ -2347,7 +2347,7 @@ mod test {
                 self.common_config.read_le16(common_cfg::queue_enable) == 1;
             assert!(!already_enabled);
 
-            let queue_size =
+            let mut queue_size =
                 self.common_config.read_le16(common_cfg::queue_size);
             assert_ne!(queue_size, 0);
             // In "2.7 Split Virtqueues",
@@ -2370,6 +2370,7 @@ mod test {
             if chosen_size < queue_size {
                 self.common_config
                     .write_le16(common_cfg::queue_size, chosen_size);
+                queue_size = chosen_size;
             }
 
             let acc_mem =
@@ -2385,11 +2386,15 @@ mod test {
             // > * The driver MUST set flags to 0 or 1.
             // > * The driver MAY set flags to 1 to advise the device that
             //     notifications are not needed.
-            acc_mem.write::<u32>(GuestAddr(avail_gpa), &0);
+            acc_mem.write::<u16>(GuestAddr(avail_gpa), &0);
             // Index. "This starts at 0, and increases."
-            acc_mem.write::<u32>(GuestAddr(avail_gpa + 4), &0);
-            // Leave all the `ring` entries uninitialized, and we've not
-            // negotiated VIRTIO_F_EVENT_IDX so no `used_event` for now.
+            acc_mem.write::<u16>(GuestAddr(avail_gpa + 2), &0);
+            // Leave all the `ring` entries uninitialized. Initialize
+            // `used_event` to zero.
+            acc_mem.write::<u16>(
+                GuestAddr(avail_gpa + 4 + (queue_size as u64 * 2)),
+                &0,
+            );
             self.common_config.write_le64(common_cfg::queue_driver, avail_gpa);
 
             let used_gpa = avail_gpa.next_multiple_of(page_u64);
@@ -2644,8 +2649,10 @@ mod test {
     }
 
     fn basic_operation_modern(test_ctx: TestCtx) -> TestCtx {
-        let expected_feats =
-            VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_CTRL_VQ;
+        let expected_feats = VIRTIO_F_EVENT_IDX
+            | VIRTIO_NET_F_MAC
+            | VIRTIO_NET_F_STATUS
+            | VIRTIO_NET_F_CTRL_VQ;
 
         // Go through setting up the virtio NIC in a few scenarios, but don't
         // try using it or setting any interesting features.
@@ -2688,7 +2695,8 @@ mod test {
     fn basic_operation_multiqueue(test_ctx: TestCtx) -> TestCtx {
         // All the same operation as `basic_operation_modern`, but with
         // `VIRTIO_NET_F_MQ`.
-        let expected_feats = VIRTIO_NET_F_MAC
+        let expected_feats = VIRTIO_F_EVENT_IDX
+            | VIRTIO_NET_F_MAC
             | VIRTIO_NET_F_STATUS
             | VIRTIO_NET_F_CTRL_VQ
             | VIRTIO_NET_F_MQ;
@@ -2739,8 +2747,10 @@ mod test {
     fn multiqueue_migration(test_ctx: TestCtx) -> TestCtx {
         // All the same operation as `basic_operation_modern`, but with
         // `VIRTIO_NET_F_MQ`.
-        let expected_feats =
-            VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_CTRL_VQ;
+        let expected_feats = VIRTIO_F_EVENT_IDX
+            | VIRTIO_NET_F_MAC
+            | VIRTIO_NET_F_STATUS
+            | VIRTIO_NET_F_CTRL_VQ;
 
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
@@ -2804,8 +2814,10 @@ mod test {
     /// but were still "enabled" because reset did not cover them, and would
     /// make guests determine the device was simply broken. They were right!
     fn multiqueue_migration_after_boot(test_ctx: TestCtx) -> TestCtx {
-        let expected_feats =
-            VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_CTRL_VQ;
+        let expected_feats = VIRTIO_F_EVENT_IDX
+            | VIRTIO_NET_F_MAC
+            | VIRTIO_NET_F_STATUS
+            | VIRTIO_NET_F_CTRL_VQ;
 
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
