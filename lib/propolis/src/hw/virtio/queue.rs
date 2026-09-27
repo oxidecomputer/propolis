@@ -242,7 +242,7 @@ impl VqUsed {
         self.gpa_flags = GuestAddr(gpa);
         self.gpa_idx = GuestAddr(gpa + 2);
         self.gpa_ring = GuestAddr(gpa + 4);
-        self.gpa_avail_event = self.gpa_ring.offset::<VqUsed>(usize::from(sz));
+        self.gpa_avail_event = self.gpa_ring.offset::<VqdUsed>(usize::from(sz));
     }
 }
 
