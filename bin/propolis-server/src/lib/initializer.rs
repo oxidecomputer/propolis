@@ -343,6 +343,7 @@ impl MachineInitializer<'_> {
                 ));
                 let sci_pin = Arc::new(i440fx::LNKPin::new());
 
+                let acpi = acpi::Acpi::create(sci_pin.clone());
                 let chipset_hb = i440fx::I440FxHostBridge::create(
                     pci_topology,
                     i440fx::Opts {
@@ -371,6 +372,8 @@ impl MachineInitializer<'_> {
                 };
 
                 // Attach chipset devices to PCI and buses
+                acpi.attach(&self.machine.bus_pio);
+
                 do_pci_attach(i440fx::DEFAULT_HB_BDF, chipset_hb.clone());
                 chipset_hb.attach(self.machine);
 
@@ -380,6 +383,8 @@ impl MachineInitializer<'_> {
                 do_pci_attach(i440fx::DEFAULT_PM_BDF, chipset_pm.clone());
                 chipset_pm.attach(&self.machine.bus_pio);
 
+                self.devices
+                    .insert(SpecKey::Name(acpi.type_name().into()), acpi);
                 self.devices.insert(
                     SpecKey::Name(chipset_hb.type_name().into()),
                     chipset_hb.clone(),

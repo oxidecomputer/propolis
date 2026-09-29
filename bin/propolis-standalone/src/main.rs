@@ -1218,6 +1218,7 @@ fn setup_instance(
     let pci_topo =
         propolis::hw::pci::topology::Builder::new().finish(machine)?.topology;
 
+    let acpi = acpi::Acpi::create(sci_pin.clone());
     let chipset_hb = i440fx::I440FxHostBridge::create(
         pci_topo,
         i440fx::Opts {
@@ -1242,10 +1243,12 @@ fn setup_instance(
     chipset_pci_attach(i440fx::DEFAULT_LPC_BDF, chipset_lpc.clone());
     chipset_pci_attach(i440fx::DEFAULT_PM_BDF, chipset_pm.clone());
 
+    acpi.attach(&machine.bus_pio);
     chipset_hb.attach(machine);
     chipset_lpc.attach(&machine.bus_pio);
     chipset_pm.attach(&machine.bus_pio);
 
+    guard.inventory.register(&acpi);
     guard.inventory.register(&chipset_hb);
     guard.inventory.register(&chipset_lpc);
     guard.inventory.register(&chipset_pm);

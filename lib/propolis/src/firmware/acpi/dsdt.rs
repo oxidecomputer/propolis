@@ -38,8 +38,8 @@ use std::cell::RefCell;
 
 use super::aml::{devids, methods, names, paths, *};
 use super::{
-    AcpiVariant, GPE0_BLK_ADDR, GPE0_BLK_LEN, IO_APIC_ADDR, IO_APIC_LEN,
-    LOCAL_APIC_ADDR, LOCAL_APIC_LEN, PCI_LINK_IRQS,
+    AcpiVariant, GPE0_BLK_ADDR, GPE0_BLK_LEN, GPE_PCI_HOTPLUG, IO_APIC_ADDR,
+    IO_APIC_LEN, LOCAL_APIC_ADDR, LOCAL_APIC_LEN, PCI_LINK_IRQS,
 };
 use crate::common::DeviceMetadataMap;
 use crate::hw::{chipset::i440fx, pci, qemu};
@@ -214,6 +214,19 @@ impl<'a> Aml for Dsdt<'a> {
         // Sleep states.
         SleepState::new("_S0_", PM1A_CNT_SLP_TYP_S0).to_aml_bytes(&mut dsdt);
         SleepState::new("_S5_", PM1A_CNT_SLP_TYP_S5).to_aml_bytes(&mut dsdt);
+
+        aml::Scope::new(
+            paths::gpe(),
+            vec![
+                &names::hid(&"ACPI0006"),
+                &gpe::Method::new(
+                    GPE_PCI_HOTPLUG,
+                    gpe::Trigger::Edge,
+                    vec![&aml::Name::new("TEST".into(), &0_u8)],
+                ),
+            ],
+        )
+        .to_aml_bytes(&mut dsdt);
 
         // System bus namespace (\_SB).
         aml::Scope::new(

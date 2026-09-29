@@ -115,6 +115,8 @@ pub mod paths {
     // ACPI rev. 6.6 section 6.1.5 "_HID (Hardware ID)"
     path!(hid, "_HID");
 
+    path!(gpe, "_GPE");
+
     // An object that specifies a device's possible resource settings, or a
     // control method that generates such an object.
     //
@@ -230,4 +232,37 @@ pub mod devids {
     // --QEMU---
     // https://www.qemu.org/docs/master/specs/pvpanic.html
     pub const QEMU_PVPANIC: &'static str = "QEMU0001";
+}
+
+pub mod gpe {
+    use acpi_tables::{aml, Aml, AmlSink};
+
+    pub enum Trigger {
+        Edge,
+        Level,
+    }
+
+    pub struct Method<'a> {
+        bit: u8,
+        trigger: Trigger,
+        body: Vec<&'a dyn Aml>,
+    }
+    impl<'a> Method<'a> {
+        pub fn new(bit: u8, trigger: Trigger, body: Vec<&'a dyn Aml>) -> Self {
+            Self { bit, trigger, body }
+        }
+    }
+    impl Aml for Method<'_> {
+        fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
+            let trigger = match self.trigger {
+                Trigger::Edge => "E",
+                Trigger::Level => "L",
+            };
+            let name = format!("_{trigger}{:02X}", self.bit);
+            println!("{}", name);
+
+            aml::Method::new(name.as_str().into(), 0, false, self.body.clone())
+                .to_aml_bytes(sink);
+        }
+    }
 }

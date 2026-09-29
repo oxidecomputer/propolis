@@ -22,17 +22,21 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::common::{Lifecycle, RWOp};
 use crate::hw::chipset::i440fx;
 use crate::intr_pins::{IntrPin, OrGate};
+use crate::pio::{PioBus, PioFn};
 
 pub mod aml;
 pub mod dsdt;
 pub mod facs;
 pub mod fadt;
 pub mod file_sink;
+pub mod gpe;
 pub mod madt;
 pub mod rsdp;
 pub mod ssdt_edk2;
+pub mod ssdt_pci_hotplug;
 pub mod xsdt;
 
 pub use dsdt::{Dsdt, DsdtConfig, DsdtDeviceType, DsdtGenerator, DsdtScope};
@@ -93,6 +97,8 @@ const LOCAL_APIC_LEN: u32 = 0x10_0000;
 const GPE0_BLK_ADDR: u16 = 0xafe0;
 const GPE0_BLK_LEN: u8 = 4;
 
+pub const GPE_PCI_HOTPLUG: u8 = 1;
+
 pub struct Acpi {
     // The SCI state can be driven by multiple inputs that OR'ed to determine
     // if an interrupt should happen, so model it as an OrGate and hand out new
@@ -100,14 +106,46 @@ pub struct Acpi {
     //
     // Refer to Fig. 4.3 of the ACPI spec. v6.6 for more information.
     sci_gate: Arc<OrGate>,
+
+    gpe0: gpe::Registers,
 }
 
 impl Acpi {
     pub fn create(sci_pin: Arc<dyn IntrPin>) -> Arc<Self> {
-        Arc::new(Self { sci_gate: OrGate::new(sci_pin) })
+        let sci_gate = OrGate::new(sci_pin);
+        Arc::new(Self {
+            sci_gate: sci_gate.clone(),
+            gpe0: gpe::Registers::new(
+                GPE0_BLK_ADDR,
+                GPE0_BLK_LEN.into(),
+                sci_gate.new_input(),
+            ),
+        })
+    }
+
+    pub fn attach(self: &Arc<Self>, pio: &PioBus) {
+        let this = Arc::clone(self);
+        let gpe0_piofn =
+            Arc::new(move |port: u16, rwo: RWOp| this.gpe0.pio_rw(port, rwo))
+                as Arc<PioFn>;
+        pio.register(GPE0_BLK_ADDR, GPE0_BLK_LEN as u16, gpe0_piofn).unwrap();
     }
 
     pub fn sci_pin(&self) -> Arc<dyn IntrPin> {
         self.sci_gate.new_input()
     }
+
+    pub fn pci_hotplug(self: &Arc<Self>) {
+        self.gpe0.raise(GPE_PCI_HOTPLUG);
+    }
+}
+
+impl Lifecycle for Acpi {
+    fn type_name(&self) -> &'static str {
+        "acpi"
+    }
+    fn reset(&self) {
+        self.gpe0.reset();
+    }
+    // TODO(luiz): migrate
 }
