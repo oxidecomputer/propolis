@@ -399,7 +399,18 @@ impl PS2Ctrl {
     }
 
     fn pio_rw(&self, port: u16, rwo: RWOp) {
-        assert_eq!(rwo.len(), 1);
+        if rwo.len() != 1 {
+            // TODO: It would be nice to record an error somewhere.
+            //
+            // The guest has operated the PS/2 controller.. poorly. Port
+            // I/O to the controller's registers should be one byte wide. In
+            // practice I *think* wider accesses are masked down to the one byte
+            // that is actually wired up to the port, but behavior in this case
+            // is not tested. Either way, we haven't (?yet?) seen a PS/2 driver
+            // that does these kinds of accesses.
+            return;
+        }
+
         match port {
             ibmpc::PORT_PS2_DATA => match rwo {
                 RWOp::Read(ro) => ro.write_u8(self.data_read()),
