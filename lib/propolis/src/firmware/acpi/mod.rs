@@ -22,14 +22,18 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::common::{Lifecycle, RWOp};
 use crate::hw::chipset::i440fx;
 use crate::intr_pins::{IntrPin, OrGate};
+use crate::migrate::*;
+use crate::pio::{PioBus, PioFn};
 
 pub mod aml;
 pub mod dsdt;
 pub mod facs;
 pub mod fadt;
 pub mod file_sink;
+pub mod gpe;
 pub mod madt;
 pub mod rsdp;
 pub mod ssdt_edk2;
@@ -100,14 +104,124 @@ pub struct Acpi {
     //
     // Refer to Fig. 4.3 of the ACPI spec. v6.6 for more information.
     sci_gate: Arc<OrGate>,
+
+    // Register block for general-purpose events.
+    gpe0: gpe::RegisterBlock,
 }
 
 impl Acpi {
     pub fn create(sci_pin: Arc<dyn IntrPin>) -> Arc<Self> {
-        Arc::new(Self { sci_gate: OrGate::new(sci_pin) })
+        let sci_gate = OrGate::new(sci_pin);
+        let gpe0_sci_pin = sci_gate.new_input();
+
+        Arc::new(Self {
+            sci_gate,
+            gpe0: gpe::RegisterBlock::new(
+                GPE0_BLK_ADDR,
+                GPE0_BLK_LEN.into(),
+                gpe0_sci_pin,
+            ),
+        })
+    }
+
+    pub fn attach(self: &Arc<Self>, pio: &PioBus) {
+        let this = Arc::clone(self);
+        let gpe0_piofn =
+            Arc::new(move |port: u16, rwo: RWOp| this.gpe0.pio_rw(port, rwo))
+                as Arc<PioFn>;
+        pio.register(GPE0_BLK_ADDR, GPE0_BLK_LEN.into(), gpe0_piofn).unwrap();
     }
 
     pub fn sci_pin(&self) -> Arc<dyn IntrPin> {
         self.sci_gate.new_input()
+    }
+}
+
+impl Lifecycle for Acpi {
+    fn type_name(&self) -> &'static str {
+        "acpi"
+    }
+    fn reset(&self) {
+        self.gpe0.reset();
+    }
+    fn migrate(&self) -> Migrator<'_> {
+        Migrator::Multi(self)
+    }
+}
+
+impl MigrateMulti for Acpi {
+    fn export(
+        &self,
+        output: &mut PayloadOutputs,
+        ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
+        MigrateMulti::export(&self.gpe0, output, ctx)?;
+        Ok(())
+    }
+
+    fn import(
+        &self,
+        offer: &mut PayloadOffers,
+        ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
+        MigrateMulti::import(&self.gpe0, offer, ctx)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::intr_pins::test::TestPin;
+    use crate::migrate::test::MigrationDriver;
+
+    #[test]
+    fn migrate() {
+        let expected_gpe0_sts = [
+            0b0101_0000, // STS[0]
+            0b0010_1000, // STS[1]
+        ];
+        let expected_gpe0_en = [
+            0b0101_0100, // EN[0]
+            0b1010_1000, // EN[1]
+        ];
+
+        // Populate source.
+        let src = {
+            let pin = Arc::new(TestPin::new());
+            let src = Acpi::create(pin.clone());
+
+            (0..2).for_each(|i| {
+                // Platform raises STS bits.
+                gpe::test::raise_sts(&src.gpe0, i, expected_gpe0_sts[i]);
+                // Guest enables EN bits.
+                gpe::test::pio_write(
+                    &src.gpe0,
+                    gpe::Register::En(i),
+                    expected_gpe0_en[i],
+                );
+            });
+
+            src
+        };
+
+        // Create and migrate destination.
+        let pin = Arc::new(TestPin::new());
+        let dest = Acpi::create(pin.clone());
+        MigrationDriver::new().migrate(src.as_ref(), dest.as_ref());
+
+        (0..2).for_each(|i| {
+            assert_eq!(
+                gpe::test::pio_read(&dest.gpe0, gpe::Register::Sts(i)),
+                expected_gpe0_sts[i],
+                "unexpected value for STS[{i}]",
+            );
+            assert_eq!(
+                gpe::test::pio_read(&dest.gpe0, gpe::Register::En(i)),
+                expected_gpe0_en[i],
+                "unexpected value for EN[{i}]",
+            );
+        });
+        assert!(pin.is_asserted());
     }
 }
