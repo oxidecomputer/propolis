@@ -110,6 +110,12 @@ pub mod paths {
     // ACPI rev. 6.6 section 6.2.3 "_DIS (Disable)"
     path!(dis, "_DIS");
 
+    // Scope for general-purpose events.
+    //
+    // ACPI rev. 6.6 section 5.6.8 "Predefined ACPI Names for Objects, Methods,
+    // and Resources".
+    path!(gpe, "_GPE");
+
     // Object that evaluates to a device's Plug and Play hardware ID.
     //
     // ACPI rev. 6.6 section 6.1.5 "_HID (Hardware ID)"
@@ -174,7 +180,8 @@ pub mod names {
 /// Refer to [paths] for more information.
 pub mod methods {
     use super::paths;
-    use acpi_tables::{aml, Aml};
+    use crate::firmware::acpi::gpe::Event;
+    use acpi_tables::{aml, Aml, AmlSink};
 
     macro_rules! method {
         ($fn:ident) => {
@@ -194,6 +201,55 @@ pub mod methods {
     method!(prt);
     method!(srs);
     method!(sta);
+
+    /// Generates AML code for an ACPI method to handle a general-purpose event
+    /// (GPE). The method is named `_Exx` or `_Lxx` depending on the event
+    /// details.
+    pub struct GpeHandler<'a> {
+        gpe: Event,
+        body: Vec<&'a dyn Aml>,
+    }
+    impl<'a> GpeHandler<'a> {
+        pub fn new(gpe: Event, body: Vec<&'a dyn Aml>) -> Self {
+            Self { gpe, body }
+        }
+    }
+    impl Aml for GpeHandler<'_> {
+        fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
+            let name = format!(
+                "_{}{:02X}",
+                self.gpe.trigger().to_char(),
+                self.gpe.number(),
+            );
+            aml::Method::new(name.as_str().into(), 0, false, self.body.clone())
+                .to_aml_bytes(sink);
+        }
+    }
+
+    #[cfg(test)]
+    mod test {
+        use super::*;
+        use crate::firmware::acpi::gpe;
+
+        #[test]
+        fn gpe_handler() {
+            let e_01 = GpeHandler::new(
+                gpe::Event::new(0x01, gpe::Trigger::Edge),
+                vec![],
+            );
+            let l_0c = GpeHandler::new(
+                gpe::Event::new(0x0c, gpe::Trigger::Level),
+                vec![],
+            );
+
+            let mut aml = Vec::new();
+            e_01.to_aml_bytes(&mut aml);
+            l_0c.to_aml_bytes(&mut aml);
+
+            assert!(aml.windows(4).any(|w| w == b"_E01"));
+            assert!(aml.windows(4).any(|w| w == b"_L0C"));
+        }
+    }
 }
 
 /// Device ID and Plug and Play (`PNP`) device codes used throughout ACPI
