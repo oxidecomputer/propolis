@@ -393,6 +393,8 @@ impl MachineInitializer<'_> {
                 do_pci_attach(i440fx::DEFAULT_PM_BDF, chipset_pm.clone());
                 chipset_pm.attach(&self.machine.bus_pio);
 
+                acpi.attach(&self.machine.bus_pio);
+
                 self.devices.insert(
                     SpecKey::Name(chipset_hb.type_name().into()),
                     chipset_hb.clone(),
