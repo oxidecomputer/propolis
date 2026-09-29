@@ -23,7 +23,6 @@ bitflags! {
     /// Features supported by our implementation of virtqueues.
     pub struct Features: u64 {
         const RING_INDIRECT_DESC = 1 << 28;
-        const RING_EVENT_IDX = 1 << 29;
         const VERSION_1 = 1 << 32;
     }
 

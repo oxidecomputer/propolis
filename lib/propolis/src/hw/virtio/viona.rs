@@ -75,6 +75,12 @@ enum MqSetPairsCause {
 mod probes {
     fn virtio_viona_mq_set_use_pairs(cause: u8, npairs: u16) {}
     fn virtio_viona_cq_request(class: u8, command: u8) {}
+    // Probe that fires when the guest sets the VIRTIO features.
+    //
+    // id: The instance id of the link
+    // set: The features set by the guest.
+    // dev_feature: The features offered by the viona device.
+    fn virtio_viona_set_features(id: u32, set: u64, dev_feat: u64) {}
 }
 
 /// Types and so forth for supporting the control queue.
@@ -1095,12 +1101,41 @@ impl VirtioDevice for PciVirtioViona {
         self.virtio_state.mode()
     }
 
+    // Most features require support from both the VMM and the viona
+    // device. For example, NET_F_CTRL_RX requests are initially
+    // received by the VMM, but require viona ioctls affect them in
+    // the in-kernel device. Another example is the combination of
+    // NET_F_CTRL_VQ with F_EVENT_IDX; the later requires that all
+    // virt queues implement it. The VMM must implement it for the
+    // control queue, and the viona device must implement it for the
+    // Tx/Rx queues. Up to this point we have relied on the viona API
+    // number as a guarantee that the device provides a certain set of
+    // features. This has served us fine thus far, but the number
+    // provides no such guarantee, and it's a shaky assumption to
+    // make. There is another approach that is taken with F_EVENT_IDX:
+    // have the device advertise the feature so that the VMM can
+    // dynamically determine if it is available at runtime. Instead of
+    // assuming a feature based on a number, actually check for its
+    // existence at time of use.
+    //
+    // This does pose one problem based on how our current feature
+    // advertisement works where we simply biwise-OR the VMM and
+    // device features: a newer viona device could advertise a feature
+    // that also requires support in the VMM before the VMM actually
+    // supports it. In fact, this very scenario played out in the
+    // development of of F_EVENT_IDX, and lead to guest instances
+    // getting stuck in boot. For this reason we may want to define
+    // some sort of whitelist in the VMM to make sure that it has
+    // support for all features advertised to the guest, but that work
+    // has not been done yet.
     fn features(&self) -> u64 {
-        let mut feat = VIRTIO_NET_F_MAC
+        let mut feat = VIRTIO_F_EVENT_IDX
+            | VIRTIO_NET_F_MAC
             | VIRTIO_NET_F_STATUS
             | VIRTIO_NET_F_CTRL_VQ
             | VIRTIO_NET_F_CTRL_RX
             | VIRTIO_NET_F_MQ;
+
         // We drop the "VIRTIO_NET_F_MTU" flag from feat if we are unable to
         // query it. This can happen when executing within a non-global Zone.
         //
@@ -1108,18 +1143,28 @@ impl VirtioDevice for PciVirtioViona {
         if self.mtu.is_some() {
             feat |= VIRTIO_NET_F_MTU;
         }
-        feat |= self.dev_features;
 
-        feat
+        let dev_feat = self.dev_features;
+
+        // The viona device must also support F_EVENT_IDX in order to
+        // advertise it.
+        if (dev_feat & VIRTIO_F_EVENT_IDX) == 0 {
+            feat &= !VIRTIO_F_EVENT_IDX;
+        }
+
+        feat | dev_feat
     }
 
     fn set_features(&self, feat: u64) -> Result<(), ()> {
+        probes::virtio_viona_set_features!(|| (
+            self.hdl.instance_id().unwrap(),
+            feat,
+            self.dev_features,
+        ));
+
         self.hdl.set_features(feat).map_err(|_| ())?;
 
-        eprintln!("set_features: {:?}", feat);
-
         if (feat & VIRTIO_F_EVENT_IDX) != 0 {
-            eprintln!("set f_event_idx on all queues");
             self.virtio_state.queues.set_f_event_idx(true);
         }
 
@@ -1935,8 +1980,8 @@ mod test {
     use crate::hw::pci::Bdf;
     use crate::hw::virtio::pci::Status;
     use crate::hw::virtio::viona::{
-        VIRTIO_F_EVENT_IDX, VIRTIO_NET_F_CTRL_VQ, VIRTIO_NET_F_MAC,
-        VIRTIO_NET_F_MQ, VIRTIO_NET_F_STATUS,
+        VIRTIO_NET_F_CTRL_VQ, VIRTIO_NET_F_MAC, VIRTIO_NET_F_MQ,
+        VIRTIO_NET_F_STATUS,
     };
     use crate::hw::virtio::PciVirtioViona;
     use crate::lifecycle::Lifecycle;
@@ -2649,10 +2694,8 @@ mod test {
     }
 
     fn basic_operation_modern(test_ctx: TestCtx) -> TestCtx {
-        let expected_feats = VIRTIO_F_EVENT_IDX
-            | VIRTIO_NET_F_MAC
-            | VIRTIO_NET_F_STATUS
-            | VIRTIO_NET_F_CTRL_VQ;
+        let expected_feats =
+            VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_CTRL_VQ;
 
         // Go through setting up the virtio NIC in a few scenarios, but don't
         // try using it or setting any interesting features.
@@ -2695,8 +2738,7 @@ mod test {
     fn basic_operation_multiqueue(test_ctx: TestCtx) -> TestCtx {
         // All the same operation as `basic_operation_modern`, but with
         // `VIRTIO_NET_F_MQ`.
-        let expected_feats = VIRTIO_F_EVENT_IDX
-            | VIRTIO_NET_F_MAC
+        let expected_feats = VIRTIO_NET_F_MAC
             | VIRTIO_NET_F_STATUS
             | VIRTIO_NET_F_CTRL_VQ
             | VIRTIO_NET_F_MQ;
@@ -2747,10 +2789,8 @@ mod test {
     fn multiqueue_migration(test_ctx: TestCtx) -> TestCtx {
         // All the same operation as `basic_operation_modern`, but with
         // `VIRTIO_NET_F_MQ`.
-        let expected_feats = VIRTIO_F_EVENT_IDX
-            | VIRTIO_NET_F_MAC
-            | VIRTIO_NET_F_STATUS
-            | VIRTIO_NET_F_CTRL_VQ;
+        let expected_feats =
+            VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_CTRL_VQ;
 
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);
@@ -2814,10 +2854,8 @@ mod test {
     /// but were still "enabled" because reset did not cover them, and would
     /// make guests determine the device was simply broken. They were right!
     fn multiqueue_migration_after_boot(test_ctx: TestCtx) -> TestCtx {
-        let expected_feats = VIRTIO_F_EVENT_IDX
-            | VIRTIO_NET_F_MAC
-            | VIRTIO_NET_F_STATUS
-            | VIRTIO_NET_F_CTRL_VQ;
+        let expected_feats =
+            VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS | VIRTIO_NET_F_CTRL_VQ;
 
         let mut driver = test_ctx.create_driver();
         driver.modern_device_init(expected_feats | VIRTIO_NET_F_MQ);

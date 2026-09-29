@@ -197,9 +197,6 @@ fn minor(meta: &std::fs::Metadata) -> u32 {
 #[repr(u32)]
 #[derive(Copy, Clone)]
 pub enum ApiVersion {
-    /// Adds support for F_EVENT_IDX. No change to API or data structures.
-    V8 = 8,
-
     /// Adds multi-queue support and change the data structure for per-queue
     /// interrupt polling to a compact bitmap.
     V6 = 6,
@@ -221,7 +218,7 @@ pub enum ApiVersion {
 }
 impl ApiVersion {
     pub const fn current() -> Self {
-        Self::V8
+        Self::V6
     }
 }
 impl PartialEq<ApiVersion> for u32 {
