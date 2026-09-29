@@ -20,7 +20,7 @@ use crate::hw::pci::topology::{LogicalBusId, RoutedBusId};
 use crate::hw::pci::{
     self, Bdf, INTxPinID, LintrCfg, PcieCfgDecoder, PioCfgDecoder,
 };
-use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin, NoOpPin};
+use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin, NoOpPin, OrGate};
 use crate::lifecycle;
 use crate::migrate::*;
 use crate::mmio::MmioFn;
@@ -100,12 +100,14 @@ impl IntrPin for LNKPin {
 
 struct IrqConfig {
     pic: Arc<LegacyPIC>,
-
     lnk_pins: [Arc<LNKPin>; 4],
 
-    #[allow(unused)]
-    // XXX: wire up SCI notifications
-    sci_pin: Arc<LNKPin>,
+    // The SCI state can be driven by multiple inputs that OR'ed to determine
+    // if an interrupt should happen, so model it as an OrGate and hand out new
+    // inputs for components that connect to the SCI pin.
+    //
+    // Refer to Fig. 4.3 of the ACPI spec. v6.6 for more information.
+    sci_pin: Arc<OrGate>,
 }
 impl IrqConfig {
     fn create(hdl: Arc<VmmHdl>) -> Arc<Self> {
@@ -120,7 +122,7 @@ impl IrqConfig {
                 Arc::new(LNKPin::new()),
                 Arc::new(LNKPin::new()),
             ],
-            sci_pin,
+            sci_pin: OrGate::new(sci_pin),
         })
     }
     fn set_lnk_route(&self, idx: usize, irq: Option<u8>) {
@@ -384,6 +386,10 @@ impl Piix3Lpc {
             post_code: AtomicU8::new(0),
             irq_config,
         })
+    }
+
+    pub fn sci_pin(&self) -> Arc<dyn IntrPin> {
+        self.irq_config.sci_pin.new_input()
     }
 
     pub fn attach(self: &Arc<Self>, pio: &PioBus) {

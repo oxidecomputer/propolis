@@ -241,6 +241,106 @@ struct FPInner {
     func: Box<dyn Fn(bool) + Send + 'static>,
 }
 
+/// Aggregates multiple input pins into a single `output` [IntrPin] using an OR
+/// operation. Inputs are also [IntrPin] themselves. Use [OrGate::new_input] to
+/// retrieve a new input.
+///
+/// The gate is considered stateless for migration purposes. It's expected that
+/// the components connected to the inputs manage and reconstruct their own
+/// state after a migration.
+///
+/// The current implementation uses a single [std::sync::Mutex], and is
+/// overly-protective of concurrent operations. It would be possible to allow
+/// inputs to change independently, but we would need to be careful to also
+/// synchronize updates to the output pin.
+///
+/// Internal state is stored in a `<Vec<bool>>` to make the code easier to read
+/// and maintain, but it would be possible to use something like a
+/// [std::sync::atomic::AtomicU64] bitmask instead.
+pub struct OrGate {
+    inputs: Mutex<Vec<bool>>,
+    output: Arc<dyn IntrPin>,
+}
+impl OrGate {
+    pub fn new(pin: Arc<dyn IntrPin>) -> Arc<Self> {
+        Arc::new(Self { output: pin, inputs: Mutex::new(vec![]) })
+    }
+
+    // The gate is expected to be constructed once during VM initialization, so
+    // inputs are currently never removed.
+    pub fn new_input(self: &Arc<Self>) -> Arc<dyn IntrPin> {
+        let mut inputs = self.inputs.lock().unwrap();
+        let pin = Arc::new(OrGatePin { idx: inputs.len(), gate: self.clone() });
+        inputs.push(false);
+        pin
+    }
+
+    fn set_input_state(&self, input: usize, is_asserted: bool) {
+        let mut inputs = self.inputs.lock().unwrap();
+        inputs[input] = is_asserted;
+
+        // Only modify the output if the gate state actually changed to avoid
+        // spurious edges.
+        let should_assert = OrGate::is_asserted(&inputs);
+        if should_assert != self.output.is_asserted() {
+            self.output.set_state(should_assert);
+        }
+    }
+
+    fn pulse_input(&self) {
+        let inputs = self.inputs.lock().unwrap();
+        if !OrGate::is_asserted(&inputs) {
+            self.output.pulse();
+        }
+    }
+
+    fn is_input_asserted(&self, input: usize) -> bool {
+        let inputs = self.inputs.lock().unwrap();
+        inputs[input]
+    }
+
+    fn import_input_state(&self, input: usize, is_asserted: bool) {
+        let mut inputs = self.inputs.lock().unwrap();
+        inputs[input] = is_asserted;
+
+        let should_assert = OrGate::is_asserted(&inputs);
+        if should_assert != self.output.is_asserted() {
+            self.output.import_state(should_assert);
+        }
+    }
+
+    fn is_asserted(inputs: &[bool]) -> bool {
+        inputs.contains(&true)
+    }
+}
+
+pub struct OrGatePin {
+    idx: usize,
+    gate: Arc<OrGate>,
+}
+impl IntrPin for OrGatePin {
+    fn assert(&self) {
+        self.gate.set_input_state(self.idx, true);
+    }
+    fn deassert(&self) {
+        self.gate.set_input_state(self.idx, false);
+    }
+    fn pulse(&self) {
+        self.gate.pulse_input();
+    }
+    fn is_asserted(&self) -> bool {
+        self.gate.is_input_asserted(self.idx)
+    }
+    fn import_state(&self, is_asserted: bool) {
+        self.gate.import_input_state(self.idx, is_asserted)
+    }
+}
+impl Drop for OrGatePin {
+    fn drop(&mut self) {
+        self.deassert();
+    }
+}
+
 pub struct NoOpPin {}
 
 impl IntrPin for NoOpPin {
@@ -251,4 +351,472 @@ impl IntrPin for NoOpPin {
         false
     }
     fn import_state(&self, _: bool) {}
+}
+
+#[cfg(test)]
+pub mod test {
+    use super::*;
+
+    use std::hint;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Barrier;
+    use std::thread;
+
+    pub struct TestPin {
+        state: Mutex<TestPinState>,
+    }
+    impl TestPin {
+        pub fn new() -> Self {
+            Self {
+                state: Mutex::new(TestPinState {
+                    is_asserted: false,
+                    rises: 0,
+                    falls: 0,
+                    pulses: 0,
+                }),
+            }
+        }
+
+        // Number of times the pin went from deasserted to asserted.
+        pub fn rises(&self) -> usize {
+            self.state.lock().unwrap().rises
+        }
+
+        // Number of times the pin went from asserted to deasserted.
+        pub fn falls(&self) -> usize {
+            self.state.lock().unwrap().falls
+        }
+
+        // Number of times the pin was pulsed. A pulse also generates a rise
+        // and a fall.
+        pub fn pulses(&self) -> usize {
+            self.state.lock().unwrap().pulses
+        }
+    }
+    impl IntrPin for TestPin {
+        fn assert(&self) {
+            self.state.lock().unwrap().assert();
+        }
+        fn deassert(&self) {
+            self.state.lock().unwrap().deassert();
+        }
+        fn pulse(&self) {
+            self.state.lock().unwrap().pulse();
+        }
+        fn is_asserted(&self) -> bool {
+            self.state.lock().unwrap().is_asserted
+        }
+        fn import_state(&self, is_asserted: bool) {
+            self.state.lock().unwrap().import_state(is_asserted);
+        }
+    }
+
+    struct TestPinState {
+        is_asserted: bool,
+        rises: usize,
+        falls: usize,
+        pulses: usize,
+    }
+    impl TestPinState {
+        fn assert(&mut self) {
+            if !self.is_asserted {
+                self.is_asserted = true;
+                self.rises += 1;
+            }
+        }
+        fn deassert(&mut self) {
+            if self.is_asserted {
+                self.is_asserted = false;
+                self.falls += 1;
+            }
+        }
+        fn pulse(&mut self) {
+            if !self.is_asserted {
+                self.rises += 1;
+                self.falls += 1;
+                self.pulses += 1;
+            }
+        }
+        fn import_state(&mut self, is_asserted: bool) {
+            self.is_asserted = is_asserted;
+        }
+    }
+
+    // Type used to control an OrGate pin during tests.
+    type PinSignal = Arc<dyn Fn(&Arc<dyn IntrPin>, usize) + Send + Sync>;
+
+    // Test harness that provides an OrGate connected to a TestPin. Inputs
+    // are controlled using PinSignal closures and are synchronized with a
+    // shared clock. The PinSignal closure receives the current tick as
+    // input.
+    //
+    // Both the gate and the output pin can be accessed for asserting the
+    // overall state of the system.
+    struct OrGateDriver {
+        gate: Arc<OrGate>,
+        output: Arc<TestPin>,
+        start_asserted: bool,
+
+        pins: Vec<Arc<dyn IntrPin>>,
+        signals: Vec<PinSignal>,
+    }
+    impl OrGateDriver {
+        // Returns a new OrGateDriver with all pins deasserted.
+        fn new() -> Self {
+            Self::new_inner(false)
+        }
+
+        // Returns a new OrGateDriver with all pins asserted.
+        fn new_asserted() -> Self {
+            Self::new_inner(true)
+        }
+
+        fn new_inner(start_asserted: bool) -> Self {
+            let output = Arc::new(TestPin::new());
+            Self {
+                output: output.clone(),
+                gate: OrGate::new(output.clone()),
+                start_asserted,
+                pins: vec![],
+                signals: vec![],
+            }
+        }
+
+        fn add_signal(&mut self, f: PinSignal) {
+            let pin = self.gate.new_input();
+            self.pins.push(pin);
+            self.signals.push(f);
+        }
+
+        fn run(&self, ticks: usize) {
+            // The last thread to arrive at a Barrier wakes the other threads
+            // and proceeds without locking. This difference can make timing
+            // slightly different between inputs.
+            //
+            // The two Barriers and AtomicBool below are used to achieve a more
+            // consistent timing. Threads are controlled by a driver loop that
+            // runs in the main thread.
+            //
+            // Pin threads first block on the `start` `Barrier` and then
+            // spinlock on the `go` `AtomicBool` until the driver flips its
+            // value. This ensures all threads are awake and ready to poke at
+            // their pins.
+            //
+            // The driver then waits for all threads to complete before
+            // flipping `go` again for the next tick.
+            let start = Arc::new(Barrier::new(self.pins.len() + 1));
+            let done = Arc::new(Barrier::new(self.pins.len() + 1));
+            let go = Arc::new(AtomicBool::new(false));
+
+            let threads = self
+                .pins
+                .iter()
+                .enumerate()
+                .map(|(pin_idx, pin)| {
+                    if self.start_asserted {
+                        pin.import_state(true);
+                    }
+
+                    let start = start.clone();
+                    let done = done.clone();
+                    let go = go.clone();
+                    let pin = pin.clone();
+                    let f = self.signals[pin_idx].clone();
+
+                    thread::spawn(move || {
+                        for i in 0..ticks {
+                            // Live-wait for all other threads and the Go!
+                            // signal from the driver.
+                            start.wait();
+                            while !go.load(Ordering::Acquire) {
+                                hint::spin_loop();
+                            }
+
+                            f(&pin, i);
+
+                            // Block until everyone is ready.
+                            done.wait();
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            for _ in 0..ticks {
+                go.store(false, Ordering::Release);
+                start.wait();
+                go.store(true, Ordering::Release);
+                done.wait();
+            }
+
+            threads.into_iter().for_each(|t| t.join().unwrap());
+        }
+    }
+
+    #[test]
+    fn test_or_gate() {
+        let output_pin = Arc::new(TestPin::new());
+        let or_gate = OrGate::new(output_pin.clone());
+
+        let pin1 = or_gate.new_input();
+        let pin2 = or_gate.new_input();
+        let pin3 = or_gate.new_input();
+
+        // Assert pin1.
+        // Expect gate output to go high.
+        pin1.assert();
+        assert!(pin1.is_asserted());
+        assert!(output_pin.is_asserted());
+        assert_eq!(output_pin.rises(), 1);
+        assert_eq!(output_pin.falls(), 0);
+
+        // Assert pin2.
+        // Expect gate output to remain high and not re-assert.
+        pin2.assert();
+        assert!(pin2.is_asserted());
+        assert!(output_pin.is_asserted());
+        assert_eq!(output_pin.rises(), 1);
+        assert_eq!(output_pin.falls(), 0);
+
+        // Deassert pin1.
+        // Expect gate output to remain high and not re-assert.
+        pin1.deassert();
+        assert!(!pin1.is_asserted());
+        assert!(output_pin.is_asserted());
+        assert_eq!(output_pin.rises(), 1);
+        assert_eq!(output_pin.falls(), 0);
+
+        // Deassert pin2.
+        // Expect gate output to go low.
+        pin2.deassert();
+        assert!(!pin2.is_asserted());
+        assert!(!output_pin.is_asserted());
+        assert_eq!(output_pin.rises(), 1);
+        assert_eq!(output_pin.falls(), 1);
+
+        // Deassert already deasserted pin3 while gate output is low.
+        // Expect no-op.
+        pin3.deassert();
+        assert!(!pin3.is_asserted());
+        assert!(!output_pin.is_asserted());
+        assert_eq!(output_pin.rises(), 1);
+        assert_eq!(output_pin.falls(), 1);
+    }
+
+    #[test]
+    fn test_or_gate_pulse() {
+        let output_pin = Arc::new(TestPin::new());
+        let or_gate = OrGate::new(output_pin.clone());
+
+        let pin1 = or_gate.new_input();
+        let pin2 = or_gate.new_input();
+
+        // Pulse while gate output is low.
+        // Expect output pulse.
+        pin1.pulse();
+        assert!(!output_pin.is_asserted());
+        assert_eq!(output_pin.rises(), 1);
+        assert_eq!(output_pin.falls(), 1);
+        assert_eq!(output_pin.pulses(), 1);
+
+        // Pulse while gate output is high.
+        // Expect no-op.
+        pin1.assert();
+        pin2.pulse();
+        assert!(output_pin.is_asserted());
+        assert_eq!(output_pin.rises(), 2);
+        assert_eq!(output_pin.falls(), 1);
+        assert_eq!(output_pin.pulses(), 1);
+
+        // Pulse pin that is already high.
+        // Expect no-op.
+        assert!(pin1.is_asserted());
+        pin1.pulse();
+        assert!(output_pin.is_asserted());
+        assert_eq!(output_pin.rises(), 2);
+        assert_eq!(output_pin.falls(), 1);
+        assert_eq!(output_pin.pulses(), 1);
+    }
+
+    #[test]
+    fn test_or_gate_drop_input() {
+        let output_pin = Arc::new(TestPin::new());
+        let or_gate = OrGate::new(output_pin.clone());
+
+        let pin1 = or_gate.new_input();
+        let pin2 = or_gate.new_input();
+        let pin3 = or_gate.new_input();
+
+        // Assert two of the inputs.
+        pin1.assert();
+        pin2.assert();
+        assert!(output_pin.is_asserted());
+
+        // Drop one asserted input.
+        // Expect gate output to remain high.
+        drop(pin1);
+        assert!(output_pin.is_asserted());
+
+        // Drop the other asserted input.
+        // Expect gate output to go low.
+        drop(pin2);
+        assert!(!output_pin.is_asserted());
+
+        // Drop last input.
+        // Expect gate output to remain unchanged.
+        drop(pin3);
+        assert!(!output_pin.is_asserted());
+    }
+
+    #[test]
+    fn test_or_gate_import_state() {
+        let output_pin = Arc::new(TestPin::new());
+        let or_gate = OrGate::new(output_pin.clone());
+
+        let pin1 = or_gate.new_input();
+        let pin2 = or_gate.new_input();
+        let pin3 = or_gate.new_input();
+
+        // Import pin states.
+        // Expect output state to change without an edge.
+        pin1.import_state(false);
+        assert!(!output_pin.is_asserted());
+        assert_eq!(output_pin.rises(), 0);
+
+        pin2.import_state(true);
+        assert!(output_pin.is_asserted());
+        assert_eq!(output_pin.rises(), 0);
+
+        pin3.import_state(false);
+        assert!(output_pin.is_asserted());
+        assert_eq!(output_pin.rises(), 0);
+    }
+
+    #[test]
+    fn test_or_gate_concurrent_assert() {
+        let mut driver = OrGateDriver::new();
+
+        // Assert all pins concurrently.
+        // Expect output to go high just once.
+        (0..10).for_each(|_| {
+            driver.add_signal(Arc::new(move |pin, _| {
+                pin.assert();
+            }));
+        });
+        driver.run(100);
+
+        assert!(driver.output.is_asserted());
+        assert_eq!(driver.output.rises(), 1);
+        assert_eq!(driver.output.falls(), 0);
+    }
+
+    #[test]
+    fn test_or_gate_concurrent_deassert() {
+        let mut driver = OrGateDriver::new_asserted();
+
+        // Deassert all pins concurrently.
+        // Expect output to go low just once.
+        (0..10).for_each(|_| {
+            driver.add_signal(Arc::new(move |pin, _| {
+                pin.deassert();
+            }));
+        });
+        driver.run(100);
+
+        assert!(!driver.output.is_asserted());
+        assert_eq!(driver.output.rises(), 0);
+        assert_eq!(driver.output.falls(), 1);
+    }
+
+    #[test]
+    fn test_or_gate_concurrent_pulse() {
+        let mut driver = OrGateDriver::new();
+
+        // Pulse all pins concurrently.
+        // Expect all pulses to be observed by the output.
+        (0..10).for_each(|_| {
+            driver.add_signal(Arc::new(move |pin, _| {
+                pin.pulse();
+            }));
+        });
+        driver.run(100);
+
+        assert!(!driver.output.is_asserted());
+        assert_eq!(driver.output.pulses(), 1000);
+    }
+
+    // Assert and deassert two pins with square waves in lockstep.
+    //
+    // Expect output to match the input square wave. The thread that first
+    // transition its pin will drive the output while the other one will be a
+    // no-op.
+    //
+    //         ┌─┐ ┌─┐ ┌─┐ ┌─┐
+    //   pin1 ─┘ └─┘ └─┘ └─┘ └─
+    //         ┌─┐ ┌─┐ ┌─┐ ┌─┐
+    //   pin2 ─┘ └─┘ └─┘ └─┘ └─
+    //         ┌─┐ ┌─┐ ┌─┐ ┌─┐
+    // output ─┘ └─┘ └─┘ └─┘ └─
+    #[test]
+    fn test_or_gate_concurrent_square_wave() {
+        let mut driver = OrGateDriver::new();
+        driver.add_signal(Arc::new(move |pin, i| {
+            if i % 2 == 0 {
+                pin.assert();
+            } else {
+                pin.deassert();
+            }
+        }));
+        driver.add_signal(Arc::new(move |pin, i| {
+            if i % 2 == 0 {
+                pin.assert();
+            } else {
+                pin.deassert();
+            }
+        }));
+        driver.run(100);
+
+        assert!(!driver.output.is_asserted());
+        assert_eq!(driver.output.rises(), 50);
+        assert_eq!(driver.output.falls(), 50);
+    }
+
+    // Assert and deassert a pin with a square wave while pulsing another pin.
+    //
+    // There are four possible outcomes on each tick:
+    //   1. pin1 asserts   _after_  pin2 pulses => pulsed while low, output pulses.
+    //   2. pin1 deasserts _after_  pin2 pulses => pulsed while high, no-op.
+    //   3. pin1 asserts   _before_ pin2 pulses => pulsed while high, no-op.
+    //   4. pin1 deasserts _before_ pin2 pulses => pulsed while low, output pulses.
+    //
+    //         ┌─┐ ┌─┐
+    //   pin1 ─┘ └─┘ └──
+    //         ▲ ▲ ▲ ▲
+    //   pin2 ─┴─┴─┴─┴──
+    //         ▲┌┐ ┌─┐▲
+    // output ─┴┘└─┘ └┴─
+    //
+    // In theory, we should expect about half the pulses to cause the output to
+    // also pulse but, in practice, the threads will race to lock the gate, so
+    // the actual pulse count is non-deterministic and flaky to assert.
+    //
+    // Expect to at least not have any spurious edges or pulses.
+    #[test]
+    fn test_or_gate_concurrent_pulse_with_square_wave() {
+        let mut driver = OrGateDriver::new();
+        driver.add_signal(Arc::new(move |pin, i| {
+            if i % 2 == 0 {
+                pin.assert();
+            } else {
+                pin.deassert();
+            }
+        }));
+        driver.add_signal(Arc::new(move |pin, _| {
+            pin.pulse();
+        }));
+        driver.run(100);
+
+        assert!(!driver.output.is_asserted());
+        assert_eq!(driver.output.rises(), driver.output.falls());
+        assert!(driver.output.pulses() <= 100);
+    }
 }
