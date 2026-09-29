@@ -104,9 +104,8 @@ struct IrqConfig {
 }
 impl IrqConfig {
     fn create(hdl: Arc<VmmHdl>) -> Arc<Self> {
-        let pic = LegacyPIC::new(hdl);
         Arc::new(Self {
-            pic,
+            pic: LegacyPIC::new(hdl),
             lnk_pins: [
                 Arc::new(LNKPin::new()),
                 Arc::new(LNKPin::new()),

@@ -6,6 +6,7 @@ individual files for details.
 
 ## Scripts
 
+- `gpe-trace.d`: Traces changes to the ACPI general-purpose event registers.
 - `live-migration-times.d`: Measure the length of individual phases of live
   migration on a running propolis-server.
 - `nvme_trace.d`: Measure propolis-emulated NVMe read/write latency.

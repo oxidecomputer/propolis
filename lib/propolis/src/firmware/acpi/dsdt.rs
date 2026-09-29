@@ -215,6 +215,15 @@ impl<'a> Aml for Dsdt<'a> {
         SleepState::new("_S0_", PM1A_CNT_SLP_TYP_S0).to_aml_bytes(&mut dsdt);
         SleepState::new("_S5_", PM1A_CNT_SLP_TYP_S5).to_aml_bytes(&mut dsdt);
 
+        aml::Scope::new(
+            paths::gpe(),
+            vec![&methods::GpeHandler::new(
+                super::Gpe::PciHotplug.event(),
+                vec![&aml::Name::new("TEST".into(), &0_u8)],
+            )],
+        )
+        .to_aml_bytes(&mut dsdt);
+
         // System bus namespace (\_SB).
         aml::Scope::new(
             "_SB_".into(),

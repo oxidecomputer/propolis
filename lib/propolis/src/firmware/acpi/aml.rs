@@ -110,6 +110,12 @@ pub mod paths {
     // ACPI rev. 6.6 section 6.2.3 "_DIS (Disable)"
     path!(dis, "_DIS");
 
+    // Scope for general-purpose events.
+    //
+    // ACPI rev. 6.6 section 5.6.8 "Predefined ACPI Names for Objects, Methods,
+    // and Resources".
+    path!(gpe, "_GPE");
+
     // Object that evaluates to a device's Plug and Play hardware ID.
     //
     // ACPI rev. 6.6 section 6.1.5 "_HID (Hardware ID)"
@@ -174,7 +180,8 @@ pub mod names {
 /// Refer to [paths] for more information.
 pub mod methods {
     use super::paths;
-    use acpi_tables::{aml, Aml};
+    use crate::firmware::acpi::gpe::Event;
+    use acpi_tables::{aml, Aml, AmlSink};
 
     macro_rules! method {
         ($fn:ident) => {
@@ -194,6 +201,29 @@ pub mod methods {
     method!(prt);
     method!(srs);
     method!(sta);
+
+    /// Generates AML code for an ACPI method to handle a general-purpose
+    /// event (GPE).
+    pub struct GpeHandler<'a> {
+        gpe: Event,
+        body: Vec<&'a dyn Aml>,
+    }
+    impl<'a> GpeHandler<'a> {
+        pub fn new(gpe: Event, body: Vec<&'a dyn Aml>) -> Self {
+            Self { gpe, body }
+        }
+    }
+    impl Aml for GpeHandler<'_> {
+        fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
+            let name = format!(
+                "_{}{:02X}",
+                self.gpe.trigger().to_char(),
+                self.gpe.number(),
+            );
+            aml::Method::new(name.as_str().into(), 0, false, self.body.clone())
+                .to_aml_bytes(sink);
+        }
+    }
 }
 
 /// Device ID and Plug and Play (`PNP`) device codes used throughout ACPI
