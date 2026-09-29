@@ -18,15 +18,21 @@
 //!
 //! <https://github.com/oxidecomputer/edk2/tree/propolis/edk2-stable202105/OvmfPkg/AcpiTables>
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
+use crate::common::{Lifecycle, RWOp};
 use crate::hw::chipset::i440fx;
+use crate::intr_pins::IntrPin;
+use crate::pio::{PioBus, PioFn};
 
 pub mod aml;
 pub mod dsdt;
 pub mod facs;
 pub mod fadt;
 pub mod file_sink;
+pub mod gpe;
 pub mod madt;
 pub mod rsdp;
 pub mod ssdt_edk2;
@@ -89,3 +95,39 @@ const LOCAL_APIC_LEN: u32 = 0x10_0000;
 // information.
 const GPE0_BLK_ADDR: u16 = 0xafe0;
 const GPE0_BLK_LEN: u8 = 4;
+
+const GPE_PCI_HOTPLUG: u16 = 1;
+
+pub struct Acpi {
+    gpe0: gpe::Gpe,
+}
+
+impl Acpi {
+    pub fn create(sci_pin: Arc<dyn IntrPin>) -> Arc<Self> {
+        Arc::new(Self {
+            gpe0: gpe::Gpe::new(GPE0_BLK_ADDR, GPE0_BLK_LEN as usize, sci_pin),
+        })
+    }
+
+    pub fn attach(self: &Arc<Self>, pio: &PioBus) {
+        let this = Arc::clone(self);
+        let gpe0_piofn =
+            Arc::new(move |port: u16, rwo: RWOp| this.gpe0.pio_rw(port, rwo))
+                as Arc<PioFn>;
+        pio.register(GPE0_BLK_ADDR, GPE0_BLK_LEN as u16, gpe0_piofn).unwrap();
+    }
+
+    pub fn pci_hotplug(self: &Arc<Self>) {
+        self.gpe0.raise(GPE_PCI_HOTPLUG);
+    }
+}
+
+impl Lifecycle for Acpi {
+    fn type_name(&self) -> &'static str {
+        "acpi"
+    }
+    fn reset(&self) {
+        self.gpe0.reset();
+    }
+    // TODO(luiz): migrate
+}

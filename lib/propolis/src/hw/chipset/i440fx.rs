@@ -100,11 +100,7 @@ impl IntrPin for LNKPin {
 
 struct IrqConfig {
     pic: Arc<LegacyPIC>,
-
     lnk_pins: [Arc<LNKPin>; 4],
-
-    #[allow(unused)]
-    // XXX: wire up SCI notifications
     sci_pin: Arc<LNKPin>,
 }
 impl IrqConfig {
@@ -384,6 +380,10 @@ impl Piix3Lpc {
             post_code: AtomicU8::new(0),
             irq_config,
         })
+    }
+
+    pub fn sci_pin(&self) -> Arc<dyn IntrPin> {
+        Arc::clone(&self.irq_config.sci_pin) as Arc<dyn IntrPin>
     }
 
     pub fn attach(self: &Arc<Self>, pio: &PioBus) {

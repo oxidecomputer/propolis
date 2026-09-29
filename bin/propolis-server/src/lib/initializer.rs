@@ -342,6 +342,9 @@ impl MachineInitializer<'_> {
                     }),
                 ));
 
+                let chipset_lpc =
+                    i440fx::Piix3Lpc::create(self.machine.hdl.clone());
+                let acpi = acpi::Acpi::create(chipset_lpc.sci_pin());
                 let chipset_hb = i440fx::I440FxHostBridge::create(
                     pci_topology,
                     i440fx::Opts {
@@ -350,8 +353,6 @@ impl MachineInitializer<'_> {
                         enable_pcie: i440fx.enable_pcie,
                     },
                 );
-                let chipset_lpc =
-                    i440fx::Piix3Lpc::create(self.machine.hdl.clone());
 
                 let chipset_pm = i440fx::Piix3PM::create(
                     self.machine.hdl.clone(),
@@ -368,6 +369,8 @@ impl MachineInitializer<'_> {
                 };
 
                 // Attach chipset devices to PCI and buses
+                acpi.attach(&self.machine.bus_pio);
+
                 do_pci_attach(i440fx::DEFAULT_HB_BDF, chipset_hb.clone());
                 chipset_hb.attach(self.machine);
 
@@ -377,6 +380,8 @@ impl MachineInitializer<'_> {
                 do_pci_attach(i440fx::DEFAULT_PM_BDF, chipset_pm.clone());
                 chipset_pm.attach(&self.machine.bus_pio);
 
+                self.devices
+                    .insert(SpecKey::Name(acpi.type_name().into()), acpi);
                 self.devices.insert(
                     SpecKey::Name(chipset_hb.type_name().into()),
                     chipset_hb.clone(),

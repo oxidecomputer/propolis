@@ -252,3 +252,72 @@ impl IntrPin for NoOpPin {
     }
     fn import_state(&self, _: bool) {}
 }
+
+#[cfg(test)]
+pub mod test {
+    use super::*;
+
+    struct TestPinState {
+        is_asserted: bool,
+        assert_count: usize,
+        deassert_count: usize,
+        pulse_count: usize,
+    }
+    impl TestPinState {
+        fn assert(&mut self) {
+            self.is_asserted = true;
+            self.assert_count += 1;
+        }
+        fn deassert(&mut self) {
+            self.is_asserted = false;
+            self.deassert_count += 1;
+        }
+        fn pulse(&mut self) {
+            if !self.is_asserted {
+                self.pulse_count += 1;
+            }
+        }
+    }
+
+    pub struct TestPin {
+        state: Mutex<TestPinState>,
+    }
+    impl TestPin {
+        pub fn new() -> Self {
+            Self {
+                state: Mutex::new(TestPinState {
+                    is_asserted: false,
+                    assert_count: 0,
+                    deassert_count: 0,
+                    pulse_count: 0,
+                }),
+            }
+        }
+        pub fn assert_count(&self) -> usize {
+            self.state.lock().unwrap().assert_count
+        }
+        pub fn deassert_count(&self) -> usize {
+            self.state.lock().unwrap().deassert_count
+        }
+        pub fn pulse_count(&self) -> usize {
+            self.state.lock().unwrap().pulse_count
+        }
+    }
+    impl IntrPin for TestPin {
+        fn assert(&self) {
+            self.state.lock().unwrap().assert();
+        }
+        fn deassert(&self) {
+            self.state.lock().unwrap().deassert();
+        }
+        fn pulse(&self) {
+            self.state.lock().unwrap().pulse();
+        }
+        fn is_asserted(&self) -> bool {
+            self.state.lock().unwrap().is_asserted
+        }
+        fn import_state(&self, _: bool) {
+            todo!("implement when needed for testing");
+        }
+    }
+}
