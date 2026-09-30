@@ -12,8 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::serial::Serial;
 use crate::spec::{self, Spec, StorageBackend, StorageDevice};
 use crate::stats::{
-    track_network_interface_kstats, track_vcpu_kstats, VirtualDiskProducer,
-    VirtualMachine,
+    track_network_interface_kstats, track_vcpu_kstats, BlockMetrics,
+    VirtualDisk, VirtualMachine,
 };
 use crate::vm::{
     BlockBackendMap, CrucibleBackendMap, DeviceMap, NetworkInterfaceIds,
@@ -24,12 +24,15 @@ use crucible_client_types::VolumeConstructionRequest;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use oximeter_instruments::kstat::KstatSampler;
+use propolis::attestation;
+use propolis::attestation::server::AttestationServerConfig;
+use propolis::attestation::server::AttestationSock;
 use propolis::block;
 use propolis::chardev::{self, BlockingSource, Source};
-use propolis::common::{Lifecycle, GB, MB, PAGE_SIZE};
+use propolis::common::{DeviceMetadataMap, Lifecycle, GB, MB, PAGE_SIZE};
 use propolis::cpuid::TopoKind;
 use propolis::enlightenment::Enlightenment;
-use propolis::firmware::smbios;
+use propolis::firmware::{acpi, smbios};
 use propolis::hw::bhyve::BhyveHpet;
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ibmpc;
@@ -42,13 +45,14 @@ use propolis::hw::qemu::{
     fwcfg::{self, Entry},
     ramfb,
 };
-use propolis::hw::uart::LpcUart;
+use propolis::hw::uart::{LpcUart, LpcUartMetadata};
 use propolis::hw::{nvme, virtio};
 use propolis::intr_pins;
 use propolis::vmm::{self, Builder, Machine};
+use propolis::vsock::GuestCid;
+use propolis_api_types::instance::InstanceProperties;
 use propolis_api_types::instance_spec::components::devices::SerialPortNumber;
 use propolis_api_types::instance_spec::{self, SpecKey};
-use propolis_api_types::InstanceProperties;
 use propolis_types::{CpuidIdent, CpuidVendor};
 use slog::info;
 use strum::IntoEnumIterator;
@@ -94,14 +98,26 @@ pub enum MachineInitError {
     #[error("boot order entry {0:?} does not refer to an attached disk")]
     BootOrderEntryWithoutDevice(SpecKey),
 
+    #[error(
+        "disk device {device_id:?} refers to a \
+         non-existent block backend {backend_id:?}"
+    )]
+    DeviceWithoutBlockBackend { device_id: SpecKey, backend_id: SpecKey },
+
     #[error("boot entry {0:?} refers to a device on non-zero PCI bus {1}")]
     BootDeviceOnDownstreamPciBus(SpecKey, u8),
+
+    #[error("failed to generate ACPI tables: {0}")]
+    AcpiTableError(#[from] fwcfg::formats::AcpiTablesError),
 
     #[error("failed to insert {0} fwcfg entry")]
     FwcfgInsertFailed(&'static str, #[source] fwcfg::InsertError),
 
     #[error("failed to specialize CPUID for vcpu {0}")]
     CpuidSpecializationFailed(i32, #[source] propolis::cpuid::SpecializeError),
+
+    #[error("failed to start attestation server")]
+    AttestationServer(#[source] std::io::Error),
 
     #[cfg(feature = "falcon")]
     #[error("softnpu p9 device missing")]
@@ -110,6 +126,15 @@ pub enum MachineInitError {
 
 /// Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
+
+/// End address of the 32-bit PCI MMIO window.
+///
+// Value inherited from the original EDK2 static tables.
+// https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/PlatformPei/Platform.c#L180-L192
+//
+// It should be updated to match the actual memory regions registered in the
+// instance.
+const PCI_MMIO32_END: usize = 0xfeef_ffff;
 
 fn get_spec_guest_ram_limits(spec: &Spec) -> (usize, usize) {
     let memsize = spec.board.memory_mb as usize * MB;
@@ -191,6 +216,7 @@ pub struct MachineInitializer<'a> {
     pub(crate) log: slog::Logger,
     pub(crate) machine: &'a Machine,
     pub(crate) devices: DeviceMap,
+    pub(crate) device_metadata: DeviceMetadataMap,
     pub(crate) block_backends: BlockBackendMap,
     pub(crate) crucible_backends: CrucibleBackendMap,
     pub(crate) spec: &'a Spec,
@@ -393,17 +419,28 @@ impl MachineInitializer<'_> {
                 continue;
             }
 
-            let (irq, port) = match desc.num {
-                SerialPortNumber::Com1 => (ibmpc::IRQ_COM1, ibmpc::PORT_COM1),
-                SerialPortNumber::Com2 => (ibmpc::IRQ_COM2, ibmpc::PORT_COM2),
-                SerialPortNumber::Com3 => (ibmpc::IRQ_COM3, ibmpc::PORT_COM3),
-                SerialPortNumber::Com4 => (ibmpc::IRQ_COM4, ibmpc::PORT_COM4),
+            let (num, irq, port) = match desc.num {
+                SerialPortNumber::Com1 => {
+                    (1, ibmpc::IRQ_COM1, ibmpc::PORT_COM1)
+                }
+                SerialPortNumber::Com2 => {
+                    (2, ibmpc::IRQ_COM2, ibmpc::PORT_COM2)
+                }
+                SerialPortNumber::Com3 => {
+                    (3, ibmpc::IRQ_COM3, ibmpc::PORT_COM3)
+                }
+                SerialPortNumber::Com4 => {
+                    (4, ibmpc::IRQ_COM4, ibmpc::PORT_COM4)
+                }
             };
 
             let dev = LpcUart::new(chipset.irq_pin(irq).unwrap());
             dev.set_autodiscard(true);
             LpcUart::attach(&dev, &self.machine.bus_pio, port);
             self.devices.insert(name.to_owned(), dev.clone());
+            self.device_metadata
+                .insert(&dev, Box::new(LpcUartMetadata::new(num, port, irq)));
+
             if desc.num == SerialPortNumber::Com1 {
                 assert!(com1.is_none());
                 com1 = Some(dev);
@@ -476,11 +513,63 @@ impl MachineInitializer<'_> {
         Ok(())
     }
 
+    pub async fn initialize_vsock(
+        &mut self,
+        chipset: &RegisteredChipset,
+        attest_cfg: Option<AttestationServerConfig>,
+    ) -> Result<Option<AttestationSock>, MachineInitError> {
+        use propolis::vsock::proxy::VsockPortMapping;
+
+        if let Some(vsock) = &self.spec.vsock {
+            let bdf: pci::Bdf = vsock.spec.pci_path.into();
+
+            let mappings = vec![VsockPortMapping::new(
+                attestation::ATTESTATION_PORT.into(),
+                attestation::ATTESTATION_ADDR,
+            )];
+
+            let guest_cid = GuestCid::try_from(vsock.spec.guest_cid)
+                .context("could not parse guest cid")?;
+            // While the spec does not recommend how large the virtio descriptor
+            // table should be, we sized this appropriately in testing, so
+            // that the guest is able to move vsock packets at a reasonable
+            // throughput without the need to be much larger.
+            let num_queues = 256;
+
+            let device = virtio::PciVirtioSock::new(
+                num_queues,
+                guest_cid,
+                self.log.new(slog::o!("dev" => "virtio-socket")),
+                mappings,
+            );
+
+            self.devices.insert(vsock.id.clone(), device.clone());
+            chipset.pci_attach(bdf, device);
+
+            // Spawn attestation server that will go over the vsock device
+            if let Some(cfg) = attest_cfg {
+                let attest = AttestationSock::new(
+                    self.log.new(slog::o!("component" => "attestation-server")),
+                    cfg.sled_agent_addr,
+                )
+                .await
+                .map_err(MachineInitError::AttestationServer)?;
+                return Ok(Some(attest));
+            }
+        } else {
+            info!(self.log, "no vsock device in instance spec");
+            return Ok(None);
+        }
+
+        Ok(None)
+    }
+
     async fn create_storage_backend_from_spec(
         &mut self,
         backend_spec: &StorageBackend,
         backend_id: &SpecKey,
         nexus_client: &Option<NexusClient>,
+        wanted_heap: &mut usize,
     ) -> Result<StorageBackendInstance, MachineInitError> {
         match backend_spec {
             StorageBackend::Crucible(spec) => {
@@ -503,6 +592,17 @@ impl MachineInitializer<'_> {
                         "Region".to_string()
                     }
                 };
+
+                // Wild guess: we might collect up to 1MB (assuming we're
+                // limited by NVMe MDTS) of data in each Crucible worker. That
+                // is accumulated into a BytesMut, which is backed by a
+                // Vec::with_capacity. With a power of two capacity it's
+                // *probably* not rounded up further.
+                const PER_WORKER_HEAP: usize = MB;
+                // And Crucible workers are not currently tunable, so this is
+                // how many there are
+                // (see propolis::block::crucible::Crucible::WORKER_COUNT)
+                *wanted_heap += 8 * PER_WORKER_HEAP;
 
                 let be = propolis::block::CrucibleBackend::create(
                     vcr,
@@ -560,6 +660,13 @@ impl MachineInitializer<'_> {
                     }
                     None => NonZeroUsize::new(DEFAULT_WORKER_COUNT).unwrap(),
                 };
+
+                // Similar to Crucible backends above: we might collect up to
+                // 1MB (assuming we're limited by NVMe MDTS) of data in each
+                // worker. This is a hack in its own right, see Propolis#985.
+                const PER_WORKER_HEAP: usize = MB;
+                *wanted_heap += nworkers.get() * PER_WORKER_HEAP;
+
                 let be = propolis::block::FileBackend::create(
                     &spec.path,
                     propolis::block::BackendOpts {
@@ -568,6 +675,7 @@ impl MachineInitializer<'_> {
                         ..Default::default()
                     },
                     nworkers,
+                    self.log.clone(),
                 )
                 .with_context(|| {
                     format!(
@@ -608,6 +716,110 @@ impl MachineInitializer<'_> {
         }
     }
 
+    /// Collect the necessary information out of the VM under construction into
+    /// the provided `AttestationSocketInit`. This is expected to populate
+    /// `attest_init` with information so the caller can spawn off
+    /// `AttestationSockInit::run`.
+    pub fn prepare_rot_initializer(
+        &self,
+        vm_rot: &mut AttestationSock,
+    ) -> Result<(), MachineInitError> {
+        let uuid = self.properties.id;
+        let project = self.properties.metadata.project_id;
+        let silo = self.properties.metadata.silo_id;
+
+        let vm_attestation_conf = vm_attest::VmInstanceConf {
+            uuid,
+            project,
+            silo,
+            boot_digest: None,
+        };
+
+        // The first boot entry is a key into `self.spec.disks`, which is how
+        // we'll get to a Crucible volume backing this boot option.
+        let boot_disk_entry =
+            self.spec.boot_settings.as_ref().and_then(|settings| {
+                if settings.order.len() >= 2 {
+                    // In a rack we only configure propolis-server with zero or
+                    // one boot disks.  It's possible to provide a fuller list,
+                    // and in the future the product may actually expose such a
+                    // capability. At that time, we'll need to have a reckoning
+                    // for what "boot disk measurement" from the RoT actually
+                    // means; it probably "should" be "the measurement of the
+                    // disk that EDK2 decided to boot into", but that
+                    // communication to and from the guest is a little more
+                    // complicated than we want or need to build out today.
+                    //
+                    // Since as the system exists we either have no specific
+                    // boot disk (and don't know where the guest is expected to
+                    // end up), or one boot disk (and can determine which disk
+                    // to collect a measurement of before even running guest
+                    // firmware), we encode this expectation up front. If the
+                    // product has changed such that this assert is reached,
+                    // "that's exciting!" and "sorry for crashing your
+                    // Propolis".
+                    panic!(
+                        "Unsupported VM RoT configuration: \
+                            more than one boot disk"
+                    );
+                }
+
+                settings.order.first()
+            });
+
+        let boot_backend = if let Some(entry) = boot_disk_entry {
+            let disk_dev =
+                self.spec.disks.get(&entry.device_id).ok_or_else(|| {
+                    MachineInitError::BootOrderEntryWithoutDevice(
+                        entry.device_id.clone(),
+                    )
+                })?;
+
+            let backend_id = match &disk_dev.device_spec {
+                spec::StorageDevice::Virtio(disk) => &disk.backend_id,
+                spec::StorageDevice::Nvme(disk) => &disk.backend_id,
+            };
+
+            let Some(block_backend) = self.block_backends.get(backend_id)
+            else {
+                return Err(MachineInitError::DeviceWithoutBlockBackend {
+                    device_id: entry.device_id.to_owned(),
+                    backend_id: backend_id.to_owned(),
+                });
+            };
+
+            if let Some(backend) =
+                block_backend.as_any().downcast_ref::<block::CrucibleBackend>()
+            {
+                if backend.is_read_only() {
+                    Some(attestation::boot_digest::Backend::Crucible(
+                        backend.clone_volume(),
+                    ))
+                } else {
+                    // Disk must be read-only to be used for attestation.
+                    slog::info!(
+                        self.log,
+                        "boot disk is not read-only (and will not be used for attestations)",
+                    );
+                    None
+                }
+            } else {
+                // Probably fine, just not handled right now.
+                slog::warn!(
+                    self.log,
+                    "VM RoT ignoring boot disk: not a Crucible volume"
+                );
+                None
+            }
+        } else {
+            None
+        };
+
+        vm_rot.measure_instance(vm_attestation_conf, boot_backend);
+
+        Ok(())
+    }
+
     /// Initializes the storage devices and backends listed in this
     /// initializer's instance spec.
     ///
@@ -617,7 +829,9 @@ impl MachineInitializer<'_> {
         &mut self,
         chipset: &RegisteredChipset,
         nexus_client: Option<NexusClient>,
-    ) -> Result<(), MachineInitError> {
+    ) -> Result<usize, MachineInitError> {
+        let mut wanted_heap = 0usize;
+
         enum DeviceInterface {
             Virtio,
             Nvme,
@@ -642,6 +856,19 @@ impl MachineInitializer<'_> {
                 }
             };
 
+            // For all storage devices we'll have a QueueMinder connecting
+            // each emulated device queue to storage backends. The minder and
+            // structures in its supporting logic don't have much state, but may
+            // do some dynamic allocation. Assume they won't need more than 1KiB
+            // of state (`in_flight` has at most nworkers entries currently and
+            // will need to grow only once or twice to a small capacity. The
+            // number of outstanding boxed requests and responses is at most
+            // nworkers. Might be more, but not much).
+            //
+            // 64 * 1K is a wild over-estimate while we support 1-15 queues
+            // across virtio-block and nvme.
+            wanted_heap += 64 * 1024;
+
             let bdf: pci::Bdf = pci_path.into();
 
             let StorageBackendInstance { be: backend, crucible } = self
@@ -649,8 +876,14 @@ impl MachineInitializer<'_> {
                     &disk.backend_spec,
                     backend_id,
                     &nexus_client,
+                    &mut wanted_heap,
                 )
                 .await?;
+            info!(
+                self.log,
+                "raised balloon size";
+                "ballon_size" => wanted_heap
+            );
 
             self.block_backends.insert(backend_id.clone(), backend.clone());
             let block_dev: Arc<dyn block::Device> = match device_interface {
@@ -658,7 +891,8 @@ impl MachineInitializer<'_> {
                     let vioblk = virtio::PciVirtioBlock::new(0x100);
 
                     self.devices.insert(device_id.clone(), vioblk.clone());
-                    block::attach(vioblk.clone(), backend).unwrap();
+                    block::attach(&vioblk.block_attach, backend.attachment())
+                        .unwrap();
                     chipset.pci_attach(bdf, vioblk.clone());
                     vioblk
                 }
@@ -675,15 +909,19 @@ impl MachineInitializer<'_> {
                     let nvme = nvme::PciNvme::create(
                         &nvme_spec.serial_number,
                         mdts,
+                        nvme_spec.has_write_cache,
                         self.log.new(slog::o!("component" => component)),
                     );
                     self.devices.insert(device_id.clone(), nvme.clone());
-                    block::attach(nvme.clone(), backend).unwrap();
+                    block::attach(&nvme.block_attach, backend.attachment())
+                        .unwrap();
                     chipset.pci_attach(bdf, nvme.clone());
                     nvme
                 }
             };
 
+            let block_size;
+            let volume_id;
             if let Some(crucible) = crucible {
                 let crucible =
                     match self.crucible_backends.entry(backend_id.clone()) {
@@ -699,35 +937,38 @@ impl MachineInitializer<'_> {
                         }
                     };
 
-                let Some(block_size) = crucible.block_size().await else {
-                    slog::error!(
-                        self.log,
-                        "Could not get Crucible backend block size, \
-                        virtual disk metrics can't be reported for it";
-                        "disk_id" => %backend_id,
-                    );
-                    continue;
+                block_size = crucible.block_size().await;
+                volume_id = crucible.get_uuid().await.ok();
+            } else {
+                // Not a Crucible backend, e.g. local disk
+                block_size = match &disk.backend_spec {
+                    StorageBackend::File(fsb) => Some(fsb.block_size),
+                    StorageBackend::Blob(_) => Some(512),
+                    _ => None,
                 };
-
-                let Ok(volume_id) = crucible.get_uuid().await else {
-                    slog::error!(
-                        self.log,
-                        "Could not get Crucible volume ID, \
-                        virtual disk metrics can't be reported for it";
-                        "disk_id" => %backend_id,
-                    );
-                    continue;
+                volume_id = match backend_id {
+                    SpecKey::Uuid(uuid) => Some(*uuid),
+                    _ => None,
                 };
-
-                if let Some(registry) = &self.producer_registry {
-                    let stats = VirtualDiskProducer::new(
-                        block_size,
-                        self.properties.id,
-                        volume_id,
-                        &self.properties.metadata,
+            }
+            if let Some(registry) = &self.producer_registry {
+                if let (Some(block_size), Some(volume_id)) =
+                    (block_size, volume_id)
+                {
+                    let block_metrics = BlockMetrics::new(
+                        VirtualDisk {
+                            attached_instance_id: self.properties.id,
+                            block_size,
+                            disk_id: volume_id,
+                            project_id: self.properties.metadata.project_id,
+                            silo_id: self.properties.metadata.silo_id,
+                        },
+                        block_dev.attachment().max_queues(),
                     );
 
-                    if let Err(e) = registry.register_producer(stats.clone()) {
+                    if let Err(e) =
+                        registry.register_producer(block_metrics.producer())
+                    {
                         slog::error!(
                             self.log,
                             "Could not register virtual disk producer, \
@@ -739,16 +980,19 @@ impl MachineInitializer<'_> {
                         continue;
                     };
 
-                    // Set the on-completion callback for the block device, to
-                    // update stats.
-                    let callback = move |op, result, duration| {
-                        stats.on_completion(op, result, duration);
-                    };
-                    block_dev.on_completion(Box::new(callback));
-                };
+                    block_dev.attachment().set_metric_consumer(block_metrics);
+                } else {
+                    slog::error!(
+                        self.log,
+                        "Could not get backend volume UUID or block size, \
+                        virtual disk metrics can't be reported for it";
+                        "disk_id" => %backend_id,
+                    );
+                    continue;
+                }
             }
         }
-        Ok(())
+        Ok(wanted_heap)
     }
 
     /// Initialize network devices, add them to the device map, and attach them
@@ -768,37 +1012,30 @@ impl MachineInitializer<'_> {
             info!(self.log, "Creating vNIC {}", device_name);
             let bdf: pci::Bdf = nic.device_spec.pci_path.into();
 
-            // Set viona device parameters if possible.
+            // Set viona device parameters. The parameters here (copy_data and
+            // header_pad) require `viona::ApiVersion::V3`, below Propolis'
+            // minimum of V6, so we can always set them.
             //
             // The values chosen here are tuned to maximize performance when
             // Propolis is used with OPTE in a full Oxide rack deployment,
             // although they should not negatively impact use outside those
             // conditions.  These parameters and their effects (save for
             // performance delta) are not guest-visible.
-            let params = if virtio::viona::api_version()
-                .expect("can query viona version")
-                >= virtio::viona::ApiVersion::V3
-            {
-                Some(virtio::viona::DeviceParams {
-                    // Loan guest packet data, rather than allocating fresh
-                    // buffers and copying it.
-                    copy_data: false,
-                    // Leave room for underlay encapsulation:
-                    // - ethernet: 14
-                    // - IPv6: 40
-                    // - UDP: 8
-                    // - Geneve: 8–16 (due to options)
-                    // - (and then round up to nearest 8)
-                    header_pad: 80,
-                })
-            } else {
-                None
-            };
+            let params = Some(virtio::viona::DeviceParams {
+                // Loan guest packet data, rather than allocating fresh
+                // buffers and copying it.
+                copy_data: false,
+                // Leave room for underlay encapsulation:
+                // - ethernet: 14
+                // - IPv6: 40
+                // - UDP: 8
+                // - Geneve: 8–16 (due to options)
+                // - (and then round up to nearest 8)
+                header_pad: 80,
+            });
 
             let viona = virtio::PciVirtioViona::new(
                 &nic.backend_spec.vnic_name,
-                0x0800.try_into().unwrap(),
-                0x0100.try_into().unwrap(),
                 &self.machine.hdl,
                 params,
             )
@@ -898,9 +1135,17 @@ impl MachineInitializer<'_> {
         // NOTE: SoftNpu squats on com4.
         let uart = LpcUart::new(chipset.irq_pin(ibmpc::IRQ_COM4).unwrap());
         uart.set_autodiscard(true);
-        LpcUart::attach(&uart, &self.machine.bus_pio, ibmpc::PORT_COM4);
+        uart.attach(&self.machine.bus_pio, ibmpc::PORT_COM4);
         self.devices
             .insert(SpecKey::Name("softnpu-uart".to_string()), uart.clone());
+        self.device_metadata.insert(
+            &uart,
+            Box::new(LpcUartMetadata::new(
+                4,
+                ibmpc::PORT_COM4,
+                ibmpc::IRQ_COM4,
+            )),
+        );
 
         // Start with no pipeline. The guest must load the initial P4 program.
         let pipeline = Arc::new(std::sync::Mutex::new(None));
@@ -999,21 +1244,26 @@ impl MachineInitializer<'_> {
             ..Default::default()
         };
 
-        let smb_type1 = smbios::table::Type1 {
-            manufacturer: "Oxide".try_into().unwrap(),
-            product_name: "OxVM".try_into().unwrap(),
-
-            serial_number: self
-                .properties
-                .id
-                .to_string()
-                .try_into()
-                .unwrap_or_default(),
-            uuid: self.properties.id.to_bytes_le(),
-
-            wake_up_type: type1::WakeUpType::PowerSwitch,
-            ..Default::default()
+        // If `spec` contains smbios_type1_input then use it. Otherwise use
+        // defaults.
+        let mut smb_type1 = smbios::table::Type1::default();
+        if let Some(smbios) = self.spec.smbios_type1_input.clone() {
+            smb_type1.manufacturer =
+                smbios.manufacturer.try_into().unwrap_or_default();
+            smb_type1.product_name =
+                smbios.product_name.try_into().unwrap_or_default();
+            smb_type1.serial_number =
+                smbios.serial_number.try_into().unwrap_or_default();
+            smb_type1.version =
+                smbios.version.to_string().try_into().unwrap_or_default();
+        } else {
+            smb_type1.manufacturer = "Oxide".try_into().unwrap();
+            smb_type1.product_name = "OxVM".try_into().unwrap();
+            smb_type1.serial_number =
+                self.properties.id.to_string().try_into().unwrap_or_default();
         };
+        smb_type1.uuid = self.properties.id.to_bytes_le();
+        smb_type1.wake_up_type = type1::WakeUpType::PowerSwitch;
 
         // The processor vendor, family/model/stepping, and brand string should
         // correspond to the values the guest will see if it queries CPUID.
@@ -1216,14 +1466,52 @@ impl MachineInitializer<'_> {
         Ok(Some(order.finish()))
     }
 
+    fn generate_acpi_tables(
+        &self,
+        acpi_variant: acpi::AcpiVariant,
+        cpus: u8,
+    ) -> Result<fwcfg::formats::AcpiTables, MachineInitError> {
+        let (lowmem, _) = get_spec_guest_ram_limits(self.spec);
+        let generators: Vec<_> = self
+            .devices
+            .values()
+            .filter_map(|dev| dev.as_dsdt_generator())
+            .collect();
+
+        // The values for pci_window_32 and pci_window_64 are set based on the
+        // original EDK2 ACPI tables, and currently don't exactly match the
+        // ranges defined in build_instance().
+        //
+        // Propolis doesn't verify if an MMIO operation happens in an address
+        // reserved for MMIO, so this doesn't cause problems for now, but the
+        // PCI windows should be updated to match what's reserved in
+        // build_instance().
+        let pci_window_32 = fwcfg::formats::PciWindow::new(
+            lowmem as u64,
+            PCI_MMIO32_END as u64,
+        )?;
+
+        let config = &fwcfg::formats::AcpiConfig {
+            acpi_variant,
+            num_cpus: cpus,
+            pci_window_32,
+            pci_window_64: fwcfg::formats::PciWindow::empty(),
+            dsdt_generators: &generators,
+            device_metadata: &self.device_metadata,
+        };
+        let acpi_tables = fwcfg::formats::AcpiTablesBuilder::new(config);
+        Ok(acpi_tables.build())
+    }
+
     /// Initialize qemu `fw_cfg` device, and populate it with data including CPU
-    /// count, SMBIOS tables, and attached RAM-FB device.
+    /// count, SMBIOS and ACPI tables, and attached RAM-FB device.
     ///
     /// Should not be called before [`Self::initialize_rom()`].
     pub fn initialize_fwcfg(
         &mut self,
         cpus: u8,
         bootrom_version: &Option<String>,
+        acpi_variant: acpi::AcpiVariant,
     ) -> Result<Arc<ramfb::RamFb>, MachineInitError> {
         let fwcfg = fwcfg::FwCfg::new();
         fwcfg
@@ -1261,6 +1549,19 @@ impl MachineInitializer<'_> {
         fwcfg
             .insert_named("etc/e820", e820_entry)
             .map_err(|e| MachineInitError::FwcfgInsertFailed("e820", e))?;
+
+        let acpi_entries = self.generate_acpi_tables(acpi_variant, cpus)?;
+        fwcfg.insert_named("etc/acpi/tables", acpi_entries.tables).map_err(
+            |e| MachineInitError::FwcfgInsertFailed("acpi/tables", e),
+        )?;
+        fwcfg
+            .insert_named("etc/acpi/rsdp", acpi_entries.rsdp)
+            .map_err(|e| MachineInitError::FwcfgInsertFailed("acpi/rsdp", e))?;
+        fwcfg
+            .insert_named("etc/table-loader", acpi_entries.table_loader)
+            .map_err(|e| {
+                MachineInitError::FwcfgInsertFailed("table-loader", e)
+            })?;
 
         let ramfb = ramfb::RamFb::create(
             self.log.new(slog::o!("component" => "ramfb")),

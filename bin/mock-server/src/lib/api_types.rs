@@ -9,7 +9,7 @@ progenitor::generate_api!(
     spec = "../../openapi/propolis-server/propolis-server-latest.json",
     derives = [schemars::JsonSchema],
     replace = {
-        SpecKey = propolis_api_types::instance_spec::SpecKey,
+        SpecKey = propolis_api_types_versions::latest::instance_spec::SpecKey,
     },
     patch = {
         InstanceMetadata = { derives = [Clone, Eq, PartialEq] },

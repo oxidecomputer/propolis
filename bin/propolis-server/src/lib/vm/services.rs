@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use oximeter::types::ProducerRegistry;
-use propolis_api_types::InstanceProperties;
+use propolis_api_types::instance::InstanceProperties;
 use slog::{error, info, Logger};
 
 use crate::{

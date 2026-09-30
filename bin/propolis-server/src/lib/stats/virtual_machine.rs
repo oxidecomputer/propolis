@@ -64,7 +64,7 @@ pub struct VirtualMachine {
 impl VirtualMachine {
     pub fn new(
         n_vcpus: u8,
-        properties: &propolis_api_types::InstanceProperties,
+        properties: &propolis_api_types::instance::InstanceProperties,
     ) -> Self {
         Self {
             target: VirtualMachineTarget {

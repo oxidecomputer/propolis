@@ -5,11 +5,11 @@
 //! Implement a virtual block device backed by Crucible
 
 use std::io;
+use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use crate::accessors::MemAccessor;
-use crate::block::{self, DeviceInfo};
+use crate::block;
 use crate::tasks::TaskGroup;
 use crate::vmm::MemCtx;
 
@@ -18,6 +18,7 @@ use crucible::{
     VolumeBuilder,
 };
 use crucible_client_types::VolumeConstructionRequest;
+use crucible_client_types::VolumeInfo;
 use oximeter::types::ProducerRegistry;
 use slog::{error, info};
 use thiserror::Error;
@@ -25,59 +26,134 @@ use uuid::Uuid;
 
 pub use nexus_client::Client as NexusClient;
 
+// TODO: Make this a runtime tunable?
+const WORKER_COUNT: NonZeroUsize = NonZeroUsize::new(8).unwrap();
+
 pub struct CrucibleBackend {
+    block_attach: block::BackendAttachment,
     state: Arc<WorkerState>,
     workers: TaskGroup,
 }
 struct WorkerState {
-    attachment: block::BackendAttachment,
     volume: Volume,
     info: block::DeviceInfo,
     skip_flush: bool,
 }
 impl WorkerState {
-    async fn process_loop(&self, acc_mem: MemAccessor) {
-        let waiter = match self.attachment.waiter() {
-            None => {
-                return;
-            }
-            Some(w) => w,
-        };
+    async fn process_loop(&self, wctx: block::AsyncWorkerCtx) {
         // Start with a read buffer of a single block
         // It will be resized larger (and remain so) if subsequent read
         // operations required additional space.
         let mut readbuf = Buffer::new(1, self.info.block_size as usize);
         loop {
-            let req = match waiter.for_req().await {
-                Some(r) => r,
-                None => {
-                    // bail
-                    break;
-                }
+            let Some(dreq) = wctx.wait_for_req().await else {
+                break;
             };
-            let res = if let Some(memctx) = acc_mem.access() {
-                match process_request(
+
+            let Some(memctx) = wctx.acc_mem().access() else {
+                dreq.complete(block::Result::Failure);
+                continue;
+            };
+
+            let res = match self
+                .process_request(
                     self.volume.deref(),
-                    &self.info,
-                    self.skip_flush,
-                    &req,
+                    dreq.req(),
                     &mut readbuf,
                     &memctx,
                 )
                 .await
-                {
-                    Ok(_) => block::Result::Success,
-                    Err(e) => {
-                        let mapped = block::Result::from(e);
-                        assert!(mapped.is_err());
-                        mapped
-                    }
+            {
+                Ok(_) => block::Result::Success,
+                Err(e) => {
+                    let mapped = block::Result::from(e);
+                    assert!(mapped.is_err());
+                    mapped
                 }
-            } else {
-                block::Result::Failure
             };
-            req.complete(res);
+
+            dreq.complete(res);
         }
+    }
+
+    async fn process_request(
+        &self,
+        block: &(dyn BlockIO + Send + Sync),
+        req: &block::Request,
+        readbuf: &mut Buffer,
+        mem: &MemCtx,
+    ) -> Result<(), Error> {
+        let block_size = self.info.block_size as usize;
+
+        match req.op {
+            block::Operation::Read(off, len) => {
+                let (off_blocks, len_blocks) =
+                    block_offset_count(off, len, block_size)?;
+
+                let maps =
+                    req.mappings(mem).ok_or_else(|| Error::BadGuestRegion)?;
+
+                // Perform one large read from crucible, and write from data into
+                // mappings
+                readbuf.reset(len_blocks, block_size);
+                let _ = block.read(off_blocks, readbuf).await?;
+
+                let mut nwritten = 0;
+                for mapping in maps {
+                    nwritten += mapping.write_bytes(
+                        &readbuf[nwritten..(nwritten + mapping.len())],
+                    )?;
+                }
+
+                if nwritten != len {
+                    return Err(Error::CopyError(nwritten, len));
+                }
+            }
+            block::Operation::Write(off, len) => {
+                if self.info.read_only {
+                    return Err(Error::ReadOnly);
+                }
+
+                let (off_blocks, _len_blocks) =
+                    block_offset_count(off, len, block_size)?;
+
+                // Read from all the mappings into vec, and perform one large write
+                // to crucible
+                let maps =
+                    req.mappings(mem).ok_or_else(|| Error::BadGuestRegion)?;
+                let mut data = crucible::BytesMut::with_capacity(len);
+                let mut nread = 0;
+                for mapping in maps {
+                    let n = mapping.read_bytes_uninit(
+                        &mut data.spare_capacity_mut()[..mapping.len()],
+                    )?;
+                    // `read_bytes` returns the number of bytes written, so we can
+                    // expand our initialized area by this amount.
+                    unsafe {
+                        data.set_len(data.len() + n);
+                    }
+                    nread += n;
+                }
+                if nread != len {
+                    return Err(Error::CopyError(nread, len));
+                }
+
+                let _ = block.write(off_blocks, data).await?;
+            }
+            block::Operation::Flush => {
+                if !self.skip_flush {
+                    // Send flush to crucible
+                    let _ = block.flush(None).await?;
+                }
+            }
+            block::Operation::Discard(..) => {
+                // Crucible does not support discard operations for now, so we implement this as
+                // a no-op (which technically is a valid implementation of discard, just one that
+                // doesn't actually free any space).
+                return Ok(());
+            }
+        }
+        Ok(())
     }
 }
 
@@ -95,7 +171,10 @@ impl CrucibleBackend {
             .map_err(|e| io::Error::from(CrucibleError::from(e)))?;
 
         // Decide if we need to scrub this volume or not.
-        if volume.has_read_only_parent() {
+        //
+        // We should not scrub read-only volumes, as we cannot write back to
+        // them, due to...you know, being read-only. So just don't do that.
+        if !opts.is_read_only() && volume.has_read_only_parent() {
             let vclone = volume.clone();
             tokio::spawn(async move {
                 let volume_id = vclone.get_uuid().await.unwrap();
@@ -141,16 +220,18 @@ impl CrucibleBackend {
         let total_size = volume.total_size().await?;
         let sectors = total_size / block_size;
 
+        let info = block::DeviceInfo {
+            block_size: block_size as u32,
+            total_size: sectors,
+            read_only: opts.is_read_only(),
+            supports_discard: false,
+        };
+
         Ok(Arc::new(Self {
+            block_attach: block::BackendAttachment::new(WORKER_COUNT, info),
             state: Arc::new(WorkerState {
-                attachment: block::BackendAttachment::new(),
                 volume,
-                info: block::DeviceInfo {
-                    block_size: block_size as u32,
-                    total_size: sectors,
-                    read_only: opts.read_only.unwrap_or(false),
-                    supports_discard: false,
-                },
+                info,
                 skip_flush: opts.skip_flush.unwrap_or(false),
             }),
             workers: TaskGroup::new(),
@@ -191,16 +272,18 @@ impl CrucibleBackend {
             .await
             .map_err(|e| std::io::Error::from(e))?;
 
+        let info = block::DeviceInfo {
+            block_size: block_size as u32,
+            total_size: size / block_size,
+            read_only: opts.read_only.unwrap_or(false),
+            supports_discard: false,
+        };
+
         Ok(Arc::new(CrucibleBackend {
+            block_attach: block::BackendAttachment::new(WORKER_COUNT, info),
             state: Arc::new(WorkerState {
-                attachment: block::BackendAttachment::new(),
                 volume: builder.into(),
-                info: block::DeviceInfo {
-                    block_size: block_size as u32,
-                    total_size: size / block_size,
-                    read_only: opts.read_only.unwrap_or(false),
-                    supports_discard: false,
-                },
+                info,
                 skip_flush: opts.skip_flush.unwrap_or(false),
             }),
             workers: TaskGroup::new(),
@@ -266,45 +349,54 @@ impl CrucibleBackend {
     }
 
     fn spawn_workers(&self) {
-        // TODO: make this tunable?
-        let worker_count = 8;
-        self.workers.extend((0..worker_count).map(|n| {
+        let max_workers = self.block_attach.max_workers().get();
+        self.workers.extend((0..max_workers).map(|n| {
             let worker_state = self.state.clone();
-            let worker_acc = self
-                .state
-                .attachment
-                .accessor_mem(|acc_mem| {
-                    acc_mem.child(Some(format!("crucible worker {n}")))
-                })
-                .expect("backend is attached");
-            tokio::spawn(
-                async move { worker_state.process_loop(worker_acc).await },
-            )
+            let wctx = self.block_attach.worker(n);
+
+            tokio::spawn(async move {
+                let Some(wctx) = wctx.activate_async() else {
+                    return;
+                };
+                worker_state.process_loop(wctx).await
+            })
         }))
     }
 
     pub async fn volume_is_active(&self) -> Result<bool, CrucibleError> {
         self.state.volume.query_is_active().await
     }
+
+    pub fn clone_volume(&self) -> Volume {
+        self.state.volume.clone()
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.state.info.read_only
+    }
+
+    pub async fn query_volume_info(&self) -> Result<VolumeInfo, CrucibleError> {
+        self.state.volume.query_volume_info().await
+    }
 }
 
 #[async_trait::async_trait]
 impl block::Backend for CrucibleBackend {
     fn attachment(&self) -> &block::BackendAttachment {
-        &self.state.attachment
-    }
-    fn info(&self) -> DeviceInfo {
-        self.state.info
+        &self.block_attach
     }
     async fn start(&self) -> anyhow::Result<()> {
         self.state.volume.activate().await?;
-        self.state.attachment.start();
+        self.block_attach.start();
         self.spawn_workers();
         Ok(())
     }
     async fn stop(&self) -> () {
-        self.state.attachment.stop();
+        self.block_attach.stop();
         self.workers.join_all().await;
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -345,7 +437,9 @@ fn block_offset_count(
     len_bytes: usize,
     block_size: usize,
 ) -> Result<(crucible::BlockIndex, usize), Error> {
-    if off_bytes % block_size == 0 && len_bytes % block_size == 0 {
+    if off_bytes.is_multiple_of(block_size)
+        && len_bytes.is_multiple_of(block_size)
+    {
         Ok((
             crucible::BlockIndex((off_bytes / block_size) as u64),
             len_bytes / block_size,
@@ -353,85 +447,6 @@ fn block_offset_count(
     } else {
         Err(Error::BlocksizeMismatch)
     }
-}
-
-async fn process_request(
-    block: &(dyn BlockIO + Send + Sync),
-    info: &block::DeviceInfo,
-    skip_flush: bool,
-    req: &block::Request,
-    readbuf: &mut Buffer,
-    mem: &MemCtx,
-) -> Result<(), Error> {
-    let block_size = info.block_size as usize;
-
-    match req.oper() {
-        block::Operation::Read(off, len) => {
-            let (off_blocks, len_blocks) =
-                block_offset_count(off, len, block_size)?;
-
-            let maps =
-                req.mappings(mem).ok_or_else(|| Error::BadGuestRegion)?;
-
-            // Perform one large read from crucible, and write from data into
-            // mappings
-            readbuf.reset(len_blocks, block_size);
-            let _ = block.read(off_blocks, readbuf).await?;
-
-            let mut nwritten = 0;
-            for mapping in maps {
-                nwritten += mapping.write_bytes(
-                    &readbuf[nwritten..(nwritten + mapping.len())],
-                )?;
-            }
-
-            if nwritten != len {
-                return Err(Error::CopyError(nwritten, len));
-            }
-        }
-        block::Operation::Write(off, len) => {
-            if info.read_only {
-                return Err(Error::ReadOnly);
-            }
-
-            let (off_blocks, _len_blocks) =
-                block_offset_count(off, len, block_size)?;
-
-            // Read from all the mappings into vec, and perform one large write
-            // to crucible
-            let maps =
-                req.mappings(mem).ok_or_else(|| Error::BadGuestRegion)?;
-            let mut data = crucible::BytesMut::with_capacity(len);
-            let mut nread = 0;
-            for mapping in maps {
-                let n = mapping.read_bytes_uninit(
-                    &mut data.spare_capacity_mut()[..mapping.len()],
-                )?;
-                // `read_bytes` returns the number of bytes written, so we can
-                // expand our initialized area by this amount.
-                unsafe {
-                    data.set_len(data.len() + n);
-                }
-                nread += n;
-            }
-            if nread != len {
-                return Err(Error::CopyError(nread, len));
-            }
-
-            let _ = block.write(off_blocks, data).await?;
-        }
-        block::Operation::Flush => {
-            if !skip_flush {
-                // Send flush to crucible
-                let _ = block.flush(None).await?;
-            }
-        }
-        block::Operation::Discard(..) => {
-            // Crucible does not support discard operations for now
-            return Err(Error::Unsupported);
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

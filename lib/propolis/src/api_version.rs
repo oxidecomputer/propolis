@@ -7,8 +7,14 @@ pub enum Error {
     #[error("IO Error")]
     Io(#[from] std::io::Error),
 
-    #[error("API version {0} did not match expectation {1}")]
-    Mismatch(u32, u32),
+    // Newer APIs are backwards compatible with older (for now?), so don't
+    // bother trying to express "we need a version before .." or any of that.
+    //
+    // Also assume that the component being versioned is either part of the OS
+    // or that the OS version is a decent proxy for it. Not necessarily true in
+    // general, but true for viona and bhyve.
+    #[error("API version {have} is not at or above {want}. OS is too old?")]
+    TooLow { have: u32, want: u32 },
 }
 
 #[derive(Debug, thiserror::Error)]

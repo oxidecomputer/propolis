@@ -44,14 +44,17 @@ pub(crate) fn cmd_clippy(strict: bool, quiet: bool) -> Result<()> {
         run_clippy(&["-p", "propolis-server", "--features", "omicron-build"])?;
 
     // Check the Falcon bits
-    failed |= run_clippy(&[
-        "--features",
-        "falcon",
-        "-p",
-        "propolis-server",
-        "-p",
-        "propolis-client",
-    ])?;
+    //
+    // TODO(jph): Currently specifying both the propolis-client and
+    // propolis-server packages in a single clippy command will cause clippy
+    // to fail because cargo finds 2 copies of propolis-client. This is because
+    // dice-util depends on sled-agent-client, which depends on a rev of
+    // propolis.
+    //
+    // We should clean this up by making sled-agent-client not re-export
+    // propolis-client..
+    failed |= run_clippy(&["--features", "falcon", "-p", "propolis-server"])?;
+    failed |= run_clippy(&["-p", "propolis-client"])?;
 
     // Check the mock server
     failed |= run_clippy(&["-p", "propolis-mock-server"])?;

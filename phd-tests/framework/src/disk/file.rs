@@ -5,7 +5,7 @@
 //! Abstractions for disks with a raw file backend.
 
 use camino::{Utf8Path, Utf8PathBuf};
-use propolis_client::instance_spec::{ComponentV0, FileStorageBackend};
+use propolis_client::instance_spec::{Component, FileStorageBackend};
 use std::num::NonZeroUsize;
 use tracing::{debug, error, warn};
 use uuid::Uuid;
@@ -128,8 +128,8 @@ impl super::DiskConfig for FileBackedDisk {
         &self.device_name
     }
 
-    fn backend_spec(&self) -> ComponentV0 {
-        ComponentV0::FileStorageBackend(FileStorageBackend {
+    fn backend_spec(&self) -> Component {
+        Component::FileStorageBackend(FileStorageBackend {
             path: self.file.path().to_string(),
             readonly: false,
             block_size: 512,

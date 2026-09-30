@@ -6,9 +6,10 @@
 
 use std::sync::Arc;
 
-use propolis_api_types::{
-    instance_spec::SpecKey, InstanceProperties, InstanceStateRequested,
+use propolis_api_types::instance::{
+    InstanceProperties, InstanceStateRequested,
 };
+use propolis_api_types::instance_spec::SpecKey;
 use slog::info;
 use uuid::Uuid;
 

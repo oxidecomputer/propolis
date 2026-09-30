@@ -5,7 +5,7 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
-    io::{Result, Write},
+    io::{Error, Result, Write},
     sync::{Arc, Mutex},
     thread::{sleep, spawn},
     time::Duration,
@@ -14,7 +14,7 @@ use std::{
 use crate::{
     chardev::{Sink, Source},
     common::*,
-    hw::{pci, uart::LpcUart},
+    hw::{pci, uart::LpcUart, virtio},
     migrate::Migrator,
     util::regmap::RegMap,
     vmm::MemCtx,
@@ -23,7 +23,7 @@ use crate::{
 use super::{
     bits::*,
     pci::{PciVirtio, PciVirtioState},
-    queue::{write_buf, Chain, VirtQueue, VirtQueues},
+    queue::{write_buf, Chain, VirtQueue, VirtQueues, VqSize},
     viona::bits::VIRTIO_NET_S_LINK_UP,
     VirtioDevice,
 };
@@ -44,6 +44,9 @@ use slog::{error, info, warn, Logger};
 // Transit jumbo frames
 const MTU: usize = 9216;
 const SOFTNPU_CPU_AUX_PORT: u16 = 1000;
+
+// Enough RX buffer space to hold ~100 frames
+const RX_BUFFER_SIZE: u32 = 0x120000;
 
 pub const MANAGEMENT_MESSAGE_PREAMBLE: u8 = 0b11100101;
 pub const SOFTNPU_TTY: &str = "/dev/tty03";
@@ -144,19 +147,15 @@ pub struct PortVirtioState {
 
 impl PortVirtioState {
     fn new(queue_size: u16) -> Self {
-        let queue_size = queue_size.try_into().unwrap();
-        let queues = VirtQueues::new(
-            // RX and TX queues
-            [VirtQueue::new(queue_size), VirtQueue::new(queue_size)],
-        )
-        .unwrap();
+        let rxq_size = VqSize::new(queue_size);
+        let txq_size = VqSize::new(queue_size);
+        let queues = VirtQueues::new(&[rxq_size, txq_size]);
         let msix_count = Some(2);
-        let (pci_virtio_state, pci_state) = PciVirtioState::create(
+        let (pci_virtio_state, pci_state) = PciVirtioState::new(
+            virtio::Mode::Legacy,
             queues,
             msix_count,
-            VIRTIO_DEV_NET,
-            VIRTIO_SUB_DEV_NET,
-            pci::bits::CLASS_NETWORK,
+            virtio::DeviceId::Network,
             VIRTIO_NET_CFG_SIZE,
         );
         Self { pci_virtio_state, pci_state }
@@ -213,6 +212,7 @@ impl SoftNpu {
         let mut handles = Vec::new();
         for x in data_links {
             let h = dlpi::open(x, dlpi::sys::DLPI_RAW)?;
+            set_rx_buffer_size(h, RX_BUFFER_SIZE)?;
 
             // Although we bind to the IPv6 SAP (Ethertype), the DL_PROMISC_SAP
             // allows us to pick up everything. Binding to *something* to start
@@ -260,6 +260,82 @@ impl SoftNpu {
             info!(log, "handled management message");
         }
     }
+}
+
+#[repr(C)]
+struct StrIoctl {
+    ic_cmd: i32,
+    ic_timout: i32,
+    ic_len: i32,
+    ic_dp: *mut libc::c_char,
+}
+
+fn strioc<T>(fd: i32, cmd: i32, arg: &mut T) -> Result<()> {
+    #[cfg(target_os = "illumos")]
+    let rq = libc::I_STR;
+    #[cfg(not(target_os = "illumos"))]
+    let rq = 0xdeadbeef;
+
+    let mut si = StrIoctl {
+        ic_cmd: cmd,
+        ic_timout: -1,
+        ic_len: std::mem::size_of::<T>() as i32,
+        ic_dp: arg as *mut T as *mut libc::c_char,
+    };
+    if unsafe { libc::ioctl(fd, rq, &mut si as *mut StrIoctl) } < 0 {
+        return Err(Error::last_os_error());
+    }
+    Ok(())
+}
+
+// STREAMS uses a high water mark as a backpressure mechanism. When we hit the
+// high water mark, messages are dropped until we drain to the low water mark.
+// This essentially makes the high water mark a receive buffer size.
+//
+// For TCP on the STREAMS path (i.e. TPI consumers), it appears that the high
+// water mark is set to SO_RCVBUF which is 128000 bytes. However, for DLPI
+// the high water mark is not set and it defaults to 5120. This meaans we hit
+// the mark at the first jumbo frame and thrash from there.
+//
+// It seems the only way to influence this outside the kernel is pushing a
+// passthrough bufmod STREAMS module. So that's what we do here for the time
+// being.
+fn set_rx_buffer_size(h: dlpi::DlpiHandle, size: u32) -> Result<()> {
+    // <sys/bufmod.h>
+    const SBIOCSTIME: i32 = 0x4201; // ('B'<<8)|1
+    const SBIOCSCHUNK: i32 = 0x4204; // ('B'<<8)|4
+    const SBIOCSFLAGS: i32 = 0x4208; // ('B'<<8)|8
+    const SB_NO_HEADER: u32 = 0x02;
+    const SB_NO_PROTO_CVT: u32 = 0x04;
+    const SB_NO_DROPS: u32 = 0x10;
+
+    let fd = dlpi::fd(h)?;
+
+    // bufmod calculates the high water mark as 4*chunk + 512, do the
+    // inverse to get our target buffer size.
+    let mut chunk: u32 = size.saturating_sub(512) / 4;
+    // Put the bufmod in passthrough mode
+    let mut flags: u32 = SB_NO_HEADER | SB_NO_PROTO_CVT | SB_NO_DROPS;
+    // Disable chunking, still keeps the water mark that was applied for the
+    // supplied chunk. Yes this is relying on implicit behavior. Good motivation
+    // to get off DLPI entirely.
+    let mut zero = libc::timeval { tv_sec: 0, tv_usec: 0 };
+
+    // Push the STREAMS module
+    #[cfg(target_os = "illumos")]
+    let rq = libc::I_PUSH;
+    #[cfg(not(target_os = "illumos"))]
+    let rq = 0xdeadbeef;
+    if unsafe { libc::ioctl(fd, rq, c"bufmod".as_ptr()) } < 0 {
+        return Err(Error::last_os_error());
+    }
+
+    // Apply the chunk/flags/zero values described above.
+    strioc(fd, SBIOCSFLAGS, &mut flags)?;
+    strioc(fd, SBIOCSCHUNK, &mut chunk)?;
+    strioc(fd, SBIOCSTIME, &mut zero)?;
+
+    Ok(())
 }
 
 impl Lifecycle for SoftNpu {
@@ -310,7 +386,7 @@ impl PciVirtioSoftNpuPort {
         })
     }
 
-    fn handle_guest_virtio_request(&self, vq: &Arc<VirtQueue>) {
+    fn handle_guest_virtio_request(&self, vq: &VirtQueue) {
         if vq.id == 0 {
             return self.handle_q0_req(vq);
         }
@@ -380,7 +456,7 @@ impl PciVirtioSoftNpuPort {
         }
     }
 
-    fn handle_q0_req(&self, _vq: &Arc<VirtQueue>) {
+    fn handle_q0_req(&self, _vq: &VirtQueue) {
         // ignore notifications from the queue that we use for writing to the
         // guest.
         return;
@@ -424,7 +500,7 @@ impl PciVirtio for PciVirtioSoftNpuPort {
 }
 
 impl VirtioDevice for PciVirtioSoftNpuPort {
-    fn cfg_rw(&self, mut rwo: RWOp) {
+    fn rw_dev_config(&self, mut rwo: RWOp) {
         NET_DEV_REGS.process(&mut rwo, |id, rwo| match rwo {
             RWOp::Read(ro) => self.net_cfg_read(id, ro),
             RWOp::Write(_) => {
@@ -433,15 +509,19 @@ impl VirtioDevice for PciVirtioSoftNpuPort {
         });
     }
 
-    fn get_features(&self) -> u32 {
+    fn mode(&self) -> virtio::Mode {
+        virtio::Mode::Legacy
+    }
+
+    fn features(&self) -> u64 {
         VIRTIO_NET_F_MAC
     }
 
-    fn set_features(&self, _feat: u32) -> std::result::Result<(), ()> {
+    fn set_features(&self, _feat: u64) -> std::result::Result<(), ()> {
         Ok(())
     }
 
-    fn queue_notify(&self, vq: &Arc<VirtQueue>) {
+    fn queue_notify(&self, vq: &VirtQueue) {
         self.handle_guest_virtio_request(vq);
     }
 }
@@ -616,7 +696,7 @@ impl PacketHandler {
             }
         };
         let mut chain = Chain::with_capacity(1);
-        let vq = &virtio.pci_virtio_state.queues[0];
+        let vq = virtio.pci_virtio_state.queues.get(0).expect("a queue");
         if let None = vq.pop_avail(&mut chain, &mem) {
             return;
         }

@@ -17,7 +17,6 @@ doctest = false
 test = false
 
 [dependencies]
-atty.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 bit_field.workspace = true
@@ -43,6 +42,7 @@ oxide-tokio-rt.workspace = true
 oximeter-instruments.workspace = true
 oximeter-producer.workspace = true
 oximeter.workspace = true
+pbind.workspace = true
 ron.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }
@@ -61,18 +61,20 @@ slog-term.workspace = true
 strum = { workspace = true, features = ["derive"] }
 propolis = { workspace = true, features = ["crucible-full", "oximeter"] }
 propolis_api_types = { workspace = true }
+propolis-api-types-versions.workspace = true
 propolis-server-api.workspace = true
 propolis_types.workspace = true
 rgb_frame.workspace = true
 rfb = { workspace = true, features = ["tungstenite"] }
 uuid.workspace = true
 usdt.workspace = true
+vm-attest.workspace = true
 base64.workspace = true
 schemars = { workspace = true, features = ["chrono", "uuid1"] }
 
 [dev-dependencies]
 hex.workspace = true
-reqwest = { workspace = true, features = ["rustls-tls"] }
+reqwest = { workspace = true, features = ["rustls"] }
 ring.workspace = true
 slog = { workspace = true, features = [ "max_level_trace", "release_max_level_debug" ] }
 expectorate.workspace = true
@@ -81,6 +83,7 @@ proptest.workspace = true
 
 [features]
 default = []
+acpi-debug = ["propolis/acpi-debug"]
 
 # When building to be packaged for inclusion in the production ramdisk
 # (nominally an Omicron package), certain code is compiled in or out.

@@ -19,10 +19,7 @@ fn main() {
         }
     };
 
-    let include_paths = [
-        "usr/src/uts/intel",
-        "usr/src/uts/common",
-    ];
+    let include_paths = ["usr/src/uts/intel", "usr/src/uts/common"];
     cfg.include("/usr/include");
     for p in include_paths {
         cfg.include(gate_dir.join(p));
@@ -39,7 +36,8 @@ fn main() {
 
     cfg.skip_field(move |name, field| match (name, field) {
         // C header currently lacks explicit pad fields
-        ("vioc_ring_init", "_pad") => true,
+        ("vioc_intr_poll_mq", "_pad") => true,
+        ("vioc_ring_init_modern", "_pad") => true,
         ("vioc_ring_msi", "_pad") => true,
 
         _ => false,
@@ -53,5 +51,5 @@ fn main() {
         _ => false,
     });
 
-    cfg.generate("../sys/src/lib.rs", "main.rs");
+    cfg.generate("../src/ffi.rs", "main.rs");
 }

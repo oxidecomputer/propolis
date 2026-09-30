@@ -10,7 +10,9 @@ use std::str::FromStr;
 use serde_derive::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub use cpuid_profile_config::CpuidProfile;
+pub use cpuid_profile_config::{
+    CpuVendor, CpuidEntry, CpuidParseError, CpuidProfile,
+};
 
 pub mod spec;
 
@@ -19,6 +21,9 @@ pub mod spec;
 // configuration will likely become more dynamic.
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Config {
+    #[serde(default, rename = "main")]
+    pub machine_settings: MachineSettings,
+
     #[serde(default, rename = "pci_bridge")]
     pub pci_bridges: Vec<PciBridge>,
 
@@ -37,6 +42,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            machine_settings: MachineSettings::default(),
             pci_bridges: Vec::new(),
             chipset: Chipset { options: BTreeMap::new() },
             devices: BTreeMap::new(),
@@ -44,6 +50,74 @@ impl Default for Config {
             cpuid_profiles: BTreeMap::new(),
         }
     }
+}
+
+/// The hypervisor interface to present to guest OSes.
+///
+/// The variants here correspond to implementations of `Enlightenment`, which
+/// may influence many aspects of a VM. Most immediately, different interfaces
+/// have different CPUID leaves, but can also support para-virtualized features
+/// such as additional hypercalls and MSRs.
+#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum HypervisorInterface {
+    #[default]
+    Bhyve,
+
+    HyperV {
+        reference_tsc: bool,
+    },
+}
+
+/// Settings covering the VM "at large".
+///
+/// This corresponds to (and is a subset of) the `main` block understood by
+/// `propolis-standalone`
+#[derive(Serialize, Deserialize, Debug, PartialEq, Default)]
+pub struct MachineSettings {
+    pub boot_order: Option<Vec<String>>,
+    // In the fullness of time, one could imagine a list of hypervisor
+    // interfaces for Propolis to offer up. The premise here would be that each
+    // hypervisor interface's CPUID leaves are offered up at different offsets
+    // of 0x100 with the "first" hypervisor being at 0x4000_0000 like normal.
+    //
+    // There is some background here:
+    // * Linux detects hypervisors like above, see `hypervisor_cpuid_bsae`,
+    //   which does this and returns the leaf that matched a given brand string.
+    // * FreeBSD does the same basic approach at
+    //   `identify_hypervisor_cpuid_base()`, looking for the first hypervisor
+    //   brand string that matches one of the signatures in `vm_cpuids`.
+    // * illumos in particular takes the above approach to look for the Xen
+    //   signature.
+    //
+    // The history seems to be that in 2008, Xen added support for presenting
+    // Hyper-V enlightenments in support of Windows guests. That's Xen commit
+    // 39f97ffa2. This also placed the "normal" Xen hypervisor leaves at
+    // 0x40000100 to query Xen rather than querying the reading back the Hyper-
+    // leaves lower down. Intel reserves all of 0x4xxxxxxx for hypervisors,
+    // TODO: AMD may have only reserved 0x400000xx, or maybe it has since become
+    // more.
+    //
+    // In 2010, to detect Xen vs Hyper-V correctly, Linux got a a "check every
+    // 0x100'th leaf" loop in `xen_cpuid_base()` with commit bee6ab53e6.
+    // Allegedly a VMWare knowledge base item about detecting virtualization
+    // platforms also included a mention of checking every 0x100'th leaf for
+    // hypervisor signatures, but the knowledge base entry has since been lost
+    // to the sands of time; this is only inference from FreeBSD and mailing
+    // list posts.
+    //
+    // Later, this loop was generalized to all hypervisor detection in Linux and
+    // things start looking much closer to how they are today. illumos, for its
+    // part, currently only looks for Xen in the upper hypervisor leaves.
+    //
+    // So: one could imagine Hyper-V-then-KVM brand strings, such as QEMU
+    // presumably offers when providing Hyper-V enlightenments. Should we be
+    // Hyper-V-then-byhve? Hyper-V-then-KVM-then-bhyve may be technically viable
+    // too. Other orderings are mostly a test of guest tolerance for *weird
+    // things*.
+    //
+    // That all to say: this could be a list.
+    pub hv_interface: Option<HypervisorInterface>,
 }
 
 /// The instance's chipset.
@@ -91,8 +165,15 @@ pub struct Device {
 }
 
 impl Device {
+    pub fn get_toml_value<S: AsRef<str>>(
+        &self,
+        key: S,
+    ) -> Option<&toml::Value> {
+        self.options.get(key.as_ref())
+    }
+
     pub fn get_string<S: AsRef<str>>(&self, key: S) -> Option<&str> {
-        self.options.get(key.as_ref())?.as_str()
+        self.get_toml_value(key)?.as_str()
     }
 
     pub fn get<T: FromStr, S: AsRef<str>>(&self, key: S) -> Option<T> {

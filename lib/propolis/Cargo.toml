@@ -3,13 +3,15 @@ name = "propolis"
 version = "0.1.0"
 license = "MPL-2.0"
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.93"
 
 [dependencies]
 libc.workspace = true
-bitflags.workspace = true
+bit_field.workspace = true
+bitflags = { workspace = true, features = ["serde"] }
 bitstruct.workspace = true
 byteorder.workspace = true
+dice-verifier.workspace = true
 lazy_static.workspace = true
 thiserror.workspace = true
 bhyve_api.workspace = true
@@ -17,10 +19,13 @@ cpuid_utils.workspace = true
 dladm.workspace = true
 viona_api.workspace = true
 propolis_types.workspace = true
+pbind.workspace = true
 usdt = { workspace = true, features = ["asm"] }
 tokio = { workspace = true, features = ["full"] }
 futures.workspace = true
+paste.workspace = true
 pin-project-lite.workspace = true
+acpi_tables.workspace = true
 anyhow.workspace = true
 rgb_frame.workspace = true
 rfb.workspace = true
@@ -29,6 +34,7 @@ serde.workspace = true
 serde_arrays.workspace = true
 erased-serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 strum = { workspace = true, features = ["derive"] }
 uuid.workspace = true
 zerocopy = { workspace = true, features = ["derive"] }
@@ -37,6 +43,10 @@ crucible = { workspace = true, optional = true }
 oximeter = { workspace = true, optional = true }
 nexus-client = { workspace = true, optional = true }
 async-trait.workspace = true
+iddqd.workspace = true
+nix.workspace = true
+vm-attest.workspace = true
+itertools.workspace = true
 
 # falcon
 libloading = { workspace = true, optional = true }
@@ -45,6 +55,11 @@ ispf = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 softnpu = { workspace = true, optional = true }
 dlpi = { workspace = true, optional = true }
+static_assertions = "1.1.0"
+
+[build-dependencies]
+anyhow.workspace = true
+vergen-git2.workspace = true
 
 [dev-dependencies]
 crossbeam-channel.workspace = true
@@ -59,6 +74,7 @@ ron.workspace = true
 default = []
 crucible-full = ["crucible", "crucible-client-types", "oximeter", "nexus-client"]
 falcon = ["libloading", "p9ds", "dlpi", "ispf", "rand", "softnpu", "viona_api/falcon"]
+acpi-debug = []
 
 # TODO until crucible#1280 is addressed, enabling Nexus notifications is done
 # through a feature flag.

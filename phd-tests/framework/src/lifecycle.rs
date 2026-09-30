@@ -7,7 +7,7 @@ use futures::future::BoxFuture;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::{test_vm::MigrationTimeout, Framework, TestVm};
+use crate::{test_vm::MigrationTimeout, TestCtx, TestVm};
 
 /// The set of actions that can be taken on a VM undergoing lifecycle testing.
 pub enum Action<'a> {
@@ -31,11 +31,11 @@ pub enum Action<'a> {
     MigrateToPropolis(&'a str),
 }
 
-impl Framework {
+impl TestCtx {
     /// Runs a lifecycle test on the supplied `vm` by iterating over the
     /// `actions`, performing the specified action, and then calling `check_fn`
     /// on the resulting VM to verify invariants.
-    pub async fn lifecycle_test<'a>(
+    pub async fn lifecycle_test(
         &self,
         vm: TestVm,
         actions: &[Action<'_>],

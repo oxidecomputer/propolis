@@ -525,7 +525,7 @@ impl OverlayManager {
 mod pfn {
     use crate::{
         common::{GuestRegion, PAGE_SIZE},
-        vmm::{MemCtx, Pfn, SubMapping},
+        vmm::{Pfn, SubMapping},
     };
 
     use super::{OverlayContents, OverlayError};
@@ -540,7 +540,10 @@ mod pfn {
         /// Creates a new page-sized mapping of the supplied PFN.
         pub(super) fn new(
             pfn: Pfn,
-            memctx: &'a crate::accessors::Guard<'a, MemCtx>,
+            memctx: &'a crate::accessors::Guard<
+                'a,
+                crate::vmm::mem::MemAccessed,
+            >,
         ) -> Result<Self, OverlayError> {
             let gpa = pfn.addr();
             let mapping = memctx
@@ -617,7 +620,7 @@ mod test {
             let hdl = Arc::new(VmmHdl::new_test(1024 * 1024).unwrap());
             let mut map = PhysMap::new(MAX_PHYSMEM, hdl.clone());
             map.add_test_mem("test-ram".to_string(), 0, 1024 * 1024).unwrap();
-            let acc_mem = MemAccessor::new(map.memctx());
+            let acc_mem = map.finalize();
 
             let mgr = Arc::new(OverlayManager::default());
             mgr.attach(&acc_mem);

@@ -3,12 +3,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use phd_testcase::*;
-use propolis_client::{
-    instance_spec::VersionedInstanceSpec, types::InstanceSpecStatus,
-};
+use propolis_client::instance_spec::InstanceSpecStatus;
 
 #[phd_testcase]
-async fn nproc_test(ctx: &Framework) {
+async fn nproc_test(ctx: &TestCtx) {
     let mut vm =
         ctx.spawn_vm(ctx.vm_config_builder("nproc_test").cpus(6), None).await?;
     vm.launch().await?;
@@ -19,7 +17,7 @@ async fn nproc_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
-async fn api_reboot_test(ctx: &Framework) {
+async fn api_reboot_test(ctx: &TestCtx) {
     let mut vm = ctx.spawn_default_vm("api_reboot_test").await?;
     vm.launch().await?;
     vm.wait_to_boot().await?;
@@ -28,7 +26,7 @@ async fn api_reboot_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
-async fn guest_reboot_test(ctx: &Framework) {
+async fn guest_reboot_test(ctx: &TestCtx) {
     let mut vm = ctx.spawn_default_vm("guest_reboot_test").await?;
     vm.launch().await?;
     vm.wait_to_boot().await?;
@@ -37,7 +35,7 @@ async fn guest_reboot_test(ctx: &Framework) {
 }
 
 #[phd_testcase]
-async fn instance_spec_get_test(ctx: &Framework) {
+async fn instance_spec_get_test(ctx: &TestCtx) {
     let mut vm = ctx
         .spawn_vm(
             ctx.vm_config_builder("instance_spec_test")
@@ -53,7 +51,6 @@ async fn instance_spec_get_test(ctx: &Framework) {
         panic!("launched instance should have a spec");
     };
 
-    let VersionedInstanceSpec::V0(spec) = spec;
     assert_eq!(spec.board.cpus, 4);
     assert_eq!(spec.board.memory_mb, 3072);
 }

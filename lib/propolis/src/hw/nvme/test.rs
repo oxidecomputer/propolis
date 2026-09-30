@@ -2,8 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use crate::accessors::MemAccessor;
-use crate::block::{self, Backend, BackendOpts, InMemoryBackend};
+use crate::block::{self, Backend, BackendOpts, Device, InMemoryBackend};
 use crate::hw::pci::{test::Scaffold, Bus, BusLocation, Endpoint};
 use crate::migrate::{
     MigrateCtx, MigrateMulti, PayloadOffer, PayloadOffers, PayloadOutputs,
@@ -109,7 +108,7 @@ impl FuzzCtx {
         // Test RAM starts at 1 MB and is 1 MB large.
         map.add_test_mem("test-ram".to_string(), MB, MB)
             .expect("can create test memory region");
-        scaffold.acc_mem = MemAccessor::new(map.memctx());
+        scaffold.acc_mem = map.finalize();
 
         let bus = scaffold.create_bus();
 
@@ -130,13 +129,9 @@ impl FuzzCtx {
         )
         .unwrap();
 
-        let nvme = PciNvme::create(Self::TEST_SERIAL, None, log.clone());
+        let nvme = PciNvme::create(Self::TEST_SERIAL, None, true, log.clone());
 
-        block::attach(
-            Arc::clone(&nvme) as Arc<dyn block::Device>,
-            Arc::clone(&backend) as Arc<dyn Backend>,
-        )
-        .unwrap();
+        block::attach(nvme.attachment(), backend.attachment()).unwrap();
         bus.attach(
             Self::TEST_NVME_LOCATION,
             Arc::clone(&nvme) as Arc<dyn Endpoint>,
@@ -384,19 +379,17 @@ impl FuzzCtx {
             PayloadOffers::new(offer_iter)
         };
 
-        self.nvme = PciNvme::create(Self::TEST_SERIAL, None, self.log.clone());
+        self.nvme =
+            PciNvme::create(Self::TEST_SERIAL, None, true, self.log.clone());
 
         // TODO: we don't have a way to detach the exported NVMe device from
         // the bus, so we'll replace the whole bus and attach the new NVMe
         // device to the new bus.
         self.bus = self.scaffold.create_bus();
 
-        self.backend.attachment().detach().unwrap();
-        block::attach(
-            Arc::clone(&self.nvme) as Arc<dyn block::Device>,
-            Arc::clone(&self.backend) as Arc<dyn Backend>,
-        )
-        .unwrap();
+        self.backend.attachment().detach();
+        block::attach(self.nvme.attachment(), self.backend.attachment())
+            .unwrap();
 
         self.bus.attach(
             Self::TEST_NVME_LOCATION,

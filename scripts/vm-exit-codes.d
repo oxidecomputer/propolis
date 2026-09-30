@@ -1,3 +1,5 @@
+#!/usr/sbin/dtrace -qCs
+
 #pragma D option quiet
 
 /*

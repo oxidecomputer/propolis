@@ -3,7 +3,7 @@ name = "propolis-standalone"
 version = "0.1.0"
 license = "MPL-2.0"
 edition = "2021"
-rust-version = "1.73"
+rust-version = "1.93"
 
 [[bin]]
 name = "propolis-standalone"
@@ -13,7 +13,6 @@ doctest = false
 
 [dependencies]
 anyhow.workspace = true
-atty.workspace = true
 bhyve_api.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 cpuid_utils.workspace = true
@@ -39,7 +38,9 @@ slog-term.workspace = true
 strum = { workspace = true, features = ["derive"] }
 tar.workspace = true
 uuid.workspace = true
+pbind.workspace = true
 
 [features]
 default = []
 crucible = ["propolis/crucible-full", "propolis/oximeter", "crucible-client-types"]
+acpi-debug = ["propolis/acpi-debug"]

@@ -14,7 +14,7 @@ mod migrate;
 mod smoke;
 
 fn add_crucible_boot_disk_or_skip<'a>(
-    ctx: &Framework,
+    ctx: &TestCtx,
     config: &mut VmConfig<'a>,
     artifact: &'a str,
     interface: DiskInterface,
@@ -37,14 +37,14 @@ fn add_crucible_boot_disk_or_skip<'a>(
 }
 
 fn add_default_boot_disk<'a>(
-    ctx: &'a Framework,
+    ctx: &'a TestCtx,
     config: &mut VmConfig<'a>,
 ) -> phd_testcase::Result<()> {
     add_crucible_boot_disk_or_skip(
         ctx,
         config,
         ctx.default_guest_os_artifact(),
-        DiskInterface::Nvme,
+        DiskInterface::nvme(),
         4,
         10,
         BlockSize::Bytes512,

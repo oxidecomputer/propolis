@@ -13,12 +13,13 @@ use std::{
 
 use futures::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
 use propolis::{
+    attestation,
     hw::{ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart},
     vmm::VmmHdl,
     Machine,
 };
 use propolis_api_types::instance_spec::SpecKey;
-use slog::{error, info};
+use slog::info;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::{serial::Serial, spec::Spec, vcpu_tasks::VcpuTaskController};
@@ -51,6 +52,7 @@ pub(super) struct InputVmObjects {
     pub com1: Arc<Serial<LpcUart>>,
     pub framebuffer: Option<Arc<RamFb>>,
     pub ps2ctrl: Arc<PS2Ctrl>,
+    pub attest_handle: Option<attestation::server::AttestationSock>,
 }
 
 /// The collection of objects and state that make up a Propolis instance.
@@ -86,6 +88,9 @@ pub(crate) struct VmObjectsLocked {
 
     /// A handle to the VM's PS/2 controller.
     ps2ctrl: Arc<PS2Ctrl>,
+
+    /// A handle to the VM's attestation server.
+    attest_handle: Option<attestation::server::AttestationSock>,
 }
 
 impl VmObjects {
@@ -126,6 +131,7 @@ impl VmObjectsLocked {
             com1: input.com1,
             framebuffer: input.framebuffer,
             ps2ctrl: input.ps2ctrl,
+            attest_handle: input.attest_handle,
         }
     }
 
@@ -153,7 +159,8 @@ impl VmObjectsLocked {
     /// is not currently accessible.
     pub(crate) fn access_mem(
         &self,
-    ) -> Option<propolis::accessors::Guard<'_, propolis::vmm::MemCtx>> {
+    ) -> Option<propolis::accessors::Guard<'_, propolis::vmm::MemAccessed>>
+    {
         self.machine.acc_mem.access()
     }
 
@@ -370,7 +377,7 @@ impl VmObjectsLocked {
 
     /// Stops all of a VM's devices and detaches its block backends from their
     /// devices.
-    async fn halt_devices(&self) {
+    async fn halt_devices(&mut self) {
         // Take care not to wedge the runtime with any device halt
         // implementations which might block.
         tokio::task::block_in_place(|| {
@@ -383,11 +390,11 @@ impl VmObjectsLocked {
         for (id, backend) in self.block_backends.iter() {
             info!(self.log, "stopping and detaching block backend {}", id);
             backend.stop().await;
-            if let Err(err) = backend.detach() {
-                error!(self.log, "error detaching block backend";
-                       "id" => %id,
-                       "error" => ?err);
-            }
+            backend.attachment().detach();
+        }
+
+        if let Some(attest_handle) = self.attest_handle.take() {
+            attest_handle.halt().await;
         }
     }
 

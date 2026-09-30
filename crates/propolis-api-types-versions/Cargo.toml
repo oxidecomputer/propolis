@@ -1,0 +1,19 @@
+[package]
+name = "propolis-api-types-versions"
+version = "0.0.0"
+license = "MPL-2.0"
+edition = "2021"
+
+[lib]
+doctest = false
+
+[dependencies]
+crucible-client-types.workspace = true
+propolis_types.workspace = true
+schemars.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

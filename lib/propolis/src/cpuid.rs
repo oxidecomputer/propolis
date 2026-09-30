@@ -337,12 +337,18 @@ impl Specializer {
                         // processor)
                         subleaf.eax |= (num_vproc - 1) << 26;
 
-                        // Present L1 and L2 caches as per-thread, L3 is across
-                        // the whole VM.
+                        // L1/L2 shared by SMT siblings, L3 shared by whole VM.
+                        //
+                        // Per Intel SDM, EAX[25:14] is "Maximum number of
+                        // addressable IDs for logical processors sharing this
+                        // cache". Add one to get the actual count; the nearest
+                        // power of 2 >= that value gives the APIC ID mask width.
                         if level < 3 {
                             subleaf.eax &= !LEAF4_EAX_VCPU_MASK;
-                            // And leave that range 0: this means only one
-                            // vCPU shares the cache.
+                            if self.has_smt {
+                                // 2 logical processors share L1/L2 so (1 + 1) = 2
+                                subleaf.eax |= 1 << 14;
+                            }
                         } else {
                             subleaf.eax &= !LEAF4_EAX_VCPU_MASK;
                             let shifted_vcpu = (num_vcpu - 1) << 14;

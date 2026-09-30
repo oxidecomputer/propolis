@@ -6,6 +6,7 @@
 
 use crate::common::RWOp;
 use crate::common::ReadOp;
+use crate::hw::pci::CapId;
 use crate::util::regmap::Flags;
 use crate::util::regmap::RegMap;
 
@@ -13,18 +14,23 @@ use super::bits::*;
 use super::Cap;
 
 #[derive(Debug)]
+pub(super) enum CfgCapReg {
+    Id(u8),
+    Next(u8),
+    Body(u8),
+}
+
+#[derive(Debug)]
 pub(super) enum CfgReg {
     Std,
     Custom(u8),
-    CapId(u8),
-    CapNext(u8),
-    CapBody(u8),
+    Cap(CfgCapReg),
 }
 
 /// A helper for building maps of PCI device configuration space.
 pub(super) struct CfgBuilder {
     cfgmap: RegMap<CfgReg>,
-    caps: Vec<Cap>,
+    caps: Vec<Cap<u32>>,
     cap_next_alloc: usize,
 }
 
@@ -97,27 +103,35 @@ impl CfgBuilder {
     ///   capability pointer registers) is not a multiple of 4 bytes; or
     /// - The capability's total size (again inclusive of the standard
     ///   registers) is 256 bytes or larger.
-    pub fn add_capability(&mut self, id: u8, len: u8) {
+    pub fn add_capability(&mut self, id: CapId<u32>, len: u8) {
         self.check_overlap(self.cap_next_alloc, len as usize);
         let end = self.cap_next_alloc + 2 + len as usize;
         // XXX: on the caller to size properly for alignment requirements
-        assert!(end % 4 == 0);
+        assert_eq!(end % 4, 0);
         assert!(end <= u8::MAX as usize);
         let idx = self.caps.len() as u8;
         self.caps.push(Cap::new(id, self.cap_next_alloc as u8));
-        self.cfgmap.define(self.cap_next_alloc, 1, CfgReg::CapId(idx));
-        self.cfgmap.define(self.cap_next_alloc + 1, 1, CfgReg::CapNext(idx));
+        self.cfgmap.define(
+            self.cap_next_alloc,
+            1,
+            CfgReg::Cap(CfgCapReg::Id(idx)),
+        );
+        self.cfgmap.define(
+            self.cap_next_alloc + 1,
+            1,
+            CfgReg::Cap(CfgCapReg::Next(idx)),
+        );
         self.cfgmap.define(
             self.cap_next_alloc + 2,
             len as usize,
-            CfgReg::CapBody(idx),
+            CfgReg::Cap(CfgCapReg::Body(idx)),
         );
         self.cap_next_alloc = end;
     }
 
     /// Constructs the configuration space and a description of its
     /// capabilities.
-    pub fn finish(self) -> (RegMap<CfgReg>, Vec<Cap>) {
+    pub fn finish(self) -> (RegMap<CfgReg>, Vec<Cap<u32>>) {
         (self.cfgmap, self.caps)
     }
 }

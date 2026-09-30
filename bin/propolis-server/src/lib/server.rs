@@ -36,9 +36,26 @@ use internal_dns_resolver::{ResolveError, Resolver};
 use internal_dns_types::names::ServiceName;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
-use propolis_api_types as api;
-use propolis_api_types::instance_spec::SpecKey;
-use propolis_api_types::InstanceInitializationMethod;
+use propolis::attestation::server::AttestationServerConfig;
+use propolis_api_types::disk::{
+    InstanceVCRReplace, SnapshotRequestPathParams, VCRRequestPathParams,
+    VolumeStatus, VolumeStatusPathParams,
+};
+use propolis_api_types::instance::{
+    ErrorCode, Instance, InstanceEnsureRequest, InstanceEnsureResponse,
+    InstanceGetResponse, InstanceInitializationMethod,
+    InstanceStateMonitorRequest, InstanceStateMonitorResponse,
+    InstanceStateRequested,
+};
+use propolis_api_types::instance_spec::{InstanceSpecGetResponse, SpecKey};
+use propolis_api_types::migration::{
+    InstanceMigrateStartRequest, InstanceMigrateStatusResponse,
+};
+use propolis_api_types::serial::{
+    InstanceSerialConsoleHistoryRequest, InstanceSerialConsoleHistoryResponse,
+    InstanceSerialConsoleStreamRequest,
+};
+use propolis_api_types_versions::v1::disk::VolumeStatus as VolumeStatusV1;
 use propolis_server_api::PropolisServerApi;
 use rfb::tungstenite::BinaryWs;
 use slog::{error, warn, Logger};
@@ -80,6 +97,9 @@ pub struct StaticConfig {
     /// The configuration to use when setting up this server's Oximeter
     /// endpoint.
     metrics: Option<MetricsEndpointConfig>,
+
+    /// TODO: comment
+    attest_config: Option<AttestationServerConfig>,
 }
 
 /// Context accessible from HTTP callbacks.
@@ -98,6 +118,7 @@ impl DropshotEndpointContext {
         use_reservoir: bool,
         log: slog::Logger,
         metric_config: Option<MetricsEndpointConfig>,
+        attest_config: Option<AttestationServerConfig>,
     ) -> Self {
         let vnc_server = VncServer::new(log.clone());
         Self {
@@ -106,6 +127,7 @@ impl DropshotEndpointContext {
                 bootrom_version,
                 use_reservoir,
                 metrics: metric_config,
+                attest_config,
             },
             vnc_server,
             vm: crate::vm::Vm::new(&log),
@@ -190,9 +212,9 @@ async fn find_local_nexus_client(
     }
 }
 
-async fn instance_get_common(
+async fn instance_get(
     rqctx: &RequestContext<Arc<DropshotEndpointContext>>,
-) -> Result<api::InstanceSpecGetResponse, HttpError> {
+) -> Result<InstanceSpecGetResponse, HttpError> {
     let ctx = rqctx.context();
     ctx.vm.get().await.ok_or_else(not_created_error)
 }
@@ -204,12 +226,10 @@ impl PropolisServerApi for PropolisServerImpl {
 
     async fn instance_ensure(
         rqctx: RequestContext<Self::Context>,
-        request: TypedBody<api::InstanceEnsureRequest>,
-    ) -> Result<HttpResponseCreated<api::InstanceEnsureResponse>, HttpError>
-    {
+        request: TypedBody<InstanceEnsureRequest>,
+    ) -> Result<HttpResponseCreated<InstanceEnsureResponse>, HttpError> {
         let server_context = rqctx.context();
-        let api::InstanceEnsureRequest { properties, init } =
-            request.into_inner();
+        let InstanceEnsureRequest { properties, init } = request.into_inner();
         let oximeter_registry = server_context
             .static_config
             .metrics
@@ -232,6 +252,7 @@ impl PropolisServerApi for PropolisServerImpl {
             nexus_client,
             vnc_server: server_context.vnc_server.clone(),
             local_server_addr: rqctx.server.local_addr,
+            attest_config: server_context.static_config.attest_config,
         };
 
         let vm_init = match init {
@@ -276,7 +297,7 @@ impl PropolisServerApi for PropolisServerImpl {
                 VmError::WaitingToInitialize
                 | VmError::AlreadyInitialized
                 | VmError::RundownInProgress => HttpError::for_client_error(
-                    Some(api::ErrorCode::AlreadyInitialized.to_string()),
+                    Some(ErrorCode::AlreadyInitialized.to_string()),
                     ClientErrorStatusCode::CONFLICT,
                     "instance already initialized".to_string(),
                 ),
@@ -293,16 +314,16 @@ impl PropolisServerApi for PropolisServerImpl {
 
     async fn instance_spec_get(
         rqctx: RequestContext<Self::Context>,
-    ) -> Result<HttpResponseOk<api::InstanceSpecGetResponse>, HttpError> {
-        Ok(HttpResponseOk(instance_get_common(&rqctx).await?))
+    ) -> Result<HttpResponseOk<InstanceSpecGetResponse>, HttpError> {
+        Ok(HttpResponseOk(instance_get(&rqctx).await?))
     }
 
     async fn instance_get(
         rqctx: RequestContext<Self::Context>,
-    ) -> Result<HttpResponseOk<api::InstanceGetResponse>, HttpError> {
-        instance_get_common(&rqctx).await.map(|full| {
-            HttpResponseOk(api::InstanceGetResponse {
-                instance: api::Instance {
+    ) -> Result<HttpResponseOk<InstanceGetResponse>, HttpError> {
+        instance_get(&rqctx).await.map(|full| {
+            HttpResponseOk(InstanceGetResponse {
+                instance: Instance {
                     properties: full.properties,
                     state: full.state,
                 },
@@ -312,9 +333,8 @@ impl PropolisServerApi for PropolisServerImpl {
 
     async fn instance_state_monitor(
         rqctx: RequestContext<Self::Context>,
-        request: TypedBody<api::InstanceStateMonitorRequest>,
-    ) -> Result<HttpResponseOk<api::InstanceStateMonitorResponse>, HttpError>
-    {
+        request: TypedBody<InstanceStateMonitorRequest>,
+    ) -> Result<HttpResponseOk<InstanceStateMonitorResponse>, HttpError> {
         let ctx = rqctx.context();
         let gen = request.into_inner().gen;
         let mut state_watcher =
@@ -332,7 +352,7 @@ impl PropolisServerApi for PropolisServerImpl {
             // Inform the client of this condition so it doesn't wait forever.
             state_watcher.changed().await.map_err(|_| {
                 HttpError::for_client_error(
-                    Some(api::ErrorCode::NoInstance.to_string()),
+                    Some(ErrorCode::NoInstance.to_string()),
                     ClientErrorStatusCode::GONE,
                     format!(
                         "No instance present; will never reach generation {gen}",
@@ -344,7 +364,7 @@ impl PropolisServerApi for PropolisServerImpl {
 
     async fn instance_state_put(
         rqctx: RequestContext<Self::Context>,
-        request: TypedBody<api::InstanceStateRequested>,
+        request: TypedBody<InstanceStateRequested>,
     ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
         let ctx = rqctx.context();
         let requested_state = request.into_inner();
@@ -371,7 +391,7 @@ impl PropolisServerApi for PropolisServerImpl {
             });
 
         if result.is_ok() {
-            if let api::InstanceStateRequested::Reboot = requested_state {
+            if let InstanceStateRequested::Reboot = requested_state {
                 let stats = MutexGuard::map(
                     vm.services().oximeter.lock().await,
                     |state| &mut state.stats,
@@ -387,11 +407,9 @@ impl PropolisServerApi for PropolisServerImpl {
 
     async fn instance_serial_history_get(
         rqctx: RequestContext<Self::Context>,
-        query: Query<api::InstanceSerialConsoleHistoryRequest>,
-    ) -> Result<
-        HttpResponseOk<api::InstanceSerialConsoleHistoryResponse>,
-        HttpError,
-    > {
+        query: Query<InstanceSerialConsoleHistoryRequest>,
+    ) -> Result<HttpResponseOk<InstanceSerialConsoleHistoryResponse>, HttpError>
+    {
         let ctx = rqctx.context();
         let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
         let serial = vm.objects().lock_shared().await.com1().clone();
@@ -405,7 +423,7 @@ impl PropolisServerApi for PropolisServerImpl {
             .await
             .map_err(|e| HttpError::for_bad_request(None, e.to_string()))?;
 
-        Ok(HttpResponseOk(api::InstanceSerialConsoleHistoryResponse {
+        Ok(HttpResponseOk(InstanceSerialConsoleHistoryResponse {
             data,
             last_byte_offset: end as u64,
         }))
@@ -413,7 +431,7 @@ impl PropolisServerApi for PropolisServerImpl {
 
     async fn instance_serial(
         rqctx: RequestContext<Self::Context>,
-        query: Query<api::InstanceSerialConsoleStreamRequest>,
+        query: Query<InstanceSerialConsoleStreamRequest>,
         websock: WebsocketConnection,
     ) -> dropshot::WebsocketChannelResult {
         let ctx = rqctx.context();
@@ -493,7 +511,7 @@ impl PropolisServerApi for PropolisServerImpl {
 
     async fn instance_migrate_start(
         rqctx: RequestContext<Self::Context>,
-        path_params: Path<api::InstanceMigrateStartRequest>,
+        path_params: Path<InstanceMigrateStartRequest>,
         websock: WebsocketConnection,
     ) -> dropshot::WebsocketChannelResult {
         let ctx = rqctx.context();
@@ -504,8 +522,7 @@ impl PropolisServerApi for PropolisServerImpl {
 
     async fn instance_migrate_status(
         rqctx: RequestContext<Self::Context>,
-    ) -> Result<HttpResponseOk<api::InstanceMigrateStatusResponse>, HttpError>
-    {
+    ) -> Result<HttpResponseOk<InstanceMigrateStatusResponse>, HttpError> {
         let ctx = rqctx.context();
         ctx.vm
             .state_watcher()
@@ -516,7 +533,7 @@ impl PropolisServerApi for PropolisServerImpl {
 
     async fn instance_issue_crucible_snapshot_request(
         rqctx: RequestContext<Self::Context>,
-        path_params: Path<api::SnapshotRequestPathParams>,
+        path_params: Path<SnapshotRequestPathParams>,
     ) -> Result<HttpResponseOk<()>, HttpError> {
         let vm = rqctx
             .context()
@@ -541,10 +558,10 @@ impl PropolisServerApi for PropolisServerImpl {
         Ok(HttpResponseOk(()))
     }
 
-    async fn disk_volume_status(
+    async fn disk_volume_status_v1(
         rqctx: RequestContext<Self::Context>,
-        path_params: Path<api::VolumeStatusPathParams>,
-    ) -> Result<HttpResponseOk<api::VolumeStatus>, HttpError> {
+        path_params: Path<VolumeStatusPathParams>,
+    ) -> Result<HttpResponseOk<VolumeStatusV1>, HttpError> {
         let path_params = path_params.into_inner();
         let vm = rqctx
             .context()
@@ -562,17 +579,45 @@ impl PropolisServerApi for PropolisServerImpl {
                 HttpError::for_not_found(Some(s.clone()), s)
             })?;
 
-        Ok(HttpResponseOk(api::VolumeStatus {
+        Ok(HttpResponseOk(VolumeStatusV1 {
             active: backend.volume_is_active().await.map_err(|e| {
                 HttpError::for_bad_request(Some(e.to_string()), e.to_string())
             })?,
         }))
     }
 
+    async fn disk_volume_status(
+        rqctx: RequestContext<Self::Context>,
+        path_params: Path<VolumeStatusPathParams>,
+    ) -> Result<HttpResponseOk<VolumeStatus>, HttpError> {
+        let path_params = path_params.into_inner();
+        let vm = rqctx
+            .context()
+            .vm
+            .active_vm()
+            .await
+            .ok_or_else(not_created_error)?;
+        let objects = vm.objects().lock_shared().await;
+        let backend = objects
+            .crucible_backends()
+            .get(&SpecKey::from(path_params.id.clone()))
+            .ok_or_else(|| {
+                let s =
+                    format!("No crucible backend for id {}", path_params.id);
+                HttpError::for_not_found(Some(s.clone()), s)
+            })?;
+
+        let volume_info = backend.query_volume_info().await.map_err(|e| {
+            HttpError::for_bad_request(Some(e.to_string()), e.to_string())
+        })?;
+
+        Ok(HttpResponseOk(VolumeStatus { volume_info }))
+    }
+
     async fn instance_issue_crucible_vcr_request(
         rqctx: RequestContext<Self::Context>,
-        path_params: Path<api::VCRRequestPathParams>,
-        request: TypedBody<api::InstanceVCRReplace>,
+        path_params: Path<VCRRequestPathParams>,
+        request: TypedBody<InstanceVCRReplace>,
     ) -> Result<HttpResponseOk<crucible_client_types::ReplaceResult>, HttpError>
     {
         let path_params = path_params.into_inner();
@@ -641,7 +686,7 @@ pub fn api() -> ApiDescription<Arc<DropshotEndpointContext>> {
 
 fn not_created_error() -> HttpError {
     HttpError::for_client_error(
-        Some(api::ErrorCode::NoInstance.to_string()),
+        Some(ErrorCode::NoInstance.to_string()),
         ClientErrorStatusCode::FAILED_DEPENDENCY,
         "Server not initialized (no instance)".to_string(),
     )

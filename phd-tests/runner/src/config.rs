@@ -202,6 +202,16 @@ pub struct RunOptions {
     // number of seconds, but i'm lazy...
     #[clap(long, value_parser, default_value_t = 60 * 20)]
     pub max_buildomat_wait_secs: u64,
+
+    /// When a testcase fails while this is enabled, any instances started by
+    /// the failed test are left running and phd-runner waits until they are
+    /// manually shut down out-of-band by the operator.
+    ///
+    /// This feature is intended to give the operator a chance to inspect the
+    /// state of the guest(s) easily without necessarily having to reconstruct
+    /// the scenario by hand.
+    #[clap(long, value_parser)]
+    pub manual_stop_on_failure: bool,
 }
 
 #[derive(Args, Debug)]
