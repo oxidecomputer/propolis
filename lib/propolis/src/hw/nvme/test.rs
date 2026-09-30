@@ -90,14 +90,33 @@ impl FuzzCtx {
     const ADMIN_CQ_BASE: GuestAddr =
         GuestAddr(Self::ADMIN_SQ_BASE.0 + Self::ADMIN_SQ_SIZE as u64);
 
-    // Place I/O queues arbitrarily at the end of memory.
-    const IO_QUEUES_BASE: usize = 2 * MB - (256 * 1024);
+    // We (currently) can fuzz up to 32 I/O queue pairs at once.
+    const IO_QUEUEPAIR_MAX: u16 = 32;
     // We won't do much with the queues, so they don't need to be deep.
     const IO_QUEUE_ENTRIES: u16 = 64;
     // And SQEs are larger than CQEs, so we'll just use the larger size for
     // all I/O queues.
     const IO_QUEUE_SIZE: usize =
         Self::SQE_SIZE * (Self::IO_QUEUE_ENTRIES as usize);
+    // The size of all I/O queues together, including the admin
+    // submission/completion queue.
+    const IO_QUEUES_SIZE: usize =
+        Self::IO_QUEUEPAIR_MAX as usize * 2 * Self::IO_QUEUE_SIZE;
+    // Place I/O queues arbitrarily at the end of memory.
+    const IO_QUEUES_BASE: usize = const {
+        let base = 2 * MB - Self::IO_QUEUES_SIZE;
+
+        // .. for legibility: the I/O queue size region is currently 256KiB, aka
+        // 0x40000 bytes, and is placed at 2MiB - 256KiB or 0x1c0000.
+        //
+        // Change this as appropriate if queue sizes, the number of queues, or
+        // the size of guest memory changes. These asserts are only to have some
+        // debugging-relevant sizes and offsets written out and checked.
+        assert!(Self::IO_QUEUES_SIZE == 0x40_000);
+        assert!(base == 0x1c0_000);
+
+        base
+    };
 
     fn new(log: &Logger) -> Self {
         let mut scaffold = Scaffold::new();
@@ -153,11 +172,9 @@ impl FuzzCtx {
     }
 
     // I/O submission/completion queues are interleaved (for fun more than
-    // anything else). With 256kb of memory for queues we can have
-    // up to 64 I/O queues in the form of 32 submission and completion
-    // queues.
+    // anything else).
     fn io_sq_address(i: u16) -> GuestAddr {
-        assert!(i < 32, "invalid I/O submission queue id");
+        assert!(i < Self::IO_QUEUEPAIR_MAX, "invalid I/O submission queue id");
         GuestAddr(
             (Self::IO_QUEUES_BASE + i as usize * 2 * Self::IO_QUEUE_SIZE)
                 as u64,
@@ -165,7 +182,7 @@ impl FuzzCtx {
     }
 
     fn io_cq_address(i: u16) -> GuestAddr {
-        assert!(i < 32, "invalid I/O completion queue id");
+        assert!(i < Self::IO_QUEUEPAIR_MAX, "invalid I/O completion queue id");
         GuestAddr(
             (Self::IO_QUEUES_BASE + (i as usize * 2 + 1) * Self::IO_QUEUE_SIZE)
                 as u64,
