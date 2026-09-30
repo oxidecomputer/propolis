@@ -291,8 +291,18 @@ const PS2C_CMD_WRITE_AUX_IN: u8 = 0xd4;
 const PS2C_CMD_PULSE_START: u8 = 0xf0;
 const PS2C_CMD_PULSE_END: u8 = 0xff;
 
-const PS2C_RAM_LEN: usize =
-    (PS2C_CMD_WRITE_RAM_END - PS2C_CMD_WRITE_RAM_START) as usize;
+// PS/2 Controller RAM is modeled as 31 bytes of variable data, with the first
+// byte of the controller RAM region (read with command 0x20, written with
+// command 0x60) is handled separately through `ctrl_cfg`.
+//
+// That leaves 31 bytes of controller RAM here.
+const PS2C_RAM_LEN: usize = const {
+    // The command consts above are inclusive of the accessed range, so we must
+    // add one for the RAM array to span all 31 bytes.
+    let size = (PS2C_CMD_WRITE_RAM_END - PS2C_CMD_WRITE_RAM_START + 1) as usize;
+    assert!(size == 31);
+    size
+};
 
 #[derive(Default)]
 struct PS2State {
@@ -445,7 +455,7 @@ impl PS2Ctrl {
                     state.ctrl_cfg = cfg;
                 }
                 PS2C_CMD_WRITE_RAM_START..=PS2C_CMD_WRITE_RAM_END => {
-                    let off = v - PS2C_CMD_WRITE_RAM_START;
+                    let off = prefix - PS2C_CMD_WRITE_RAM_START;
                     state.ram[off as usize] = v;
                 }
                 PS2C_CMD_WRITE_CTLR_OUT => {
