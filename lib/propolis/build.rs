@@ -10,7 +10,6 @@ fn main() -> anyhow::Result<()> {
         .sha(true)
         .build();
     vergen_git2::Emitter::default()
-        .idempotent()
         .add_instructions(&git2)?
         .emit()?;
 

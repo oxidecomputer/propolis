@@ -39,6 +39,10 @@ ptime -m ./tools/install_builder_prerequisites.sh -y
 # should fire during tests.
 banner build-propolis
 
+# The same reasoning as in `image.sh` applies here, where we'd prefer more
+# deterministic CI builds over less deterministic.
+export VERGEN_IDEMPOTENT="true"
+
 # We'll do a few cargo builds, keeping features the same means we reuse build
 # artifacts from crates these configure.
 TEST_FEATURES="omicron-build,failure-injection"

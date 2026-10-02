@@ -31,6 +31,20 @@ ptime -m ./tools/install_builder_prerequisites.sh -y
 
 banner build
 
+# We collect some build envrionment information with vergen to augment
+# development builds, but this would otherwise put extra build-env info into
+# the production (and test) binaries built here. While we don't test or rely on
+# deterministic rebuilds of propolis-server, set Vergen up to use idempotent
+# environment variables so we're not needlessly introducing build-time
+# variance.
+#
+# "idempotent" still lets us collect the current relevant git info, so CI
+# builds of propolis-server will still be able to self-report what commit they
+# came from. See
+# https://docs.rs/vergen/10.0.3/vergen/struct.Emitter.html#method.idempotent
+# for more.
+export VERGEN_IDEMPOTENT="true"
+
 # Enable the "omicron-build" feature to indicate this is an artifact destined
 # for production use on an appropriately configured Oxide machine
 #
