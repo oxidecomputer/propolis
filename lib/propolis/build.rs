@@ -9,9 +9,7 @@ fn main() -> anyhow::Result<()> {
         .dirty(true)
         .sha(true)
         .build();
-    vergen_git2::Emitter::default()
-        .add_instructions(&git2)?
-        .emit()?;
+    vergen_git2::Emitter::default().add_instructions(&git2)?.emit()?;
 
     Ok(())
 }
