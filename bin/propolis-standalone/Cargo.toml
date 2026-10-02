@@ -39,11 +39,6 @@ strum = { workspace = true, features = ["derive"] }
 tar.workspace = true
 uuid.workspace = true
 pbind.workspace = true
-vergen-git2.workspace = true
-
-[build-dependencies]
-anyhow.workspace = true
-vergen-git2.workspace = true
 
 [features]
 default = []
