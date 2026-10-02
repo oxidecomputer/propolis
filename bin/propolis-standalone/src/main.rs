@@ -1634,7 +1634,7 @@ fn api_version_checks(log: &slog::Logger) -> std::io::Result<()> {
 }
 
 #[derive(clap::Parser)]
-#[clap(version = propolis::version(option_env!("VERGEN_GIT_DIRTY")))]
+#[clap(version = propolis::version())]
 /// Propolis command-line frontend for running a VM.
 struct Args {
     /// Either the VM config file or a previously captured snapshot image.
@@ -1668,11 +1668,7 @@ fn main() -> anyhow::Result<ExitCode> {
 
     let log = build_log(log_level);
 
-    slog::info!(
-        log,
-        "Running {}",
-        propolis::version(option_env!("VERGEN_GIT_DIRTY"))
-    );
+    slog::info!(log, "Running {}", propolis::version());
 
     // Check that vmm and viona device version match what we expect
     api_version_checks(&log).context("API version checks")?;
