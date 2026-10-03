@@ -79,6 +79,7 @@ pub(crate) fn create_vm(name: &str, opts: CreateOpts) -> Result<VmmHdl> {
         inner,
         destroyed: AtomicBool::new(false),
         name: name.to_string(),
+        opts,
         #[cfg(test)]
         is_test_hdl: false,
     })
@@ -109,6 +110,7 @@ pub struct VmmHdl {
     pub(super) inner: bhyve_api::VmmFd,
     destroyed: AtomicBool,
     name: String,
+    opts: CreateOpts,
 
     #[cfg(test)]
     /// Track if this VmmHdl belongs to a wholly fictitious Instance/Machine.
@@ -203,13 +205,21 @@ impl VmmHdl {
     ) -> Result<()> {
         assert!(segoff <= i64::MAX as usize);
 
+        let mut flags = 0;
+        if self.opts.use_reservoir {
+            // If the reservoir is in use, guest memory is already not eligible
+            // to be paged; map it as wired so we proactively set up mappings
+            // now rather than forcing guest NPFs to establish mappings.
+            flags |= bhyve_api::VM_MEMMAP_F_WIRED;
+        }
+
         let mut map = bhyve_api::vm_memmap {
             gpa: gpa as u64,
             segid,
             segoff: segoff as i64,
             len,
             prot: i32::from(prot.bits()),
-            flags: 0,
+            flags,
         };
         unsafe { self.ioctl(bhyve_api::VM_MMAP_MEMSEG, &mut map) }
     }
