@@ -39,7 +39,10 @@ use uuid::Uuid;
 
 use propolis_client::{
     support::{InstanceSerialConsoleHelper, WSClientOffset},
-    types::{InstanceStateRequested, InstanceVcrReplace, MigrationState},
+    types::{
+        InstanceStateChange, InstanceStateRequested, InstanceVcrReplace,
+        MigrationState,
+    },
     Client,
 };
 
@@ -118,6 +121,9 @@ enum Command {
         /// The requested state
         #[clap(value_parser = parse_state)]
         state: InstanceStateRequested,
+        /// The number of seconds to wait after sending ACPI PWRBTN_STS before
+        /// forcing stop/reset. (If omitted, stop/reset are forced immediately)
+        acpi_timeout_secs: Option<u64>,
     },
 
     /// Drop to a Serial console connected to the instance
@@ -572,10 +578,11 @@ async fn get_instance(client: &Client) -> anyhow::Result<()> {
 async fn put_instance(
     client: &Client,
     state: InstanceStateRequested,
+    acpi_timeout_secs: Option<u64>,
 ) -> anyhow::Result<()> {
     client
         .instance_state_put()
-        .body(state)
+        .body(InstanceStateChange { state, acpi_timeout_secs })
         .send()
         .await
         .with_context(|| anyhow!("failed to set instance state"))?;
@@ -958,7 +965,9 @@ async fn main() -> anyhow::Result<()> {
             .await?
         }
         Command::Get => get_instance(&client).await?,
-        Command::State { state } => put_instance(&client, state).await?,
+        Command::State { state, acpi_timeout_secs } => {
+            put_instance(&client, state, acpi_timeout_secs).await?
+        }
         Command::Serial { byte_offset } => {
             serial(addr, byte_offset, log).await?
         }

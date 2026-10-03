@@ -344,7 +344,7 @@ async fn instance_state_monitor(
 }]
 async fn instance_state_put(
     rqctx: RequestContext<Arc<Context>>,
-    request: TypedBody<api::InstanceStateRequested>,
+    request: TypedBody<api::InstanceStateChange>,
 ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
     let mut instance = rqctx.context().instance.lock().await;
     let instance = instance.as_mut().ok_or_else(|| {
@@ -353,13 +353,14 @@ async fn instance_state_put(
         )
     })?;
     let requested_state = request.into_inner();
-    instance.set_target_state(&rqctx.log, requested_state).await.map_err(
-        |err| {
+    instance
+        .set_target_state(&rqctx.log, requested_state.state)
+        .await
+        .map_err(|err| {
             HttpError::for_internal_error(format!(
                 "Failed to transition: {err}"
             ))
-        },
-    )?;
+        })?;
     Ok(HttpResponseUpdatedNoContent {})
 }
 
