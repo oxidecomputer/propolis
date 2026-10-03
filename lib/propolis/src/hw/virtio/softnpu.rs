@@ -752,10 +752,9 @@ fn handle_management_message(
     radix: usize,
     log: Logger,
 ) {
-    let mut pl_opt = pipeline.lock().unwrap();
-
     match msg {
         ManagementRequest::TableAdd(tm) => {
+            let mut pl_opt = pipeline.lock().unwrap();
             let pl = match &mut *pl_opt {
                 Some(pl) => pl,
                 None => return,
@@ -769,6 +768,7 @@ fn handle_management_message(
             );
         }
         ManagementRequest::TableRemove(tm) => {
+            let mut pl_opt = pipeline.lock().unwrap();
             let pl = match &mut *pl_opt {
                 Some(pl) => pl,
                 None => return,
@@ -794,7 +794,16 @@ fn handle_management_message(
         }
         ManagementRequest::DumpRequest => {
             info!(log, "dumping state");
+            // Release the pipeline lock before the uart write below, as a vcpu
+            // in `process_guest_packet` can block on it and stall out the guest.
+            //
+            // TODO?: do dump request readers (e.g. scadm) need to detect
+            // pipeline replacement while reading a the dump's contents? If so,
+            // we could add a monotonic program generation counter to track and
+            // return its value along with the snapshot, and expose the current
+            // generation number for comparison.
             let result = {
+                let mut pl_opt = pipeline.lock().unwrap();
                 let pl = match &mut *pl_opt {
                     Some(pl) => &pl.1,
                     None => return,
@@ -806,7 +815,9 @@ fn handle_management_message(
 
                 for id in pl.get_table_ids() {
                     let entries = pl.get_table_entries(id);
-                    result.insert(id, entries);
+                    // The table ids borrow from the pipeline, convert them
+                    // to owned to let the map outlive the lock.
+                    result.insert(id.to_owned(), entries);
                 }
                 result
             };
@@ -814,13 +825,13 @@ fn handle_management_message(
             let buf = match serde_json::to_string(&result) {
                 Ok(j) => {
                     let mut buf = j.as_bytes().to_vec();
-                    info!(log, "writing: {}", j);
+                    info!(log, "writing: {j}");
                     // Add trailing newline for proper tty handling.
                     buf.push(b'\n');
                     buf
                 }
                 Err(e) => {
-                    warn!(log, "failed to serialize table state: {}", e);
+                    warn!(log, "failed to serialize table state: {e}");
                     b"{}\n".to_vec()
                 }
             };
