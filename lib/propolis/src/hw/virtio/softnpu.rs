@@ -8,7 +8,7 @@ use std::{
     io::{Error, Result, Write},
     sync::{Arc, Mutex},
     thread::{sleep, spawn},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use crate::{
@@ -248,23 +248,15 @@ impl SoftNpu {
         log: Logger,
     ) {
         info!(log, "management handler thread started");
-        let mut needs_resync = false;
         loop {
             let r = ManagementMessageReader::new(uart.clone(), log.clone());
-            let msg = r.read(&mut needs_resync);
+            let msg = r.read();
             info!(log, "received management message: {:#?}", msg);
 
             let pipeline = pipeline.clone();
             let uart = uart.clone();
             let log = log.clone();
-            handle_management_message(
-                msg,
-                pipeline,
-                uart,
-                radix,
-                &mut needs_resync,
-                log.clone(),
-            );
+            handle_management_message(msg, pipeline, uart, radix, log.clone());
             info!(log, "handled management message");
         }
     }
@@ -752,75 +744,12 @@ fn read_buf(mem: &MemCtx, chain: &mut Chain, buf: &mut [u8]) -> usize {
     })
 }
 
-/// Write each byte of `buf` to the uart, yielding while the one-byte FIFO
-/// is full. Gives up once `deadline` passes.
-///
-/// Returns the number of bytes written.
-fn write_with_deadline(uart: &LpcUart, buf: &[u8], deadline: Instant) -> usize {
-    for (i, b) in buf.iter().enumerate() {
-        if Instant::now() >= deadline {
-            return i;
-        }
-        while !uart.write(*b) {
-            if Instant::now() >= deadline {
-                return i;
-            }
-            sleep(Duration::from_millis(1));
-        }
-    }
-    buf.len()
-}
-
-/// Write a response buffer to the management uart, yielding while the guest
-/// drains the FIFO. This gives up once a deadline passes. So, a guest that
-/// stopped reading the management tty cannot block this thread.
-///
-/// A timed out write can leave a partial, unterminated frame in the tty;
-/// `needs_resync` makes the next call write a newline first to terminate it.
-///
-/// Returns true if the full buffer was written.
-fn write_management_response(
-    uart: &LpcUart,
-    buf: &[u8],
-    needs_resync: &mut bool,
-    log: &Logger,
-) -> bool {
-    // The management protocol has no client side timeout to inherit from.
-    //
-    // `scadm` performs one blocking `read()` with a 1 KiB buffer, and only for
-    // the radix query. Every other command writes the tty and never reads a
-    // response. A guest that hits this deadline stopped reading.
-    //
-    // See <https://github.com/oxidecomputer/sidecar-lite/blob/2e7bd9b52a90224fb227e72c27623beb5b827e57/scadm/src/main.rs#L664-L688>.
-    const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
-    let deadline = Instant::now() + WRITE_TIMEOUT;
-
-    if *needs_resync {
-        if write_with_deadline(uart, b"\n", deadline) != 1 {
-            warn!(log, "management uart write timed out, dropping response");
-            return false;
-        }
-        *needs_resync = false;
-    }
-
-    let written = write_with_deadline(uart, buf, deadline);
-    if written == buf.len() {
-        return true;
-    }
-    if written > 0 {
-        *needs_resync = true;
-    }
-    warn!(log, "management uart write timed out, dropping response");
-    false
-}
-
 /// Handle ASIC management messages from the guest using the loaded program.
 fn handle_management_message(
     msg: ManagementRequest,
     pipeline: Arc<Mutex<Option<LoadedP4Program>>>,
     uart: Arc<LpcUart>,
     radix: usize,
-    needs_resync: &mut bool,
     log: Logger,
 ) {
     match msg {
@@ -856,19 +785,23 @@ fn handle_management_message(
             let mut buf: Vec<u8> = Vec::new();
             buf.extend_from_slice(radix.to_string().as_bytes());
             buf.push(b'\n');
-            if write_management_response(&uart, &buf, needs_resync, &log) {
-                info!(log, "wrote: {} bytes", buf.len());
+            for b in &buf {
+                while !uart.write(*b) {
+                    std::thread::yield_now();
+                }
             }
+            info!(log, "wrote: {:?}", buf.len());
         }
         ManagementRequest::DumpRequest => {
             info!(log, "dumping state");
-            // Collect the table state under the pipeline lock, then serialize
-            // and write the response after releasing it. Holding the lock
-            // across the uart write loop below can deadlock the whole guest.
-            // For example, if the guest stops draining the management tty, this
-            // thread spins with the lock held while a vcpu servicing a queue
-            // notify blocks on the same lock in process_guest_packet. That
-            // vcpu is stuck in its exit and nothing ever drains the tty.
+            // Release the pipeline lock before the uart write below, as a vcpu
+            // in `process_guest_packet` can block on it and stall out the guest.
+            //
+            // TODO?: do dump request readers (e.g. scadm) need to detect
+            // pipeline replacement while reading a the dump's contents? If so,
+            // we could add a monotonic program generation counter to track and
+            // return its value along with the snapshot, and expose the current
+            // generation number for comparison.
             let result = {
                 let mut pl_opt = pipeline.lock().unwrap();
                 let pl = match &mut *pl_opt {
@@ -882,8 +815,8 @@ fn handle_management_message(
 
                 for id in pl.get_table_ids() {
                     let entries = pl.get_table_entries(id);
-                    // The table ids borrow from the pipeline, so own them to
-                    // let the map outlive the lock.
+                    // The table ids borrow from the pipeline, convert them
+                    // to owned to let the map outlive the lock.
                     result.insert(id.to_owned(), entries);
                 }
                 result
@@ -892,7 +825,7 @@ fn handle_management_message(
             let buf = match serde_json::to_string(&result) {
                 Ok(j) => {
                     let mut buf = j.as_bytes().to_vec();
-                    info!(log, "writing table dump: {} bytes", j.len());
+                    info!(log, "writing: {j}");
                     // Add trailing newline for proper tty handling.
                     buf.push(b'\n');
                     buf
@@ -903,9 +836,15 @@ fn handle_management_message(
                 }
             };
 
-            if write_management_response(&uart, &buf, needs_resync, &log) {
-                info!(log, "management wrote: {}", buf.len());
+            for b in &buf {
+                while !uart.write(*b) {
+                    // If we cannot write to the uart, yield and come back once
+                    // scheduled again.
+                    std::thread::yield_now();
+                }
             }
+
+            info!(log, "management wrote: {}", buf.len());
         }
     }
 }
@@ -925,15 +864,12 @@ impl ManagementMessageReader {
         Self { uart, log }
     }
 
-    fn read(&self, needs_resync: &mut bool) -> ManagementRequest {
+    fn read(&self) -> ManagementRequest {
         loop {
             let mut buf = vec![0; 10240];
             let mut i = 0;
             let mut in_message = false;
             loop {
-                if *needs_resync && self.uart.write(b'\n') {
-                    *needs_resync = false;
-                }
                 let x = match self.uart.read() {
                     Some(b) => b,
                     None => {
