@@ -59,7 +59,7 @@ async fn configurable_boot_order(ctx: &TestCtx) {
     cfg.data_disk(
         "alt-boot",
         DiskSource::Artifact(ctx.default_guest_os_artifact()),
-        DiskInterface::Virtio,
+        DiskInterface::virtio(),
         DiskBackend::File,
         24,
     );
@@ -121,7 +121,7 @@ async fn unbootable_disk_skipped(ctx: &TestCtx) {
     cfg.data_disk(
         "unbootable",
         DiskSource::FatFilesystem(FatFilesystem::new()),
-        DiskInterface::Virtio,
+        DiskInterface::virtio(),
         DiskBackend::InMemory { readonly: true },
         16,
     );
@@ -240,7 +240,7 @@ async fn guest_can_adjust_boot_order(ctx: &TestCtx) {
     cfg.data_disk(
         "unbootable",
         DiskSource::FatFilesystem(FatFilesystem::new()),
-        DiskInterface::Virtio,
+        DiskInterface::virtio(),
         DiskBackend::InMemory { readonly: true },
         16,
     );
@@ -407,7 +407,7 @@ async fn boot_order_source_priority(ctx: &TestCtx) {
     cfg.data_disk(
         "unbootable",
         DiskSource::FatFilesystem(FatFilesystem::new()),
-        DiskInterface::Virtio,
+        DiskInterface::virtio(),
         DiskBackend::InMemory { readonly: true },
         16,
     );
@@ -415,7 +415,7 @@ async fn boot_order_source_priority(ctx: &TestCtx) {
     cfg.data_disk(
         "unbootable-2",
         DiskSource::FatFilesystem(FatFilesystem::new()),
-        DiskInterface::Virtio,
+        DiskInterface::virtio(),
         DiskBackend::InMemory { readonly: true },
         20,
     );
@@ -514,7 +514,7 @@ async fn nvme_boot_option_description(ctx: &TestCtx) {
     cfg.data_disk(
         "nvme-test-disk",
         DiskSource::Artifact(ctx.default_guest_os_artifact()),
-        DiskInterface::Nvme,
+        DiskInterface::nvme(),
         DiskBackend::File,
         8,
     );

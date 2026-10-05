@@ -291,8 +291,18 @@ const PS2C_CMD_WRITE_AUX_IN: u8 = 0xd4;
 const PS2C_CMD_PULSE_START: u8 = 0xf0;
 const PS2C_CMD_PULSE_END: u8 = 0xff;
 
-const PS2C_RAM_LEN: usize =
-    (PS2C_CMD_WRITE_RAM_END - PS2C_CMD_WRITE_RAM_START) as usize;
+// PS/2 Controller RAM is modeled as 31 bytes of variable data, with the first
+// byte of the controller RAM region (read with command 0x20, written with
+// command 0x60) is handled separately through `ctrl_cfg`.
+//
+// That leaves 31 bytes of controller RAM here.
+const PS2C_RAM_LEN: usize = const {
+    // The command consts above are inclusive of the accessed range, so we must
+    // add one for the RAM array to span all 31 bytes.
+    let size = (PS2C_CMD_WRITE_RAM_END - PS2C_CMD_WRITE_RAM_START + 1) as usize;
+    assert!(size == 31);
+    size
+};
 
 #[derive(Default)]
 struct PS2State {
@@ -399,7 +409,18 @@ impl PS2Ctrl {
     }
 
     fn pio_rw(&self, port: u16, rwo: RWOp) {
-        assert_eq!(rwo.len(), 1);
+        if rwo.len() != 1 {
+            // TODO: It would be nice to record an error somewhere.
+            //
+            // The guest has operated the PS/2 controller.. poorly. Port
+            // I/O to the controller's registers should be one byte wide. In
+            // practice I *think* wider accesses are masked down to the one byte
+            // that is actually wired up to the port, but behavior in this case
+            // is not tested. Either way, we haven't (?yet?) seen a PS/2 driver
+            // that does these kinds of accesses.
+            return;
+        }
+
         match port {
             ibmpc::PORT_PS2_DATA => match rwo {
                 RWOp::Read(ro) => ro.write_u8(self.data_read()),
@@ -434,7 +455,7 @@ impl PS2Ctrl {
                     state.ctrl_cfg = cfg;
                 }
                 PS2C_CMD_WRITE_RAM_START..=PS2C_CMD_WRITE_RAM_END => {
-                    let off = v - PS2C_CMD_WRITE_RAM_START;
+                    let off = prefix - PS2C_CMD_WRITE_RAM_START;
                     state.ram[off as usize] = v;
                 }
                 PS2C_CMD_WRITE_CTLR_OUT => {
@@ -712,6 +733,10 @@ impl MigrateSingle for PS2Ctrl {
 impl acpi::DsdtGenerator for PS2Ctrl {
     fn dsdt_scope(&self) -> acpi::DsdtScope {
         acpi::DsdtScope::Lpc
+    }
+
+    fn device_type(&self) -> Option<acpi::DsdtDeviceType> {
+        Some(acpi::DsdtDeviceType::PS2Ctrl)
     }
 
     fn to_aml_bytes(

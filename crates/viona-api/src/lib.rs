@@ -197,6 +197,10 @@ fn minor(meta: &std::fs::Metadata) -> u32 {
 #[repr(u32)]
 #[derive(Copy, Clone)]
 pub enum ApiVersion {
+    /// Adds ioctls in support of CTRL_RX MAC commands; setting a multicast MAC
+    /// filter table as well as controlling the device's unicast MAC.
+    V7 = 7,
+
     /// Adds multi-queue support and change the data structure for per-queue
     /// interrupt polling to a compact bitmap.
     V6 = 6,
@@ -218,7 +222,7 @@ pub enum ApiVersion {
 }
 impl ApiVersion {
     pub const fn current() -> Self {
-        Self::V6
+        Self::V7
     }
 }
 impl PartialEq<ApiVersion> for u32 {

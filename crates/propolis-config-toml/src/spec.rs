@@ -5,16 +5,18 @@
 //! Functions for converting a [`super::Config`] into instance spec elements.
 
 use std::{
-    collections::BTreeMap,
-    str::{FromStr, ParseBoolError},
+    collections::{BTreeMap, BTreeSet},
+    str::FromStr,
 };
 
+use crate::HypervisorInterface;
 use propolis_client::{
     instance_spec::{
-        Component, Cpuid, CpuidVendor, DlpiNetworkBackend, FileStorageBackend,
-        MigrationFailureInjector, NvmeDisk, P9fs, PciPath, PciPciBridge,
-        SoftNpuP9, SoftNpuPciPort, SoftNpuPort, SpecKey, VirtioDisk,
-        VirtioNetworkBackend, VirtioNic, VirtioSocket,
+        BootOrderEntry, BootSettings, Component, Cpuid, CpuidVendor,
+        DlpiNetworkBackend, FileStorageBackend, GuestHypervisorInterface,
+        HyperVFeatureFlag, MigrationFailureInjector, NvmeDisk, P9fs, PciPath,
+        PciPciBridge, SoftNpuP9, SoftNpuPciPort, SoftNpuPort, SpecKey,
+        VirtioDisk, VirtioNetworkBackend, VirtioNic, VirtioSocket,
     },
     support::nvme_serial_from_str,
 };
@@ -54,8 +56,14 @@ pub enum TomlToSpecError {
     #[error("couldn't get path for file backend {0:?}")]
     InvalidFileBackendPath(String),
 
-    #[error("failed to parse read-only option for file backend {0:?}")]
-    FileBackendReadonlyParseFailed(String, #[source] ParseBoolError),
+    #[error("failed to parse option \"{field}\" for {name}: {error}")]
+    FieldParseError {
+        field: &'static str,
+        name: String,
+        // "String" is just a lowest common denominator for the different kinds
+        // of parse errors we might see.
+        error: String,
+    },
 
     #[error("failed to get VNIC name for device {0:?}")]
     NoVnicName(String),
@@ -73,10 +81,11 @@ pub enum TomlToSpecError {
 #[derive(Clone, Debug, Default)]
 pub struct SpecConfig {
     pub enable_pcie: bool,
+    pub hv_interface: GuestHypervisorInterface,
     pub components: BTreeMap<SpecKey, Component>,
 }
 
-// Inspired by `api_spec_v0.rs`'s `insert_component` and
+// Inspired by `api_spec_v1.rs`'s `insert_component` and
 // `propolis-cli/src/main.rs`'s `add_component_to_spec`. Same purpose as both of
 // them.
 //
@@ -101,6 +110,22 @@ impl TryFrom<&super::Config> for SpecConfig {
     type Error = TomlToSpecError;
 
     fn try_from(config: &super::Config) -> Result<Self, Self::Error> {
+        let hv_interface = config
+            .machine_settings
+            .hv_interface
+            .as_ref()
+            .map(|hv| match hv {
+                HypervisorInterface::Bhyve => GuestHypervisorInterface::Bhyve,
+                HypervisorInterface::HyperV { reference_tsc } => {
+                    let mut features = BTreeSet::new();
+                    if *reference_tsc {
+                        features.insert(HyperVFeatureFlag::ReferenceTsc);
+                    }
+                    GuestHypervisorInterface::HyperV { features }
+                }
+            })
+            .unwrap_or_default();
+
         let mut spec = SpecConfig {
             enable_pcie: config
                 .chipset
@@ -113,6 +138,7 @@ impl TryFrom<&super::Config> for SpecConfig {
                 })
                 .transpose()?
                 .unwrap_or(false),
+            hv_interface,
             ..Default::default()
         };
 
@@ -287,6 +313,22 @@ impl TryFrom<&super::Config> for SpecConfig {
             )?;
         }
 
+        if let Some(boot_order) = config.machine_settings.boot_order.as_ref() {
+            let settings = Component::BootSettings(BootSettings {
+                order: boot_order
+                    .iter()
+                    .map(|key| BootOrderEntry {
+                        id: SpecKey::Name(key.to_owned()),
+                    })
+                    .collect(),
+            });
+            spec_component_add(
+                &mut spec,
+                SpecKey::Name("boot-settings".to_string()),
+                settings,
+            )?;
+        }
+
         Ok(spec)
     }
 }
@@ -335,11 +377,36 @@ fn parse_storage_device_from_config(
             Interface::Virtio => {
                 Component::VirtioDisk(VirtioDisk { backend_id, pci_path })
             }
-            Interface::Nvme => Component::NvmeDisk(NvmeDisk {
-                backend_id,
-                pci_path,
-                serial_number: nvme_serial_from_str(name, b' '),
-            }),
+            Interface::Nvme => {
+                let write_cache_opt = device
+                    .get_toml_value("has_write_cache")
+                    .map(|v: &toml::Value| {
+                        v.as_bool().ok_or_else(|| {
+                            TomlToSpecError::FieldParseError {
+                                field: "has_write_cache",
+                                name: name.to_owned(),
+                                error: format!(
+                                    "field must be a boolean, was {:?}",
+                                    v
+                                ),
+                            }
+                        })
+                    })
+                    .transpose()?;
+
+                // Reporting a write cache when the underlying medium does not
+                // causes unnecessary guest work, but is not a correctness
+                // issue. The converse can be. Default to reporting write caches
+                // if we're not instructed otherwise.
+                let has_write_cache = write_cache_opt.unwrap_or(true);
+
+                Component::NvmeDisk(NvmeDisk {
+                    backend_id,
+                    pci_path,
+                    serial_number: nvme_serial_from_str(name, b' '),
+                    has_write_cache,
+                })
+            }
         },
         id_to_return,
     ))
@@ -366,10 +433,11 @@ fn parse_storage_backend_from_config(
                 Some(toml::Value::Boolean(ro)) => Some(*ro),
                 Some(toml::Value::String(v)) => {
                     Some(v.parse::<bool>().map_err(|e| {
-                        TomlToSpecError::FileBackendReadonlyParseFailed(
-                            name.to_owned(),
-                            e,
-                        )
+                        TomlToSpecError::FieldParseError {
+                            field: "readonly",
+                            name: name.to_owned(),
+                            error: e.to_string(),
+                        }
                     })?)
                 }
                 _ => None,

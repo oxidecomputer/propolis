@@ -65,7 +65,7 @@ impl VcpuTasks {
 
         let mut tasks = Vec::new();
         for (vcpu, bind_cpu) in
-            machine.vcpus.iter().map(Arc::clone).zip(bindings.into_iter())
+            machine.vcpus.iter().map(Arc::clone).zip(bindings)
         {
             let (task, ctrl) =
                 propolis::tasks::TaskHdl::new_held(Some(vcpu.barrier_fn()));

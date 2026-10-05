@@ -749,7 +749,7 @@ impl<T: MigrateConn> RonV0<T> {
                 if count != 0 {
                     return Err(MigrateError::DeviceState(format!(
                         "Found {} unconsumed payload(s) for device {}",
-                        count, &device.instance_name,
+                        count, device.instance_name,
                     )));
                 }
             }

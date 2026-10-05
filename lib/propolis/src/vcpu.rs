@@ -76,7 +76,7 @@ impl Vcpu {
     ) -> Arc<Self> {
         #[cfg(target_arch = "x86_64")]
         fn query_hardware_vendor() -> CpuidVendor {
-            let res = unsafe { core::arch::x86_64::__cpuid(0) };
+            let res = core::arch::x86_64::__cpuid(0);
             propolis_types::CpuidValues::from(res)
                 .try_into()
                 .expect("CPU vendor is recognized")
