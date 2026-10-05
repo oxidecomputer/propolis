@@ -747,9 +747,9 @@ impl WorkerSlot {
     }
 
     /// Reconfigure this worker for a polling strategy matching the current
-    /// assignment. Returns if the worker has actually been modified; `false` if
-    /// the current strategy is newer than provided (as in the case of racing
-    /// worker assignments).
+    /// assignment. Returns whether the worker has actually been modified;
+    /// `false` if the current strategy is newer than provided (as in the case
+    /// of racing worker assignments).
     fn update_assignment(&self, assign: &Assignment) -> bool {
         let mut state = self.state.lock().unwrap();
         if state.assign_strat.newer_than(&assign.strategy) {

@@ -401,18 +401,15 @@ async fn run_smoke_test(ctx: &TestCtx, mut source: TestVm) -> Result<()> {
                 // the controller in dmesg. so if we see that, we've actually
                 // failed to migrate reasonably.
                 //
-                // ignore the status from `grep` because it returns 1 when the
-                // regex matches no line. we don't want to `check_err()`
-                // because it's useful for debugging to see what *did* match.
-                let disk_reset = target
-                    .run_shell_command("dmesg | grep 'reset controller'")
-                    .ignore_status()
+                // -q makes grep return 1 if no line was selected, which is
+                // actually the success case here (e.g. no controller reset).
+                // `!` to negate this pipeline so that we get 0 in the success
+                // case and 1 if any "reset controller" message is in dmesg,
+                // matching the typical expected shell command outcomes.
+                target
+                    .run_shell_command("! dmesg | grep -q 'reset controller'")
                     .await
-                    .expect("can grep dmesg");
-
-                if !disk_reset.is_empty() {
-                    panic!("controller reset during the test?! {}", disk_reset);
-                }
+                    .expect("controller reset durring the test?!");
             })
         },
     )
