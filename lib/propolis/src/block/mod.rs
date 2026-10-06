@@ -7,6 +7,7 @@
 use std::time::Duration;
 
 use crate::common::*;
+use crate::hw::pci;
 use crate::vmm::{MemCtx, SubMapping};
 
 mod id;
@@ -289,7 +290,7 @@ impl BackendOpts {
 
 /// Top-level trait for block devices (frontends) to translate guest block IO
 /// requests into [Request]s for the attached [Backend]
-pub trait Device: Send + Sync + 'static {
+pub trait Device: Lifecycle + pci::Endpoint + Send + Sync + 'static {
     /// Access to the [DeviceAttachment] representing this device.
     fn attachment(&self) -> &DeviceAttachment;
 }

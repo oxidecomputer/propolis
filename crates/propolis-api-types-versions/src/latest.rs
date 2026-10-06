@@ -73,6 +73,9 @@ pub mod instance {
 
     pub use crate::v6::api::InstanceEnsureRequest;
     pub use crate::v6::api::InstanceInitializationMethod;
+
+    pub use crate::v7::api::InstanceDiskAttachRequest;
+    pub use crate::v7::api::InstanceDiskDetachPathParams;
 }
 
 pub mod instance_spec {

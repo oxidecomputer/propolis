@@ -90,15 +90,24 @@
 //! [`ensure`]: crate::vm::ensure
 
 use std::{
+    collections::BTreeMap,
+    num::NonZeroUsize,
+    path::Path,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use anyhow::Context;
+use crucible_client_types::VolumeConstructionRequest;
 use dropshot::HttpError;
+use propolis::{
+    block::{self, Backend, Device},
+    firmware::acpi::EjectFn,
+    hw::{nvme::PciNvme, pci::Bdf, virtio::PciVirtioBlock},
+};
 use propolis_api_types::instance::InstanceState;
 use propolis_api_types::instance_spec::{
-    components::backends::CrucibleStorageBackend, SpecKey,
+    components::backends::CrucibleStorageBackend, Component, SpecKey,
 };
 use propolis_api_types::migration::MigrationState;
 use slog::{error, info};
@@ -109,7 +118,7 @@ use crate::{
     migrate::{
         destination::DestinationProtocol, source::SourceProtocol, MigrateRole,
     },
-    spec::StorageBackend,
+    spec::{Disk, StorageBackend, StorageDevice},
     vm::{state_publisher::ExternalStateUpdate, BlockBackendMap},
 };
 
@@ -763,7 +772,13 @@ impl StateDriver {
                 | r @ ExternalRequest::State(
                     StateChangeRequest::MigrateAsSource { .. },
                 )
-                | r @ ExternalRequest::State(StateChangeRequest::Reboot) => {
+                | r @ ExternalRequest::State(StateChangeRequest::Reboot)
+                | r @ ExternalRequest::Component(
+                    ComponentChangeRequest::HotplugDisk { .. },
+                )
+                | r @ ExternalRequest::Component(
+                    ComponentChangeRequest::HotUnplugDisk { .. },
+                ) => {
                     unreachable!(
                         "external request {r:?} shouldn't be queued while \
                         starting"
@@ -892,6 +907,18 @@ impl StateDriver {
                 );
                 HandleEventOutcome::Continue
             }
+            ExternalRequest::Component(
+                ComponentChangeRequest::HotplugDisk { components, result_tx },
+            ) => {
+                let _ = result_tx.send(self.hotplug_disk(components).await);
+                HandleEventOutcome::Continue
+            }
+            ExternalRequest::Component(
+                ComponentChangeRequest::HotUnplugDisk { device_key, result_tx },
+            ) => {
+                let _ = result_tx.send(self.hot_unplug_disk(device_key).await);
+                HandleEventOutcome::Continue
+            }
         }
     }
 
@@ -1009,6 +1036,337 @@ impl StateDriver {
                 Err(())
             }
         }
+    }
+
+    async fn hotplug_disk(
+        &self,
+        components: BTreeMap<SpecKey, Component>,
+    ) -> super::DiskHotplugResult {
+        let (disk_id, disk_component) = components
+            .iter()
+            .find_map(|(k, v)| {
+                let dev =
+                    crate::spec::StorageDevice::try_from(v.clone()).ok()?;
+                Some((k, dev))
+            })
+            .ok_or(HttpError::for_bad_request(
+                None,
+                "missing disk".to_string(),
+            ))?;
+        let disk_bdf = Bdf::from(disk_component.pci_path());
+
+        let backend_id = disk_component.backend_id().clone();
+        let backend_component: StorageBackend = components
+            .get(&backend_id)
+            .cloned()
+            .ok_or(HttpError::for_bad_request(
+                None,
+                "missing backend".to_string(),
+            ))?
+            .try_into()
+            .map_err(|_| {
+                HttpError::for_bad_request(None, "invalid backend".to_string())
+            })?;
+
+        let backend: Arc<dyn Backend> = match &backend_component {
+            StorageBackend::File(spec) => {
+                let workers: NonZeroUsize = match spec.workers {
+                    Some(n) => n,
+                    None => NonZeroUsize::new(8).unwrap(),
+                };
+                block::FileBackend::create(
+                    Path::new(&spec.path),
+                    block::BackendOpts {
+                        block_size: Some(spec.block_size),
+                        read_only: Some(spec.readonly),
+                        ..Default::default()
+                    },
+                    workers,
+                    self.log.clone(),
+                )
+                .map_err(|e| {
+                    HttpError::for_internal_error(format!(
+                        "failed to create file backend for file {:?}: {e:?}",
+                        spec.path
+                    ))
+                })?
+            }
+            StorageBackend::Blob(spec) => {
+                let bytes = base64::Engine::decode(
+                    &base64::engine::general_purpose::STANDARD,
+                    &spec.base64,
+                )
+                .map_err(|e| {
+                    HttpError::for_bad_request(
+                        None,
+                        format!(
+                            "failed to decode in-memory storage backend: {e:?}",
+                        ),
+                    )
+                })?;
+
+                block::InMemoryBackend::create(
+                    bytes,
+                    propolis::block::BackendOpts {
+                        block_size: Some(512),
+                        read_only: Some(spec.readonly),
+                        ..Default::default()
+                    },
+                    NonZeroUsize::new(8).unwrap(),
+                )
+                .map_err(|e| {
+                    HttpError::for_internal_error(format!(
+                        "failed to create in-memory storage backend: {e:?}",
+                    ))
+                })?
+            }
+            StorageBackend::Crucible(spec) => {
+                let vcr: VolumeConstructionRequest =
+                    serde_json::from_str(&spec.request_json).map_err(|e| {
+                        HttpError::for_bad_request(
+                            None,
+                            format!("failed to decode Crucible VCR: {e:?}"),
+                        )
+                    })?;
+
+                let cru_id = match vcr {
+                    VolumeConstructionRequest::Volume { id, .. } => {
+                        id.to_string()
+                    }
+                    VolumeConstructionRequest::File { id, .. } => {
+                        id.to_string()
+                    }
+                    VolumeConstructionRequest::Url { id, .. } => id.to_string(),
+                    VolumeConstructionRequest::Region { .. } => {
+                        "Region".to_string()
+                    }
+                };
+
+                propolis::block::CrucibleBackend::create(
+                    vcr,
+                    propolis::block::BackendOpts {
+                        read_only: Some(spec.readonly),
+                        ..Default::default()
+                    },
+                    None, // TODO(luiz)
+                    None, // TODO(luiz)
+                    self.log.new(
+                        slog::o!("component" => format!("crucible-{cru_id}")),
+                    ),
+                )
+                .await
+                .map_err(|e| {
+                    HttpError::for_internal_error(format!(
+                        "failed to create crucible storage backend: {e:?}",
+                    ))
+                })?
+            }
+        };
+
+        let disk_dev: Arc<dyn Device> = match &disk_component {
+            StorageDevice::Virtio(_) => PciVirtioBlock::new(0x100),
+            StorageDevice::Nvme(disk) => PciNvme::create(
+                &disk.serial_number,
+                Some(8),
+                false, // TODO(luiz)
+                self.log.new(slog::o!("component" => disk_id.to_string())),
+            ),
+        };
+
+        block::attach(disk_dev.attachment(), backend.attachment()).map_err(
+            |e| {
+                HttpError::for_internal_error(format!(
+                    "failed to attach disk device to backend: {e:?}",
+                ))
+            },
+        )?;
+
+        let mut objects = self.objects.lock_exclusive().await;
+        if objects
+            .block_backend_map_mut()
+            .insert(backend_id.clone(), backend.clone())
+            .is_some()
+        {
+            return Err(HttpError::for_bad_request(
+                None,
+                format!("backend with key {backend_id:?} already exists"),
+            ));
+        };
+        if objects
+            .device_map_mut()
+            .insert(disk_id.clone(), disk_dev.clone())
+            .is_some()
+        {
+            return Err(HttpError::for_bad_request(
+                None,
+                format!("disk with key {disk_id:?} already exists"),
+            ));
+        };
+
+        disk_dev.start().map_err(|e| {
+            HttpError::for_internal_error(format!(
+                "failed to start disk: {e:?}"
+            ))
+        })?;
+        backend.start().await.map_err(|e| {
+            HttpError::for_internal_error(format!(
+                "failed to start backend: {e:?}"
+            ))
+        })?;
+
+        let chipset = objects.chipset();
+        chipset.pci_attach(disk_bdf, disk_dev.clone());
+
+        let acpi = objects.acpi();
+        acpi.pci_hotplug(disk_bdf).map_err(|e| {
+            HttpError::for_internal_error(format!(
+                "failed to hotplug disk: {e:?}"
+            ))
+        })?;
+
+        let disk = Disk {
+            device_spec: disk_component.clone(),
+            backend_spec: backend_component.clone(),
+        };
+        if objects
+            .instance_spec_mut()
+            .disks
+            .insert(disk_id.clone(), disk)
+            .is_some()
+        {
+            return Err(HttpError::for_bad_request(
+                None,
+                format!("disk with key {disk_id:?} already exists"),
+            ));
+        };
+
+        Ok(())
+    }
+
+    async fn hot_unplug_disk(
+        &self,
+        disk_id: SpecKey,
+    ) -> super::DiskHotUnplugResult {
+        let (bdf, acpi, chipset) = {
+            let objects = self.objects.lock_exclusive().await;
+
+            let disk = objects.instance_spec().disks.get(&disk_id).ok_or(
+                HttpError::for_bad_request(
+                    None,
+                    format!("disk {disk_id:?} not found"),
+                ),
+            )?;
+            let bdf = Bdf::from(disk.device_spec.pci_path());
+            let acpi = objects.acpi().clone();
+            let chipset = objects.chipset().clone();
+
+            (bdf, acpi, chipset)
+        };
+
+        let log = self
+            .log
+            .new(slog::o!("req" => "detach_disk","bdf" => bdf.to_string()));
+
+        let (ejected_tx, ejected_rx) = tokio::sync::oneshot::channel();
+        let ej_log = log.clone();
+        let ejfn: EjectFn = Box::new(move || {
+            slog::info!(ej_log, "detaching disk");
+            chipset.pci_detach(bdf);
+            let _ = ejected_tx.send(());
+        });
+
+        slog::info!(log, "ejecting disk");
+        acpi.pci_hot_unplug(bdf, Some(ejfn)).map_err(|e| {
+            HttpError::for_internal_error(format!(
+                "failed to hot-unplug disk: {e:?}"
+            ))
+        })?;
+
+        let _ = ejected_rx.await;
+
+        slog::info!(log, "stopping disk");
+
+        let mut objects = self.objects.lock_exclusive().await;
+        let dev = objects.device_map().get(&disk_id).unwrap();
+        dev.pause();
+        dev.paused().await;
+        // TODO: probably not a good idea.
+        dev.halt();
+
+        let backend_id = {
+            let (_, disk) = objects
+                .instance_spec()
+                .disks
+                .iter()
+                .find(|(_, d)| {
+                    d.device_spec.pci_path().device()
+                        == u8::from(bdf.location.dev)
+                })
+                .unwrap();
+            disk.device_spec.backend_id().clone()
+        };
+        let backend = objects.block_backend_map().get(&backend_id).unwrap();
+        backend.stop().await;
+        backend.attachment().detach();
+
+        assert!(objects.device_map_mut().remove(&disk_id).is_some());
+        assert!(objects.block_backend_map_mut().remove(&backend_id).is_some());
+        assert!(objects.instance_spec_mut().disks.remove(&disk_id).is_some());
+
+        Ok(())
+
+        /*
+        let device = 8;
+        let bdf = Bdf::new(0, device, 0).unwrap();
+        let log = self
+            .log
+            .new(slog::o!("req" => "detach_disk","bdf" => bdf.to_string()));
+
+        let (acpi, chipset) = {
+            let objects = self.objects.lock_exclusive().await;
+            (objects.acpi().clone(), objects.chipset().clone())
+        };
+
+        let (ejected_tx, ejected_rx) = tokio::sync::oneshot::channel();
+        let ej_log = log.clone();
+        let ejfn: EjectFn = Box::new(move || {
+            slog::info!(ej_log, "detaching disk");
+            chipset.pci_detach(bdf);
+            let _ = ejected_tx.send(());
+        });
+
+        slog::info!(log, "ejecting disk");
+        acpi.pci_hot_unplug(bdf, Some(ejfn));
+
+        let _ = ejected_rx.await;
+
+        slog::info!(log, "stopping disk");
+
+        let mut objects = self.objects.lock_exclusive().await;
+        let key = SpecKey::Name(format!("hotplug-{:02}", device));
+        let dev = objects.device_map().get(&key).unwrap();
+        dev.pause();
+        dev.paused().await;
+        // TODO: probably not a good idea.
+        dev.halt();
+
+        let backend_id = {
+            let (_, disk) = objects
+                .instance_spec()
+                .disks
+                .iter()
+                .find(|(_, d)| d.device_spec.pci_path().device() == device)
+                .unwrap();
+            disk.device_spec.backend_id().clone()
+        };
+        let backend = objects.block_backend_map().get(&backend_id).unwrap();
+        backend.stop().await;
+        backend.attachment().detach();
+
+        assert!(objects.device_map_mut().remove(&key).is_some());
+        assert!(objects.block_backend_map_mut().remove(&backend_id).is_some());
+        assert!(objects.instance_spec_mut().disks.remove(&key).is_some());
+            */
     }
 
     async fn reconfigure_crucible_volume(

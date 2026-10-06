@@ -194,6 +194,9 @@ impl RegisteredChipset {
     pub fn pci_attach(&self, bdf: pci::Bdf, dev: Arc<dyn pci::Endpoint>) {
         self.chipset.pci_attach(bdf, dev, self.isa.route_lintr(bdf));
     }
+    pub fn pci_detach(&self, bdf: pci::Bdf) {
+        self.chipset.pci_detach(bdf);
+    }
     pub fn irq_pin(&self, irq: u8) -> Option<Box<dyn intr_pins::IntrPin>> {
         self.isa.irq_pin(irq)
     }
@@ -409,7 +412,10 @@ impl MachineInitializer<'_> {
         }
     }
 
-    pub fn initialize_acpi(&mut self, chipset: &RegisteredChipset) {
+    pub fn initialize_acpi(
+        &mut self,
+        chipset: &RegisteredChipset,
+    ) -> Arc<acpi::Acpi> {
         let sci_pin = chipset.irq_pin(acpi::SCI_IRQ).unwrap();
         let acpi = acpi::Acpi::create(
             sci_pin.into(),
@@ -419,6 +425,7 @@ impl MachineInitializer<'_> {
         acpi.attach(&self.machine.bus_pio);
         self.devices
             .insert(SpecKey::Name(acpi.type_name().into()), acpi.clone());
+        acpi
     }
 
     pub fn initialize_uart(

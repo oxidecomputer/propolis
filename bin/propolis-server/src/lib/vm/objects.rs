@@ -14,6 +14,7 @@ use std::{
 use futures::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
 use propolis::{
     attestation,
+    firmware::acpi::Acpi,
     hw::{ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart},
     vmm::VmmHdl,
     Machine,
@@ -24,6 +25,7 @@ use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::{serial::Serial, spec::Spec, vcpu_tasks::VcpuTaskController};
 
+use super::super::initializer::RegisteredChipset;
 use super::{BlockBackendMap, CrucibleBackendMap, DeviceMap};
 
 /// A collection of components that make up a Propolis VM instance.
@@ -52,6 +54,8 @@ pub(super) struct InputVmObjects {
     pub com1: Arc<Serial<LpcUart>>,
     pub framebuffer: Option<Arc<RamFb>>,
     pub ps2ctrl: Arc<PS2Ctrl>,
+    pub chipset: Arc<RegisteredChipset>,
+    pub acpi: Arc<Acpi>,
     pub attest_handle: Option<attestation::server::AttestationSock>,
 }
 
@@ -88,6 +92,9 @@ pub(crate) struct VmObjectsLocked {
 
     /// A handle to the VM's PS/2 controller.
     ps2ctrl: Arc<PS2Ctrl>,
+
+    chipset: Arc<RegisteredChipset>,
+    acpi: Arc<Acpi>,
 
     /// A handle to the VM's attestation server.
     attest_handle: Option<attestation::server::AttestationSock>,
@@ -131,8 +138,18 @@ impl VmObjectsLocked {
             com1: input.com1,
             framebuffer: input.framebuffer,
             ps2ctrl: input.ps2ctrl,
+            chipset: input.chipset,
+            acpi: input.acpi,
             attest_handle: input.attest_handle,
         }
+    }
+
+    pub(crate) fn acpi(&self) -> &Arc<Acpi> {
+        &self.acpi
+    }
+
+    pub(crate) fn chipset(&self) -> &Arc<RegisteredChipset> {
+        &self.chipset
     }
 
     /// Yields the VM's current instance spec.
@@ -198,8 +215,16 @@ impl VmObjectsLocked {
         &self.devices
     }
 
+    pub(crate) fn device_map_mut(&mut self) -> &mut DeviceMap {
+        &mut self.devices
+    }
+
     pub(crate) fn block_backend_map(&self) -> &BlockBackendMap {
         &self.block_backends
+    }
+
+    pub(crate) fn block_backend_map_mut(&mut self) -> &mut BlockBackendMap {
+        &mut self.block_backends
     }
 
     /// Iterates over all of the lifecycle trait objects in this VM and calls

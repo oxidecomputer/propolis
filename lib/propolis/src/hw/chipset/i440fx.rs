@@ -302,6 +302,7 @@ impl Chipset for I440FxHostBridge {
             )
             .unwrap();
     }
+    fn pci_detach(&self, _: Bdf) {}
     fn power_pin(&self) -> Arc<dyn IntrPin> {
         self.pin_power.clone()
     }

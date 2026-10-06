@@ -4,12 +4,13 @@
 
 //! Implements a wrapper around an active VM.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use propolis_api_types::instance::{
     InstanceProperties, InstanceStateRequested,
 };
-use propolis_api_types::instance_spec::SpecKey;
+use propolis_api_types::instance_spec::{Component, SpecKey};
 use slog::info;
 use uuid::Uuid;
 
@@ -17,7 +18,7 @@ use crate::vm::request_queue::ExternalRequest;
 
 use super::{
     objects::VmObjects, services::VmServices, CrucibleReplaceResultTx,
-    InstanceStateRx, VmError,
+    DiskHotUnplugResultTx, DiskHotplugResultTx, InstanceStateRx, VmError,
 };
 
 /// The components and services that make up an active Propolis VM.
@@ -68,6 +69,30 @@ impl ActiveVm {
                 InstanceStateRequested::Stop => ExternalRequest::stop(),
                 InstanceStateRequested::Reboot => ExternalRequest::reboot(),
             })
+            .map_err(Into::into)
+    }
+
+    pub(crate) async fn hotplug_disk(
+        &self,
+        components: BTreeMap<SpecKey, Component>,
+        result_tx: DiskHotplugResultTx,
+    ) -> Result<(), VmError> {
+        self.state_driver_queue
+            .queue_external_request(ExternalRequest::hotplug_disk(
+                components, result_tx,
+            ))
+            .map_err(Into::into)
+    }
+
+    pub(crate) async fn hot_unplug_disk(
+        &self,
+        device_key: SpecKey,
+        result_tx: DiskHotUnplugResultTx,
+    ) -> Result<(), VmError> {
+        self.state_driver_queue
+            .queue_external_request(ExternalRequest::hot_unplug_disk(
+                device_key, result_tx,
+            ))
             .map_err(Into::into)
     }
 

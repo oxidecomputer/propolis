@@ -14,9 +14,9 @@
 //! The queue contains no synchronization of its own. Users who want to share a
 //! queue between multiple threads must wrap it in a synchronization object.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
-use propolis_api_types::instance_spec::SpecKey;
+use propolis_api_types::instance_spec::{Component, SpecKey};
 use slog::{info, Logger};
 use thiserror::Error;
 use uuid::Uuid;
@@ -99,6 +99,15 @@ pub enum ComponentChangeRequest {
         /// The sink for the result of this operation.
         result_tx: super::CrucibleReplaceResultTx,
     },
+
+    HotplugDisk {
+        components: BTreeMap<SpecKey, Component>,
+        result_tx: super::DiskHotplugResultTx,
+    },
+    HotUnplugDisk {
+        device_key: SpecKey,
+        result_tx: super::DiskHotUnplugResultTx,
+    },
 }
 
 impl std::fmt::Debug for ComponentChangeRequest {
@@ -107,6 +116,11 @@ impl std::fmt::Debug for ComponentChangeRequest {
             Self::ReconfigureCrucibleVolume { backend_id, .. } => f
                 .debug_struct("ReconfigureCrucibleVolume")
                 .field("backend_id", backend_id)
+                .finish(),
+            Self::HotplugDisk { .. } => f.debug_struct("HotplugDisk").finish(),
+            Self::HotUnplugDisk { device_key, .. } => f
+                .debug_struct("HotUnplugDisk")
+                .field("device_key", device_key)
                 .finish(),
         }
     }
@@ -161,6 +175,26 @@ impl ExternalRequest {
         Self::Component(ComponentChangeRequest::ReconfigureCrucibleVolume {
             backend_id,
             new_vcr_json,
+            result_tx,
+        })
+    }
+
+    pub fn hotplug_disk(
+        components: BTreeMap<SpecKey, Component>,
+        result_tx: super::DiskHotplugResultTx,
+    ) -> Self {
+        Self::Component(ComponentChangeRequest::HotplugDisk {
+            components,
+            result_tx,
+        })
+    }
+
+    pub fn hot_unplug_disk(
+        device_key: SpecKey,
+        result_tx: super::DiskHotUnplugResultTx,
+    ) -> Self {
+        Self::Component(ComponentChangeRequest::HotUnplugDisk {
+            device_key,
             result_tx,
         })
     }
@@ -486,6 +520,13 @@ impl ExternalRequestQueue {
                         ..
                     },
                 ) => {}
+
+                ExternalRequest::Component(
+                    ComponentChangeRequest::HotplugDisk { .. },
+                ) => {}
+                ExternalRequest::Component(
+                    ComponentChangeRequest::HotUnplugDisk { .. },
+                ) => {}
             }
         };
 
@@ -566,6 +607,29 @@ impl Drop for ExternalRequestQueue {
                     result_tx,
                     ..
                 } => {
+                    let _ = result_tx.send(Err(
+                        dropshot::HttpError::for_client_error_with_status(
+                            Some(
+                                "VM destroyed before request could be handled"
+                                    .to_string(),
+                            ),
+                            dropshot::ClientErrorStatusCode::GONE,
+                        ),
+                    ));
+                }
+                // TODO(luiz): avoid duplication
+                ComponentChangeRequest::HotplugDisk { result_tx, .. } => {
+                    let _ = result_tx.send(Err(
+                        dropshot::HttpError::for_client_error_with_status(
+                            Some(
+                                "VM destroyed before request could be handled"
+                                    .to_string(),
+                            ),
+                            dropshot::ClientErrorStatusCode::GONE,
+                        ),
+                    ));
+                }
+                ComponentChangeRequest::HotUnplugDisk { result_tx, .. } => {
                     let _ = result_tx.send(Err(
                         dropshot::HttpError::for_client_error_with_status(
                             Some(
