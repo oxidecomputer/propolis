@@ -42,8 +42,9 @@ use propolis_api_types::disk::{
     VolumeStatus, VolumeStatusPathParams,
 };
 use propolis_api_types::instance::{
-    ErrorCode, Instance, InstanceEnsureRequest, InstanceEnsureResponse,
-    InstanceGetResponse, InstanceInitializationMethod,
+    ErrorCode, Instance, InstanceDiskAttachRequest,
+    InstanceDiskDetachPathParams, InstanceEnsureRequest,
+    InstanceEnsureResponse, InstanceGetResponse, InstanceInitializationMethod,
     InstanceStateMonitorRequest, InstanceStateMonitorResponse,
     InstanceStateRequested,
 };
@@ -529,6 +530,112 @@ impl PropolisServerApi for PropolisServerImpl {
             .await
             .map(|rx| HttpResponseOk(rx.borrow().migration.clone()))
             .ok_or_else(not_created_error)
+    }
+
+    async fn instance_disk_attach(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<InstanceDiskAttachRequest>,
+    ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
+        let components = request.into_inner().components;
+
+        if components.len() != 2 {
+            return Err(HttpError::for_bad_request(
+                None,
+                "expected only 2 components".to_string(),
+            ));
+        }
+
+        let disk_dev = components
+            .iter()
+            .find_map(|(_k, v)| {
+                crate::spec::StorageDevice::try_from(v.clone()).ok()
+            })
+            .ok_or(HttpError::for_bad_request(
+                None,
+                "missing disk".to_string(),
+            ))?;
+
+        let backend_id = disk_dev.backend_id();
+        let _ = components.get(backend_id).ok_or(
+            HttpError::for_bad_request(None, "missing backend".to_string()),
+        )?;
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        rqctx
+            .context()
+            .vm
+            .active_vm()
+            .await
+            .ok_or_else(not_created_error)?
+            .hotplug_disk(components, tx)
+            .await
+            .map_err(|e| match e {
+                VmError::ForbiddenStateChange(reason) => {
+                    HttpError::for_client_error_with_status(
+                        Some(format!(
+                            "instance state change not allowed: {reason}"
+                        )),
+                        ClientErrorStatusCode::FORBIDDEN,
+                    )
+                }
+                _ => HttpError::for_internal_error(format!(
+                    "unexpected error from VM controller: {e}"
+                )),
+            })?;
+
+        let _ = rx.await.map_err(|_| {
+            HttpError::for_internal_error(
+                "VM worker task unexpectedly dropped result channel"
+                    .to_string(),
+            )
+        })?;
+
+        Ok(HttpResponseUpdatedNoContent {})
+    }
+
+    async fn instance_disk_detach(
+        rqctx: RequestContext<Self::Context>,
+        path_params: Path<InstanceDiskDetachPathParams>,
+    ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
+        let path_params = path_params.into_inner();
+        let device_key = SpecKey::from(path_params.id.clone());
+        let vm = rqctx
+            .context()
+            .vm
+            .active_vm()
+            .await
+            .ok_or_else(not_created_error)?;
+        {
+            let objects = vm.objects().lock_shared().await;
+            objects.device_map().get(&device_key).ok_or_else(|| {
+                let s = format!("no disk with id {}!", path_params.id);
+                HttpError::for_not_found(Some(s.clone()), s)
+            })?;
+        }
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        vm.hot_unplug_disk(device_key, tx).await.map_err(|e| match e {
+            VmError::ForbiddenStateChange(reason) => {
+                HttpError::for_client_error_with_status(
+                    Some(format!(
+                        "instance state change not allowed: {reason}"
+                    )),
+                    ClientErrorStatusCode::FORBIDDEN,
+                )
+            }
+            _ => HttpError::for_internal_error(format!(
+                "unexpected error from VM controller: {e}"
+            )),
+        })?;
+
+        let _ = rx.await.map_err(|_| {
+            HttpError::for_internal_error(
+                "VM worker task unexpectedly dropped result channel"
+                    .to_string(),
+            )
+        })?;
+
+        Ok(HttpResponseUpdatedNoContent {})
     }
 
     async fn instance_issue_crucible_snapshot_request(

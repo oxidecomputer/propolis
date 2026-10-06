@@ -75,6 +75,9 @@ pub mod instance {
     pub use crate::v7::instance::ReplacementComponent;
 
     pub use crate::v8::instance::InstanceStateRequested;
+
+    pub use crate::v9::api::InstanceDiskAttachRequest;
+    pub use crate::v9::api::InstanceDiskDetachPathParams;
 }
 
 pub mod instance_spec {

@@ -92,3 +92,20 @@ propolis$target:::gpe_reset
         (timestamp - start) / 1000,
         arg0);
 }
+
+propolis$target:::pci_hotplug_io_read
+{
+    printf("%10d pcihp_r  %s  bit 0x%02x\n",
+        (timestamp - start) / 1000,
+	copyinstr(arg0),
+	arg1);
+}
+
+propolis$target:::pci_hotplug_io_write
+{
+    printf("%10d pcihp_w  %s (0x%02x -> 0x%02x)\n",
+        (timestamp - start) / 1000,
+	copyinstr(arg0),
+	arg1,
+	arg2);
+}

@@ -45,3 +45,5 @@ pub mod v6;
 pub mod v7;
 #[path = "acpi_shutdown/mod.rs"]
 pub mod v8;
+#[path = "disk_hotplug/mod.rs"]
+pub mod v9;

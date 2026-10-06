@@ -189,6 +189,7 @@ impl Inner {
         location: BusLocation,
         dev: Arc<dyn Endpoint>,
     ) -> (Arc<SlotState>, MsiAccessor, MemAccessor) {
+        // TODO(luiz): use get to avoid panic
         let slot_state =
             self.slots[location.dev.get() as usize].attach(location, dev);
 

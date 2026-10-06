@@ -191,14 +191,12 @@ pub struct RegisteredChipset {
     isa: Arc<i440fx::Piix3Lpc>,
     pm: Arc<i440fx::Piix3PM>,
     // TODO(luiz): make acpi optional once it's exposed in the instance spec.
-    #[expect(dead_code, reason = "acpi will be wired in later work")]
     acpi: Arc<acpi::Acpi>,
 }
 impl RegisteredChipset {
     pub fn pci_attach(&self, bdf: pci::Bdf, dev: Arc<dyn pci::Endpoint>) {
         self.chipset.pci_attach(bdf, dev, self.isa.route_lintr(bdf));
     }
-    #[expect(dead_code)]
     pub fn pci_detach(
         &self,
         bdf: pci::Bdf,
@@ -213,6 +211,9 @@ impl RegisteredChipset {
     }
     fn reset_pin(&self) -> Arc<dyn intr_pins::IntrPin> {
         self.chipset.reset_pin()
+    }
+    pub fn acpi(&self) -> Arc<acpi::Acpi> {
+        self.acpi.clone()
     }
 }
 

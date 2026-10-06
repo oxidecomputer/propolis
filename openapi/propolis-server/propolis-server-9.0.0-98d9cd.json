@@ -7,7 +7,7 @@
       "url": "https://oxide.computer",
       "email": "api@oxide.computer"
     },
-    "version": "8.0.0"
+    "version": "9.0.0"
   },
   "paths": {
     "/instance": {
@@ -54,6 +54,58 @@
                 }
               }
             }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/instance/disk": {
+      "post": {
+        "operationId": "instance_disk_attach",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstanceDiskAttachRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "resource updated"
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/instance/disk/{id}": {
+      "delete": {
+        "operationId": "instance_disk_detach",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "resource updated"
           },
           "4XX": {
             "$ref": "#/components/responses/Error"
@@ -1274,6 +1326,20 @@
         "required": [
           "properties",
           "state"
+        ]
+      },
+      "InstanceDiskAttachRequest": {
+        "type": "object",
+        "properties": {
+          "components": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Component"
+            }
+          }
+        },
+        "required": [
+          "components"
         ]
       },
       "InstanceEnsureRequest": {

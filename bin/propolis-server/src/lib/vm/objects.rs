@@ -211,8 +211,16 @@ impl VmObjectsLocked {
         &self.devices
     }
 
+    pub(crate) fn device_map_mut(&mut self) -> &mut DeviceMap {
+        &mut self.devices
+    }
+
     pub(crate) fn block_backend_map(&self) -> &BlockBackendMap {
         &self.block_backends
+    }
+
+    pub(crate) fn block_backend_map_mut(&mut self) -> &mut BlockBackendMap {
+        &mut self.block_backends
     }
 
     /// Iterates over all of the lifecycle trait objects in this VM and calls

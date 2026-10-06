@@ -22,6 +22,7 @@ api_versions!([
     // |  example for the next person.
     // v
     // (next_int, IDENT),
+    (9, DISK_HOTPLUG),
     (8, ACPI_SHUTDOWN),
     (7, OPENAPI_LINT),
     (6, NVME_WRITE_CACHE),
@@ -430,6 +431,26 @@ pub trait PropolisServerApi {
             .await?
             .map(v1::migration::InstanceMigrateStatusResponse::from))
     }
+
+    #[endpoint {
+        method = POST,
+        path = "/instance/disk",
+        versions = VERSION_DISK_HOTPLUG..,
+    }]
+    async fn instance_disk_attach(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<latest::instance::InstanceDiskAttachRequest>,
+    ) -> Result<HttpResponseUpdatedNoContent, HttpError>;
+
+    #[endpoint {
+        method = DELETE,
+        path = "/instance/disk/{id}",
+        versions = VERSION_DISK_HOTPLUG..,
+    }]
+    async fn instance_disk_detach(
+        rqctx: RequestContext<Self::Context>,
+        path_params: Path<latest::instance::InstanceDiskDetachPathParams>,
+    ) -> Result<HttpResponseUpdatedNoContent, HttpError>;
 
     /// Issues a snapshot request to a crucible backend.
     #[endpoint {
