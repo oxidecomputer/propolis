@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::common::*;
+use crate::firmware::acpi;
 use crate::hw::bhyve::{
     BhyveAtPic, BhyveAtPit, BhyveIoApic, BhyvePmTimer, BhyveRtc,
 };
@@ -155,12 +156,15 @@ pub struct I440FxHostBridge {
     pci_cfg: PioCfgDecoder,
     pcie_cfg: Option<PcieCfgDecoder>,
 
+    acpi: Arc<acpi::Acpi>,
+
     pin_power: Arc<dyn IntrPin>,
     pin_reset: Arc<dyn IntrPin>,
 }
 impl I440FxHostBridge {
     pub fn create(
         pci_topology: Arc<pci::topology::Topology>,
+        acpi: Arc<acpi::Acpi>,
         opts: Opts,
     ) -> Arc<Self> {
         let pci_state = pci::Builder::new(pci::Ident {
@@ -189,6 +193,8 @@ impl I440FxHostBridge {
             pci_topology,
             pci_cfg,
             pcie_cfg,
+
+            acpi,
 
             pin_power,
             pin_reset,
@@ -304,6 +310,9 @@ impl Chipset for I440FxHostBridge {
                 lintr_cfg,
             )
             .unwrap();
+    }
+    fn pci_hot_attach(&self) {
+        self.acpi.pci_hotplug();
     }
     fn power_pin(&self) -> Arc<dyn IntrPin> {
         self.pin_power.clone()
@@ -1126,9 +1135,11 @@ mod test {
     fn hb_pci_cfg_read() {
         let scaffold = Scaffold::new();
         let topo = scaffold.basic_topo();
+        let acpi = acpi::Acpi::create_test();
 
         let hb = I440FxHostBridge::create(
             topo.clone(),
+            acpi.clone(),
             Opts { enable_pcie: false, power_pin: None, reset_pin: None },
         );
         topo_attach(&topo, hb.clone());
@@ -1140,9 +1151,11 @@ mod test {
     fn hb_pci_cfg_write() {
         let scaffold = Scaffold::new();
         let topo = scaffold.basic_topo();
+        let acpi = acpi::Acpi::create_test();
 
         let hb = I440FxHostBridge::create(
             topo.clone(),
+            acpi.clone(),
             Opts { enable_pcie: false, power_pin: None, reset_pin: None },
         );
         topo_attach(&topo, hb.clone());

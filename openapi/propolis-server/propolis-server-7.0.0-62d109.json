@@ -7,7 +7,7 @@
       "url": "https://oxide.computer",
       "email": "api@oxide.computer"
     },
-    "version": "6.0.0"
+    "version": "7.0.0"
   },
   "paths": {
     "/instance": {
@@ -51,6 +51,33 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/InstanceEnsureResponse"
+                }
+              }
+            }
+          },
+          "4XX": {
+            "$ref": "#/components/responses/Error"
+          },
+          "5XX": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/instance/disk": {
+      "post": {
+        "operationId": "instance_disk_attach",
+        "responses": {
+          "200": {
+            "description": "successful operation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "title": "Null",
+                  "type": "string",
+                  "enum": [
+                    null
+                  ]
                 }
               }
             }

@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::common::{Lifecycle, RWOp};
 use crate::hw::chipset::i440fx;
+#[cfg(test)]
+use crate::intr_pins::NoOpPin;
 use crate::intr_pins::{IntrPin, OrGate};
 use crate::pio::{PioBus, PioFn};
 
@@ -137,6 +139,12 @@ impl Acpi {
 
     pub fn pci_hotplug(self: &Arc<Self>) {
         self.gpe0.raise(GPE_PCI_HOTPLUG);
+    }
+
+    #[cfg(test)]
+    pub fn create_test() -> Arc<Self> {
+        let pin = Arc::new(NoOpPin {});
+        Self::create(pin)
     }
 }
 

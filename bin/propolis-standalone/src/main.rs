@@ -1221,6 +1221,7 @@ fn setup_instance(
     let acpi = acpi::Acpi::create(sci_pin.clone());
     let chipset_hb = i440fx::I440FxHostBridge::create(
         pci_topo,
+        acpi.clone(),
         i440fx::Opts {
             power_pin: Some(power_pin),
             reset_pin: Some(reset_pin),

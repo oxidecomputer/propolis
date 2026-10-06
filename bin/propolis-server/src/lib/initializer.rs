@@ -194,6 +194,9 @@ impl RegisteredChipset {
     pub fn pci_attach(&self, bdf: pci::Bdf, dev: Arc<dyn pci::Endpoint>) {
         self.chipset.pci_attach(bdf, dev, self.isa.route_lintr(bdf));
     }
+    pub fn pci_hot_attach(&self) {
+        self.chipset.pci_hot_attach();
+    }
     pub fn irq_pin(&self, irq: u8) -> Option<Box<dyn intr_pins::IntrPin>> {
         self.isa.irq_pin(irq)
     }
@@ -346,6 +349,7 @@ impl MachineInitializer<'_> {
                 let acpi = acpi::Acpi::create(sci_pin.clone());
                 let chipset_hb = i440fx::I440FxHostBridge::create(
                     pci_topology,
+                    acpi.clone(),
                     i440fx::Opts {
                         power_pin: Some(power_pin),
                         reset_pin: Some(reset_pin),

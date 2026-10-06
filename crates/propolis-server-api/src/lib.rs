@@ -22,6 +22,7 @@ api_versions!([
     // |  example for the next person.
     // v
     // (next_int, IDENT),
+    (7, DISK_HOTPLUG),
     (6, NVME_WRITE_CACHE),
     (5, CRUCIBLE_VOLUME_INFO),
     (4, DROPSHOT_BUMP_WEBSOCKET),
@@ -300,6 +301,15 @@ pub trait PropolisServerApi {
         HttpResponseOk<latest::migration::InstanceMigrateStatusResponse>,
         HttpError,
     >;
+
+    #[endpoint {
+        method = POST,
+        path = "/instance/disk",
+        versions = VERSION_DISK_HOTPLUG..,
+    }]
+    async fn instance_disk_attach(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<HttpResponseOk<()>, HttpError>;
 
     /// Issues a snapshot request to a crucible backend.
     #[endpoint {

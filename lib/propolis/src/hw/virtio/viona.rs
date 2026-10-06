@@ -2111,8 +2111,10 @@ mod test {
             .finish(&machine)
             .expect("can build empty topology")
             .topology;
+        let acpi = crate::firmware::acpi::Acpi::create_test();
         let chipset_hb = I440FxHostBridge::create(
             pci_topology,
+            acpi,
             i440fx::Opts {
                 power_pin: None,
                 reset_pin: None,
