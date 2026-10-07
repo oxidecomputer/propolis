@@ -20,7 +20,7 @@ use crate::hw::pci::topology::{LogicalBusId, RoutedBusId};
 use crate::hw::pci::{
     self, Bdf, INTxPinID, LintrCfg, PcieCfgDecoder, PioCfgDecoder,
 };
-use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin, NoOpPin};
+use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin, NoOpPin, OrGate};
 use crate::lifecycle;
 use crate::migrate::*;
 use crate::mmio::MmioFn;
@@ -101,7 +101,7 @@ impl IntrPin for LNKPin {
 struct IrqConfig {
     pic: Arc<LegacyPIC>,
     lnk_pins: [Arc<LNKPin>; 4],
-    sci_pin: Arc<LNKPin>,
+    sci_pin: Arc<OrGate>,
 }
 impl IrqConfig {
     fn create(hdl: Arc<VmmHdl>) -> Arc<Self> {
@@ -116,7 +116,7 @@ impl IrqConfig {
                 Arc::new(LNKPin::new()),
                 Arc::new(LNKPin::new()),
             ],
-            sci_pin,
+            sci_pin: OrGate::new(sci_pin),
         })
     }
     fn set_lnk_route(&self, idx: usize, irq: Option<u8>) {
@@ -383,7 +383,7 @@ impl Piix3Lpc {
     }
 
     pub fn sci_pin(&self) -> Arc<dyn IntrPin> {
-        Arc::clone(&self.irq_config.sci_pin) as Arc<dyn IntrPin>
+        self.irq_config.sci_pin.new_input()
     }
 
     pub fn attach(self: &Arc<Self>, pio: &PioBus) {
