@@ -4,6 +4,7 @@
 
 #![allow(clippy::mutex_atomic)]
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::vmm::VmmHdl;
@@ -241,6 +242,78 @@ struct FPInner {
     func: Box<dyn Fn(bool) + Send + 'static>,
 }
 
+pub struct OrGate {
+    inputs: Mutex<Vec<Weak<OrGatePin>>>,
+    output: Arc<dyn IntrPin>,
+}
+impl OrGate {
+    pub fn new(pin: Arc<dyn IntrPin>) -> Arc<Self> {
+        Arc::new(Self { output: pin, inputs: Mutex::new(vec![]) })
+    }
+
+    pub fn new_input(self: &Arc<Self>) -> Arc<dyn IntrPin> {
+        let mut inputs = self.inputs.lock().unwrap();
+        let pin = Arc::new(OrGatePin {
+            gate: Arc::clone(self),
+            is_asserted: false.into(),
+        });
+        inputs.push(Arc::downgrade(&pin));
+        pin
+    }
+
+    fn update_state(&self) {
+        let inputs = self.inputs.lock().unwrap();
+        let is_asserted = self.is_asserted(&inputs);
+        if is_asserted != self.output.is_asserted() {
+            self.output.set_state(is_asserted);
+        }
+    }
+
+    fn pulse(&self) {
+        let inputs = self.inputs.lock().unwrap();
+        if !self.is_asserted(&inputs) {
+            self.output.pulse();
+        }
+    }
+
+    fn is_asserted(&self, inputs: &[Weak<OrGatePin>]) -> bool {
+        inputs.iter().any(|x| match x.upgrade() {
+            Some(x) => x.is_asserted(),
+            None => false,
+        })
+    }
+}
+
+pub struct OrGatePin {
+    gate: Arc<OrGate>,
+    is_asserted: AtomicBool,
+}
+impl IntrPin for OrGatePin {
+    fn assert(&self) {
+        self.is_asserted.store(true, Ordering::Relaxed);
+        self.gate.update_state();
+    }
+    fn deassert(&self) {
+        self.is_asserted.store(false, Ordering::Relaxed);
+        self.gate.update_state();
+    }
+    fn pulse(&self) {
+        self.gate.pulse();
+    }
+    fn is_asserted(&self) -> bool {
+        self.is_asserted.load(Ordering::Relaxed)
+    }
+    fn import_state(&self, _: bool) {
+        // TODO(luiz): migrate
+        todo!("migrate");
+    }
+}
+impl Drop for OrGatePin {
+    fn drop(&mut self) {
+        self.gate.update_state();
+    }
+}
+
 pub struct NoOpPin {}
 
 impl IntrPin for NoOpPin {
@@ -319,5 +392,98 @@ pub mod test {
         fn import_state(&self, _: bool) {
             todo!("implement when needed for testing");
         }
+    }
+
+    #[test]
+    fn or_gate() {
+        let test_pin = Arc::new(TestPin::new());
+        let or_gate = OrGate::new(test_pin.clone());
+
+        let pin1 = or_gate.new_input();
+        let pin2 = or_gate.new_input();
+        let pin3 = or_gate.new_input();
+
+        // Assert pin1. Expect gate output to go high.
+        pin1.assert();
+        assert!(test_pin.is_asserted());
+        assert_eq!(test_pin.assert_count(), 1);
+        assert_eq!(test_pin.deassert_count(), 0);
+
+        // Assert pin2. Expect gate output to remain high and not re-assert.
+        pin2.assert();
+        assert!(test_pin.is_asserted());
+        assert_eq!(test_pin.assert_count(), 1);
+        assert_eq!(test_pin.deassert_count(), 0);
+
+        // Deassert pin1. Expect gate output to remain high.
+        pin1.deassert();
+        assert!(test_pin.is_asserted());
+        assert_eq!(test_pin.assert_count(), 1);
+        assert_eq!(test_pin.deassert_count(), 0);
+
+        // Deassert pin2. Expect gate output to go low.
+        pin2.deassert();
+        assert!(!test_pin.is_asserted());
+        assert_eq!(test_pin.assert_count(), 1);
+        assert_eq!(test_pin.deassert_count(), 1);
+
+        // Deassert deasserted pin3 while gate output is low. Expect no-op.
+        pin3.deassert();
+        assert!(!test_pin.is_asserted());
+        assert_eq!(test_pin.assert_count(), 1);
+        assert_eq!(test_pin.deassert_count(), 1);
+    }
+
+    #[test]
+    fn or_gate_pulse() {
+        let test_pin = Arc::new(TestPin::new());
+        let or_gate = OrGate::new(test_pin.clone());
+
+        let pin1 = or_gate.new_input();
+        let pin2 = or_gate.new_input();
+
+        // Pulse while gate output is low. Expect output pulse.
+        pin1.pulse();
+        assert!(!test_pin.is_asserted());
+        assert_eq!(test_pin.pulse_count(), 1);
+        assert_eq!(test_pin.assert_count(), 0);
+        assert_eq!(test_pin.deassert_count(), 0);
+
+        // Pulse while gate output is high. Expect no-op.
+        pin1.assert();
+        assert_eq!(test_pin.assert_count(), 1);
+
+        pin2.pulse();
+        assert!(test_pin.is_asserted());
+        assert_eq!(test_pin.pulse_count(), 1);
+        assert_eq!(test_pin.assert_count(), 1);
+        assert_eq!(test_pin.deassert_count(), 0);
+    }
+
+    #[test]
+    fn or_gate_drop_input() {
+        let test_pin = Arc::new(TestPin::new());
+        let or_gate = OrGate::new(test_pin.clone());
+
+        let pin1 = or_gate.new_input();
+        let pin2 = or_gate.new_input();
+        let pin3 = or_gate.new_input();
+
+        // Assert two of the inputs.
+        pin1.assert();
+        pin2.assert();
+        assert!(test_pin.is_asserted());
+
+        // Drop one asserted input. Expect gate output to remain high.
+        drop(pin1);
+        assert!(test_pin.is_asserted());
+
+        // Drop the other asserted input. Expect gate output to go low.
+        drop(pin2);
+        assert!(!test_pin.is_asserted());
+
+        // Drop last input. Expect gate output to remain unchanged.
+        drop(pin3);
+        assert!(!test_pin.is_asserted());
     }
 }
