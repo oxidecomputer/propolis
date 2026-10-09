@@ -660,6 +660,52 @@ impl VirtQueue {
         used: &mut VqUsed,
         mem: &MemCtx,
     ) -> bool {
+        // The F_EVENT_IDX check follows the VIRTIO spec verbatim. See
+        // `virtq_need_event()` in Appendix A. The relevant fragment
+        // is copied below.
+        //
+        // ```
+        // (uint16_t)(new_idx - event_idx - 1) < (uint16_t)(new_idx - old_idx);
+        // ```
+        //
+        // * `uidx` = `new_idx`
+        // * `last_chk_uidx` = `old_idx`
+        // * `used_event` = `event_idx`
+        //
+        // This can be confusing to follow. Per the spec, the device
+        // should notify the guest when the `event_idx` entry is
+        // written to. For that to be true, the current index
+        // (`new_idx`/`uidx`) must have crossed over `event_idx`.
+        //
+        // The expression `new_idx - old_idx` is the number of entries
+        // written since we last checked for notification.
+        //
+        // The expression `new_idx - event_idx - 1` is the
+        // displacement, in number of entries written, between the new
+        // index and the event index. That is, given the `new_idx`,
+        // how many entries would have to be written to get from
+        // `event_idx` to `new_idx`. You must subtract one because the
+        // index is always one ahead of the last written entry; e.g.,
+        // `new_idx = 806` indicates that entry 805 is the last
+        // written entry. Following that, `806 - 805 - 1 = 0` because
+        // if your current index is 806, it means you would write zero
+        // entries to get to there from 805. If you have `807 - 805 -
+        // 1 = 1`, then one entry must be written, and `805 - 805 - 1
+        // = U16_MAX` means all entries must be written in order to
+        // wrap back around to overwrite the last written entry.
+        //
+        // So if the lhs tells you how many entries you must have
+        // written to reach from `event_idx` to `new_idx`, then the
+        // number of entries actually consumed must be greater than
+        // that to know that you crossed over the `event_idx` entry.
+        //
+        // You might think this could be phrased other ways, such as
+        // `new - old > event - old`. You would mostly be right,
+        // except for the case where `new = old = event`. This
+        // property could be useful if we started checking for
+        // notification in cases where no entries have been written
+        // since the last notification, and we want to make sure that
+        // notification is only ever sent once.
         if self.f_event_idx() {
             let used_event = Wrapping(avail.used_event(mem));
             let uidx = used.used_idx;
