@@ -323,7 +323,7 @@ impl Inner {
         // Spawn the downstairs processes that will serve requests from guest
         // VMs.
         let mut downstairs_instances = vec![];
-        for (port, dir) in downstairs_ports.iter().zip(data_dirs.into_iter()) {
+        for (port, dir) in downstairs_ports.iter().zip(data_dirs) {
             let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), *port);
             let dir_arg = dir.path.to_string_lossy();
             let crucible_args = [
@@ -337,7 +337,7 @@ impl Inner {
             ];
 
             // NOTE: `log_format` is ignored here because Crucible determines
-            // Bunyan or plain formatting based on `atty::is()`. In practice
+            // Bunyan or plain formatting based on `is_terminal()`. In practice
             // this is fine, and matches what we want right now, but it might be
             // nice to connect this more directly to the output desire expressed
             // by the test runner.

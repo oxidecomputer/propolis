@@ -12,7 +12,7 @@ use dropshot::{
     TypedBody, WebsocketConnection,
 };
 use futures::SinkExt;
-use slog::{error, o, Logger};
+use slog::{o, Logger};
 use std::collections::BTreeMap;
 use thiserror::Error;
 use tokio::sync::{watch, Mutex};

@@ -11,7 +11,7 @@ use propolis_api_types::instance_spec::{
         board::Board as InstanceSpecBoard,
         devices::{PciPciBridge, SerialPortNumber},
     },
-    PciPath, SpecKey,
+    PciPath, SmbiosType1Input, SpecKey,
 };
 use thiserror::Error;
 
@@ -71,6 +71,18 @@ pub(crate) enum SpecBuilderError {
     DefaultCpuidReadFailed(#[from] cpuid_utils::host::GetHostCpuidError),
 }
 
+/// A builder onto which devices and other components are added as an
+/// `InstanceSpec` is interpreted. Among other things, this services as a
+/// forcing function to canonicalize VM descriptions, where we can enforce
+/// invariants about components (such as "disk devices must reference backends
+/// that exist").
+///
+/// Note that the API type `Component` itself does not appear here: the
+/// expectation is that individual components' definitions change relatively
+/// rarely, so callers do the work of mapping components to the
+/// closer-to-internal definitions that `SpecBuilder` accepts. In theory,
+/// hopefully, this means `SpecBuilder` itself changes rarely and can be more
+/// readily audited for semantic drift.
 #[derive(Debug, Default)]
 pub(crate) struct SpecBuilder {
     spec: super::Spec,
@@ -377,6 +389,11 @@ impl SpecBuilder {
         let _old = self.spec.softnpu.ports.insert(port_name, port);
         assert!(_old.is_none());
         Ok(self)
+    }
+
+    /// Sets the SMBIOS type 1 table contents to expose to the guest.
+    pub fn set_smbios_type1_input(&mut self, input: SmbiosType1Input) {
+        self.spec.smbios_type1_input = Some(input);
     }
 
     /// Yields the completed spec, consuming the builder.

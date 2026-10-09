@@ -845,8 +845,7 @@ impl P9Handler for HostFSHandler {
 
         let mut entries: Vec<proto::Dirent> = Vec::new();
 
-        let mut offset = 1;
-        for de in &dir[msg.offset as usize..] {
+        for (offset, de) in (1..).zip(dir[msg.offset as usize..].iter()) {
             let metadata = match de.metadata() {
                 Ok(m) => m,
                 Err(e) => {
@@ -885,7 +884,6 @@ impl P9Handler for HostFSHandler {
 
             space_left -= dirent.wire_size();
             entries.push(dirent);
-            offset += 1;
         }
 
         let response = Rreaddir::new(entries);

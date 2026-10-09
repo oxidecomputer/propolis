@@ -80,10 +80,8 @@ impl Drop for Vm {
 /// Queries the supplied CPUID leaf on the caller's machine.
 #[cfg(target_arch = "x86_64")]
 pub fn query(leaf: CpuidIdent) -> CpuidValues {
-    unsafe {
-        core::arch::x86_64::__cpuid_count(leaf.leaf, leaf.subleaf.unwrap_or(0))
-    }
-    .into()
+    core::arch::x86_64::__cpuid_count(leaf.leaf, leaf.subleaf.unwrap_or(0))
+        .into()
 }
 
 #[cfg(not(target_arch = "x86_64"))]

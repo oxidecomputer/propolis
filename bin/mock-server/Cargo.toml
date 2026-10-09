@@ -19,7 +19,6 @@ doctest = false
 test = false
 
 [dependencies]
-atty.workspace = true
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 base64.workspace = true

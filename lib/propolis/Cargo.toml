@@ -3,7 +3,7 @@ name = "propolis"
 version = "0.1.0"
 license = "MPL-2.0"
 edition = "2021"
-rust-version = "1.90"
+rust-version = "1.93"
 
 [dependencies]
 libc.workspace = true
@@ -57,12 +57,18 @@ softnpu = { workspace = true, optional = true }
 dlpi = { workspace = true, optional = true }
 static_assertions = "1.1.0"
 
+[build-dependencies]
+anyhow.workspace = true
+vergen-git2.workspace = true
+
 [dev-dependencies]
 crossbeam-channel.workspace = true
 tempfile.workspace = true
 slog-term.workspace = true
 slog-async.workspace = true
 rand.workspace = true
+rand_pcg.workspace = true
+ron.workspace = true
 
 [features]
 default = []

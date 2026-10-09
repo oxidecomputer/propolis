@@ -33,6 +33,7 @@ use queue::VirtQueue;
 use serde::{Deserialize, Serialize};
 
 pub use block::PciVirtioBlock;
+pub use queue::VqSize;
 pub use viona::PciVirtioViona;
 pub use vsock::PciVirtioSock;
 

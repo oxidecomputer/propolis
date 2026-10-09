@@ -11,7 +11,7 @@ use zerocopy::{FromBytes, IntoBytes};
 /// A Submission Queue Entry as represented in memory.
 ///
 /// See NVMe 1.0e Section 4.2 Submission Queue Entry - Command Format
-#[derive(Debug, Default, Copy, Clone, FromBytes)]
+#[derive(Debug, Default, Copy, Clone, FromBytes, IntoBytes)]
 #[repr(C, packed(1))]
 pub struct SubmissionQueueEntry {
     /// Command Dword 0 (CDW0)

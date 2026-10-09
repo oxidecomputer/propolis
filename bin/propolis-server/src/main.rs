@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 use std::fmt;
+use std::io::IsTerminal;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -72,7 +73,7 @@ fn parse_log_level(s: &str) -> anyhow::Result<slog::Level> {
 }
 
 #[derive(Debug, Parser)]
-#[clap(about, version)]
+#[clap(about, version = propolis::version())]
 /// An HTTP server providing access to Propolis
 enum Args {
     /// Runs the Propolis server.
@@ -120,6 +121,8 @@ fn run_server(
     log: slog::Logger,
 ) -> anyhow::Result<()> {
     use propolis::api_version;
+
+    slog::info!(log, "Running {}", propolis::version());
 
     // Check that devices conform to expected API version
     if let Err(e) = api_version::check() {
@@ -203,7 +206,7 @@ fn run_server(
 fn build_logger(level: slog::Level) -> slog::Logger {
     use slog::Drain;
 
-    let main_drain = if atty::is(atty::Stream::Stdout) {
+    let main_drain = if std::io::stdout().is_terminal() {
         let decorator = slog_term::TermDecorator::new().build();
         let drain = slog_term::FullFormat::new(decorator).build().fuse();
         slog_async::Async::new(drain)

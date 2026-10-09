@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::fs::File;
-use std::io::{Error, ErrorKind, Result};
+use std::io::{Error, ErrorKind, IsTerminal, Result};
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -24,6 +24,7 @@ use tokio::runtime;
 
 use propolis::chardev::{BlockingSource, Sink, Source, UDSock};
 use propolis::common::{DeviceMetadataMap, GB, MB};
+use propolis::enlightenment::{bhyve, hyperv, Enlightenment};
 use propolis::firmware::{acpi, smbios};
 use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ps2::ctrl::PS2Ctrl;
@@ -130,14 +131,13 @@ impl EventQueue {
         let mut inner = self.inner.lock().unwrap();
         while let Some((ev, ctx)) = inner.events.pop_front() {
             match cur {
-                Some(cur_ev) => {
-                    if cur_ev.supersedes(&ev) {
-                        // queued event is superseded by current one, so discard
-                        // it and look for another which may be relevant.
-                        continue;
-                    } else {
-                        return Some((ev, ctx));
-                    }
+                Some(cur_ev) if cur_ev.supersedes(&ev) => {
+                    // queued event is superseded by current one, so discard
+                    // it and look for another which may be relevant.
+                    continue;
+                }
+                Some(_) => {
+                    return Some((ev, ctx));
                 }
                 None => return Some((ev, ctx)),
             }
@@ -218,6 +218,9 @@ struct Inventory {
     block: BTreeMap<String, Arc<dyn propolis::block::Backend>>,
 }
 impl Inventory {
+    fn register_dyn(&mut self, dev: Arc<dyn propolis::common::Lifecycle>) {
+        self.devs.insert(dev.type_name().into(), dev);
+    }
     fn register<D: propolis::common::Lifecycle>(&mut self, dev: &Arc<D>) {
         self.devs.insert(
             dev.type_name().into(),
@@ -299,6 +302,10 @@ impl Instance {
         let state = &mut *state_guard;
         let machine = state.machine.as_ref().unwrap();
 
+        state.inventory.register_dyn(enlightenment::as_lifecycle(Arc::clone(
+            &machine.guest_hv_interface,
+        )));
+
         let bind_cpus = match this.0.config.main.cpu_binding {
             Some(config::BindingStrategy::UpperHalf) => {
                 let total_cpus =
@@ -327,7 +334,7 @@ impl Instance {
         };
 
         for (vcpu, bind_cpu) in
-            machine.vcpus.iter().map(Arc::clone).zip(bind_cpus.into_iter())
+            machine.vcpus.iter().map(Arc::clone).zip(bind_cpus)
         {
             let (task, ctrl) =
                 propolis::tasks::TaskHdl::new_held(Some(vcpu.barrier_fn()));
@@ -406,14 +413,14 @@ impl Instance {
         match state {
             State::Run if first_boot => {
                 tokio::runtime::Handle::current().block_on(async {
-                    for (_name, be) in guard.inventory.block.iter() {
+                    for be in guard.inventory.block.values() {
                         be.start().await.expect("blockdev start succeeds");
                     }
                 });
             }
             State::Halt => {
                 tokio::runtime::Handle::current().block_on(async {
-                    for (_name, be) in guard.inventory.block.iter() {
+                    for be in guard.inventory.block.values() {
                         be.stop().await;
                         be.attachment().detach();
                     }
@@ -769,11 +776,13 @@ impl Instance {
 }
 
 fn build_machine(
+    log: &slog::Logger,
     name: &str,
     max_cpu: u8,
     lowmem: usize,
     highmem: usize,
     use_reservoir: bool,
+    hv_interface: &config::HypervisorInterface,
 ) -> Result<propolis::Machine> {
     let mut builder = Builder::new(
         name,
@@ -801,6 +810,18 @@ fn build_machine(
         "dev64",
     )?;
 
+    let hv = match hv_interface {
+        config::HypervisorInterface::Bhyve => {
+            Arc::new(bhyve::BhyveGuestInterface) as Arc<dyn Enlightenment>
+        }
+        config::HypervisorInterface::HyperV { reference_tsc } => {
+            let hv_feats = hyperv::Features { reference_tsc: *reference_tsc };
+            Arc::new(hyperv::HyperV::new(log, hv_feats))
+                as Arc<dyn Enlightenment>
+        }
+    };
+    builder = builder.guest_hypervisor_interface(hv);
+
     builder.finalize()
 }
 
@@ -823,7 +844,7 @@ fn open_bootrom(path: &str) -> Result<(File, usize)> {
 }
 
 fn build_log(level: slog::Level) -> slog::Logger {
-    let main_drain = if atty::is(atty::Stream::Stdout) {
+    let main_drain = if std::io::stdout().is_terminal() {
         let decorator = slog_term::TermDecorator::new().build();
         let drain = slog_term::CompactFormat::new(decorator).build().fuse();
         slog_async::Async::new(drain)
@@ -1153,8 +1174,16 @@ fn setup_instance(
 
     slog::info!(log, "Creating VM with {} vCPUs, {} lowmem, {} highmem",
         cpus, lowmem, highmem;);
-    let machine = build_machine(vm_name, cpus, lowmem, highmem, use_reservoir)
-        .context("Failed to create VM Machine")?;
+    let machine = build_machine(
+        log,
+        vm_name,
+        cpus,
+        lowmem,
+        highmem,
+        use_reservoir,
+        &config.main.hv_interface,
+    )
+    .context("Failed to create VM Machine")?;
     let com1_sock =
         UDSock::bind(Path::new("./ttya")).context("Cannot open UD socket")?;
     let inst = Instance::new(
@@ -1324,6 +1353,18 @@ fn setup_instance(
                 "pci-virtio-viona" => {
                     let vnic_name =
                         dev.options.get("vnic").unwrap().as_str().unwrap();
+                    let rxqsz = match dev.options.get("rx-queue-size") {
+                        Some(toml::Value::Integer(v)) => {
+                            hw::virtio::VqSize::new(u16::try_from(*v).unwrap())
+                        }
+                        _ => hw::virtio::viona::RX_QUEUE_SIZE,
+                    };
+                    let txqsz = match dev.options.get("tx-queue-size") {
+                        Some(toml::Value::Integer(v)) => {
+                            hw::virtio::VqSize::new(u16::try_from(*v).unwrap())
+                        }
+                        _ => hw::virtio::viona::TX_QUEUE_SIZE,
+                    };
                     let bdf = bdf.unwrap();
 
                     let viona_params =
@@ -1333,11 +1374,15 @@ fn setup_instance(
                     // The viona_params here (currently just copy_data and
                     // header_pad) require `viona::ApiVersion::V3`, below
                     // Propolis' minimum of V6, so we can always set them.
-                    let viona = hw::virtio::PciVirtioViona::new(
-                        vnic_name,
-                        &hdl,
-                        viona_params,
-                    )?;
+                    let viona =
+                        hw::virtio::PciVirtioViona::new_with_queue_sizes(
+                            vnic_name,
+                            rxqsz,
+                            txqsz,
+                            hw::virtio::viona::CTL_QUEUE_SIZE,
+                            &hdl,
+                            viona_params,
+                        )?;
                     guard.inventory.register_instance(&viona, &bdf.to_string());
                     chipset_pci_attach(bdf, viona);
                 }
@@ -1355,6 +1400,11 @@ fn setup_instance(
                         .to_string();
                     let log =
                         log.new(slog::o!("dev" => format!("nvme-{}", name)));
+                    let has_write_cache = dev
+                        .options
+                        .get("has_write_cache")
+                        .map(|v| v.as_bool().unwrap())
+                        .unwrap_or(false);
                     // Limit data transfers to 1MiB (2^8 * 4k) in size
                     let mdts = Some(8);
 
@@ -1363,8 +1413,12 @@ fn setup_instance(
                     serial_number[..sz]
                         .clone_from_slice(&dev_serial.as_bytes()[..sz]);
 
-                    let nvme =
-                        hw::nvme::PciNvme::create(&serial_number, mdts, log);
+                    let nvme = hw::nvme::PciNvme::create(
+                        &serial_number,
+                        mdts,
+                        has_write_cache,
+                        log,
+                    );
 
                     guard.inventory.register_instance(&nvme, &bdf.to_string());
                     guard.inventory.register_block(&backend, name);
@@ -1403,11 +1457,7 @@ fn setup_instance(
                 }
                 _ => {
                     slog::error!(log, "unrecognized driver {driver}"; "name" => name);
-                    return Err(Error::new(
-                        ErrorKind::Other,
-                        "Unrecognized driver",
-                    )
-                    .into());
+                    return Err(Error::other("Unrecognized driver").into());
                 }
             };
             Ok(())
@@ -1516,24 +1566,37 @@ fn setup_instance(
     guard.inventory.register(&fwcfg);
     guard.inventory.register(&ramfb);
 
+    let mut base_profile = match cpuid_profile {
+        Some(profile) => profile,
+        None => {
+            // If the config has provided no CPUID configuration, collect the
+            // default leaves from a bhyve guest and use that. We must collect
+            // this now, because we'll add hypervisor interface leaves and
+            // specialize for each vCPU below.
+            cpuid_utils::host::query_complete(
+                cpuid_utils::host::CpuidSource::BhyveDefault,
+            )
+            .context("failed to query host cpuid")?
+        }
+    };
+    machine
+        .guest_hv_interface
+        .add_cpuid(&mut base_profile)
+        .context("failed to add hypervisor cpuid leaves")?;
+
     for vcpu in machine.vcpus.iter() {
-        let vcpu_profile = if let Some(profile) = cpuid_profile.as_ref() {
-            propolis::cpuid::Specializer::new()
-                .with_vcpu_count(
-                    std::num::NonZeroU8::new(config.main.cpus).unwrap(),
-                    true,
-                )
-                .with_vcpuid(vcpu.id)
-                .with_cache_topo()
-                .clear_cpu_topo(cpuid::TopoKind::iter())
-                .with_cpu_topo(cpuid::TopoKind::supported())
-                .execute(profile.clone())
-                .context("failed to specialize cpuid profile")?
-        } else {
-            // An empty set will instruct the kernel to use the legacy
-            // fallback behavior
-            cpuid_utils::CpuidSet::new_host()
-        };
+        let vcpu_profile = propolis::cpuid::Specializer::new()
+            .with_vcpu_count(
+                std::num::NonZeroU8::new(config.main.cpus).unwrap(),
+                true,
+            )
+            .with_vcpuid(vcpu.id)
+            .with_cache_topo()
+            .clear_cpu_topo(cpuid::TopoKind::iter())
+            .with_cpu_topo(cpuid::TopoKind::supported())
+            .execute(base_profile.clone())
+            .context("failed to specialize cpuid profile")?;
+
         vcpu.set_cpuid(vcpu_profile)?;
         vcpu.set_default_capabs()?;
     }
@@ -1571,6 +1634,7 @@ fn api_version_checks(log: &slog::Logger) -> std::io::Result<()> {
 }
 
 #[derive(clap::Parser)]
+#[clap(version = propolis::version())]
 /// Propolis command-line frontend for running a VM.
 struct Args {
     /// Either the VM config file or a previously captured snapshot image.
@@ -1603,6 +1667,8 @@ fn main() -> anyhow::Result<ExitCode> {
     register_probes().context("Failed to setup USDT probes")?;
 
     let log = build_log(log_level);
+
+    slog::info!(log, "Running {}", propolis::version());
 
     // Check that vmm and viona device version match what we expect
     api_version_checks(&log).context("API version checks")?;
