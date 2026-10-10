@@ -22,7 +22,10 @@ use propolis_api_types::instance_spec::SpecKey;
 use slog::info;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use crate::{serial::Serial, spec::Spec, vcpu_tasks::VcpuTaskController};
+use crate::{
+    initializer::RegisteredChipset, serial::Serial, spec::Spec,
+    vcpu_tasks::VcpuTaskController,
+};
 
 use super::{BlockBackendMap, CrucibleBackendMap, DeviceMap};
 
@@ -53,6 +56,7 @@ pub(super) struct InputVmObjects {
     pub framebuffer: Option<Arc<RamFb>>,
     pub ps2ctrl: Arc<PS2Ctrl>,
     pub attest_handle: Option<attestation::server::AttestationSock>,
+    pub chipset: Arc<RegisteredChipset>,
 }
 
 /// The collection of objects and state that make up a Propolis instance.
@@ -91,6 +95,9 @@ pub(crate) struct VmObjectsLocked {
 
     /// A handle to the VM's attestation server.
     attest_handle: Option<attestation::server::AttestationSock>,
+
+    /// A handle to the VM's mainboard chipset.
+    chipset: Arc<RegisteredChipset>,
 }
 
 impl VmObjects {
@@ -132,6 +139,7 @@ impl VmObjectsLocked {
             framebuffer: input.framebuffer,
             ps2ctrl: input.ps2ctrl,
             attest_handle: input.attest_handle,
+            chipset: input.chipset,
         }
     }
 
@@ -192,6 +200,11 @@ impl VmObjectsLocked {
     /// Yields a clonable reference to this VM's PS/2 controller.
     pub(crate) fn ps2ctrl(&self) -> &Arc<PS2Ctrl> {
         &self.ps2ctrl
+    }
+
+    /// Yields a clonable reference to this VM's mainboard chipset.
+    pub(crate) fn chipset(&self) -> &Arc<RegisteredChipset> {
+        &self.chipset
     }
 
     pub(crate) fn device_map(&self) -> &DeviceMap {
