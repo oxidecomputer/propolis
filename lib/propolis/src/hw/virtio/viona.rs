@@ -75,6 +75,12 @@ enum MqSetPairsCause {
 mod probes {
     fn virtio_viona_mq_set_use_pairs(cause: u8, npairs: u16) {}
     fn virtio_viona_cq_request(class: u8, command: u8) {}
+    // Probe that fires when the guest sets the VIRTIO features.
+    //
+    // id: The instance id of the link
+    // set: The features set by the guest.
+    // dev_feature: The features offered by the viona device.
+    fn virtio_viona_set_features(id: u32, set: u64, dev_feat: u64) {}
 }
 
 /// Types and so forth for supporting the control queue.
@@ -624,7 +630,9 @@ impl PciVirtioViona {
                 .intr_poll(self.virtio_state.queues.len(), |vq_idx| {
                     self.hdl.ring_intr_clear(vq_idx).unwrap();
                     let vq = self.virtio_state.queues.get(vq_idx).unwrap();
-                    vq.send_intr(&mem);
+                    if vq.needs_intr(&mem) {
+                        vq.send_intr();
+                    }
                 })
                 .unwrap();
         }
@@ -632,19 +640,32 @@ impl PciVirtioViona {
 
     fn ctl_queue_notify(&self, vq: &VirtQueue) {
         if let Some(mem) = self.pci_state.acc_mem.access() {
-            while !vq.avail_is_empty(&mem) {
-                let mut chain = Chain::with_capacity(4);
-                let intrs_en = vq.disable_intr(&mem);
-                while let Some((_idx, _len)) = vq.pop_avail(&mut chain, &mem) {
-                    let res = match self.ctl_msg(&mut chain, &mem) {
-                        Ok(_) => control::Ack::Ok,
-                        Err(_) => control::Ack::Err,
-                    } as u8;
-                    chain.write(&res, &mem);
-                    vq.push_used(&mut chain, &mem);
+            loop {
+                vq.disable_intr(&mem);
+
+                while !vq.avail_is_empty(&mem) {
+                    let mut chain = Chain::with_capacity(4);
+
+                    while let Some((_idx, _len)) =
+                        vq.pop_avail(&mut chain, &mem)
+                    {
+                        let res = match self.ctl_msg(&mut chain, &mem) {
+                            Ok(_) => control::Ack::Ok,
+                            Err(_) => control::Ack::Err,
+                        } as u8;
+                        chain.write(&res, &mem);
+                        vq.push_used(&mut chain, &mem);
+                    }
                 }
-                if intrs_en {
-                    vq.enable_intr(&mem);
+
+                vq.enable_intr(&mem);
+
+                crate::hw::virtio::membar_enter();
+
+                // Check if enabling the interrupt raced with the
+                // driver publishing new entries to avail.
+                if vq.avail_is_empty(&mem) {
+                    break;
                 }
             }
         }
@@ -1080,12 +1101,41 @@ impl VirtioDevice for PciVirtioViona {
         self.virtio_state.mode()
     }
 
+    // Most features require support from both the VMM and the viona
+    // device. For example, NET_F_CTRL_RX requests are initially
+    // received by the VMM, but require viona ioctls affect them in
+    // the in-kernel device. Another example is the combination of
+    // NET_F_CTRL_VQ with F_EVENT_IDX; the later requires that all
+    // virt queues implement it. The VMM must implement it for the
+    // control queue, and the viona device must implement it for the
+    // Tx/Rx queues. Up to this point we have relied on the viona API
+    // number as a guarantee that the device provides a certain set of
+    // features. This has served us fine thus far, but the number
+    // provides no such guarantee, and it's a shaky assumption to
+    // make. There is another approach that is taken with F_EVENT_IDX:
+    // have the device advertise the feature so that the VMM can
+    // dynamically determine if it is available at runtime. Instead of
+    // assuming a feature based on a number, actually check for its
+    // existence at time of use.
+    //
+    // This does pose one problem based on how our current feature
+    // advertisement works where we simply biwise-OR the VMM and
+    // device features: a newer viona device could advertise a feature
+    // that also requires support in the VMM before the VMM actually
+    // supports it. In fact, this very scenario played out in the
+    // development of of F_EVENT_IDX, and lead to guest instances
+    // getting stuck in boot. For this reason we may want to define
+    // some sort of whitelist in the VMM to make sure that it has
+    // support for all features advertised to the guest, but that work
+    // has not been done yet.
     fn features(&self) -> u64 {
-        let mut feat = VIRTIO_NET_F_MAC
+        let mut feat = VIRTIO_F_EVENT_IDX
+            | VIRTIO_NET_F_MAC
             | VIRTIO_NET_F_STATUS
             | VIRTIO_NET_F_CTRL_VQ
             | VIRTIO_NET_F_CTRL_RX
             | VIRTIO_NET_F_MQ;
+
         // We drop the "VIRTIO_NET_F_MTU" flag from feat if we are unable to
         // query it. This can happen when executing within a non-global Zone.
         //
@@ -1093,13 +1143,30 @@ impl VirtioDevice for PciVirtioViona {
         if self.mtu.is_some() {
             feat |= VIRTIO_NET_F_MTU;
         }
-        feat |= self.dev_features;
 
-        feat
+        let dev_feat = self.dev_features;
+
+        // The viona device must also support F_EVENT_IDX in order to
+        // advertise it.
+        if (dev_feat & VIRTIO_F_EVENT_IDX) == 0 {
+            feat &= !VIRTIO_F_EVENT_IDX;
+        }
+
+        feat | dev_feat
     }
 
     fn set_features(&self, feat: u64) -> Result<(), ()> {
+        probes::virtio_viona_set_features!(|| (
+            self.hdl.instance_id().unwrap(),
+            feat,
+            self.dev_features,
+        ));
+
         self.hdl.set_features(feat).map_err(|_| ())?;
+
+        if (feat & VIRTIO_F_EVENT_IDX) != 0 {
+            self.virtio_state.queues.set_f_event_idx(true);
+        }
 
         // Any remaining setup is for control-queue based features.
         let control_queue = if (feat & VIRTIO_NET_F_CTRL_VQ) == 0 {
@@ -2330,7 +2397,7 @@ mod test {
                 self.common_config.read_le16(common_cfg::queue_enable) == 1;
             assert!(!already_enabled);
 
-            let queue_size =
+            let mut queue_size =
                 self.common_config.read_le16(common_cfg::queue_size);
             assert_ne!(queue_size, 0);
             // In "2.7 Split Virtqueues",
@@ -2353,6 +2420,7 @@ mod test {
             if chosen_size < queue_size {
                 self.common_config
                     .write_le16(common_cfg::queue_size, chosen_size);
+                queue_size = chosen_size;
             }
 
             let acc_mem =
@@ -2368,11 +2436,15 @@ mod test {
             // > * The driver MUST set flags to 0 or 1.
             // > * The driver MAY set flags to 1 to advise the device that
             //     notifications are not needed.
-            acc_mem.write::<u32>(GuestAddr(avail_gpa), &0);
+            acc_mem.write::<u16>(GuestAddr(avail_gpa), &0);
             // Index. "This starts at 0, and increases."
-            acc_mem.write::<u32>(GuestAddr(avail_gpa + 4), &0);
-            // Leave all the `ring` entries uninitialized, and we've not
-            // negotiated VIRTIO_F_EVENT_IDX so no `used_event` for now.
+            acc_mem.write::<u16>(GuestAddr(avail_gpa + 2), &0);
+            // Leave all the `ring` entries uninitialized. Initialize
+            // `used_event` to zero.
+            acc_mem.write::<u16>(
+                GuestAddr(avail_gpa + 4 + (queue_size as u64 * 2)),
+                &0,
+            );
             self.common_config.write_le64(common_cfg::queue_driver, avail_gpa);
 
             let used_gpa = avail_gpa.next_multiple_of(page_u64);
@@ -2879,25 +2951,10 @@ mod test {
         let underlying_nic = match std::env::var("VIONA_TEST_NIC") {
             Ok(val) => val,
             Err(VarError::NotPresent) => {
-                eprintln!(
-                    "Skipping viona tests as env does not have VIONA_TEST_NIC. \
-                    Set this environment variable to an existing link that \
-                    Propolis viona tests should create test vnics on.");
-                let uname = nix::sys::utsname::uname().unwrap();
-                if uname.machine() != std::ffi::OsStr::new("i86pc") {
-                    // Since the tests are running on i86pc, this might be a dev
-                    // host that does not actually want us messing with devices
-                    // for tests.
-                    //
-                    // If the *tests* are running on a different architecture
-                    // (say, "oxide"), assume that this is a misconfiguration
-                    // instead and fail tests rather than "skip".
-                    panic!(
-                        "host ({}) is not i86pc, refusing to skip viona tests",
-                        uname.machine().display()
-                    );
-                }
-                return;
+                panic!(
+                    "VIONA_TEST_NIC not defined. Set this env var to an \
+                     existing link that the test should create vnics on."
+                );
             }
             Err(VarError::NotUnicode(e)) => {
                 panic!("non-unicode virtio host nic: {:?}", e.display());
