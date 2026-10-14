@@ -880,43 +880,43 @@ impl StateDriver {
                 fate,
                 timeout,
             }) => {
-                // if timeout already in progress, ignore further soft-off reqs
-                if self.soft_off.is_none() {
-                    let guard = self.objects.lock_exclusive().await;
-                    let chipset = guard.chipset();
-
-                    chipset.acpi_shutdown();
-                    // TODO? might watch for OSPM clearing the status bit to
-                    // determine if guest acknowledges the button press
-
-                    // timeout to hard-stop/reset if guest takes too long
-                    let input_queue_weak = Arc::downgrade(&self.input_queue);
-                    // (philosophically, timeout behavior is part of what was
-                    // externally requested...)
-                    let quasi_ext_req = match fate {
-                        SoftShutdownFate::Stop => ExternalRequest::stop(),
-                        SoftShutdownFate::Reboot => ExternalRequest::reboot(),
-                    };
-                    let log = self.log.clone();
-                    self.soft_off = Some((
-                        fate,
-                        tokio::spawn(async move {
-                            tokio::time::sleep(timeout).await;
-                            if let Some(input_queue) =
-                                input_queue_weak.upgrade()
-                            {
-                                if let Err(e) = input_queue
-                                    .queue_external_request(quasi_ext_req)
-                                {
-                                    slog::error!(
-                                        log,
-                                        "Failed to enqueue {fate:?}: {e}"
-                                    );
-                                }
-                            }
-                        }),
-                    ));
+                if self.soft_off.is_some() {
+                    // timeout already in progress, ignore further soft-off reqs
+                    return HandleEventOutcome::Continue;
                 }
+
+                let guard = self.objects.lock_exclusive().await;
+                let chipset = guard.chipset();
+
+                chipset.acpi_shutdown();
+                // TODO? might watch for OSPM clearing the status bit to
+                // determine if guest acknowledges the button press
+
+                // timeout to hard-stop/reset if guest takes too long
+                let input_queue_weak = Arc::downgrade(&self.input_queue);
+                // (philosophically, timeout behavior is part of what was
+                // externally requested...)
+                let quasi_ext_req = match fate {
+                    SoftShutdownFate::Stop => ExternalRequest::stop(),
+                    SoftShutdownFate::Reboot => ExternalRequest::reboot(),
+                };
+                let log = self.log.clone();
+                self.soft_off = Some((
+                    fate,
+                    tokio::spawn(async move {
+                        tokio::time::sleep(timeout).await;
+                        if let Some(input_queue) = input_queue_weak.upgrade() {
+                            if let Err(e) = input_queue
+                                .queue_external_request(quasi_ext_req)
+                            {
+                                slog::error!(
+                                    log,
+                                    "Failed to enqueue {fate:?}: {e}"
+                                );
+                            }
+                        }
+                    }),
+                ));
                 HandleEventOutcome::Continue
             }
             ExternalRequest::State(StateChangeRequest::Start) => {
@@ -985,7 +985,13 @@ impl StateDriver {
     async fn do_reboot(&mut self) {
         info!(self.log, "resetting instance");
 
-        // first abandon any timeout task that may send a redundant request
+        // first, abandon any timeout task that may send a redundant request.
+        // if the guest has, say, raced us with an independently-originating
+        // power signal, at worst we'd process a couple reboots in quick
+        // succession. (what we *don't* want is for the guest to successfully
+        // shut down while we're waiting for it to do so, have us reboot it
+        // here, and then have the timeout task hard-reboot minutes later
+        // once it's come back up)
         if let Some((_, timeout_task)) = self.soft_off.take() {
             timeout_task.abort();
         }
@@ -1004,7 +1010,10 @@ impl StateDriver {
     async fn do_halt(&mut self) {
         info!(self.log, "stopping instance");
 
-        // first abandon any timeout task that may send a redundant request
+        // first, abandon any timeout task that may send a redundant request.
+        // (if the guest has raced us with a power signal, turning off what
+        // is already off is fine - but we certainly don't want someone turning
+        // the instance back *on* later, then our old timeout task offs it)
         if let Some((_, timeout_task)) = self.soft_off.take() {
             timeout_task.abort();
         }
