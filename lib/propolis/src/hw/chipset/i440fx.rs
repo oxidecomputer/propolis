@@ -103,7 +103,6 @@ struct IrqConfig {
 
     lnk_pins: [Arc<LNKPin>; 4],
 
-    // XXX: wire up SCI notifications
     sci_pin: Arc<LNKPin>,
 }
 impl IrqConfig {
@@ -854,6 +853,7 @@ impl Piix3PM {
         pio.register(PMBASE_DEFAULT, PMBASE_LEN, piofn).unwrap();
     }
 
+    // XXX: handle the logical OR of "SCI" inputs when we have many, see future hotplug work
     pub fn acpi_shutdown(&self) {
         let mut regs = self.regs.lock().unwrap();
         regs.pm_status.insert(PmSts::PWRBTN_STS);
