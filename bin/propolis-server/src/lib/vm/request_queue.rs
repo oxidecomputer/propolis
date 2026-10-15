@@ -407,7 +407,9 @@ impl ExternalRequestQueue {
             ExternalRequest::State(StateChangeRequest::ACPIShutdown {
                 ..
             }) => {
-                assert!(!self.awaiting_shutdown);
+                // subsequent shutdown requests may be seeking to change
+                // the post-shutdown instance fate (stop vs. reboot),
+                // so don't assert !awaiting_shutdown
                 self.awaiting_shutdown = true;
             }
             ExternalRequest::State(StateChangeRequest::Reboot) => {
@@ -509,7 +511,8 @@ impl ExternalRequestQueue {
                 // Reject ACPI shutdown requests if the instance is not in a
                 // state where it could reasonably be expected to respond to
                 // a power button press (that is to say, Running), and also
-                // ignore further shutdown requests if one is already happening.
+                // allow further shutdown requests if one is already happening
+                // to allow changing the post-shutdown action (stop/reboot).
                 ExternalRequest::State(StateChangeRequest::ACPIShutdown {
                     ..
                 }) => match self.state {
@@ -531,8 +534,6 @@ impl ExternalRequestQueue {
                     QueueState::Running => {
                         if self.awaiting_stop || self.awaiting_reboot {
                             return Err(RequestDeniedReason::HaltPending);
-                        } else if self.awaiting_shutdown {
-                            return Ok(false);
                         }
                     }
                 },
@@ -910,7 +911,7 @@ mod test {
     }
 
     #[test]
-    fn acpi_shutdowns_ignored_after_first() {
+    fn acpi_shutdowns_after_acpi_shutdown_allowed() {
         let mut queue =
             ExternalRequestQueue::new(test_logger(), InstanceAutoStart::Yes);
         queue.notify_request_completed(CompletedRequest::Start {
@@ -926,18 +927,17 @@ mod test {
             ))
             .is_ok());
 
-        // all these further ACPI shutdown requests should be ignored
-        // (with intent sent to reboot, just so we can distinguish in this test
-        // that only the first request was enqueued)
-        for _ in 0..5 {
-            assert!(queue
-                .try_queue(ExternalRequest::acpi_shutdown(
-                    SoftShutdownFate::Reboot,
-                    Duration::from_secs(600)
-                ))
-                .is_ok());
-        }
+        // a further ACPI shutdown request with intent sent to reboot,
+        // just so we can distinguish from the previous one
+        assert!(queue
+            .try_queue(ExternalRequest::acpi_shutdown(
+                SoftShutdownFate::Reboot,
+                Duration::from_secs(600)
+            ))
+            .is_ok());
+
         queue.pop_front().unwrap().assert_acpi_shutdown();
+        queue.pop_front().unwrap().assert_acpi_reboot();
         assert!(queue.is_empty());
     }
 
