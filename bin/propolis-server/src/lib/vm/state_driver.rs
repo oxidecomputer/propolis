@@ -382,7 +382,10 @@ struct StateDriver {
     /// Contains a tuple of the action to take after the guest halts its CPUs,
     /// the timeout task that will forcibly halt the guest's CPUs if it is not
     /// aborted.
-    soft_off: Option<(SoftShutdownFate, tokio::task::JoinHandle<()>)>,
+    soft_off: Option<(
+        Arc<tokio::sync::Mutex<SoftShutdownFate>>,
+        tokio::task::JoinHandle<()>,
+    )>,
 
     /// State persisted from previous attempts to migrate out of this VM.
     migration_src_state: crate::migrate::source::PersistentState,
@@ -824,7 +827,8 @@ impl StateDriver {
         // asked for the guest to be *off*.
         if let Some((fate, _)) = &self.soft_off {
             self.input_queue.notify_shutdown();
-            return match fate {
+            let fate_val = *fate.lock().await;
+            return match fate_val {
                 SoftShutdownFate::Stop => {
                     info!(
                         self.log,
@@ -880,8 +884,11 @@ impl StateDriver {
                 fate,
                 timeout,
             }) => {
-                if self.soft_off.is_some() {
-                    // timeout already in progress, ignore further soft-off reqs
+                if let Some((fate_mut, _)) = &mut self.soft_off {
+                    // timeout already in progress, don't start timeout task
+                    // anew or send further PWRBTN_STS, but do change the
+                    // post-shutdown fate
+                    *fate_mut.lock().await = fate;
                     return HandleEventOutcome::Continue;
                 }
 
@@ -889,31 +896,40 @@ impl StateDriver {
                 let chipset = guard.chipset();
 
                 chipset.acpi_shutdown();
-                // TODO? might watch for OSPM clearing the status bit to
-                // determine if guest acknowledges the button press
+
+                // TODO? in future we may watch for OSPM clearing the status bit
+                // (per ACPI 4.8.2.2.1.1) after above chipset.acpi_shutdown call
+                // call to determine whether the guest has acknowledged the push
+                // of the power button. mayhap consider adding a tighter timeout
+                // task to terminate/reboot sooner if the kernel is so wedged or
+                // absent that it didn't even respond to pulling PWRBTN_STS high
 
                 // timeout to hard-stop/reset if guest takes too long
-                let input_queue_weak = Arc::downgrade(&self.input_queue);
-                // (philosophically, timeout behavior is part of what was
-                // externally requested...)
-                let quasi_ext_req = match fate {
-                    SoftShutdownFate::Stop => ExternalRequest::stop(),
-                    SoftShutdownFate::Reboot => ExternalRequest::reboot(),
-                };
+                let queue_weak = Arc::downgrade(&self.input_queue);
+                let fate_strong = Arc::new(tokio::sync::Mutex::new(fate));
+                let fate_weak = Arc::downgrade(&fate_strong);
                 let log = self.log.clone();
                 self.soft_off = Some((
-                    fate,
+                    fate_strong,
                     tokio::spawn(async move {
                         tokio::time::sleep(timeout).await;
-                        if let Some(input_queue) = input_queue_weak.upgrade() {
-                            if let Err(e) = input_queue
-                                .queue_external_request(quasi_ext_req)
-                            {
-                                slog::error!(
-                                    log,
-                                    "Failed to enqueue {fate:?}: {e}"
-                                );
+                        let Some(queue) = queue_weak.upgrade() else { return };
+                        let Some(fate) = fate_weak.upgrade() else { return };
+                        let quasi_ext_req = match *fate.lock().await {
+                            SoftShutdownFate::Stop => ExternalRequest::stop(),
+                            SoftShutdownFate::Reboot => {
+                                ExternalRequest::reboot()
                             }
+                        };
+                        // (philosophically, timeout behavior is part of
+                        // what was externally-requested...)
+                        if let Err(e) =
+                            queue.queue_external_request(quasi_ext_req)
+                        {
+                            slog::error!(
+                                log,
+                                "Failed to enqueue {fate:?}: {e}"
+                            );
                         }
                     }),
                 ));

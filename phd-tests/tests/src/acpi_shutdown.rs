@@ -102,6 +102,23 @@ async fn acpi_shutdown_interject_with_hard_reboot(ctx: &TestCtx) {
 }
 
 #[phd_testcase]
+async fn acpi_shutdown_change_of_fate(ctx: &TestCtx) {
+    let vm =
+        non_acpid_vm(ctx, "acpi_shutdown_interject_with_soft_reboot").await?;
+
+    // note: *not* running acpid, so alpine will ignore pwrbtn.
+    // sending a 'shutdown' request so we can be sure we don't race with a
+    // very fast guest shutdown, but rather our given timeout
+    vm.acpi_reset(10).await?;
+    // this shouldn't change the timeout, but it should make the instance stop
+    // after the *previous* timeout
+    vm.acpi_shutdown(60).await?;
+
+    vm.wait_for_state(InstanceState::Destroyed, Duration::from_secs(20))
+        .await?;
+}
+
+#[phd_testcase]
 async fn acpi_shutdown_timeout_stop(ctx: &TestCtx) {
     let vm = non_acpid_vm(ctx, "acpi_shutdown_timeout_stop").await?;
 
