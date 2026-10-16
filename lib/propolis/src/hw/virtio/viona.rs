@@ -1333,9 +1333,15 @@ impl Lifecycle for PciVirtioViona {
         let _ = self.hdl.set_notify_io_port(None);
         let _ = self.hdl.set_notify_mmio_addr(None);
 
+        if let Some(opte_port) = self.opte_port.as_ref() {
+            opte_port.pause();
+        }
         self.indicator.pause();
     }
     fn resume(&self) {
+        if let Some(opte_port) = self.opte_port.as_ref() {
+            opte_port.resume();
+        }
         self.run();
         self.indicator.resume();
     }
@@ -1389,6 +1395,9 @@ impl MigrateMulti for PciVirtioViona {
         ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         <dyn PciVirtio>::export(self, output, ctx)?;
+        if let Some(opte_port) = self.opte_port.as_ref() {
+            opte_port.export(output, ctx)?;
+        }
 
         let viona_state = {
             let state = self.inner.lock().unwrap();
@@ -1410,6 +1419,9 @@ impl MigrateMulti for PciVirtioViona {
         ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         <dyn PciVirtio>::import(self, offer, ctx)?;
+        if let Some(opte_port) = self.opte_port.as_ref() {
+            opte_port.import(offer, ctx)?;
+        }
 
         let feat = self.virtio_state.negotiated_features();
         self.hdl.set_features(feat).map_err(|e| {
