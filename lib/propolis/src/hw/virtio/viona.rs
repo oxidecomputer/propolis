@@ -38,6 +38,10 @@ use zerocopy::{FromBytes, Immutable, IntoBytes};
 // Re-export API versioning interface for convenience of propolis consumers
 pub use viona_api::{api_version, ApiVersion};
 
+mod opte_port;
+
+use self::opte_port::OptePort;
+
 pub const RX_QUEUE_SIZE: VqSize = VqSize::new(0x800);
 pub const TX_QUEUE_SIZE: VqSize = VqSize::new(0x100);
 pub const CTL_QUEUE_SIZE: VqSize = VqSize::new(32);
@@ -506,6 +510,8 @@ pub struct PciVirtioViona {
     mtu: Option<u16>,
     hdl: VionaHdl,
     inner: Mutex<Inner>,
+
+    opte_port: Option<OptePort>,
 }
 
 impl PciVirtioViona {
@@ -513,6 +519,7 @@ impl PciVirtioViona {
         vnic_name: &str,
         vm: &VmmHdl,
         viona_params: Option<DeviceParams>,
+        log: &slog::Logger,
     ) -> io::Result<Arc<PciVirtioViona>> {
         Self::new_with_queue_sizes(
             vnic_name,
@@ -521,6 +528,7 @@ impl PciVirtioViona {
             CTL_QUEUE_SIZE,
             vm,
             viona_params,
+            log,
         )
     }
 
@@ -531,10 +539,17 @@ impl PciVirtioViona {
         ctl_queue_size: VqSize,
         vm: &VmmHdl,
         viona_params: Option<DeviceParams>,
+        log: &slog::Logger,
     ) -> io::Result<Arc<PciVirtioViona>> {
         let dlhdl = dladm::Handle::new()?;
         let info = dlhdl.query_link(vnic_name)?;
         let hdl = VionaHdl::new(info.link_id, vm.fd())?;
+        let opte_port = match info.link_class {
+            dladm::LinkClass::Vnic => None,
+            dladm::LinkClass::Xde => {
+                Some(OptePort::new(vnic_name.to_owned(), log))
+            }
+        };
 
         // Viona is configured in all-multicast mode by default. We'll downgrade
         // this later if the guest supports `VIRTIO_NET_F_CTRL_RX`.
@@ -607,6 +622,7 @@ impl PciVirtioViona {
             mtu: info.mtu,
             hdl,
             inner: Mutex::new(Inner::new(nqueues, promisc_level)),
+            opte_port,
         };
         let this = Arc::new(this);
 
@@ -2119,8 +2135,10 @@ mod test {
                 enable_pcie: false,
             },
         );
-        let viona_dev = PciVirtioViona::new(vnic_name, &machine.hdl, None)
-            .expect("can create test vnic");
+        let log = slog::Logger::root(slog::Discard, slog::o!());
+        let viona_dev =
+            PciVirtioViona::new(vnic_name, &machine.hdl, None, &log)
+                .expect("can create test vnic");
 
         chipset_hb.pci_attach(i440fx::DEFAULT_HB_BDF, chipset_hb.clone(), None);
         chipset_hb.attach(&machine);
