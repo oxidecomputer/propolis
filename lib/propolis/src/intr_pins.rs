@@ -4,8 +4,8 @@
 
 #![allow(clippy::mutex_atomic)]
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 
 use crate::vmm::VmmHdl;
 
@@ -243,126 +243,106 @@ struct FPInner {
 }
 
 pub struct OrGate {
-    inputs: RwLock<Vec<AtomicBool>>,
+    inputs: AtomicU64,
+    idx: AtomicU8,
     output: Arc<dyn IntrPin>,
 }
 impl OrGate {
     pub fn new(pin: Arc<dyn IntrPin>) -> Arc<Self> {
-        Arc::new(Self { output: pin, inputs: RwLock::new(vec![]) })
+        Arc::new(Self {
+            output: pin,
+            inputs: AtomicU64::new(0),
+            idx: AtomicU8::new(0),
+        })
     }
 
     pub fn new_input(self: &Arc<Self>) -> Arc<dyn IntrPin> {
-        let mut inputs = self.inputs.write().unwrap();
-        let pin = Arc::new(OrGatePin { idx: inputs.len(), gate: self.clone() });
-        inputs.push(AtomicBool::new(false));
-        pin
+        let idx = self.idx.fetch_add(1, Ordering::Relaxed);
+        Arc::new(OrGatePin { mask: 1 << idx, gate: self.clone() })
     }
 
-    fn set_input_state(&self, input: usize, is_asserted: bool) {
-        let was_asserted = {
-            let inputs = self.inputs.read().unwrap();
-            assert!(input < inputs.len());
-
-            inputs[input].swap(is_asserted, Ordering::Relaxed)
+    fn set_input_state(&self, mask: u64, is_asserted: bool) {
+        let (old, new) = if is_asserted {
+            let old = self.inputs.fetch_or(mask, Ordering::Relaxed);
+            let new = old | mask;
+            (old, new)
+        } else {
+            let old = self.inputs.fetch_and(!mask, Ordering::Relaxed);
+            let new = old & !mask;
+            (old, new)
         };
-        if is_asserted != was_asserted {
-            self.set_output_state();
+        if (old != 0) != (new != 0) {
+            self.output.set_state(new != 0);
         }
     }
 
-    fn pulse_input(&self, input: usize) {
-        let should_pulse = {
-            let inputs = self.inputs.read().unwrap();
-            assert!(input < inputs.len());
-
-            let pulsed = inputs[input].compare_exchange(
-                false,
-                true,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            );
-            match pulsed {
-                Ok(_) => {
-                    inputs[input].store(false, Ordering::Relaxed);
-                    true
-                }
-                Err(_) => false,
-            }
-        };
-        if should_pulse {
+    fn pulse_input(&self, mask: u64) {
+        if !self.is_input_asserted(mask) {
             self.pulse_output();
         }
     }
 
-    fn is_input_asserted(&self, input: usize) -> bool {
-        let inputs = self.inputs.read().unwrap();
-        assert!(input < inputs.len());
-
-        inputs[input].load(Ordering::Relaxed)
+    fn is_input_asserted(&self, mask: u64) -> bool {
+        self.inputs.load(Ordering::Relaxed) & mask != 0
     }
 
-    fn import_input_state(&self, input: usize, is_asserted: bool) {
-        let was_asserted = {
-            let inputs = self.inputs.read().unwrap();
-            assert!(input < inputs.len());
-
-            inputs[input].swap(is_asserted, Ordering::Relaxed)
+    fn import_input_state(&self, mask: u64, is_asserted: bool) {
+        let old = if is_asserted {
+            self.inputs.fetch_or(mask, Ordering::Relaxed)
+        } else {
+            self.inputs.fetch_and(!mask, Ordering::Relaxed)
         };
-        if is_asserted != was_asserted {
+        if old != self.inputs.load(Ordering::Relaxed) {
             self.import_output_state();
         }
     }
 
-    #[allow(clippy::readonly_write_lock)]
-    fn set_output_state(&self) {
-        let inputs = self.inputs.write().unwrap();
-        let should_assert = OrGate::is_asserted(&inputs);
-        if should_assert != self.output.is_asserted() {
-            self.output.set_state(should_assert);
-        }
-    }
+    //fn set_output_state(&self) {
+    //    let inputs = self.inputs.load(Ordering::Relaxed);
+    //    println!("{:#066b}", inputs);
+    //    let should_assert = inputs != 0;
+    //    if should_assert != self.output.is_asserted() {
+    //        self.output.set_state(should_assert);
+    //    }
+    //}
 
-    #[allow(clippy::readonly_write_lock)]
     fn pulse_output(&self) {
-        let inputs = self.inputs.write().unwrap();
-        if !OrGate::is_asserted(&inputs) {
+        if !self.is_asserted() {
             self.output.pulse();
         }
     }
 
-    #[allow(clippy::readonly_write_lock)]
     fn import_output_state(&self) {
-        let inputs = self.inputs.write().unwrap();
-        let should_assert = OrGate::is_asserted(&inputs);
+        let should_assert = self.is_asserted();
         if should_assert != self.output.is_asserted() {
             self.output.import_state(should_assert);
         }
     }
 
-    fn is_asserted(inputs: &[AtomicBool]) -> bool {
-        inputs.iter().any(|b| b.load(Ordering::Relaxed))
+    fn is_asserted(&self) -> bool {
+        self.inputs.load(Ordering::Relaxed) != 0
     }
 }
 
 pub struct OrGatePin {
-    idx: usize,
+    mask: u64,
     gate: Arc<OrGate>,
 }
 impl IntrPin for OrGatePin {
     fn assert(&self) {
-        self.gate.set_input_state(self.idx, true);
+        self.gate.set_input_state(self.mask, true);
     }
     fn deassert(&self) {
-        self.gate.set_input_state(self.idx, false);
+        self.gate.set_input_state(self.mask, false);
     }
     fn pulse(&self) {
-        self.gate.pulse_input(self.idx);
+        self.gate.pulse_input(self.mask);
     }
     fn is_asserted(&self) -> bool {
-        self.gate.is_input_asserted(self.idx)
+        self.gate.is_input_asserted(self.mask)
     }
     fn import_state(&self, is_asserted: bool) {
-        self.gate.import_input_state(self.idx, is_asserted)
+        self.gate.import_input_state(self.mask, is_asserted)
     }
 }
 impl Drop for OrGatePin {
@@ -386,6 +366,7 @@ impl IntrPin for NoOpPin {
 #[cfg(test)]
 pub mod test {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use std::hint;
     use std::sync::Barrier;
@@ -602,9 +583,9 @@ pub mod test {
         // Pulse while gate output is low. Expect output pulse.
         pin1.pulse();
         assert!(!output_pin.is_asserted());
+        assert_eq!(output_pin.pulse_count(), 1);
         assert_eq!(output_pin.rise_count(), 1);
         assert_eq!(output_pin.fall_count(), 1);
-        assert_eq!(output_pin.pulse_count(), 1);
 
         // Pulse while gate output is high. Expect no-op.
         pin1.assert();
@@ -699,7 +680,13 @@ pub mod test {
         });
         driver.run(100);
 
+        println!(
+            "rise: {}, fall: {}",
+            driver.output.rise_count(),
+            driver.output.fall_count()
+        );
         assert!(!driver.output.is_asserted());
+        assert!(!driver.gate.is_asserted());
         assert_eq!(driver.output.rise_count(), 0);
         assert_eq!(driver.output.fall_count(), 1);
     }
