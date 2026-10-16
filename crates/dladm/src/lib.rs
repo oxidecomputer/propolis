@@ -40,16 +40,17 @@ impl Handle {
             )
         })?;
 
-        let mut res = LinkInfo { link_id, ..Default::default() };
-
-        match datalink_class::from_repr(class) {
+        let mut mac_addr = [0; ETHERADDRL];
+        let link_class = match datalink_class::from_repr(class) {
             // acceptable values: this supports both VNICs
             // and direct use of XDE/OPTE ports.
             Some(datalink_class::DATALINK_CLASS_VNIC) => {
-                Self::get_vnic_mac(name, &mut res.mac_addr[..])?;
+                Self::get_vnic_mac(name, &mut mac_addr[..])?;
+                LinkClass::Vnic
             }
             Some(datalink_class::DATALINK_CLASS_MISC) => {
-                self.get_misc_mac(link_id, &mut res.mac_addr[..])?;
+                self.get_misc_mac(link_id, &mut mac_addr[..])?;
+                LinkClass::Xde
             }
             Some(c) => {
                 return Err(Error::new(
@@ -63,11 +64,11 @@ impl Handle {
                     format!("{name} is of invalid class {class:x}"),
                 ));
             }
-        }
+        };
 
-        res.mtu = Self::get_mtu(name).ok();
+        let mtu = Self::get_mtu(name).ok();
 
-        Ok(res)
+        Ok(LinkInfo { link_id, mtu, mac_addr, link_class })
     }
     fn get_mtu(name: &str) -> Result<u16> {
         // dladm show-linkprop -c -o value -p mtu <NIC_NAME>
@@ -202,9 +203,16 @@ impl Drop for Handle {
 
 const ETHERADDRL: usize = 6;
 
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone)]
+pub enum LinkClass {
+    Vnic,
+    Xde,
+}
+
+#[derive(Copy, Clone)]
 pub struct LinkInfo {
     pub link_id: u32,
     pub mtu: Option<u16>,
     pub mac_addr: [u8; ETHERADDRL],
+    pub link_class: LinkClass,
 }
