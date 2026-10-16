@@ -1382,6 +1382,7 @@ fn setup_instance(
                             hw::virtio::viona::CTL_QUEUE_SIZE,
                             &hdl,
                             viona_params,
+                            "[::1]:0".parse().unwrap(), // TODO remove, dumb
                             log,
                         )?;
                     guard.inventory.register_instance(&viona, &bdf.to_string());

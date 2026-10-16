@@ -4,6 +4,7 @@
 
 use std::convert::TryInto;
 use std::fs::File;
+use std::net::SocketAddrV6;
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
@@ -1003,6 +1004,7 @@ impl MachineInitializer<'_> {
     pub async fn initialize_network_devices(
         &mut self,
         chipset: &RegisteredChipset,
+        sled_agent_addr: SocketAddrV6,
     ) -> Result<(), MachineInitError> {
         // Only create the vector if the kstat_sampler exists.
         let mut interface_ids: Option<NetworkInterfaceIds> =
@@ -1038,6 +1040,7 @@ impl MachineInitializer<'_> {
                 &nic.backend_spec.vnic_name,
                 &self.machine.hdl,
                 params,
+                sled_agent_addr,
                 &self.log,
             )
             .with_context(|| {
