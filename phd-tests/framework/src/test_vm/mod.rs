@@ -579,7 +579,7 @@ impl TestVm {
         timeout_secs: u64,
     ) -> PropolisClientResult<()> {
         self.put_instance_state(
-            InstanceStateRequested::Stop,
+            InstanceStateRequested::AcpiStop,
             Some(timeout_secs),
         )
         .await
@@ -592,7 +592,7 @@ impl TestVm {
         timeout_secs: u64,
     ) -> PropolisClientResult<()> {
         self.put_instance_state(
-            InstanceStateRequested::Reboot,
+            InstanceStateRequested::AcpiReboot,
             Some(timeout_secs),
         )
         .await

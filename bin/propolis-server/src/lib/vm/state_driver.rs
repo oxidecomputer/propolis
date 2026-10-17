@@ -384,7 +384,7 @@ struct StateDriver {
     /// aborted.
     soft_off: Option<(
         Arc<tokio::sync::Mutex<SoftShutdownFate>>,
-        tokio::task::JoinHandle<()>,
+        Option<tokio::task::JoinHandle<()>>,
     )>,
 
     /// State persisted from previous attempts to migrate out of this VM.
@@ -884,7 +884,7 @@ impl StateDriver {
                 fate,
                 timeout,
             }) => {
-                if let Some((fate_mut, _)) = &mut self.soft_off {
+                if let Some((fate_mut, Some(_))) = &mut self.soft_off {
                     // timeout already in progress, don't start timeout task
                     // anew or send further PWRBTN_STS, but do change the
                     // post-shutdown fate
@@ -904,35 +904,32 @@ impl StateDriver {
                 // task to terminate/reboot sooner if the kernel is so wedged or
                 // absent that it didn't even respond to pulling PWRBTN_STS high
 
-                // timeout to hard-stop/reset if guest takes too long
-                let queue_weak = Arc::downgrade(&self.input_queue);
                 let fate_strong = Arc::new(tokio::sync::Mutex::new(fate));
+                // timeout task to hard-stop/reset if guest takes too long
+                let Some(timeout) = timeout else {
+                    self.soft_off = Some((fate_strong, None));
+                    return HandleEventOutcome::Continue;
+                };
+
+                let queue_weak = Arc::downgrade(&self.input_queue);
                 let fate_weak = Arc::downgrade(&fate_strong);
                 let log = self.log.clone();
-                self.soft_off = Some((
-                    fate_strong,
-                    tokio::spawn(async move {
-                        tokio::time::sleep(timeout).await;
-                        let Some(queue) = queue_weak.upgrade() else { return };
-                        let Some(fate) = fate_weak.upgrade() else { return };
-                        let quasi_ext_req = match *fate.lock().await {
-                            SoftShutdownFate::Stop => ExternalRequest::stop(),
-                            SoftShutdownFate::Reboot => {
-                                ExternalRequest::reboot()
-                            }
-                        };
-                        // (philosophically, timeout behavior is part of
-                        // what was externally-requested...)
-                        if let Err(e) =
-                            queue.queue_external_request(quasi_ext_req)
-                        {
-                            slog::error!(
-                                log,
-                                "Failed to enqueue {fate:?}: {e}"
-                            );
-                        }
-                    }),
-                ));
+                let timeout_task = tokio::spawn(async move {
+                    tokio::time::sleep(timeout).await;
+                    let Some(queue) = queue_weak.upgrade() else { return };
+                    let Some(fate) = fate_weak.upgrade() else { return };
+                    let quasi_ext_req = match *fate.lock().await {
+                        SoftShutdownFate::Stop => ExternalRequest::stop(),
+                        SoftShutdownFate::Reboot => ExternalRequest::reboot(),
+                    };
+                    // (philosophically, timeout behavior is part of
+                    // what was externally-requested...)
+                    if let Err(e) = queue.queue_external_request(quasi_ext_req)
+                    {
+                        slog::error!(log, "Failed to enqueue {fate:?}: {e}");
+                    }
+                });
+                self.soft_off = Some((fate_strong, Some(timeout_task)));
                 HandleEventOutcome::Continue
             }
             ExternalRequest::State(StateChangeRequest::Start) => {
@@ -953,7 +950,7 @@ impl StateDriver {
                 migration_id,
                 websock,
             }) => {
-                if let Some((fate, _)) = &self.soft_off {
+                if let Some((fate, Some(_))) = &self.soft_off {
                     slog::warn!(
                         self.log,
                         "Ignored MigrateAsSource while ACPI {fate:?} in progress"
@@ -1008,7 +1005,7 @@ impl StateDriver {
         // shut down while we're waiting for it to do so, have us reboot it
         // here, and then have the timeout task hard-reboot minutes later
         // once it's come back up)
-        if let Some((_, timeout_task)) = self.soft_off.take() {
+        if let Some((_, Some(timeout_task))) = self.soft_off.take() {
             timeout_task.abort();
         }
 
@@ -1030,7 +1027,7 @@ impl StateDriver {
         // (if the guest has raced us with a power signal, turning off what
         // is already off is fine - but we certainly don't want someone turning
         // the instance back *on* later, then our old timeout task offs it)
-        if let Some((_, timeout_task)) = self.soft_off.take() {
+        if let Some((_, Some(timeout_task))) = self.soft_off.take() {
             timeout_task.abort();
         }
 

@@ -122,7 +122,7 @@ enum Command {
         #[clap(value_parser = parse_state)]
         state: InstanceStateRequested,
         /// The number of seconds to wait after sending ACPI PWRBTN_STS before
-        /// forcing stop/reset. (If omitted, stop/reset are forced immediately)
+        /// forcing stop/reset. (Only valid on acpi-stop and acpi-reboot states)
         acpi_timeout_secs: Option<u64>,
     },
 
@@ -452,8 +452,11 @@ fn parse_state(state: &str) -> anyhow::Result<InstanceStateRequested> {
         "run" => Ok(InstanceStateRequested::Run),
         "stop" => Ok(InstanceStateRequested::Stop),
         "reboot" => Ok(InstanceStateRequested::Reboot),
+        "acpi-stop" => Ok(InstanceStateRequested::AcpiStop),
+        "acpi-reboot" => Ok(InstanceStateRequested::AcpiReboot),
         _ => Err(anyhow!(
-            "invalid requested state, must be one of: 'run', 'stop', 'reboot"
+            "invalid requested state, must be one of: \
+            'run', 'stop', 'reboot', 'acpi-stop', 'acpi-reboot'"
         )),
     }
 }
