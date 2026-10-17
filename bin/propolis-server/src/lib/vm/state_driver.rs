@@ -102,7 +102,7 @@ use propolis_api_types::instance_spec::{
 };
 use propolis_api_types::migration::MigrationState;
 use slog::{error, info};
-use tokio::sync::Notify;
+use tokio::{sync::Notify, task::JoinHandle};
 use uuid::Uuid;
 
 use crate::{
@@ -360,6 +360,8 @@ impl guest_event::ChipsetEventHandler for InputQueue {
     }
 }
 
+type ShutdownFateMutex = Arc<tokio::sync::Mutex<SoftShutdownFate>>;
+
 /// The context for a VM state driver task's main loop.
 struct StateDriver {
     /// The state driver's associated logger.
@@ -382,10 +384,7 @@ struct StateDriver {
     /// Contains a tuple of the action to take after the guest halts its CPUs,
     /// the timeout task that will forcibly halt the guest's CPUs if it is not
     /// aborted.
-    soft_off: Option<(
-        Arc<tokio::sync::Mutex<SoftShutdownFate>>,
-        Option<tokio::task::JoinHandle<()>>,
-    )>,
+    soft_off: Option<(ShutdownFateMutex, Option<JoinHandle<()>>)>,
 
     /// State persisted from previous attempts to migrate out of this VM.
     migration_src_state: crate::migrate::source::PersistentState,
