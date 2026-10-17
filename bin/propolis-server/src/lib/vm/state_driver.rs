@@ -102,7 +102,7 @@ use propolis_api_types::instance_spec::{
 };
 use propolis_api_types::migration::MigrationState;
 use slog::{error, info};
-use tokio::sync::Notify;
+use tokio::{sync::Notify, task::JoinHandle};
 use uuid::Uuid;
 
 use crate::{
@@ -110,7 +110,9 @@ use crate::{
         destination::DestinationProtocol, source::SourceProtocol, MigrateRole,
     },
     spec::StorageBackend,
-    vm::{state_publisher::ExternalStateUpdate, BlockBackendMap},
+    vm::{
+        state_publisher::ExternalStateUpdate, BlockBackendMap, SoftShutdownFate,
+    },
 };
 
 use super::{
@@ -273,6 +275,18 @@ impl InputQueue {
         guard.external_requests.notify_stopped();
     }
 
+    /// Notifies the external request queue that the instance guest has
+    /// completed its externally-requested shutdown process.
+    fn notify_shutdown(&self) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.external_requests.notify_shutdown();
+    }
+
+    fn notify_rebooted(&self) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.external_requests.notify_rebooted();
+    }
+
     /// Submits an external state change request to the queue.
     pub(super) fn queue_external_request(
         &self,
@@ -346,6 +360,8 @@ impl guest_event::ChipsetEventHandler for InputQueue {
     }
 }
 
+type ShutdownFateMutex = Arc<tokio::sync::Mutex<SoftShutdownFate>>;
+
 /// The context for a VM state driver task's main loop.
 struct StateDriver {
     /// The state driver's associated logger.
@@ -363,6 +379,12 @@ struct StateDriver {
 
     /// True if the VM is paused.
     paused: bool,
+
+    /// `Some` if an ACPI shutdown has been requested.
+    /// Contains a tuple of the action to take after the guest halts its CPUs,
+    /// the timeout task that will forcibly halt the guest's CPUs if it is not
+    /// aborted.
+    soft_off: Option<(ShutdownFateMutex, Option<JoinHandle<()>>)>,
 
     /// State persisted from previous attempts to migrate out of this VM.
     migration_src_state: crate::migrate::source::PersistentState,
@@ -428,6 +450,7 @@ pub(super) async fn ensure_vm_and_launch_driver(
         external_state: state_publisher,
         paused: false,
         migration_src_state: Default::default(),
+        soft_off: None,
     };
 
     // Run the VM until it exits, then set rundown on the parent VM so that no
@@ -759,11 +782,12 @@ impl StateDriver {
                 // reported that it's fully started. Similarly, requests to
                 // start a VM that's already starting are expected to be ignored
                 // for idempotency.
-                r @ ExternalRequest::State(StateChangeRequest::Start)
-                | r @ ExternalRequest::State(
-                    StateChangeRequest::MigrateAsSource { .. },
-                )
-                | r @ ExternalRequest::State(StateChangeRequest::Reboot) => {
+                r @ ExternalRequest::State(
+                    StateChangeRequest::Start
+                    | StateChangeRequest::MigrateAsSource { .. }
+                    | StateChangeRequest::Reboot
+                    | StateChangeRequest::ACPIShutdown { .. },
+                ) => {
                     unreachable!(
                         "external request {r:?} shouldn't be queued while \
                         starting"
@@ -773,22 +797,57 @@ impl StateDriver {
         }
     }
 
+    async fn stop_and_notify(
+        &mut self,
+        direct_external_req: bool,
+    ) -> HandleEventOutcome {
+        self.do_halt().await;
+
+        self.external_state
+            .update(ExternalStateUpdate::Instance(InstanceState::Stopped));
+
+        if direct_external_req {
+            self.input_queue.notify_request_completed(CompletedRequest::Stop);
+        } else {
+            self.input_queue.notify_stopped();
+        }
+
+        HandleEventOutcome::Exit { final_state: InstanceState::Destroyed }
+    }
+
     async fn handle_guest_event(
         &mut self,
         event: GuestEvent,
     ) -> HandleEventOutcome {
+        // if an ACPI shutdown request was in progress when a guest event comes,
+        // we trust the control plane's authority on the ultimate fate
+        // of the guest's running state -- even if e.g. guest BSoD'd during
+        // its shutdown process and tried to reboot afterward, when operator
+        // asked for the guest to be *off*.
+        if let Some((fate, _)) = &self.soft_off {
+            self.input_queue.notify_shutdown();
+            let fate_val = *fate.lock().await;
+            return match fate_val {
+                SoftShutdownFate::Stop => {
+                    info!(
+                        self.log,
+                        "Halting due to {event:?} following power button event"
+                    );
+                    self.stop_and_notify(false).await
+                }
+                SoftShutdownFate::Reboot => {
+                    info!(self.log, "Resetting due to {event:?} following power button event");
+                    self.do_reboot().await;
+                    self.input_queue.notify_rebooted();
+                    HandleEventOutcome::Continue
+                }
+            };
+        }
+
         match event {
             GuestEvent::VcpuSuspendHalt(_when) => {
                 info!(self.log, "Halting due to VM suspend event",);
-                self.do_halt().await;
-                self.external_state.update(ExternalStateUpdate::Instance(
-                    InstanceState::Stopped,
-                ));
-
-                self.input_queue.notify_stopped();
-                HandleEventOutcome::Exit {
-                    final_state: InstanceState::Destroyed,
-                }
+                self.stop_and_notify(false).await
             }
             GuestEvent::VcpuSuspendReset(_when) => {
                 info!(self.log, "Resetting due to VM suspend event");
@@ -805,15 +864,7 @@ impl StateDriver {
             }
             GuestEvent::ChipsetHalt => {
                 info!(self.log, "Halting due to chipset-driven halt");
-                self.do_halt().await;
-                self.external_state.update(ExternalStateUpdate::Instance(
-                    InstanceState::Stopped,
-                ));
-
-                self.input_queue.notify_stopped();
-                HandleEventOutcome::Exit {
-                    final_state: InstanceState::Destroyed,
-                }
+                self.stop_and_notify(false).await
             }
             GuestEvent::ChipsetReset => {
                 info!(self.log, "Resetting due to chipset-driven reset");
@@ -828,6 +879,58 @@ impl StateDriver {
         request: ExternalRequest,
     ) -> HandleEventOutcome {
         match request {
+            ExternalRequest::State(StateChangeRequest::ACPIShutdown {
+                fate,
+                timeout,
+            }) => {
+                if let Some((fate_mut, Some(_))) = &mut self.soft_off {
+                    // timeout already in progress, don't start timeout task
+                    // anew or send further PWRBTN_STS, but do change the
+                    // post-shutdown fate
+                    *fate_mut.lock().await = fate;
+                    return HandleEventOutcome::Continue;
+                }
+
+                let guard = self.objects.lock_exclusive().await;
+                let chipset = guard.chipset();
+
+                chipset.acpi_shutdown();
+
+                // TODO? in future we may watch for OSPM clearing the status bit
+                // (per ACPI 4.8.2.2.1.1) after above chipset.acpi_shutdown call
+                // call to determine whether the guest has acknowledged the push
+                // of the power button. mayhap consider adding a tighter timeout
+                // task to terminate/reboot sooner if the kernel is so wedged or
+                // absent that it didn't even respond to pulling PWRBTN_STS high
+
+                let fate_strong = Arc::new(tokio::sync::Mutex::new(fate));
+                // timeout task to hard-stop/reset if guest takes too long
+                let Some(timeout) = timeout else {
+                    self.soft_off = Some((fate_strong, None));
+                    return HandleEventOutcome::Continue;
+                };
+
+                let queue_weak = Arc::downgrade(&self.input_queue);
+                let fate_weak = Arc::downgrade(&fate_strong);
+                let log = self.log.clone();
+                let timeout_task = tokio::spawn(async move {
+                    tokio::time::sleep(timeout).await;
+                    let Some(queue) = queue_weak.upgrade() else { return };
+                    let Some(fate) = fate_weak.upgrade() else { return };
+                    let quasi_ext_req = match *fate.lock().await {
+                        SoftShutdownFate::Stop => ExternalRequest::stop(),
+                        SoftShutdownFate::Reboot => ExternalRequest::reboot(),
+                    };
+                    // (philosophically, timeout behavior is part of
+                    // what was externally-requested...)
+                    if let Err(e) = queue.queue_external_request(quasi_ext_req)
+                    {
+                        slog::error!(log, "Failed to enqueue {fate:?}: {e}");
+                    }
+                });
+                self.soft_off = Some((fate_strong, Some(timeout_task)));
+                HandleEventOutcome::Continue
+            }
             ExternalRequest::State(StateChangeRequest::Start) => {
                 // If this start attempt produces a terminal VM state, return it
                 // to the driver and indicate that the driver should exit.
@@ -846,7 +949,13 @@ impl StateDriver {
                 migration_id,
                 websock,
             }) => {
-                if self
+                if let Some((fate, Some(_))) = &self.soft_off {
+                    slog::warn!(
+                        self.log,
+                        "Ignored MigrateAsSource while ACPI {fate:?} in progress"
+                    );
+                    HandleEventOutcome::Continue
+                } else if self
                     .migrate_as_source(migration_id, websock.into_inner())
                     .await
                     .is_ok()
@@ -867,17 +976,7 @@ impl StateDriver {
                 HandleEventOutcome::Continue
             }
             ExternalRequest::State(StateChangeRequest::Stop) => {
-                self.do_halt().await;
-                self.external_state.update(ExternalStateUpdate::Instance(
-                    InstanceState::Stopped,
-                ));
-
-                self.input_queue
-                    .notify_request_completed(CompletedRequest::Stop);
-
-                HandleEventOutcome::Exit {
-                    final_state: InstanceState::Destroyed,
-                }
+                self.stop_and_notify(true).await
             }
             ExternalRequest::Component(
                 ComponentChangeRequest::ReconfigureCrucibleVolume {
@@ -898,6 +997,17 @@ impl StateDriver {
     async fn do_reboot(&mut self) {
         info!(self.log, "resetting instance");
 
+        // first, abandon any timeout task that may send a redundant request.
+        // if the guest has, say, raced us with an independently-originating
+        // power signal, at worst we'd process a couple reboots in quick
+        // succession. (what we *don't* want is for the guest to successfully
+        // shut down while we're waiting for it to do so, have us reboot it
+        // here, and then have the timeout task hard-reboot minutes later
+        // once it's come back up)
+        if let Some((_, Some(timeout_task))) = self.soft_off.take() {
+            timeout_task.abort();
+        }
+
         self.external_state
             .update(ExternalStateUpdate::Instance(InstanceState::Rebooting));
 
@@ -911,6 +1021,15 @@ impl StateDriver {
 
     async fn do_halt(&mut self) {
         info!(self.log, "stopping instance");
+
+        // first, abandon any timeout task that may send a redundant request.
+        // (if the guest has raced us with a power signal, turning off what
+        // is already off is fine - but we certainly don't want someone turning
+        // the instance back *on* later, then our old timeout task offs it)
+        if let Some((_, Some(timeout_task))) = self.soft_off.take() {
+            timeout_task.abort();
+        }
+
         self.external_state
             .update(ExternalStateUpdate::Instance(InstanceState::Stopping));
 

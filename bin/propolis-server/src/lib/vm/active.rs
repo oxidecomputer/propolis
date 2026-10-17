@@ -5,15 +5,17 @@
 //! Implements a wrapper around an active VM.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use propolis_api_types::instance::{
-    InstanceProperties, InstanceStateRequested,
+    InstanceProperties, InstanceStateChange, InstanceStateRequested,
 };
 use propolis_api_types::instance_spec::SpecKey;
 use slog::info;
 use uuid::Uuid;
 
-use crate::vm::request_queue::ExternalRequest;
+use crate::vm::request_queue::{ExternalRequest, RequestDeniedReason};
+use crate::vm::SoftShutdownFate;
 
 use super::{
     objects::VmObjects, services::VmServices, CrucibleReplaceResultTx,
@@ -57,17 +59,36 @@ impl ActiveVm {
     /// Pushes a state change request to the VM's state change queue.
     pub(crate) fn put_state(
         &self,
-        requested: InstanceStateRequested,
+        requested: InstanceStateChange,
     ) -> Result<(), VmError> {
         info!(self.log, "requested state via API";
-              "state" => ?requested);
+              "state" => ?requested.state,
+              "timeout" => ?requested.acpi_timeout_secs);
 
+        let timeout = requested.acpi_timeout_secs.map(Duration::from_secs);
+        let ext_req = match requested.state {
+            InstanceStateRequested::Run
+            | InstanceStateRequested::Stop
+            | InstanceStateRequested::Reboot
+                if timeout.is_some() =>
+            {
+                return Err(RequestDeniedReason::TimeoutOnNonAcpiState.into());
+            }
+            InstanceStateRequested::Run => ExternalRequest::start(),
+            InstanceStateRequested::Stop => ExternalRequest::stop(),
+            InstanceStateRequested::Reboot => ExternalRequest::reboot(),
+            InstanceStateRequested::AcpiStop => {
+                ExternalRequest::acpi_shutdown(SoftShutdownFate::Stop, timeout)
+            }
+            InstanceStateRequested::AcpiReboot => {
+                ExternalRequest::acpi_shutdown(
+                    SoftShutdownFate::Reboot,
+                    timeout,
+                )
+            }
+        };
         self.state_driver_queue
-            .queue_external_request(match requested {
-                InstanceStateRequested::Run => ExternalRequest::start(),
-                InstanceStateRequested::Stop => ExternalRequest::stop(),
-                InstanceStateRequested::Reboot => ExternalRequest::reboot(),
-            })
+            .queue_external_request(ext_req)
             .map_err(Into::into)
     }
 
