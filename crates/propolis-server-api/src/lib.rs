@@ -234,7 +234,7 @@ pub trait PropolisServerApi {
         Self::instance_state_put(
             rqctx,
             latest::instance::InstanceStateChange {
-                state: request.into_inner(),
+                state: request.into_inner().into(),
                 acpi_timeout_secs: None,
             }
             .into(),

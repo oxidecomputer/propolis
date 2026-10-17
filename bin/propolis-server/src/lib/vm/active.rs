@@ -65,21 +65,26 @@ impl ActiveVm {
               "state" => ?requested.state,
               "timeout" => ?requested.acpi_timeout_secs);
 
-        let ext_req = if let Some(secs) = requested.acpi_timeout_secs {
-            let timeout = Duration::from_secs(secs);
-            let fate = match requested.state {
-                InstanceStateRequested::Run => {
-                    return Err(RequestDeniedReason::TimeoutOnRun.into());
-                }
-                InstanceStateRequested::Stop => SoftShutdownFate::Stop,
-                InstanceStateRequested::Reboot => SoftShutdownFate::Reboot,
-            };
-            ExternalRequest::acpi_shutdown(fate, timeout)
-        } else {
-            match requested.state {
-                InstanceStateRequested::Run => ExternalRequest::start(),
-                InstanceStateRequested::Stop => ExternalRequest::stop(),
-                InstanceStateRequested::Reboot => ExternalRequest::reboot(),
+        let timeout = requested.acpi_timeout_secs.map(Duration::from_secs);
+        let ext_req = match requested.state {
+            InstanceStateRequested::Run
+            | InstanceStateRequested::Stop
+            | InstanceStateRequested::Reboot
+                if timeout.is_some() =>
+            {
+                return Err(RequestDeniedReason::TimeoutOnNonAcpiState.into());
+            }
+            InstanceStateRequested::Run => ExternalRequest::start(),
+            InstanceStateRequested::Stop => ExternalRequest::stop(),
+            InstanceStateRequested::Reboot => ExternalRequest::reboot(),
+            InstanceStateRequested::AcpiStop => {
+                ExternalRequest::acpi_shutdown(SoftShutdownFate::Stop, timeout)
+            }
+            InstanceStateRequested::AcpiReboot => {
+                ExternalRequest::acpi_shutdown(
+                    SoftShutdownFate::Reboot,
+                    timeout,
+                )
             }
         };
         self.state_driver_queue

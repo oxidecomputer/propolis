@@ -66,7 +66,10 @@ pub(crate) enum StateChangeRequest {
     /// or reboots the instance (depending on `fate`) once the guest halts
     /// its CPU. If this does not occur within the `timeout`, the guest is
     /// ungracefully stopped/rebooted.
-    ACPIShutdown { fate: SoftShutdownFate, timeout: std::time::Duration },
+    ACPIShutdown {
+        fate: SoftShutdownFate,
+        timeout: Option<std::time::Duration>,
+    },
 
     /// Halts the VM. Note that this is not a graceful shutdown and does not
     /// coordinate with guest software.
@@ -144,7 +147,7 @@ impl ExternalRequest {
 
     pub const fn acpi_shutdown(
         fate: SoftShutdownFate,
-        timeout: std::time::Duration,
+        timeout: Option<std::time::Duration>,
     ) -> Self {
         Self::State(StateChangeRequest::ACPIShutdown { fate, timeout })
     }
@@ -227,8 +230,8 @@ pub(crate) enum RequestDeniedReason {
     #[error("Instance failed to start or halted due to a failure")]
     InstanceFailed,
 
-    #[error("Cannot supply shutdown timeout to a Run request")]
-    TimeoutOnRun,
+    #[error("Cannot supply timeout with non-ACPI-shutdown state requests")]
+    TimeoutOnNonAcpiState,
 }
 
 /// A kind of request that can be popped from the queue and then completed.
@@ -923,7 +926,7 @@ mod test {
         assert!(queue
             .try_queue(ExternalRequest::acpi_shutdown(
                 SoftShutdownFate::Stop,
-                Duration::from_secs(600)
+                Some(Duration::from_secs(600))
             ))
             .is_ok());
 
@@ -932,7 +935,7 @@ mod test {
         assert!(queue
             .try_queue(ExternalRequest::acpi_shutdown(
                 SoftShutdownFate::Reboot,
-                Duration::from_secs(600)
+                Some(Duration::from_secs(600))
             ))
             .is_ok());
 
@@ -954,7 +957,7 @@ mod test {
         assert!(queue
             .try_queue(ExternalRequest::acpi_shutdown(
                 SoftShutdownFate::Stop,
-                Duration::from_secs(600)
+                Some(Duration::from_secs(600))
             ))
             .is_ok());
         // enqueue a hard stop
@@ -979,7 +982,7 @@ mod test {
         assert!(queue
             .try_queue(ExternalRequest::acpi_shutdown(
                 SoftShutdownFate::Reboot,
-                Duration::from_secs(600)
+                Some(Duration::from_secs(600))
             ))
             .is_ok());
         // enqueue a hard stop
@@ -1004,7 +1007,7 @@ mod test {
         assert!(queue
             .try_queue(ExternalRequest::acpi_shutdown(
                 SoftShutdownFate::Stop,
-                Duration::from_secs(600)
+                Some(Duration::from_secs(600))
             ))
             .is_ok());
         // enqueue a hard stop
@@ -1028,7 +1031,7 @@ mod test {
         assert!(queue
             .try_queue(ExternalRequest::acpi_shutdown(
                 SoftShutdownFate::Stop,
-                Duration::from_secs(600)
+                Some(Duration::from_secs(600))
             ))
             .is_ok());
         assert!(queue.is_empty());
@@ -1049,7 +1052,7 @@ mod test {
         assert!(queue
             .try_queue(ExternalRequest::acpi_shutdown(
                 SoftShutdownFate::Stop,
-                Duration::from_secs(600)
+                Some(Duration::from_secs(600))
             ))
             .is_err());
 
@@ -1061,7 +1064,7 @@ mod test {
         assert!(queue
             .try_queue(ExternalRequest::acpi_shutdown(
                 SoftShutdownFate::Stop,
-                Duration::from_secs(600)
+                Some(Duration::from_secs(600))
             ))
             .is_ok());
 
@@ -1081,7 +1084,7 @@ mod test {
         assert!(queue
             .try_queue(ExternalRequest::acpi_shutdown(
                 SoftShutdownFate::Stop,
-                Duration::from_secs(600)
+                Some(Duration::from_secs(600))
             ))
             .is_err());
 
@@ -1092,7 +1095,7 @@ mod test {
         assert!(queue
             .try_queue(ExternalRequest::acpi_shutdown(
                 SoftShutdownFate::Stop,
-                Duration::from_secs(600)
+                Some(Duration::from_secs(600))
             ))
             .is_ok());
 

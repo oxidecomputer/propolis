@@ -1660,7 +1660,7 @@
         "properties": {
           "acpi_timeout_secs": {
             "nullable": true,
-            "description": "The number of seconds to wait after sending ACPI `PWRBTN_STS` before forcing stop/reset. (If omitted, stop/reset are forced immediately, and the ACPI signal is not sent.)",
+            "description": "The number of seconds to wait after sending ACPI `PWRBTN_STS` before forcing stop/reset. (Only valid for AcpiStop and AcpiReboot states.)",
             "type": "integer",
             "format": "uint64",
             "minimum": 0
@@ -1717,7 +1717,9 @@
         "enum": [
           "Run",
           "Stop",
-          "Reboot"
+          "Reboot",
+          "AcpiStop",
+          "AcpiReboot"
         ]
       },
       "InstanceVCRReplace": {
