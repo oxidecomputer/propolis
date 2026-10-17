@@ -47,6 +47,7 @@ pub struct InstanceContext {
     serial_task: serial::SerialTask,
     state_watcher_rx: watch::Receiver<MockState>,
     state_watcher_tx: watch::Sender<MockState>,
+    last_state_change: Option<api::InstanceStateChange>,
 }
 
 struct MockState {
@@ -92,6 +93,7 @@ impl InstanceContext {
             serial_task,
             state_watcher_rx,
             state_watcher_tx,
+            last_state_change: None,
         }
     }
 
@@ -126,7 +128,8 @@ impl InstanceContext {
             }
             (
                 api::InstanceState::Running,
-                api::InstanceStateRequested::Reboot,
+                api::InstanceStateRequested::Reboot
+                | api::InstanceStateRequested::AcpiReboot,
             ) => {
                 self.queue_states(
                     log,
@@ -138,12 +141,26 @@ impl InstanceContext {
                 .await;
                 Ok(())
             }
-            (current, api::InstanceStateRequested::Reboot) => {
-                Err(Error::InvalidTransition {
-                    current,
-                    requested: api::InstanceStateRequested::Reboot,
-                })
+            (
+                api::InstanceState::Running,
+                api::InstanceStateRequested::AcpiStop,
+            ) => {
+                self.queue_states(
+                    log,
+                    &[
+                        api::InstanceState::Stopping,
+                        api::InstanceState::Stopped,
+                    ],
+                )
+                .await;
+                Ok(())
             }
+            (
+                current,
+                api::InstanceStateRequested::Reboot
+                | api::InstanceStateRequested::AcpiReboot
+                | api::InstanceStateRequested::AcpiStop,
+            ) => Err(Error::InvalidTransition { current, requested: target }),
             (_, api::InstanceStateRequested::Run) => {
                 self.queue_states(log, &[api::InstanceState::Running]).await;
                 Ok(())
@@ -361,6 +378,7 @@ async fn instance_state_put(
                 "Failed to transition: {err}"
             ))
         })?;
+    instance.last_state_change = Some(requested_state);
     Ok(HttpResponseUpdatedNoContent {})
 }
 
@@ -555,6 +573,28 @@ async fn mock_step(
         );
     });
     Ok(HttpResponseUpdatedNoContent())
+}
+
+// used for checking acpi shutdown timeout values in controlplane tests
+#[endpoint {
+    method = GET,
+    path = "/mock/last_state_requested"
+}]
+async fn mock_last_state_requested_get(
+    rqctx: RequestContext<Arc<Context>>,
+) -> Result<HttpResponseOk<api::InstanceStateChange>, HttpError> {
+    let instance = rqctx.context().instance.lock().await;
+    let instance = instance.as_ref().ok_or_else(|| {
+        HttpError::for_internal_error(
+            "Server not initialized (no instance)".to_string(),
+        )
+    })?;
+    match &instance.last_state_change {
+        Some(change) => Ok(HttpResponseOk(change.to_owned())),
+        None => Err(HttpError::for_internal_error(
+            "No instance_state_put yet received".to_string(),
+        )),
+    }
 }
 
 mod serial {
@@ -833,6 +873,7 @@ pub fn api() -> ApiDescription<Arc<Context>> {
     api.register(mock_mode_get).unwrap();
     api.register(mock_mode_set).unwrap();
     api.register(mock_step).unwrap();
+    api.register(mock_last_state_requested_get).unwrap();
     api
 }
 
