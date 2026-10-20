@@ -40,6 +40,15 @@ pub enum MigrateStateError {
     /// The kind and/or version of payload was not expected
     #[error("kind/version of payload not expected: {0} v{1}")]
     UnexpectedPayload(String, u32),
+
+    /// Error interacting with OPTE.
+    #[error("OPTE failure on port {port}: could not {operation}")]
+    Opte {
+        port: String,
+        operation: &'static str,
+        #[source]
+        error: opte_ioctl::Error,
+    },
 }
 
 impl From<erased_serde::Error> for MigrateStateError {

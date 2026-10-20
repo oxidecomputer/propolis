@@ -523,7 +523,6 @@ impl PciVirtioViona {
         vnic_name: &str,
         vm: &VmmHdl,
         viona_params: Option<DeviceParams>,
-        sled_agent_addr: SocketAddrV6,
         log: &slog::Logger,
     ) -> io::Result<Arc<PciVirtioViona>> {
         Self::new_with_queue_sizes(
@@ -533,13 +532,10 @@ impl PciVirtioViona {
             CTL_QUEUE_SIZE,
             vm,
             viona_params,
-            sled_agent_addr,
             log,
         )
     }
 
-    // TODO remove once extra OPTE bits are gone
-    #[allow(clippy::too_many_arguments)]
     pub fn new_with_queue_sizes(
         vnic_name: &str,
         rx_queue_size: VqSize,
@@ -547,7 +543,6 @@ impl PciVirtioViona {
         ctl_queue_size: VqSize,
         vm: &VmmHdl,
         viona_params: Option<DeviceParams>,
-        sled_agent_addr: SocketAddrV6,
         log: &slog::Logger,
     ) -> io::Result<Arc<PciVirtioViona>> {
         let dlhdl = dladm::Handle::new()?;
@@ -556,7 +551,7 @@ impl PciVirtioViona {
         let opte_port = match info.link_class {
             dladm::LinkClass::Vnic => None,
             dladm::LinkClass::Xde => {
-                Some(OptePort::new(vnic_name.to_owned(), sled_agent_addr, log))
+                Some(OptePort::new(vnic_name.to_owned(), log))
             }
         };
 
@@ -1330,13 +1325,6 @@ impl Lifecycle for PciVirtioViona {
         self.run();
         self.indicator.start();
         Ok(())
-    }
-    fn paused(&self) -> BoxFuture<'static, ()> {
-        if let Some(opte_port) = self.opte_port.as_ref() {
-            opte_port.paused()
-        } else {
-            Box::pin(future::ready(()))
-        }
     }
     fn pause(&self) {
         self.poller_stop(false);

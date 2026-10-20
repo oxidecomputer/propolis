@@ -563,14 +563,7 @@ async fn initialize_vm_objects(
         spec.board.cpus,
         &properties,
     ))?;
-    init.initialize_network_devices(
-        &chipset,
-        options
-            .attest_config
-            .map(|c| c.sled_agent_addr)
-            .unwrap_or_else(|| "[::1]:0".parse().unwrap()), // TODO remove
-    )
-    .await?;
+    init.initialize_network_devices(&chipset).await?;
     let mut attest_handle =
         init.initialize_vsock(&chipset, options.attest_config).await?;
 

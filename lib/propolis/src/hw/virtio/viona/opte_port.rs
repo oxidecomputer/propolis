@@ -10,68 +10,26 @@ use crate::migrate::PayloadOffers;
 use crate::migrate::PayloadOutputs;
 use futures::future::BoxFuture;
 use futures::FutureExt;
-use sled_agent_client::types::SledIdentifiers;
+use opte_ioctl::OpteHdl;
 use slog::info;
 use std::future;
 use std::net::SocketAddrV6;
 use std::sync::Arc;
 use std::sync::Mutex;
+use tokio::sync::oneshot;
 
 /// Handle to the OPTE port backing an XDE-class viona device.
 pub struct OptePort {
     port_name: String,
 
-    // TODO remove once we have a real backend. do we need to track anything
-    // else here? (handle to the xde device to issue ioctls?)
-    data_to_migrate: Arc<Mutex<Option<String>>>,
-    sled_agent_client: sled_agent_client::Client,
+    // TODO remove once we have a real backend?
     log: slog::Logger,
 }
 
 impl OptePort {
-    pub fn new(
-        port_name: String,
-        sled_agent_addr: SocketAddrV6,
-        log: &slog::Logger,
-    ) -> Self {
+    pub fn new(port_name: String, log: &slog::Logger) -> Self {
         let log = log.new(slog::o!("port" => port_name.clone()));
-        let sled_agent_client = sled_agent_client::Client::new(
-            &format!("http://{sled_agent_addr}"),
-            log.clone(),
-        );
-        Self {
-            port_name,
-            data_to_migrate: Arc::default(),
-            sled_agent_client,
-            log,
-        }
-    }
-
-    pub(super) fn paused(&self) -> BoxFuture<'static, ()> {
-        let data_to_migrate = Arc::clone(&self.data_to_migrate);
-        let sled_agent_client = self.sled_agent_client.clone();
-        async move {
-            let s = match sled_agent_client.sled_identifiers().await {
-                Ok(resp) => {
-                    let SledIdentifiers {
-                        model: _,
-                        rack_id,
-                        revision: _,
-                        serial,
-                        sled_id,
-                    } = resp.into_inner();
-                    format!("sled {serial}: sled {sled_id} in rack {rack_id}")
-                }
-                Err(err) => {
-                    format!(
-                        "err contacting sled-agent: {:#}",
-                        anyhow::anyhow!(err)
-                    )
-                }
-            };
-            *data_to_migrate.lock().unwrap() = Some(s);
-        }
-        .boxed()
+        Self { port_name, log }
     }
 
     pub(super) fn pause(&self) {
@@ -87,11 +45,22 @@ impl OptePort {
         output: &mut PayloadOutputs,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let message =
-            self.data_to_migrate.lock().unwrap().take().unwrap_or_else(|| {
-                "NO DATA - was paused() not called?".to_string()
-            });
-        info!(self.log, "TODO: exporting fake OPTE state"; "msg" => &message);
+        let port =
+            OpteHdl::open().map_err(|error| MigrateStateError::Opte {
+                port: self.port_name.clone(),
+                operation: "open device",
+                error,
+            })?;
+        let state =
+            port.dump_layer(&self.port_name, "firewall").map_err(|error| {
+                MigrateStateError::Opte {
+                    port: self.port_name.clone(),
+                    operation: "dump firewall layer",
+                    error,
+                }
+            })?;
+        let message = format!("firewall layer state = {state:?}");
+        info!(self.log, "TODO: exporting fake OPTE state"; "state" => &message);
         let state =
             migrate::OptePortStateV1 { blob: message.as_bytes().to_vec() };
         output.push(state.into())
@@ -104,7 +73,7 @@ impl OptePort {
     ) -> Result<(), MigrateStateError> {
         let input: migrate::OptePortStateV1 = offer.take()?;
         let message = String::from_utf8_lossy(&input.blob);
-        info!(self.log, "TODO: importing fake OPTE state"; "msg" => message);
+        info!(self.log, "TODO: importing fake OPTE state"; "state" => message);
         Ok(())
     }
 }
