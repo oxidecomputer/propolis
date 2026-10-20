@@ -261,12 +261,12 @@ impl OrGate {
         Arc::new(Self { inner: Mutex::new(OrGateInner::new(pin)) })
     }
 
-    // The gate is expected to be constructed once during VM initialization, so
-    // inputs are currently never removed.
     pub fn new_input(self: &Arc<Self>) -> Arc<dyn IntrPin> {
         let mut inner = self.inner.lock().unwrap();
 
         let idx = inner.idx;
+        assert!(idx < 64, "max number of inputs reached");
+
         inner.idx += 1;
         Arc::new(OrGatePin { mask: 1 << idx, gate: self.clone() })
     }
@@ -855,5 +855,15 @@ pub mod test {
         assert!(!driver.output.is_asserted());
         assert_eq!(driver.output.rises(), driver.output.falls());
         assert!(driver.output.pulses() <= 100);
+    }
+
+    #[test]
+    #[should_panic(expected = "max number of inputs reached")]
+    fn panic_or_gate_max_inputs() {
+        let output_pin = Arc::new(TestPin::new());
+        let or_gate = OrGate::new(output_pin.clone());
+        for _ in 0..100 {
+            _ = or_gate.new_input();
+        }
     }
 }
