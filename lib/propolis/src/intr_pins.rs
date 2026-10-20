@@ -253,86 +253,123 @@ struct FPInner {
 /// overly-protective of concurrent operations. It would be possible to allow
 /// inputs to change independently, but we would need to be careful to also
 /// synchronize updates to the output pin.
-///
-/// Internal state is stored in a `<Vec<bool>>` to make the code easier to read
-/// and maintain, but it would be possible to use something like a
-/// [std::sync::atomic::AtomicU64] bitmask instead.
 pub struct OrGate {
-    inputs: Mutex<Vec<bool>>,
-    output: Arc<dyn IntrPin>,
+    inner: Mutex<OrGateInner>,
 }
 impl OrGate {
     pub fn new(pin: Arc<dyn IntrPin>) -> Arc<Self> {
-        Arc::new(Self { output: pin, inputs: Mutex::new(vec![]) })
+        Arc::new(Self { inner: Mutex::new(OrGateInner::new(pin)) })
     }
 
     // The gate is expected to be constructed once during VM initialization, so
     // inputs are currently never removed.
     pub fn new_input(self: &Arc<Self>) -> Arc<dyn IntrPin> {
-        let mut inputs = self.inputs.lock().unwrap();
-        let pin = Arc::new(OrGatePin { idx: inputs.len(), gate: self.clone() });
-        inputs.push(false);
-        pin
+        let mut inner = self.inner.lock().unwrap();
+
+        let idx = inner.idx;
+        inner.idx += 1;
+        Arc::new(OrGatePin { mask: 1 << idx, gate: self.clone() })
     }
 
-    fn set_input_state(&self, input: usize, is_asserted: bool) {
-        let mut inputs = self.inputs.lock().unwrap();
-        inputs[input] = is_asserted;
+    fn set_input_state(&self, mask: u64, is_asserted: bool) {
+        let mut inner = self.inner.lock().unwrap();
+
+        if is_asserted {
+            inner.inputs.assert(mask)
+        } else {
+            inner.inputs.deassert(mask)
+        };
 
         // Only modify the output if the gate state actually changed to avoid
         // spurious edges.
-        let should_assert = OrGate::is_asserted(&inputs);
-        if should_assert != self.output.is_asserted() {
-            self.output.set_state(should_assert);
+        let should_assert = inner.inputs.is_asserted();
+        if should_assert != inner.output.is_asserted() {
+            inner.output.set_state(should_assert);
         }
     }
 
     fn pulse_input(&self) {
-        let inputs = self.inputs.lock().unwrap();
-        if !OrGate::is_asserted(&inputs) {
-            self.output.pulse();
+        let inner = self.inner.lock().unwrap();
+        if !inner.inputs.is_asserted() {
+            inner.output.pulse();
         }
     }
 
-    fn is_input_asserted(&self, input: usize) -> bool {
-        let inputs = self.inputs.lock().unwrap();
-        inputs[input]
+    fn is_input_asserted(&self, mask: u64) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner.inputs.is_input_asserted(mask)
     }
 
-    fn import_input_state(&self, input: usize, is_asserted: bool) {
-        let mut inputs = self.inputs.lock().unwrap();
-        inputs[input] = is_asserted;
+    fn import_input_state(&self, mask: u64, is_asserted: bool) {
+        let mut inner = self.inner.lock().unwrap();
 
-        let should_assert = OrGate::is_asserted(&inputs);
-        if should_assert != self.output.is_asserted() {
-            self.output.import_state(should_assert);
+        if is_asserted {
+            inner.inputs.assert(mask)
+        } else {
+            inner.inputs.deassert(mask)
+        };
+
+        let should_assert = inner.inputs.is_asserted();
+        if should_assert != inner.output.is_asserted() {
+            inner.output.import_state(should_assert);
         }
     }
+}
 
-    fn is_asserted(inputs: &[bool]) -> bool {
-        inputs.contains(&true)
+struct OrGateInner {
+    idx: u8,
+    inputs: OrGateInputs,
+    output: Arc<dyn IntrPin>,
+}
+impl OrGateInner {
+    fn new(pin: Arc<dyn IntrPin>) -> Self {
+        Self { idx: 0, inputs: OrGateInputs::new(), output: pin }
+    }
+}
+
+#[derive(Copy, Clone)]
+struct OrGateInputs(u64);
+impl OrGateInputs {
+    fn new() -> Self {
+        Self(0)
+    }
+    #[inline]
+    fn is_asserted(self) -> bool {
+        self.0 != 0
+    }
+    #[inline]
+    fn is_input_asserted(self, mask: u64) -> bool {
+        self.0 & mask != 0
+    }
+    #[inline]
+    fn assert(&mut self, mask: u64) {
+        self.0 |= mask;
+    }
+    #[inline]
+    fn deassert(&mut self, mask: u64) {
+        self.0 &= !mask;
     }
 }
 
 pub struct OrGatePin {
-    idx: usize,
+    mask: u64,
     gate: Arc<OrGate>,
 }
 impl IntrPin for OrGatePin {
     fn assert(&self) {
-        self.gate.set_input_state(self.idx, true);
+        self.gate.set_input_state(self.mask, true);
     }
     fn deassert(&self) {
-        self.gate.set_input_state(self.idx, false);
+        self.gate.set_input_state(self.mask, false);
     }
     fn pulse(&self) {
         self.gate.pulse_input();
     }
     fn is_asserted(&self) -> bool {
-        self.gate.is_input_asserted(self.idx)
+        self.gate.is_input_asserted(self.mask)
     }
     fn import_state(&self, is_asserted: bool) {
-        self.gate.import_input_state(self.idx, is_asserted)
+        self.gate.import_input_state(self.mask, is_asserted)
     }
 }
 impl Drop for OrGatePin {
