@@ -37,7 +37,7 @@ pub const DEFAULT_HB_BDF: Bdf = Bdf::new_unchecked(0, 0, 0);
 pub const DEFAULT_LPC_BDF: Bdf = Bdf::new_unchecked(0, 1, 0);
 pub const DEFAULT_PM_BDF: Bdf = Bdf::new_unchecked(0, 1, 3);
 
-struct LNKPin {
+pub struct LNKPin {
     inner: Mutex<LNKPinInner>,
 }
 struct LNKPinInner {
@@ -45,7 +45,7 @@ struct LNKPinInner {
     pin: Option<LegacyPin>,
 }
 impl LNKPin {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self { inner: Mutex::new(LNKPinInner { asserted: false, pin: None }) }
     }
     fn reassign(&self, new_pin: Option<LegacyPin>) {
@@ -100,17 +100,11 @@ impl IntrPin for LNKPin {
 
 struct IrqConfig {
     pic: Arc<LegacyPIC>,
-
     lnk_pins: [Arc<LNKPin>; 4],
-
-    #[allow(unused)]
-    // XXX: wire up SCI notifications
-    sci_pin: Arc<LNKPin>,
 }
 impl IrqConfig {
-    fn create(hdl: Arc<VmmHdl>) -> Arc<Self> {
+    fn create(hdl: Arc<VmmHdl>, sci_pin: Arc<LNKPin>) -> Arc<Self> {
         let pic = LegacyPIC::new(hdl);
-        let sci_pin = Arc::new(LNKPin::new());
         sci_pin.reassign(pic.pin_handle(SCI_IRQ));
         Arc::new(Self {
             pic,
@@ -120,7 +114,6 @@ impl IrqConfig {
                 Arc::new(LNKPin::new()),
                 Arc::new(LNKPin::new()),
             ],
-            sci_pin,
         })
     }
     fn set_lnk_route(&self, idx: usize, irq: Option<u8>) {
@@ -357,7 +350,7 @@ pub struct Piix3Lpc {
     post_code: AtomicU8,
 }
 impl Piix3Lpc {
-    pub fn create(hdl: Arc<VmmHdl>) -> Arc<Self> {
+    pub fn create(hdl: Arc<VmmHdl>, sci_pin: Arc<LNKPin>) -> Arc<Self> {
         let pci_state = pci::Builder::new(pci::Ident {
             vendor_id: VENDOR_INTEL,
             device_id: PIIX3_ISA_DEV_ID,
@@ -370,7 +363,7 @@ impl Piix3Lpc {
         .add_custom_cfg(PIR_OFFSET as u8, PIR_LEN as u8)
         .finish();
 
-        let irq_config = IrqConfig::create(hdl.clone());
+        let irq_config = IrqConfig::create(hdl.clone(), sci_pin);
 
         Arc::new(Self {
             pci_state,
@@ -1161,8 +1154,9 @@ mod test {
     fn lpc_pci_cfg_read() {
         let hdl = Arc::new(VmmHdl::new_test(0).unwrap());
         let scaffold = Scaffold::new();
+        let sci_pin = Arc::new(LNKPin::new());
 
-        let lpc = Piix3Lpc::create(hdl);
+        let lpc = Piix3Lpc::create(hdl, sci_pin);
         let _bus = setup_attach(&scaffold, lpc.clone());
 
         cfg_read(lpc.as_ref() as &dyn Endpoint);
@@ -1172,8 +1166,9 @@ mod test {
     fn lpc_pci_cfg_write() {
         let hdl = Arc::new(VmmHdl::new_test(0).unwrap());
         let scaffold = Scaffold::new();
+        let sci_pin = Arc::new(LNKPin::new());
 
-        let lpc = Piix3Lpc::create(hdl);
+        let lpc = Piix3Lpc::create(hdl, sci_pin);
         let _bus = setup_attach(&scaffold, lpc.clone());
 
         cfg_write(lpc.as_ref() as &dyn Endpoint);

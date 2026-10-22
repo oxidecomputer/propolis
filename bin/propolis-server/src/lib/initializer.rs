@@ -341,6 +341,7 @@ impl MachineInitializer<'_> {
                         }
                     }),
                 ));
+                let sci_pin = Arc::new(i440fx::LNKPin::new());
 
                 let chipset_hb = i440fx::I440FxHostBridge::create(
                     pci_topology,
@@ -350,8 +351,10 @@ impl MachineInitializer<'_> {
                         enable_pcie: i440fx.enable_pcie,
                     },
                 );
-                let chipset_lpc =
-                    i440fx::Piix3Lpc::create(self.machine.hdl.clone());
+                let chipset_lpc = i440fx::Piix3Lpc::create(
+                    self.machine.hdl.clone(),
+                    sci_pin.clone(),
+                );
 
                 let chipset_pm = i440fx::Piix3PM::create(
                     self.machine.hdl.clone(),
