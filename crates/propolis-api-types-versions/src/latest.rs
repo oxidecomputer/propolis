@@ -65,14 +65,15 @@ pub mod instance {
     pub use crate::v1::instance::InstancePathParams;
     pub use crate::v1::instance::InstanceProperties;
     pub use crate::v1::instance::InstanceState;
-    pub use crate::v1::instance::InstanceStateChange;
     pub use crate::v1::instance::InstanceStateMonitorRequest;
     pub use crate::v1::instance::InstanceStateMonitorResponse;
-    pub use crate::v1::instance::InstanceStateRequested;
     pub use crate::v1::instance::ReplacementComponent;
 
     pub use crate::v6::api::InstanceEnsureRequest;
     pub use crate::v6::api::InstanceInitializationMethod;
+
+    pub use crate::v7::instance::InstanceStateChange;
+    pub use crate::v7::instance::InstanceStateRequested;
 }
 
 pub mod instance_spec {
