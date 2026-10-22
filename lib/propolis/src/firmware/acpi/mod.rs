@@ -18,9 +18,12 @@
 //!
 //! <https://github.com/oxidecomputer/edk2/tree/propolis/edk2-stable202105/OvmfPkg/AcpiTables>
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::hw::chipset::i440fx;
+use crate::intr_pins::{IntrPin, OrGate};
 
 pub mod aml;
 pub mod dsdt;
@@ -89,3 +92,22 @@ const LOCAL_APIC_LEN: u32 = 0x10_0000;
 // information.
 const GPE0_BLK_ADDR: u16 = 0xafe0;
 const GPE0_BLK_LEN: u8 = 4;
+
+pub struct Acpi {
+    // The SCI state can be driven by multiple inputs that OR'ed to determine
+    // if an interrupt should happen, so model it as an OrGate and hand out new
+    // inputs for components that connect to the SCI pin.
+    //
+    // Refer to Fig. 4.3 of the ACPI spec. v6.6 for more information.
+    sci_gate: Arc<OrGate>,
+}
+
+impl Acpi {
+    pub fn create(sci_pin: Arc<dyn IntrPin>) -> Arc<Self> {
+        Arc::new(Self { sci_gate: OrGate::new(sci_pin) })
+    }
+
+    pub fn sci_pin(&self) -> Arc<dyn IntrPin> {
+        self.sci_gate.new_input()
+    }
+}
