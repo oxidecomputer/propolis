@@ -9,11 +9,11 @@ use std::collections::BTreeMap;
 
 use propolis_api_types::instance::ReplacementComponent;
 use propolis_api_types::instance_spec::SpecKey;
-use propolis_api_types_versions::{v3, v6};
+use propolis_api_types_versions::{v3, v6, v9};
 
 use super::{builder::SpecBuilder, ApiSpecError, Disk, Spec, StorageDevice};
 use crate::migrate::MigrateError;
-use crate::spec::api_spec_latest;
+use crate::spec::api_spec_v9;
 
 impl From<Spec> for v6::instance_spec::InstanceSpec {
     fn from(mut val: Spec) -> Self {
@@ -88,10 +88,14 @@ impl From<Spec> for v6::instance_spec::InstanceSpec {
 pub(crate) fn v6_to_spec_builder(
     value: v6::instance_spec::InstanceSpec,
 ) -> Result<SpecBuilder, ApiSpecError> {
-    api_spec_latest::latest_to_spec_builder(value)
+    let v9_spec: v9::instance_spec::InstanceSpec = value.into();
+    api_spec_v9::v9_to_spec_builder(v9_spec)
 }
 
-fn amend_component(
+// pub(crate) as the next version (v9) still uses
+// `v6::instance_spec::Component`, so this conversion is applicable in that
+// module as well.
+pub(crate) fn amend_component(
     id: &SpecKey,
     to_amend: &mut v6::instance_spec::Component,
     replacement: &ReplacementComponent,

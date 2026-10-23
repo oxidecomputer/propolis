@@ -178,7 +178,7 @@ impl Machine {
 pub struct Builder {
     inner_hdl: Option<Arc<VmmHdl>>,
     physmap: Option<PhysMap>,
-    max_cpu: u8,
+    max_cpu: u16,
     guest_hv_interface: Option<Arc<dyn Enlightenment>>,
 }
 impl Builder {
@@ -241,8 +241,8 @@ impl Builder {
         Ok(self)
     }
     /// Sets the maximum number of CPUs for the machine.
-    pub fn max_cpus(mut self, max: u8) -> Result<Self> {
-        if max == 0 || max > MAXCPU as u8 {
+    pub fn max_cpus(mut self, max: u16) -> Result<Self> {
+        if max == 0 || max > MAXCPU as u16 {
             Err(Error::new(ErrorKind::InvalidInput, "maxcpu out of range"))
         } else {
             self.max_cpu = max;

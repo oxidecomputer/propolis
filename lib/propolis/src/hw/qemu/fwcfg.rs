@@ -1316,7 +1316,7 @@ pub mod formats {
     /// Instance configuration that are relevant when building the ACPI tables.
     pub struct AcpiConfig<'a> {
         pub acpi_variant: acpi::AcpiVariant,
-        pub num_cpus: u8,
+        pub num_cpus: u16,
         pub pci_window_32: PciWindow,
         pub pci_window_64: PciWindow,
         pub dsdt_generators: &'a [&'a dyn acpi::DsdtGenerator],

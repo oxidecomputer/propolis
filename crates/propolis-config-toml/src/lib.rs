@@ -69,6 +69,14 @@ pub enum HypervisorInterface {
     },
 }
 
+fn default_smt() -> bool {
+    true
+}
+
+fn default_sockets() -> u16 {
+    1
+}
+
 /// Settings covering the VM "at large".
 ///
 /// This corresponds to (and is a subset of) the `main` block understood by
@@ -118,6 +126,11 @@ pub struct MachineSettings {
     //
     // That all to say: this could be a list.
     pub hv_interface: Option<HypervisorInterface>,
+
+    #[serde(default = "default_smt")]
+    pub smt: bool,
+    #[serde(default = "default_sockets")]
+    pub sockets: u16,
 }
 
 /// The instance's chipset.

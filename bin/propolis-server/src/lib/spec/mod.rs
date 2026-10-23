@@ -40,7 +40,7 @@ use propolis_api_types::instance_spec::{
             BlobStorageBackend, CrucibleStorageBackend, FileStorageBackend,
             VirtioNetworkBackend,
         },
-        board::{Chipset, GuestHypervisorInterface, I440Fx},
+        board::{Chipset, CpuTopology, GuestHypervisorInterface, I440Fx},
         devices::{
             NvmeDisk, PciPciBridge, QemuPvpanic as QemuPvpanicDesc,
             SerialPortNumber, VirtioDisk, VirtioNic,
@@ -70,6 +70,7 @@ pub(crate) mod api_spec_v1;
 pub(crate) mod api_spec_v2;
 pub(crate) mod api_spec_v3;
 pub(crate) mod api_spec_v6;
+pub(crate) mod api_spec_v9;
 pub(crate) mod builder;
 
 /// An error that can arise in converting
@@ -127,7 +128,7 @@ impl TryFrom<InstanceSpec> for Spec {
     type Error = ApiSpecError;
 
     fn try_from(value: InstanceSpec) -> Result<Self, Self::Error> {
-        Ok(api_spec_v6::v6_to_spec_builder(value)?.finish())
+        Ok(api_spec_v9::v9_to_spec_builder(value)?.finish())
     }
 }
 
@@ -198,10 +199,11 @@ pub(crate) struct Spec {
 /// [instance spec `Board`]: propolis_api_types::instance_spec::components::board::Board
 #[derive(Clone, Debug)]
 pub(crate) struct Board {
-    pub cpus: u8,
+    pub cpus: u16,
     pub memory_mb: u64,
     pub chipset: Chipset,
     pub guest_hv_interface: GuestHypervisorInterface,
+    pub cpu_topology: CpuTopology,
 
     // XXX: expose via the API once more variants are implemented.
     pub acpi_variant: AcpiVariant,
@@ -214,6 +216,7 @@ impl Default for Board {
             memory_mb: 0,
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
             guest_hv_interface: GuestHypervisorInterface::Bhyve,
+            cpu_topology: CpuTopology::single_socket_smt(),
             acpi_variant: AcpiVariant::V0,
         }
     }
