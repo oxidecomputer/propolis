@@ -112,6 +112,7 @@ impl SpecBuilder {
                     memory_mb: board.memory_mb,
                     chipset: board.chipset,
                     guest_hv_interface: board.guest_hv_interface,
+                    cpu_topology: Some(board.cpu_topology),
                     acpi_variant: propolis::firmware::acpi::AcpiVariant::V0,
                 },
                 cpuid,

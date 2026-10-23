@@ -4,6 +4,8 @@
 
 //! Functional code for instance spec types.
 
+mod components;
+
 use uuid::Uuid;
 
 use crate::latest::instance_spec::SpecKey;

@@ -40,7 +40,7 @@ use propolis_api_types::instance_spec::{
             BlobStorageBackend, CrucibleStorageBackend, FileStorageBackend,
             VirtioNetworkBackend,
         },
-        board::{Chipset, GuestHypervisorInterface, I440Fx},
+        board::{Chipset, CpuTopology, GuestHypervisorInterface, I440Fx},
         devices::{
             NvmeDisk, PciPciBridge, QemuPvpanic as QemuPvpanicDesc,
             SerialPortNumber, VirtioDisk, VirtioNic,
@@ -70,6 +70,7 @@ pub(crate) mod api_spec_v1;
 pub(crate) mod api_spec_v2;
 pub(crate) mod api_spec_v3;
 pub(crate) mod api_spec_v6;
+pub(crate) mod api_spec_v7;
 pub(crate) mod builder;
 
 /// An error that can arise in converting
@@ -127,7 +128,7 @@ impl TryFrom<InstanceSpec> for Spec {
     type Error = ApiSpecError;
 
     fn try_from(value: InstanceSpec) -> Result<Self, Self::Error> {
-        Ok(api_spec_v6::v6_to_spec_builder(value)?.finish())
+        Ok(api_spec_v7::v7_to_spec_builder(value)?.finish())
     }
 }
 
@@ -198,10 +199,14 @@ pub(crate) struct Spec {
 /// [instance spec `Board`]: propolis_api_types::instance_spec::components::board::Board
 #[derive(Clone, Debug)]
 pub(crate) struct Board {
-    pub cpus: u8,
+    pub cpus: u16,
     pub memory_mb: u64,
     pub chipset: Chipset,
     pub guest_hv_interface: GuestHypervisorInterface,
+    // TODO: should this be non-option..? if yes: the option being set or not is
+    // what tells the specializer to care about leaves B and ext 1Eh, so .. how
+    // should that happen.
+    pub cpu_topology: Option<CpuTopology>,
 
     // XXX: expose via the API once more variants are implemented.
     pub acpi_variant: AcpiVariant,
@@ -214,6 +219,9 @@ impl Default for Board {
             memory_mb: 0,
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
             guest_hv_interface: GuestHypervisorInterface::Bhyve,
+            // TODO: just making sure that adding CPU topology support doesn't
+            // change old instance spec semantics..
+            cpu_topology: None,
             acpi_variant: AcpiVariant::V0,
         }
     }
