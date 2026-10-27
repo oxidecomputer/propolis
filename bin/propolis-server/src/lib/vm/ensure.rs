@@ -553,6 +553,7 @@ async fn initialize_vm_objects(
             as Arc<dyn super::guest_event::ChipsetEventHandler>),
     )?;
 
+    init.initialize_acpi(&chipset);
     init.initialize_rtc(&chipset)?;
     init.initialize_hpet();
 
