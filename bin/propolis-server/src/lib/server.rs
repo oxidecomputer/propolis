@@ -531,6 +531,22 @@ impl PropolisServerApi for PropolisServerImpl {
             .ok_or_else(not_created_error)
     }
 
+    async fn instance_disk_attach(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<HttpResponseOk<()>, HttpError> {
+        let vm = rqctx
+            .context()
+            .vm
+            .active_vm()
+            .await
+            .ok_or_else(not_created_error)?;
+        vm.disk_attach()
+            .await
+            .map_err(|_| HttpError::for_internal_error("Error".to_string()))?;
+
+        Ok(HttpResponseOk(()))
+    }
+
     async fn instance_issue_crucible_snapshot_request(
         rqctx: RequestContext<Self::Context>,
         path_params: Path<SnapshotRequestPathParams>,

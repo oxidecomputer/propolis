@@ -553,7 +553,8 @@ async fn initialize_vm_objects(
             as Arc<dyn super::guest_event::ChipsetEventHandler>),
     )?;
 
-    init.initialize_acpi(&chipset);
+    let acpi = init.initialize_acpi(&chipset);
+
     init.initialize_rtc(&chipset)?;
     init.initialize_hpet();
 
@@ -656,6 +657,7 @@ async fn initialize_vm_objects(
         com1,
         framebuffer: Some(ramfb),
         ps2ctrl,
+        acpi,
         attest_handle,
     };
 

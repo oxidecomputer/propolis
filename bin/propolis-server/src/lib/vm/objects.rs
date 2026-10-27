@@ -14,6 +14,7 @@ use std::{
 use futures::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
 use propolis::{
     attestation,
+    firmware::acpi::Acpi,
     hw::{ps2::ctrl::PS2Ctrl, qemu::ramfb::RamFb, uart::LpcUart},
     vmm::VmmHdl,
     Machine,
@@ -52,6 +53,7 @@ pub(super) struct InputVmObjects {
     pub com1: Arc<Serial<LpcUart>>,
     pub framebuffer: Option<Arc<RamFb>>,
     pub ps2ctrl: Arc<PS2Ctrl>,
+    pub acpi: Arc<Acpi>,
     pub attest_handle: Option<attestation::server::AttestationSock>,
 }
 
@@ -88,6 +90,8 @@ pub(crate) struct VmObjectsLocked {
 
     /// A handle to the VM's PS/2 controller.
     ps2ctrl: Arc<PS2Ctrl>,
+
+    acpi: Arc<Acpi>,
 
     /// A handle to the VM's attestation server.
     attest_handle: Option<attestation::server::AttestationSock>,
@@ -131,8 +135,13 @@ impl VmObjectsLocked {
             com1: input.com1,
             framebuffer: input.framebuffer,
             ps2ctrl: input.ps2ctrl,
+            acpi: input.acpi,
             attest_handle: input.attest_handle,
         }
+    }
+
+    pub(crate) fn acpi(&self) -> &Arc<Acpi> {
+        &self.acpi
     }
 
     /// Yields the VM's current instance spec.

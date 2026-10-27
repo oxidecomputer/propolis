@@ -71,6 +71,12 @@ impl ActiveVm {
             .map_err(Into::into)
     }
 
+    pub(crate) async fn disk_attach(&self) -> Result<(), VmError> {
+        self.state_driver_queue
+            .queue_external_request(ExternalRequest::disk_attach())
+            .map_err(Into::into)
+    }
+
     /// Pushes a request to migrate out of a VM to the VM's state change queue.
     /// The migration protocol will communicate with the destination over the
     /// provided websocket.

@@ -409,12 +409,16 @@ impl MachineInitializer<'_> {
         }
     }
 
-    pub fn initialize_acpi(&mut self, chipset: &RegisteredChipset) {
+    pub fn initialize_acpi(
+        &mut self,
+        chipset: &RegisteredChipset,
+    ) -> Arc<acpi::Acpi> {
         let sci_pin = chipset.irq_pin(acpi::SCI_IRQ).unwrap();
         let acpi = acpi::Acpi::create(sci_pin.into());
         acpi.attach(&self.machine.bus_pio);
         self.devices
             .insert(SpecKey::Name(acpi.type_name().into()), acpi.clone());
+        acpi
     }
 
     pub fn initialize_uart(

@@ -754,6 +754,11 @@ impl StateDriver {
                         .await,
                     );
                 }
+                ExternalRequest::Component(
+                    ComponentChangeRequest::AttachDisk {},
+                ) => {
+                    self.attach_disk().await;
+                }
                 // The request queue is expected to reject (or at least silently
                 // ignore) requests to migrate or reboot an instance that hasn't
                 // reported that it's fully started. Similarly, requests to
@@ -892,6 +897,12 @@ impl StateDriver {
                 );
                 HandleEventOutcome::Continue
             }
+            ExternalRequest::Component(
+                ComponentChangeRequest::AttachDisk {},
+            ) => {
+                self.attach_disk().await;
+                HandleEventOutcome::Continue
+            }
         }
     }
 
@@ -1009,6 +1020,12 @@ impl StateDriver {
                 Err(())
             }
         }
+    }
+
+    async fn attach_disk(&self) {
+        let objects = self.objects.lock_exclusive().await;
+        let acpi = objects.acpi();
+        acpi.pci_hotplug();
     }
 
     async fn reconfigure_crucible_volume(
