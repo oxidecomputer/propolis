@@ -26,7 +26,7 @@ use propolis::chardev::{BlockingSource, Sink, Source, UDSock};
 use propolis::common::{DeviceMetadataMap, GB, MB};
 use propolis::enlightenment::{bhyve, hyperv, Enlightenment};
 use propolis::firmware::{acpi, smbios};
-use propolis::hw::chipset::{i440fx, i440fx::LNKPin, Chipset};
+use propolis::hw::chipset::{i440fx, Chipset};
 use propolis::hw::ps2::ctrl::PS2Ctrl;
 use propolis::hw::qemu::fwcfg;
 use propolis::hw::uart::{LpcUart, LpcUartMetadata};
@@ -740,7 +740,7 @@ impl Instance {
         }
     }
 
-    fn generate_pins(&self) -> (Arc<FuncPin>, Arc<FuncPin>, Arc<LNKPin>) {
+    fn generate_pins(&self) -> (Arc<FuncPin>, Arc<FuncPin>) {
         let power_eq = self.0.eq.clone();
         let power_pin =
             propolis::intr_pins::FuncPin::new(Box::new(move |rising| {
@@ -761,7 +761,7 @@ impl Instance {
                     );
                 }
             }));
-        (Arc::new(power_pin), Arc::new(reset_pin), Arc::new(LNKPin::new()))
+        (Arc::new(power_pin), Arc::new(reset_pin))
     }
 
     fn lock(&self) -> Option<MutexGuard<'_, InstState>> {
@@ -1214,7 +1214,7 @@ fn setup_instance(
         guard.inventory.register_instance(vcpu, &vcpu.id.to_string())
     }
 
-    let (power_pin, reset_pin, sci_pin) = inst.generate_pins();
+    let (power_pin, reset_pin) = inst.generate_pins();
     let pci_topo =
         propolis::hw::pci::topology::Builder::new().finish(machine)?.topology;
 
@@ -1226,8 +1226,7 @@ fn setup_instance(
             ..Default::default()
         },
     );
-    let chipset_lpc =
-        i440fx::Piix3Lpc::create(machine.hdl.clone(), sci_pin.clone());
+    let chipset_lpc = i440fx::Piix3Lpc::create(machine.hdl.clone());
     let chipset_pm = i440fx::Piix3PM::create(
         machine.hdl.clone(),
         chipset_hb.power_pin(),
@@ -1249,6 +1248,11 @@ fn setup_instance(
     guard.inventory.register(&chipset_hb);
     guard.inventory.register(&chipset_lpc);
     guard.inventory.register(&chipset_pm);
+
+    // ACPI
+    let sci_pin = chipset_lpc.irq_pin(acpi::SCI_IRQ).unwrap();
+    let acpi = acpi::Acpi::create(sci_pin.into());
+    guard.inventory.register(&acpi);
 
     // RTC: populate time and CMOS
     let rtc = chipset_lpc.rtc.as_ref();

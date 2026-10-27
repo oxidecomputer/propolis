@@ -37,7 +37,7 @@ pub const DEFAULT_HB_BDF: Bdf = Bdf::new_unchecked(0, 0, 0);
 pub const DEFAULT_LPC_BDF: Bdf = Bdf::new_unchecked(0, 1, 0);
 pub const DEFAULT_PM_BDF: Bdf = Bdf::new_unchecked(0, 1, 3);
 
-pub struct LNKPin {
+struct LNKPin {
     inner: Mutex<LNKPinInner>,
 }
 struct LNKPinInner {
@@ -103,9 +103,8 @@ struct IrqConfig {
     lnk_pins: [Arc<LNKPin>; 4],
 }
 impl IrqConfig {
-    fn create(hdl: Arc<VmmHdl>, sci_pin: Arc<LNKPin>) -> Arc<Self> {
+    fn create(hdl: Arc<VmmHdl>) -> Arc<Self> {
         let pic = LegacyPIC::new(hdl);
-        sci_pin.reassign(pic.pin_handle(SCI_IRQ));
         Arc::new(Self {
             pic,
             lnk_pins: [
@@ -132,8 +131,6 @@ pub const PIR_END: usize = PIR_OFFSET + PIR_LEN;
 
 pub const PIR_MASK_DISABLE: u8 = 0x80;
 const PIR_MASK_IRQ: u8 = 0x0f;
-
-pub const SCI_IRQ: u8 = 0x9;
 
 fn valid_pir_irq(irq: u8) -> bool {
     // Existing ACPI tables allow 3-7, 9-12, 14-15
@@ -350,7 +347,7 @@ pub struct Piix3Lpc {
     post_code: AtomicU8,
 }
 impl Piix3Lpc {
-    pub fn create(hdl: Arc<VmmHdl>, sci_pin: Arc<LNKPin>) -> Arc<Self> {
+    pub fn create(hdl: Arc<VmmHdl>) -> Arc<Self> {
         let pci_state = pci::Builder::new(pci::Ident {
             vendor_id: VENDOR_INTEL,
             device_id: PIIX3_ISA_DEV_ID,
@@ -363,7 +360,7 @@ impl Piix3Lpc {
         .add_custom_cfg(PIR_OFFSET as u8, PIR_LEN as u8)
         .finish();
 
-        let irq_config = IrqConfig::create(hdl.clone(), sci_pin);
+        let irq_config = IrqConfig::create(hdl.clone());
 
         Arc::new(Self {
             pci_state,
@@ -1154,9 +1151,8 @@ mod test {
     fn lpc_pci_cfg_read() {
         let hdl = Arc::new(VmmHdl::new_test(0).unwrap());
         let scaffold = Scaffold::new();
-        let sci_pin = Arc::new(LNKPin::new());
 
-        let lpc = Piix3Lpc::create(hdl, sci_pin);
+        let lpc = Piix3Lpc::create(hdl);
         let _bus = setup_attach(&scaffold, lpc.clone());
 
         cfg_read(lpc.as_ref() as &dyn Endpoint);
@@ -1166,9 +1162,8 @@ mod test {
     fn lpc_pci_cfg_write() {
         let hdl = Arc::new(VmmHdl::new_test(0).unwrap());
         let scaffold = Scaffold::new();
-        let sci_pin = Arc::new(LNKPin::new());
 
-        let lpc = Piix3Lpc::create(hdl, sci_pin);
+        let lpc = Piix3Lpc::create(hdl);
         let _bus = setup_attach(&scaffold, lpc.clone());
 
         cfg_write(lpc.as_ref() as &dyn Endpoint);
