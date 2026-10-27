@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::hw::chipset::i440fx;
+use crate::common::Lifecycle;
 use crate::intr_pins::{IntrPin, OrGate};
 
 pub mod aml;
@@ -72,8 +72,11 @@ const OEM_ID: &[u8; 6] = b"OVMF  ";
 const OEM_TABLE_ID: &[u8; 8] = b"OVMFEDK2";
 const OEM_REVISION: u32 = 0x20130221;
 
+// IRQ used for SCI interrupts.
+pub const SCI_IRQ: u8 = 0x9;
+
 // IRQs used to handle PCI interrupts.
-const PCI_LINK_IRQS: [u8; 4] = [0x05, i440fx::SCI_IRQ, 0x0a, 0x0b];
+const PCI_LINK_IRQS: [u8; 4] = [0x05, SCI_IRQ, 0x0a, 0x0b];
 
 // VIOAPIC_BASE in bhyve.
 const IO_APIC_ADDR: u32 = 0xfec0_0000;
@@ -109,5 +112,10 @@ impl Acpi {
 
     pub fn sci_pin(&self) -> Arc<dyn IntrPin> {
         self.sci_gate.new_input()
+    }
+}
+impl Lifecycle for Acpi {
+    fn type_name(&self) -> &'static str {
+        "acpi"
     }
 }
