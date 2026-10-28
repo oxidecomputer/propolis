@@ -87,6 +87,14 @@
 //! responsible for running down the VM objects and structures and resetting the
 //! server so that it can start another VM.
 //!
+//! When a [`StateChangeRequest::ACPIShutdown`] arrives in the [`InputQueue`],
+//! the [`StateDriver`] sends an ACPI fixed power-button signal to the guest,
+//! stores the intended post-shutdown fate (rebooting or stopping) to determine
+//! the VM's state after receiving the next chipset request, and starts a
+//! timeout task to force that state transition if that chipset request is not
+//! received before the deadline given by the state change request. The guest's
+//! state remains `Running` until either of these outcomes occur.
+//!
 //! [`ensure`]: crate::vm::ensure
 
 use std::{
