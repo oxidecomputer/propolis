@@ -225,7 +225,13 @@ impl From<MaybeSpec> for InstanceSpecStatus {
             MaybeSpec::WaitingForMigrationSource => {
                 Self::WaitingForMigrationSource
             }
-            MaybeSpec::Present(spec) => Self::Present((*spec).into()),
+            MaybeSpec::Present(spec) => {
+                Self::Present((*spec).try_into().unwrap_or_else(|e| {
+                    unreachable!(
+                        "instance spec conversion not expected to fail: {e}"
+                    );
+                }))
+            }
         }
     }
 }
@@ -355,7 +361,7 @@ impl Vm {
                 let spec =
                     vm.objects().lock_shared().await.instance_spec().clone();
                 let state = vm.external_state_rx.borrow().clone();
-                let external_spec: InstanceSpec = spec.into();
+                let external_spec: InstanceSpec = spec.try_into().ok()?;
                 Some(InstanceSpecGetResponse {
                     properties: vm.properties.clone(),
                     spec: InstanceSpecStatus::Present(external_spec),
@@ -371,7 +377,8 @@ impl Vm {
                 })
             }
             VmState::Rundown { vm, spec } => {
-                let external_spec: InstanceSpec = (*spec.to_owned()).into();
+                let external_spec: InstanceSpec =
+                    (*spec.to_owned()).try_into().ok()?;
                 Some(InstanceSpecGetResponse {
                     properties: vm.properties.clone(),
                     state: vm.external_state_rx.borrow().state,

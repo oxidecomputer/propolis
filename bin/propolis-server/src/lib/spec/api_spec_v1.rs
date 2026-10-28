@@ -297,13 +297,14 @@ impl TryFrom<v1::instance_spec::InstanceSpec> for Spec {
 /// Parses a v1 instance spec into a [`SpecBuilder`], validating component
 /// names, PCI paths, and backend references along the way. Callers can add
 /// additional (non-v1) components to the builder before calling `finish()`.
+#[allow(clippy::useless_conversion)]
 pub(crate) fn v1_to_spec_builder(
     value: v1::instance_spec::InstanceSpec,
 ) -> Result<SpecBuilder, LegacyApiSpecError> {
     let v2_spec: v2::instance_spec::InstanceSpec = value.into();
     let v3_spec: v3::instance_spec::InstanceSpec = v2_spec.into();
 
-    crate::spec::api_spec_v3::v3_to_spec_builder(v3_spec)
+    crate::spec::api_spec_v3::v3_to_spec_builder(v3_spec).map_err(|e| e.into())
 }
 
 // `amend_component` is suitable for (and used in) amending a v2 InstanceSpec,

@@ -143,9 +143,17 @@ pub trait PropolisServerApi {
         HttpResponseOk<v3::instance_spec::InstanceSpecGetResponse>,
         HttpError,
     > {
-        Ok(Self::instance_spec_get(rqctx)
-            .await?
-            .map(v3::instance_spec::InstanceSpecGetResponse::from))
+        let v6_response = Self::instance_spec_get(rqctx).await?.0;
+        let v3_response: v3::instance_spec::InstanceSpecGetResponse =
+            v6_response.try_into().map_err(|_e| {
+                HttpError::for_client_error(
+                    None,
+                    ClientErrorStatusCode::BAD_REQUEST,
+                    "instance spec cannot be expressed to v3 clients"
+                        .to_owned(),
+                )
+            })?;
+        Ok(HttpResponseOk(v3_response))
     }
 
     #[endpoint {

@@ -10,12 +10,36 @@ use std::collections::BTreeMap;
 use propolis_api_types::instance_spec::SpecKey;
 use propolis_api_types_versions::{v1::instance::ReplacementComponent, v3, v6};
 
-use super::{builder::SpecBuilder, ApiSpecError, Disk, Spec, StorageDevice};
+use super::{
+    builder::SpecBuilder, ApiSpecError, Disk, LegacyApiSpecError, Spec,
+    StorageBackend, StorageDevice,
+};
 use crate::migrate::MigrateError;
 use crate::spec::api_spec_latest;
 
-impl From<Spec> for v6::instance_spec::InstanceSpec {
-    fn from(mut val: Spec) -> Self {
+impl From<StorageDevice> for v6::instance_spec::Component {
+    fn from(value: StorageDevice) -> Self {
+        match value {
+            StorageDevice::Virtio(d) => Self::VirtioDisk(d),
+            StorageDevice::Nvme(d) => Self::NvmeDisk(d),
+        }
+    }
+}
+
+impl From<StorageBackend> for v6::instance_spec::Component {
+    fn from(value: StorageBackend) -> Self {
+        match value {
+            StorageBackend::Crucible(b) => Self::CrucibleStorageBackend(b),
+            StorageBackend::File(b) => Self::FileStorageBackend(b),
+            StorageBackend::Blob(b) => Self::BlobStorageBackend(b),
+        }
+    }
+}
+
+impl TryFrom<Spec> for v6::instance_spec::InstanceSpec {
+    type Error = LegacyApiSpecError;
+
+    fn try_from(mut val: Spec) -> Result<Self, Self::Error> {
         // v6 adds a new field on NvmeDisk. Such disks probably can't be
         // converted to v3 components and would cause a conversion from
         // Spec->v3::instance_spec::InstanceSpec to fail. So, extract those
@@ -35,16 +59,7 @@ impl From<Spec> for v6::instance_spec::InstanceSpec {
         }
         val.disks.retain(|_, disk| !v6_only_disk(disk));
 
-        let v3_spec: v3::instance_spec::InstanceSpec =
-            val.try_into().unwrap_or_else(|e| {
-                unreachable!(
-                    "Converting to Spec without v6 bits to v3 failed: {e}. \
-                        This is currently impossible. When Spec to \
-                        v6::instance_spec::InstanceSpec becomes fallible, \
-                        this should `?`."
-                );
-            });
-
+        let v3_spec: v3::instance_spec::InstanceSpec = val.try_into()?;
         let mut spec: v6::instance_spec::InstanceSpec = v3_spec.into();
 
         // Inserts a component entry into the supplied map, asserting first that
@@ -77,13 +92,14 @@ impl From<Spec> for v6::instance_spec::InstanceSpec {
             insert_component(&mut spec, backend_id, backend_component);
         }
 
-        spec
+        Ok(spec)
     }
 }
 
 /// Parses a v6 instance spec into a [`SpecBuilder`], validating component
 /// names, PCI paths, and backend references along the way. Callers can add
 /// additional (non-v6) components to the builder before calling `finish()`.
+#[allow(clippy::useless_conversion)]
 pub(crate) fn v6_to_spec_builder(
     value: v6::instance_spec::InstanceSpec,
 ) -> Result<SpecBuilder, ApiSpecError> {

@@ -52,7 +52,6 @@ use propolis_api_types::instance_spec::{
 use propolis_api_types::instance_spec::{
     Component, InstanceSpec, SmbiosType1Input,
 };
-use propolis_api_types_versions::latest;
 use thiserror::Error;
 
 #[cfg(feature = "failure-injection")]
@@ -127,7 +126,7 @@ impl TryFrom<InstanceSpec> for Spec {
     type Error = ApiSpecError;
 
     fn try_from(value: InstanceSpec) -> Result<Self, Self::Error> {
-        Ok(api_spec_v6::v6_to_spec_builder(value)?.finish())
+        Ok(api_spec_latest::latest_to_spec_builder(value)?.finish())
     }
 }
 
@@ -279,15 +278,6 @@ impl StorageDevice {
     }
 }
 
-impl From<StorageDevice> for latest::instance_spec::Component {
-    fn from(value: StorageDevice) -> Self {
-        match value {
-            StorageDevice::Virtio(d) => Self::VirtioDisk(d),
-            StorageDevice::Nvme(d) => Self::NvmeDisk(d),
-        }
-    }
-}
-
 impl TryFrom<Component> for StorageDevice {
     type Error = ComponentTypeMismatch;
 
@@ -322,16 +312,6 @@ impl StorageBackend {
             StorageBackend::Crucible(be) => be.readonly,
             StorageBackend::File(be) => be.readonly,
             StorageBackend::Blob(be) => be.readonly,
-        }
-    }
-}
-
-impl From<StorageBackend> for Component {
-    fn from(value: StorageBackend) -> Self {
-        match value {
-            StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),
-            StorageBackend::File(be) => Self::FileStorageBackend(be),
-            StorageBackend::Blob(be) => Self::BlobStorageBackend(be),
         }
     }
 }
