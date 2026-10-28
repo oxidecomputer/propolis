@@ -23,8 +23,8 @@ use propolis_api_types::instance_spec::components::devices::{
 use crate::spec::SerialPortDevice;
 
 use super::{
-    Board, BootOrderEntry, BootSettings, Disk, Nic, QemuPvpanic, SerialPort,
-    VirtioSocket,
+    Acpi, Board, BootOrderEntry, BootSettings, Disk, Nic, QemuPvpanic,
+    SerialPort, VirtioSocket,
 };
 
 #[cfg(feature = "failure-injection")]
@@ -53,6 +53,9 @@ pub(crate) enum SpecBuilderError {
 
     #[error("vsock device already specified")]
     VsockInUse,
+
+    #[error("acpi device already specified")]
+    AcpiInUse,
 
     #[cfg(feature = "failure-injection")]
     #[error("migration failure injection already enabled")]
@@ -302,6 +305,23 @@ impl SpecBuilder {
         self.component_names.insert(vsock.id.clone());
         self.spec.vsock = Some(vsock);
 
+        Ok(self)
+    }
+
+    pub fn add_acpi_device(
+        &mut self,
+        dev: Acpi,
+    ) -> Result<&Self, SpecBuilderError> {
+        if self.component_names.contains(&dev.id) {
+            return Err(SpecBuilderError::ComponentNameInUse(dev.id));
+        }
+
+        if self.spec.acpi.is_some() {
+            return Err(SpecBuilderError::AcpiInUse);
+        }
+
+        self.component_names.insert(dev.id.clone());
+        self.spec.acpi = Some(dev);
         Ok(self)
     }
 

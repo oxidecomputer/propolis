@@ -22,6 +22,7 @@ api_versions!([
     // |  example for the next person.
     // v
     // (next_int, IDENT),
+    (7, ACPI_PCI_HOTPLUG),
     (6, NVME_WRITE_CACHE),
     (5, CRUCIBLE_VOLUME_INFO),
     (4, DROPSHOT_BUMP_WEBSOCKET),
@@ -63,6 +64,26 @@ pub trait PropolisServerApi {
         operation_id = "instance_ensure",
         method = PUT,
         path = "/instance",
+        versions = VERSION_NVME_WRITE_CACHE..VERSION_ACPI_PCI_HOTPLUG
+    }]
+    async fn instance_ensure_v6(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<v6::api::InstanceEnsureRequest>,
+    ) -> Result<
+        HttpResponseCreated<v1::instance::InstanceEnsureResponse>,
+        HttpError,
+    > {
+        Self::instance_ensure(
+            rqctx,
+            request.map(latest::instance::InstanceEnsureRequest::from),
+        )
+        .await
+    }
+
+    #[endpoint {
+        operation_id = "instance_ensure",
+        method = PUT,
+        path = "/instance",
         versions = VERSION_ADD_VSOCK..VERSION_NVME_WRITE_CACHE
     }]
     async fn instance_ensure_v3(
@@ -72,7 +93,7 @@ pub trait PropolisServerApi {
         HttpResponseCreated<v1::instance::InstanceEnsureResponse>,
         HttpError,
     > {
-        Self::instance_ensure(
+        Self::instance_ensure_v6(
             rqctx,
             request.map(v6::api::InstanceEnsureRequest::from),
         )
@@ -122,7 +143,7 @@ pub trait PropolisServerApi {
     #[endpoint {
         method = GET,
         path = "/instance/spec",
-        versions = VERSION_NVME_WRITE_CACHE..
+        versions = VERSION_ACPI_PCI_HOTPLUG..
     }]
     async fn instance_spec_get(
         rqctx: RequestContext<Self::Context>,
@@ -130,6 +151,22 @@ pub trait PropolisServerApi {
         HttpResponseOk<latest::instance_spec::InstanceSpecGetResponse>,
         HttpError,
     >;
+
+    #[endpoint {
+        method = GET,
+        path = "/instance/spec",
+        versions = VERSION_NVME_WRITE_CACHE..VERSION_ACPI_PCI_HOTPLUG
+    }]
+    async fn instance_spec_get_v6(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<
+        HttpResponseOk<v6::instance_spec::InstanceSpecGetResponse>,
+        HttpError,
+    > {
+        Ok(Self::instance_spec_get(rqctx)
+            .await?
+            .map(v6::instance_spec::InstanceSpecGetResponse::from))
+    }
 
     #[endpoint {
         operation_id = "instance_spec_get",
@@ -143,9 +180,17 @@ pub trait PropolisServerApi {
         HttpResponseOk<v3::instance_spec::InstanceSpecGetResponse>,
         HttpError,
     > {
-        Ok(Self::instance_spec_get(rqctx)
-            .await?
-            .map(v3::instance_spec::InstanceSpecGetResponse::from))
+        let v6_response = Self::instance_spec_get_v6(rqctx).await?.0;
+        let v3_response: v3::instance_spec::InstanceSpecGetResponse =
+            v6_response.try_into().map_err(|_e| {
+                HttpError::for_client_error(
+                    None,
+                    ClientErrorStatusCode::BAD_REQUEST,
+                    "instance spec cannot be expressed to v3 clients"
+                        .to_owned(),
+                )
+            })?;
+        Ok(HttpResponseOk(v3_response))
     }
 
     #[endpoint {

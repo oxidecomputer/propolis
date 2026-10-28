@@ -123,7 +123,8 @@ mod test {
             .expect("SMBIOS type 1 input preserved");
         assert_eq!(&smbios_input, smbios);
 
-        let v6_spec = v6::instance_spec::InstanceSpec::from(spec.clone());
+        let v6_spec =
+            v6::instance_spec::InstanceSpec::try_from(spec.clone()).unwrap();
         let smbios =
             v6_spec.smbios.as_ref().expect("SMBIOS type 1 input preserved");
         assert_eq!(&smbios_input, smbios);

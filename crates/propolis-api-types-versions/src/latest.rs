@@ -44,6 +44,8 @@ pub mod components {
         pub use crate::v3::components::devices::VirtioSocket;
 
         pub use crate::v6::components::devices::NvmeDisk;
+
+        pub use crate::v7::components::devices::Acpi;
     }
 }
 
@@ -71,8 +73,8 @@ pub mod instance {
     pub use crate::v1::instance::InstanceStateRequested;
     pub use crate::v1::instance::ReplacementComponent;
 
-    pub use crate::v6::api::InstanceEnsureRequest;
-    pub use crate::v6::api::InstanceInitializationMethod;
+    pub use crate::v7::api::InstanceEnsureRequest;
+    pub use crate::v7::api::InstanceInitializationMethod;
 }
 
 pub mod instance_spec {
@@ -85,10 +87,10 @@ pub mod instance_spec {
 
     pub use crate::v2::instance_spec::SmbiosType1Input;
 
-    pub use crate::v6::instance_spec::Component;
-    pub use crate::v6::instance_spec::InstanceSpec;
-    pub use crate::v6::instance_spec::InstanceSpecGetResponse;
-    pub use crate::v6::instance_spec::InstanceSpecStatus;
+    pub use crate::v7::instance_spec::Component;
+    pub use crate::v7::instance_spec::InstanceSpec;
+    pub use crate::v7::instance_spec::InstanceSpecGetResponse;
+    pub use crate::v7::instance_spec::InstanceSpecStatus;
 }
 
 pub mod migration {

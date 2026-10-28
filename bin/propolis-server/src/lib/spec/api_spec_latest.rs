@@ -21,8 +21,8 @@ use propolis_api_types::instance_spec::{
 use propolis_api_types_versions::latest;
 
 use super::{
-    builder::SpecBuilder, ApiSpecError, Disk, Nic, QemuPvpanic, StorageBackend,
-    StorageDevice,
+    builder::SpecBuilder, Acpi, ApiSpecError, Disk, Nic, QemuPvpanic,
+    StorageBackend, StorageDevice,
 };
 
 #[cfg(feature = "failure-injection")]
@@ -134,6 +134,9 @@ pub(crate) fn latest_to_spec_builder(
                     spec: vsock,
                 };
                 builder.add_vsock_device(vsock_device)?;
+            }
+            latest::instance_spec::Component::Acpi(acpi) => {
+                builder.add_acpi_device(Acpi { id: device_id, spec: acpi })?;
             }
             #[cfg(not(feature = "failure-injection"))]
             latest::instance_spec::Component::MigrationFailureInjector(_) => {

@@ -180,14 +180,16 @@ mod test {
                 .finish();
         assert!(spec.vsock.is_some());
 
-        let v6_spec = v6::instance_spec::InstanceSpec::from(spec.clone());
-        let v6_comp: v6::instance_spec::Component = vsock_comp.clone();
+        let v6_spec =
+            v6::instance_spec::InstanceSpec::try_from(spec.clone()).unwrap();
+        let v6_comp: v6::instance_spec::Component =
+            vsock_comp.clone().try_into().unwrap();
         assert_eq!(v6_spec.components.get(&vsock_id), Some(&v6_comp));
 
         let v3_spec =
             v3::instance_spec::InstanceSpec::try_from(spec.clone()).unwrap();
         let v3_comp: v3::instance_spec::Component =
-            vsock_comp.clone().try_into().unwrap();
+            v6_comp.clone().try_into().unwrap();
         assert_eq!(v3_spec.components.get(&vsock_id), Some(&v3_comp));
 
         let v2_res = v2::instance_spec::InstanceSpec::try_from(spec.clone());

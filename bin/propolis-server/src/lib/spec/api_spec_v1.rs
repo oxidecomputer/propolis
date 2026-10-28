@@ -89,6 +89,8 @@ impl TryFrom<Spec> for v1::instance_spec::InstanceSpec {
             // Not part of `v1::instance_spec::InstanceSpec`. Added in
             // `InstanceSpec` in API Version 3.0.0.
             vsock,
+
+            acpi,
         } = val;
 
         if smbios_type1_input.is_some() {
@@ -114,6 +116,12 @@ impl TryFrom<Spec> for v1::instance_spec::InstanceSpec {
         if vsock.is_some() {
             return Err(LegacyApiSpecError::IncompatibleComponent(
                 "cannot convert virtio-socket to v1 instance spec".to_string(),
+            ));
+        }
+
+        if acpi.is_some() {
+            return Err(LegacyApiSpecError::IncompatibleComponent(
+                "cannot convert acpi to v1 instance spec".to_string(),
             ));
         }
 

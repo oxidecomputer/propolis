@@ -42,9 +42,9 @@ use propolis_api_types::instance_spec::{
         },
         board::{Chipset, GuestHypervisorInterface, I440Fx},
         devices::{
-            NvmeDisk, PciPciBridge, QemuPvpanic as QemuPvpanicDesc,
-            SerialPortNumber, VirtioDisk, VirtioNic,
-            VirtioSocket as VirtioSocketDesc,
+            Acpi as AcpiDesc, NvmeDisk, PciPciBridge,
+            QemuPvpanic as QemuPvpanicDesc, SerialPortNumber, VirtioDisk,
+            VirtioNic, VirtioSocket as VirtioSocketDesc,
         },
     },
     PciPath, SpecKey,
@@ -70,6 +70,7 @@ pub(crate) mod api_spec_v1;
 pub(crate) mod api_spec_v2;
 pub(crate) mod api_spec_v3;
 pub(crate) mod api_spec_v6;
+pub(crate) mod api_spec_v7;
 pub(crate) mod builder;
 
 /// An error that can arise in converting
@@ -127,7 +128,7 @@ impl TryFrom<InstanceSpec> for Spec {
     type Error = ApiSpecError;
 
     fn try_from(value: InstanceSpec) -> Result<Self, Self::Error> {
-        Ok(api_spec_v6::v6_to_spec_builder(value)?.finish())
+        Ok(api_spec_latest::latest_to_spec_builder(value)?.finish())
     }
 }
 
@@ -187,6 +188,8 @@ pub(crate) struct Spec {
     // If (when!) we remove `v1` types - they are wholly from before any kind of
     // live migration was supported - this can be de-Option'd.
     pub smbios_type1_input: Option<SmbiosType1Input>,
+
+    pub acpi: Option<Acpi>,
 }
 
 /// The VM's mainboard.
@@ -396,6 +399,12 @@ pub struct QemuPvpanic {
     #[allow(dead_code)]
     pub id: SpecKey,
     pub spec: QemuPvpanicDesc,
+}
+
+#[derive(Clone, Debug)]
+pub struct Acpi {
+    pub id: SpecKey,
+    pub spec: AcpiDesc,
 }
 
 #[derive(Clone, Debug)]
