@@ -7,7 +7,7 @@
       "url": "https://oxide.computer",
       "email": "api@oxide.computer"
     },
-    "version": "6.0.0"
+    "version": "7.0.0"
   },
   "paths": {
     "/instance": {
@@ -454,6 +454,19 @@
   },
   "components": {
     "schemas": {
+      "Acpi": {
+        "type": "object",
+        "properties": {
+          "enable_hotplug": {
+            "description": "If true, PCI devices can be added to the instance without the need to stop it.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enable_hotplug"
+        ],
+        "additionalProperties": false
+      },
       "BlobStorageBackend": {
         "description": "A storage backend for a disk whose initial contents are given explicitly by the specification.",
         "type": "object",
@@ -726,6 +739,25 @@
                 "type": "string",
                 "enum": [
                   "virtio_socket"
+                ]
+              }
+            },
+            "required": [
+              "component",
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "component": {
+                "$ref": "#/components/schemas/Acpi"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "acpi"
                 ]
               }
             },

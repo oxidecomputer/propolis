@@ -8,14 +8,15 @@
 use std::collections::BTreeMap;
 
 use propolis_api_types::instance_spec::SpecKey;
-use propolis_api_types_versions::{v1::instance::ReplacementComponent, v3, v6};
+use propolis_api_types_versions::{
+    v1::instance::ReplacementComponent, v3, v6, v7,
+};
 
 use super::{
-    builder::SpecBuilder, ApiSpecError, Disk, LegacyApiSpecError, Spec,
+    api_spec_v7, builder::SpecBuilder, Disk, LegacyApiSpecError, Spec,
     StorageBackend, StorageDevice,
 };
 use crate::migrate::MigrateError;
-use crate::spec::api_spec_latest;
 
 impl From<StorageDevice> for v6::instance_spec::Component {
     fn from(value: StorageDevice) -> Self {
@@ -102,8 +103,12 @@ impl TryFrom<Spec> for v6::instance_spec::InstanceSpec {
 #[allow(clippy::useless_conversion)]
 pub(crate) fn v6_to_spec_builder(
     value: v6::instance_spec::InstanceSpec,
-) -> Result<SpecBuilder, ApiSpecError> {
-    api_spec_latest::latest_to_spec_builder(value)
+) -> Result<SpecBuilder, LegacyApiSpecError> {
+    // Converting v6 to v7 is lossless so just do that and piggyback on the
+    // v7 `InstanceSpec->SpecBuilder`.
+    let v7_spec: v7::instance_spec::InstanceSpec = value.into();
+
+    api_spec_v7::v7_to_spec_builder(v7_spec).map_err(|e| e.into())
 }
 
 fn amend_component(
