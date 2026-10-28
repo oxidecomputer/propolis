@@ -123,13 +123,6 @@ impl VersionedInstanceSpec {
         // migration-to-older-version. As long as the VM doesn't use a new
         // feature or setting, we'll pick a version the older Propolis should
         // know about, and everything else will "just work".
-        //
-        // When adding a new API version, the previous latest version will
-        // probably have gone from having an `Into<Spec>` to instead having
-        // `TryInto<Spec>`, which fails for a `Spec` describing whatever new
-        // features have been added. The new latest version, hopefully, will
-        // have an `Into<Spec>`. Those two versions should be the only ones that
-        // need attention.
         let versioned = if let Ok(v1_spec) =
             TryInto::<v1::instance_spec::InstanceSpec>::try_into(spec.clone())
         {
@@ -142,10 +135,14 @@ impl VersionedInstanceSpec {
             TryInto::<v3::instance_spec::InstanceSpec>::try_into(spec.clone())
         {
             VersionedInstanceSpec::V3(v3_spec)
+        } else if let Ok(v6_spec) =
+            TryInto::<v6::instance_spec::InstanceSpec>::try_into(spec.clone())
+        {
+            VersionedInstanceSpec::V6(v6_spec)
         } else {
-            VersionedInstanceSpec::V6(
-                Into::<v6::instance_spec::InstanceSpec>::into(spec.clone()),
-            )
+            return Err(MigrateError::InstanceSpecsIncompatible(
+                "no supported version found".to_string(),
+            ));
         };
         Ok(versioned)
     }

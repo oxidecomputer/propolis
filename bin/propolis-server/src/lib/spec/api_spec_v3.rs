@@ -49,6 +49,7 @@ impl TryFrom<Spec> for v3::instance_spec::InstanceSpec {
 /// Parses a v3 instance spec into a [`SpecBuilder`], validating component
 /// names, PCI paths, and backend references along the way. Callers can add
 /// additional (non-v3) components to the builder before calling `finish()`.
+#[allow(clippy::useless_conversion)]
 pub(crate) fn v3_to_spec_builder(
     value: v3::instance_spec::InstanceSpec,
 ) -> Result<SpecBuilder, LegacyApiSpecError> {
@@ -180,14 +181,17 @@ mod test {
                 .finish();
         assert!(spec.vsock.is_some());
 
-        let v6_spec = v6::instance_spec::InstanceSpec::from(spec.clone());
-        let v6_comp: v6::instance_spec::Component = vsock_comp.clone();
+        let v6_spec =
+            v6::instance_spec::InstanceSpec::try_from(spec.clone()).unwrap();
+        #[allow(clippy::useless_conversion)]
+        let v6_comp: v6::instance_spec::Component =
+            vsock_comp.clone().try_into().unwrap();
         assert_eq!(v6_spec.components.get(&vsock_id), Some(&v6_comp));
 
         let v3_spec =
             v3::instance_spec::InstanceSpec::try_from(spec.clone()).unwrap();
         let v3_comp: v3::instance_spec::Component =
-            vsock_comp.clone().try_into().unwrap();
+            v6_comp.clone().try_into().unwrap();
         assert_eq!(v3_spec.components.get(&vsock_id), Some(&v3_comp));
 
         let v2_res = v2::instance_spec::InstanceSpec::try_from(spec.clone());

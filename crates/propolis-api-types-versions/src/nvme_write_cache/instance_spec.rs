@@ -113,19 +113,17 @@ impl TryFrom<Component> for V3Component {
     }
 }
 
-impl From<InstanceSpec> for v3::instance_spec::InstanceSpec {
-    fn from(new: InstanceSpec) -> Self {
-        Self {
-            board: new.board,
-            components: new
-                .components
-                .into_iter()
-                .filter_map(|(k, v)| {
-                    V3Component::try_from(v).ok().map(|c| (k, c))
-                })
-                .collect(),
-            smbios: new.smbios,
-        }
+impl TryFrom<InstanceSpec> for v3::instance_spec::InstanceSpec {
+    type Error = InvalidV3Component;
+
+    fn try_from(new: InstanceSpec) -> Result<Self, Self::Error> {
+        let components: BTreeMap<_, _> = new
+            .components
+            .into_iter()
+            .map(|(k, v)| V3Component::try_from(v).map(|c| (k, c)))
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+
+        Ok(Self { board: new.board, components, smbios: new.smbios })
     }
 }
 
@@ -166,26 +164,34 @@ impl From<V3Component> for Component {
     }
 }
 
-impl From<InstanceSpecStatus> for v3::instance_spec::InstanceSpecStatus {
-    fn from(new: InstanceSpecStatus) -> Self {
+impl TryFrom<InstanceSpecStatus> for v3::instance_spec::InstanceSpecStatus {
+    type Error = InvalidV3Component;
+
+    fn try_from(new: InstanceSpecStatus) -> Result<Self, Self::Error> {
         match new {
             InstanceSpecStatus::WaitingForMigrationSource => {
-                Self::WaitingForMigrationSource
+                Ok(Self::WaitingForMigrationSource)
             }
-            InstanceSpecStatus::Present(spec) => Self::Present(spec.into()),
+            InstanceSpecStatus::Present(spec) => {
+                let v3_spec: v3::instance_spec::InstanceSpec =
+                    spec.try_into()?;
+                Ok(Self::Present(v3_spec))
+            }
         }
     }
 }
 
-impl From<InstanceSpecGetResponse>
+impl TryFrom<InstanceSpecGetResponse>
     for v3::instance_spec::InstanceSpecGetResponse
 {
-    fn from(new: InstanceSpecGetResponse) -> Self {
-        Self {
+    type Error = InvalidV3Component;
+
+    fn try_from(new: InstanceSpecGetResponse) -> Result<Self, Self::Error> {
+        Ok(Self {
             properties: new.properties,
             state: new.state,
-            spec: new.spec.into(),
-        }
+            spec: new.spec.try_into()?,
+        })
     }
 }
 
