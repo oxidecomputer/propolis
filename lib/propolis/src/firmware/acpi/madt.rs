@@ -27,7 +27,7 @@ pub struct MadtConfig {
     pub acpi_variant: AcpiVariant,
 
     /// Number of vCPUs in the VM.
-    pub num_cpus: u8,
+    pub num_cpus: u16,
 }
 
 /// The MADT/APIC table describes the interrupts for the entire system.
@@ -64,7 +64,14 @@ impl Aml for Madt {
 
         // Processor Local APIC.
         // ACPI rev. 6.6 section 5.2.12.2 "Processor Local APIC Structure"
-        for i in 0..self.config.num_cpus {
+        let cpus_u8: u8 =
+            self.config.num_cpus.try_into().unwrap_or_else(|_| {
+                panic!(
+                    "Don't know how to configure MADT xAPIC/\
+                 x2APIC tables for >255 CPUs"
+                );
+            });
+        for i in 0..cpus_u8 {
             table.add_structure(madt::ProcessorLocalApic::new(
                 i,
                 i,

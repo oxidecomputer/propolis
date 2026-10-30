@@ -7,7 +7,7 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::num::NonZeroU8;
+use std::num::NonZeroU16;
 use std::ops::Bound;
 
 use bhyve_api::vcpu_cpuid_entry;
@@ -45,36 +45,36 @@ pub enum SpecializeError {
     MissingVcpuCount,
     #[error("missing vcpu id")]
     MissingVcpuId,
-    #[error("unable to specialize leaf")]
-    IncompatibleTopology { leaf: u32, num_vcpu: u32, why: Option<&'static str> },
+    #[error("unable to specialize leaf {leaf:08x}, {why:?} value={value:x}")]
+    IncompatibleTopology { leaf: u32, value: u32, why: Option<&'static str> },
 }
 
 /// Specialize a set of cpuid leafs for provided attributes.
 ///
 /// This includes things such as a CPU topology (cores/threads/etc), a given
 /// vCPU ID (APIC, core/thread ID, etc), or other info tidbits.
-#[derive(Default)]
 pub struct Specializer {
-    has_smt: bool,
-    num_vcpu: Option<NonZeroU8>,
+    num_vcpu: NonZeroU16,
     vcpuid: Option<i32>,
+    has_smt: bool,
     cpu_topo_populate: BTreeSet<TopoKind>,
     cpu_topo_clear: BTreeSet<TopoKind>,
     do_cache_topo: bool,
 }
 impl Specializer {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Specify number of vCPUs in instance, and if SMT is enabled
-    pub fn with_vcpu_count(self, count: NonZeroU8, has_smt: bool) -> Self {
-        Self { num_vcpu: Some(count), has_smt, ..self }
+    pub fn new(count: NonZeroU16) -> Self {
+        Self {
+            num_vcpu: count,
+            vcpuid: None,
+            has_smt: false,
+            cpu_topo_populate: BTreeSet::new(),
+            cpu_topo_clear: BTreeSet::new(),
+            do_cache_topo: false,
+        }
     }
 
     /// Specify vCPU ID to specialize for
     pub fn with_vcpuid(self, vcpuid: i32) -> Self {
-        assert!((vcpuid as usize) < crate::vcpu::MAXCPU);
         Self { vcpuid: Some(vcpuid), ..self }
     }
 
@@ -85,6 +85,7 @@ impl Specializer {
     /// information may be incomplete.
     pub fn with_cpu_topo(
         self,
+        has_smt: bool,
         populate: impl Iterator<Item = TopoKind>,
     ) -> Self {
         let mut cpu_topo_populate = BTreeSet::new();
@@ -93,7 +94,7 @@ impl Specializer {
             cpu_topo_populate.insert(t);
         }
 
-        Self { cpu_topo_populate, ..self }
+        Self { has_smt, cpu_topo_populate, ..self }
     }
 
     /// Specify CPU topology types to clear from the specialized [CpuidSet]
@@ -124,7 +125,7 @@ impl Specializer {
     ) -> Result<CpuidSet, SpecializeError> {
         match set.vendor() {
             CpuidVendor::Amd => {
-                if self.do_cache_topo && self.num_vcpu.is_some() {
+                if self.do_cache_topo {
                     self.fix_amd_cache_topo(&mut set)?;
                 }
             }
@@ -136,22 +137,54 @@ impl Specializer {
 
         // APIC ID based on vcpuid
         if let Some(vcpuid) = self.vcpuid.as_ref() {
+            if *vcpuid as usize >= crate::vcpu::MAXCPU {
+                return Err(SpecializeError::IncompatibleTopology {
+                    leaf: 0,
+                    value: *vcpuid as u32,
+                    why: Some(
+                        "More vCPUs than MAXCPU? This should have been checked \
+                         when creating the Machine.",
+                    ),
+                });
+            }
+
             if let Some(ent) = set.get_mut(CpuidIdent::leaf(1)) {
                 // bits 31:24 contain initial APIC ID
                 ent.ebx &= !0xff000000;
-                ent.ebx |= ((*vcpuid as u32) & 0xff) << 24;
+
+                let apic_id: u8 = (*vcpuid).try_into().map_err(|_| {
+                    SpecializeError::IncompatibleTopology {
+                        leaf: 1,
+                        value: *vcpuid as u32,
+                        why: Some(
+                            "Don't know how to set CPUID initial APIC ID \
+                             if there are more than 255 IDs!",
+                        ),
+                    }
+                })?;
+                ent.ebx |= (apic_id as u32 & 0xff) << 24;
             }
         }
 
         // logical CPU count (if SMT is enabled)
-        if let Some(num_vcpu) = self.num_vcpu.as_ref() {
-            if self.has_smt {
-                if let Some(ent) = set.get_mut(CpuidIdent::leaf(1)) {
-                    ent.edx |= (0x1 << 28);
-                    // bits 23:16 contain max IDs for logical CPUs in package
-                    ent.ebx &= !0xff0000;
-                    ent.ebx |= u32::from(num_vcpu.get()) << 16;
-                }
+        if self.has_smt {
+            if let Some(ent) = set.get_mut(CpuidIdent::leaf(1)) {
+                ent.edx |= (0x1 << 28);
+                // bits 23:16 contain max IDs for logical CPUs in package
+                // TODO: what is in this leaf when `num_vcpu` saturates u8?
+                let logical_procs: u8 =
+                    self.num_vcpu.get().try_into().map_err(|_| {
+                        SpecializeError::IncompatibleTopology {
+                            leaf: 1,
+                            value: self.num_vcpu.get() as u32,
+                            why: Some(
+                                "Don't know how to set CPUID leaf 1 processor \
+                             count if there are more than 254 threads!",
+                            ),
+                        }
+                    })?;
+                ent.ebx &= !0xff0000;
+                ent.ebx |= u32::from(logical_procs) << 16;
             }
         }
 
@@ -163,7 +196,7 @@ impl Specializer {
         set: &mut CpuidSet,
     ) -> Result<(), SpecializeError> {
         assert!(self.do_cache_topo);
-        let num = self.num_vcpu.unwrap().get();
+        let num = self.num_vcpu.get();
         for ecx in 0..u32::MAX {
             match set.get_mut(CpuidIdent::subleaf(0x8000001d, ecx)) {
                 None => break,
@@ -200,10 +233,9 @@ impl Specializer {
 
     fn fix_cpu_topo(&self, set: &mut CpuidSet) -> Result<(), SpecializeError> {
         // The number of logical threads available to the guest.
-        let num_vcpu = self
-            .num_vcpu
-            .ok_or(SpecializeError::MissingVcpuCount)
-            .map(|n| u32::from(n.get()))?;
+        let num_vcpu = u32::from(self.num_vcpu.get());
+
+        // TODO: check that the provided CPU topology does actually match the indicated CPU count.
 
         // The number of logical processors the guest should see. If we
         // indicate that SMT is enabled, then vCPUs are presented as pairs
@@ -287,7 +319,7 @@ impl Specializer {
                     if num_vproc >= 0b100_0000 {
                         return Err(SpecializeError::IncompatibleTopology {
                             leaf,
-                            num_vcpu,
+                            value: num_vcpu,
                             why: Some(
                                 "Don't know how to set CPUID leaf 4 processor \
                                  count if there are more than 64 processors!",
@@ -296,7 +328,7 @@ impl Specializer {
                     } else if num_vproc == 0 {
                         return Err(SpecializeError::IncompatibleTopology {
                             leaf,
-                            num_vcpu,
+                            value: num_vcpu,
                             why: Some(
                                 "Cannot specialize CPUID leaf 4 \
                                  for 0 processor VM",
@@ -356,7 +388,7 @@ impl Specializer {
                                 return Err(
                                     SpecializeError::IncompatibleTopology {
                                         leaf,
-                                        num_vcpu,
+                                        value: num_vcpu,
                                         why: Some("too many vCPUs"),
                                     },
                                 );
@@ -402,7 +434,7 @@ impl Specializer {
                         // least likely to surprise guest OSes.
                         return Err(SpecializeError::IncompatibleTopology {
                             leaf,
-                            num_vcpu,
+                            value: num_vcpu,
                             why: Some("Leaf B.1 would have EAX=0"),
                         });
                     }
@@ -418,7 +450,7 @@ impl Specializer {
                     if num_vcpu >= 256 {
                         return Err(SpecializeError::IncompatibleTopology {
                             leaf,
-                            num_vcpu,
+                            value: num_vcpu,
                             why: Some(
                                 "Don't know how to specialize CPUID leaf \
                                        B for more than 256 processors!",
@@ -438,12 +470,78 @@ impl Specializer {
                 TopoKind::Std1F => {
                     // TODO: add 0x1f topo info
                 }
+                TopoKind::Ext8 => {
+                    let ext_features = CpuidIdent::leaf(0x8000_0008);
+                    let ext_8h = set
+                        .get_mut(ext_features)
+                        .expect("leaf to specialize exists");
+                    ext_8h.ecx & !0xff;
+                    if num_vcpu >= 256 {
+                        return Err(SpecializeError::IncompatibleTopology {
+                            leaf,
+                            value: num_vcpu,
+                            why: Some(
+                                "Don't know how to specialize CPUID leaf \
+                                 8000_0008 for more than 256 processors!",
+                            ),
+                        });
+                    }
+                    ext_8h.ecx |= num_vcpu - 1;
+                    let apic_id_size = num_vcpu.ilog2() + 1;
+                    if apic_id_size > 0b1111 {
+                        return Err(SpecializeError::IncompatibleTopology {
+                            leaf,
+                            value: apic_id_size,
+                            why: Some(
+                                "APIC ID size is larger than leaf Ext8h ECX \
+                                 can express?",
+                            ),
+                        });
+                    }
+                    ext_8h.ecx |= apic_id_size << 12;
+                }
                 TopoKind::Ext1E => {
                     let id = self.vcpuid.unwrap_or(0) as u32;
                     let mut ebx = id;
                     if self.has_smt {
                         // bits 15:8 hold the zero-based threads-per-compute-unit
                         ebx |= 0x100;
+                        // bits 7:0 hold the compute-unit-id. a "compute unit"
+                        // is "one or more physical cores", so it is an
+                        // arbitrary choice to pick the upper bits of APIC IDs
+                        // as the compute unit ID.
+                        let compute_unit_id: u8 =
+                            (id >> 1).try_into().map_err(|_| {
+                                SpecializeError::IncompatibleTopology {
+                                    leaf: 0x8000_001e,
+                                    value: id,
+                                    why: Some(
+                                        "Need a more coarse compute unit ID \
+                                     for leaf 8000_001e and more than \
+                                     256 processors!",
+                                    ),
+                                }
+                            })?;
+                        ebx |= compute_unit_id as u32;
+                    } else {
+                        // No SMT means the zero-based threads-per-compute-unit is 0.
+                        ebx & !0x0000ff00;
+                        // bits 7:0 hold the compute-unit-id. Like above, the
+                        // compute unit ID selection is arbitrary (that we know
+                        // of).
+                        let compute_unit_id: u8 =
+                            id.try_into().map_err(|_| {
+                                SpecializeError::IncompatibleTopology {
+                                    leaf: 0x8000_001e,
+                                    value: id,
+                                    why: Some(
+                                        "Need a more coarse compute unit ID \
+                                     for leaf 8000_001e and more than \
+                                     256 processors!",
+                                    ),
+                                }
+                            })?;
+                        ebx |= compute_unit_id as u32;
                     }
                     set.insert(
                         CpuidIdent::leaf(leaf),
@@ -477,6 +575,8 @@ pub enum TopoKind {
     StdB = 0xb,
     /// Leaf 0x1F (Intel)
     Std1F = 0x1f,
+    /// LEAF 0x80000008 (AMD)
+    Ext8 = 0x80000008,
     /// LEAF 0x8000001E (AMD)
     Ext1E = 0x8000001e,
 }
@@ -485,10 +585,10 @@ impl TopoKind {
     /// Return an iterator of the CPU topology information that Propolis
     /// supports specializing. This is intended as a "reasonable default" for
     /// CPUID profile specialization.
-    pub fn supported() -> std::array::IntoIter<Self, 2> {
-        // Topology leaves 1Fh and 8000_001E are partially or entirely TODO, so
-        // we can't specialize them.
-        [TopoKind::Std4, TopoKind::StdB].into_iter()
+    pub fn supported() -> std::array::IntoIter<Self, 4> {
+        // Topology leaf 1Fh is entirely TODO, so we can't specialize it.
+        [TopoKind::Std4, TopoKind::StdB, TopoKind::Ext8, TopoKind::Ext1E]
+            .into_iter()
     }
 }
 

@@ -17,10 +17,11 @@ use clap::{Args, Parser, Subcommand};
 use futures::{future, SinkExt};
 use newtype_uuid::{GenericUuid, TypedUuid, TypedUuidKind, TypedUuidTag};
 use propolis_client::instance_spec::{
-    BlobStorageBackend, Board, Chipset, Component, CrucibleStorageBackend,
-    I440Fx, InstanceMetadata, InstanceProperties, InstanceSpec,
-    InstanceSpecGetResponse, NvmeDisk, PciPath, QemuPvpanic,
-    ReplacementComponent, SerialPort, SerialPortNumber, SpecKey, VirtioDisk,
+    BlobStorageBackend, Board, Chipset, Component, CpuTopology,
+    CrucibleStorageBackend, I440Fx, InstanceMetadata, InstanceProperties,
+    InstanceSpec, InstanceSpecGetResponse, NvmeDisk, PciPath, QemuPvpanic,
+    ReplacementComponent, SerialPort, SerialPortNumber, SpecKey, TopoLeaves,
+    VirtioDisk,
 };
 use propolis_client::support::nvme_serial_from_str;
 use propolis_client::types::{
@@ -174,7 +175,7 @@ struct VmConfig {
 
     /// Number of vCPUs allocated to instance
     #[clap(short = 'c', default_value = "4", action, requires = "config_toml")]
-    vcpus: u8,
+    vcpus: u16,
 
     /// Memory allocated to instance (MiB)
     #[clap(short, default_value = "1024", action, requires = "config_toml")]
@@ -330,11 +331,31 @@ impl VmConfig {
             .map(|cfg| cfg.hv_interface.clone())
             .unwrap_or_default();
 
+        let smt = parsed_toml
+            .as_ref()
+            .map(|cfg| cfg.machine_settings.smt)
+            .unwrap_or(true);
+
+        let sockets = parsed_toml
+            .as_ref()
+            .map(|cfg| cfg.machine_settings.sockets)
+            .unwrap_or(1);
+
         let mut spec = InstanceSpec {
             board: Board {
                 chipset: Chipset::I440Fx(I440Fx { enable_pcie }),
                 cpuid: cpuid_profile,
                 cpus: self.vcpus,
+                cpu_topology: CpuTopology {
+                    has_smt: smt,
+                    sockets,
+                    topo_leaves: TopoLeaves {
+                        std_4: true,
+                        std_b: false,
+                        ext_8: false,
+                        ext_1e: false,
+                    },
+                },
                 memory_mb: self.memory,
                 guest_hv_interface,
             },
