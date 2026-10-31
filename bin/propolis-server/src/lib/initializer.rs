@@ -410,8 +410,11 @@ impl MachineInitializer<'_> {
     }
 
     pub fn initialize_acpi(&mut self, chipset: &RegisteredChipset) {
+        // TODO(luiz): update instance spec to allow enabling or disabling the
+        //             Acpi device.
         let sci_pin = chipset.irq_pin(acpi::SCI_IRQ).unwrap();
         let acpi = acpi::Acpi::create(sci_pin.into());
+        acpi.attach(&self.machine.bus_pio);
         self.devices
             .insert(SpecKey::Name(acpi.type_name().into()), acpi.clone());
     }
