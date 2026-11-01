@@ -7,7 +7,7 @@
       "url": "https://oxide.computer",
       "email": "api@oxide.computer"
     },
-    "version": "6.0.0"
+    "version": "7.0.0"
   },
   "paths": {
     "/instance": {
@@ -88,19 +88,8 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "successful operation",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "title": "Null",
-                  "type": "string",
-                  "enum": [
-                    null
-                  ]
-                }
-              }
-            }
+          "204": {
+            "description": "resource updated"
           },
           "4XX": {
             "$ref": "#/components/responses/Error"
@@ -163,7 +152,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/InstanceVCRReplace"
+                "$ref": "#/components/schemas/InstanceVcrReplace"
               }
             }
           },
@@ -247,19 +236,8 @@
         "summary": "Issues an NMI to the instance.",
         "operationId": "instance_issue_nmi",
         "responses": {
-          "200": {
-            "description": "successful operation",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "title": "Null",
-                  "type": "string",
-                  "enum": [
-                    null
-                  ]
-                }
-              }
-            }
+          "204": {
+            "description": "resource updated"
           },
           "4XX": {
             "$ref": "#/components/responses/Error"
@@ -1345,7 +1323,7 @@
               "method": {
                 "type": "string",
                 "enum": [
-                  "Spec"
+                  "spec"
                 ]
               },
               "value": {
@@ -1371,7 +1349,7 @@
               "method": {
                 "type": "string",
                 "enum": [
-                  "MigrationTarget"
+                  "migration_target"
                 ]
               },
               "value": {
@@ -1610,7 +1588,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "WaitingForMigrationSource"
+                  "waiting_for_migration_source"
                 ]
               }
             },
@@ -1624,7 +1602,7 @@
               "type": {
                 "type": "string",
                 "enum": [
-                  "Present"
+                  "present"
                 ]
               },
               "value": {
@@ -1642,16 +1620,16 @@
         "description": "Current state of an Instance.",
         "type": "string",
         "enum": [
-          "Creating",
-          "Starting",
-          "Running",
-          "Stopping",
-          "Stopped",
-          "Rebooting",
-          "Migrating",
-          "Repairing",
-          "Failed",
-          "Destroyed"
+          "creating",
+          "starting",
+          "running",
+          "stopping",
+          "stopped",
+          "rebooting",
+          "migrating",
+          "repairing",
+          "failed",
+          "destroyed"
         ]
       },
       "InstanceStateMonitorRequest": {
@@ -1691,12 +1669,12 @@
       "InstanceStateRequested": {
         "type": "string",
         "enum": [
-          "Run",
-          "Stop",
-          "Reboot"
+          "run",
+          "stop",
+          "reboot"
         ]
       },
-      "InstanceVCRReplace": {
+      "InstanceVcrReplace": {
         "type": "object",
         "properties": {
           "vcr_json": {
@@ -1733,16 +1711,16 @@
       "MigrationState": {
         "type": "string",
         "enum": [
-          "Sync",
-          "RamPush",
-          "Pause",
-          "RamPushDirty",
-          "Device",
-          "Resume",
-          "RamPull",
-          "Server",
-          "Finish",
-          "Error"
+          "sync",
+          "ram_push",
+          "pause",
+          "ram_push_dirty",
+          "device",
+          "resume",
+          "ram_pull",
+          "server",
+          "finish",
+          "error"
         ]
       },
       "NvmeDisk": {
@@ -1907,7 +1885,7 @@
               "component": {
                 "type": "string",
                 "enum": [
-                  "MigrationFailureInjector"
+                  "migration_failure_injector"
                 ]
               },
               "spec": {
@@ -1926,7 +1904,7 @@
               "component": {
                 "type": "string",
                 "enum": [
-                  "CrucibleStorageBackend"
+                  "crucible_storage_backend"
                 ]
               },
               "spec": {
@@ -1945,7 +1923,7 @@
               "component": {
                 "type": "string",
                 "enum": [
-                  "VirtioNetworkBackend"
+                  "virtio_network_backend"
                 ]
               },
               "spec": {
