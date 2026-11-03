@@ -29,9 +29,9 @@ fn main() -> anyhow::Result<()> {
     //
     // This also means we can keep all of the versioning fiddliness here instead
     // of subjecting every (e.g. both) user to thinking about this stuff.
-    println!("cargo:rerun-if-changed=../lib");
-    println!("cargo:rerun-if-changed=../bin");
-    println!("cargo:rerun-if-changed=../crates");
+    println!("cargo:rerun-if-changed=../../lib");
+    println!("cargo:rerun-if-changed=../../bin");
+    println!("cargo:rerun-if-changed=../../crates");
 
     Ok(())
 }

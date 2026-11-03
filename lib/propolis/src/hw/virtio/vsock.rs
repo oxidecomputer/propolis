@@ -6,15 +6,18 @@ use lazy_static::lazy_static;
 use slog::Logger;
 use std::sync::Arc;
 
+use crate::accessors::Guard;
 use crate::accessors::MemAccessor;
 use crate::common::*;
 use crate::hw::pci;
 use crate::hw::virtio;
+use crate::hw::virtio::queue::AvailChain;
 use crate::hw::virtio::queue::Chain;
 use crate::hw::virtio::queue::VirtQueue;
 use crate::hw::virtio::queue::VqSize;
 use crate::migrate::*;
 use crate::util::regmap::RegMap;
+use crate::vmm::mem::MemAccessed;
 use crate::vmm::MemCtx;
 use crate::vsock::packet::VsockPacket;
 use crate::vsock::packet::VsockPacketError;
@@ -40,36 +43,25 @@ pub const VSOCK_EVENT_QUEUE: u16 = 0x2;
 /// This guarantees we have space to send a packet to the guest before reading
 /// data from a host socket, preventing data loss if the queue is full.
 ///
-/// The permit holds a mutable reference to `VsockVq`, ensuring only one permit
-/// can exist at a time (enforced at compile time). If dropped without calling
-/// `write`, the chain is retained in `VsockVq` for reuse.
+/// NB: The underlying descriptor chain is not consumed until a call to
+/// [`RxPermit::write`] is made. Droopping the [`RxPermit`] is a no-op without a
+/// call to write is a no-op.
 pub struct RxPermit<'a> {
-    vq: &'a mut VsockVq,
+    avail: AvailChain<'a>,
+    mem: Guard<'a, MemAccessed>,
 }
 
 impl RxPermit<'_> {
     /// Returns the maximum data payload that can fit in this descriptor chain.
     pub fn available_data_space(&self) -> usize {
         let header_size = std::mem::size_of::<VsockPacketHeader>();
-        self.vq
-            .rx_chain
-            .as_ref()
-            .expect("has chain")
-            .remain_write_bytes()
-            .saturating_sub(header_size)
+        self.avail.chain().remain_write_bytes().saturating_sub(header_size)
     }
 
-    pub fn write(self, header: &VsockPacketHeader, data: &[u8]) {
-        // TODO: cannot access memory?
-        let mem = self.vq.acc_mem.access().expect("mem access for write");
-        let queue =
-            self.vq.queues.get(VSOCK_RX_QUEUE as usize).expect("rx queue");
-
-        // NB: `RxPermit` should only be created if the owning `VsockVq`
-        // actually has a `Some(Chain)`. Unfortuantely there doesn't seem to be
-        // a way to enforce this at compile time.
-        let mut chain = self.vq.rx_chain.take().expect("has chain");
-        chain.write(header, &mem);
+    pub fn write(mut self, header: &VsockPacketHeader, data: &[u8]) {
+        let mem = &*self.mem;
+        let chain = self.avail.chain_mut();
+        chain.write(header, mem);
 
         if !data.is_empty() {
             let mut done = 0;
@@ -86,15 +78,25 @@ impl RxPermit<'_> {
         }
 
         probes::vsock_pkt_rx!(|| header);
-        queue.push_used(&mut chain, &mem);
+        self.avail.push_used(mem);
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum TransportResetError {
+    #[error("virt queue not alive")]
+    NotAlive,
+    #[error("mem access failed")]
+    MemAccess,
+    #[error("event queue has no usable descriptors")]
+    NoDescriptor,
+    #[error("descriptor chain buffer too small")]
+    ChainTooSmall,
 }
 
 pub struct VsockVq {
     queues: Vec<Arc<VirtQueue>>,
     acc_mem: MemAccessor,
-    /// Cached rx chain for permit reuse when dropped without write
-    rx_chain: Option<Chain>,
 }
 
 impl VsockVq {
@@ -102,13 +104,13 @@ impl VsockVq {
         queues: Vec<Arc<VirtQueue>>,
         acc_mem: MemAccessor,
     ) -> Self {
-        Self { queues, acc_mem, rx_chain: None }
+        Self { queues, acc_mem }
     }
 
     /// Try to acquire a permit for sending a packet to the guest.
     ///
-    /// Returns `Some(RxPermit)` if a descriptor chain is available,
-    /// `None` if the rx queue is full.
+    /// Returns `Some(RxPermit)` if a descriptor chain is available, `None`
+    /// if the rx queue is full.
     pub fn try_rx_permit(&mut self) -> Option<RxPermit<'_>> {
         let vq = self.queues.get(VSOCK_RX_QUEUE as usize)?;
         // See propolis#1110 & propolis#1115
@@ -121,22 +123,9 @@ impl VsockVq {
             return None;
         }
 
-        // Reuse cached chain or pop a new one
-        if self.rx_chain.is_none() {
-            // TODO: cannot access memory?
-            let mem = self.acc_mem.access().expect("mem access for write");
-            let mut chain = Chain::with_capacity(10);
-            if let Some(_) = vq.pop_avail(&mut chain, &mem) {
-                self.rx_chain = Some(chain);
-            }
-        }
-
-        // We only return a permit iff we know that we are holding onto a valid
-        // descriptor chain that can be used by the borrowing `RxPermit`
-        match self.rx_chain {
-            Some(_) => Some(RxPermit { vq: self }),
-            None => None,
-        }
+        let mem = self.acc_mem.access()?;
+        let avail = vq.peek_avail(&mem)?;
+        Some(RxPermit { avail, mem })
     }
 
     /// Receive all available packets from the TX queue.
@@ -162,13 +151,35 @@ impl VsockVq {
         Some(packet)
     }
 
-    /// Drop any cached descriptor chain.
+    /// Send a `VIRTIO_VSOCK_EVENT_TRANSPORT_RESET` to the guest on the
+    /// event queue.
     ///
-    /// This MUST be called when reseting the virtio-socket device so
-    /// that we don't use stale `GuestAddr`s across device resets.
-    #[cfg(target_os = "illumos")]
-    pub(crate) fn clear_rx_chain(&mut self) {
-        self.rx_chain = None;
+    /// virtio spec 5.10.6.7, states that this must be sent upon guest
+    /// migration, so that the guest can remove all of its established
+    /// connections.
+    pub fn send_transport_reset(&mut self) -> Result<(), TransportResetError> {
+        let vq = self
+            .queues
+            .get(VSOCK_EVENT_QUEUE as usize)
+            .expect("has event queue");
+
+        if !vq.is_alive() {
+            return Err(TransportResetError::NotAlive);
+        }
+
+        let mem =
+            self.acc_mem.access().ok_or(TransportResetError::MemAccess)?;
+        let mut avail =
+            vq.peek_avail(&mem).ok_or(TransportResetError::NoDescriptor)?;
+
+        let event_id: u32 = VIRTIO_VSOCK_EVENT_TRANSPORT_RESET.to_le();
+        if !avail.chain_mut().write(&event_id, &mem) {
+            avail.push_used(&mem);
+            return Err(TransportResetError::ChainTooSmall);
+        }
+
+        avail.push_used(&mem);
+        Ok(())
     }
 }
 
@@ -192,7 +203,7 @@ impl PciVirtioSock {
             // VSOCK_TX_QUEUE
             VqSize::new(queue_size),
             // VSOCK_EVENT_QUEUE
-            VqSize::new(1),
+            VqSize::new(16),
         ]);
 
         // One for rx, tx, event
@@ -291,9 +302,31 @@ impl Lifecycle for PciVirtioSock {
         self.backend.halt();
     }
     fn migrate(&'_ self) -> Migrator<'_> {
-        // TODO (MTZ):
-        // We need to support migration propolis#1065
-        Migrator::NonMigratable
+        Migrator::Multi(self)
+    }
+}
+
+impl MigrateMulti for PciVirtioSock {
+    fn export(
+        &self,
+        output: &mut PayloadOutputs,
+        ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
+        <dyn PciVirtio>::export(self, output, ctx)
+    }
+
+    fn import(
+        &self,
+        offer: &mut PayloadOffers,
+        ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
+        <dyn PciVirtio>::import(self, offer, ctx)?;
+
+        // Upon import, our vsock poller has no state and the spec indicates
+        // that we need to tell the guest to reset its established connections.
+        self.backend.send_transport_reset();
+
+        Ok(())
     }
 }
 
@@ -321,7 +354,6 @@ mod bits {
         }
     }
 
-    #[allow(unused)]
     pub const VIRTIO_VSOCK_EVENT_TRANSPORT_RESET: u32 = 0;
 }
 use bits::*;
@@ -399,5 +431,240 @@ impl VsockPacket {
         packet.data = data.into();
 
         Ok(packet)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    #[cfg(target_os = "illumos")]
+    mod illumos {
+        use std::net::TcpListener;
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        use crate::hw::pci::test::Scaffold;
+        use crate::hw::pci::{BusLocation, Endpoint};
+        use crate::hw::virtio::testutil::{TestVirtQueues, VqSize};
+        use crate::hw::virtio::vsock::{
+            PciVirtioSock, VIRTIO_VSOCK_EVENT_TRANSPORT_RESET,
+            VSOCK_EVENT_QUEUE, VSOCK_RX_QUEUE, VSOCK_TX_QUEUE,
+        };
+        use crate::hw::virtio::VirtioDevice;
+        use crate::lifecycle::Lifecycle;
+        use crate::migrate::{
+            MigrateCtx, MigrateMulti, PayloadOffer, PayloadOffers,
+            PayloadOutputs,
+        };
+        use crate::vsock::packet::{
+            VsockPacketHeader, VsockPacketOp, VsockSocketType,
+        };
+        use crate::vsock::proxy::VsockPortMapping;
+        use crate::vsock::{GuestCid, VSOCK_HOST_CID};
+        use zerocopy::{FromBytes, IntoBytes};
+
+        fn test_logger() -> slog::Logger {
+            slog::Logger::root(slog::Discard, slog::o!())
+        }
+
+        fn test_deadline() -> Instant {
+            Instant::now() + Duration::from_secs(15)
+        }
+
+        #[test]
+        fn migrate_multi_round_trip() {
+            const SRC_PORT: u32 = 1234;
+            const DST_PORT: u32 = 3000;
+            let cid = GuestCid::try_from(716).unwrap();
+
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mappings = vec![VsockPortMapping::new(
+                3000,
+                listener.local_addr().unwrap(),
+            )];
+
+            let source =
+                PciVirtioSock::new(256, cid, test_logger(), mappings.clone());
+            let target = PciVirtioSock::new(256, cid, test_logger(), mappings);
+
+            let tvqs = TestVirtQueues::new(&[
+                VqSize::new(256),
+                VqSize::new(256),
+                VqSize::new(16),
+            ]);
+
+            // Scaffold sets up an orphan acc_mem, swap it for a child of the
+            // test memory's accessor tree.
+            let mut scaffold = Scaffold::new();
+            scaffold.acc_mem = tvqs.mem_acc().child(Some("pci-bus".into()));
+            let bus = scaffold.create_bus();
+
+            // Source vsock device
+            bus.attach(
+                BusLocation::new(0, 0).unwrap(),
+                Arc::clone(&source) as Arc<dyn Endpoint>,
+                None,
+            );
+            // Dest vsock device
+            bus.attach(
+                BusLocation::new(1, 0).unwrap(),
+                Arc::clone(&target) as Arc<dyn Endpoint>,
+                None,
+            );
+
+            // Setup the test vsock queues, but don't provide the event buffer.
+            for qid in [VSOCK_RX_QUEUE, VSOCK_EVENT_QUEUE, VSOCK_TX_QUEUE] {
+                let layout = tvqs.layout(qid as usize);
+                let vq = source
+                    .virtio_state
+                    .queues
+                    .get(qid)
+                    .expect("device has the queue");
+                vq.map_virtqueue(
+                    layout.desc_base,
+                    layout.avail_base,
+                    layout.used_base,
+                );
+                vq.live.store(true, Ordering::Release);
+                vq.enabled.store(true, Ordering::Release);
+            }
+            let mut ev_writer = tvqs.writer(VSOCK_EVENT_QUEUE as usize, 0);
+            let mut tx_writer = tvqs.writer(VSOCK_TX_QUEUE as usize, 0x10000);
+            let mut rx_writer = tvqs.writer(VSOCK_RX_QUEUE as usize, 0x20000);
+
+            let d_rx = rx_writer.add_writable(tvqs.mem_acc(), 256);
+            rx_writer.publish_avail(tvqs.mem_acc(), d_rx);
+
+            let acc_mem = tvqs.mem_acc().access().expect("test memory");
+            let ctx = MigrateCtx { mem: &acc_mem };
+
+            // Export guest state
+            let mut outputs = PayloadOutputs::new();
+            MigrateMulti::export(source.as_ref(), &mut outputs, &ctx)
+                .expect("can export PciVirtioSock");
+
+            // Serialize the export payload into the import payload.
+            let mut offers =
+                PayloadOffers::new(outputs.into_iter().map(|output| {
+                    let value = serde_json::to_value(&output.payload)
+                        .expect("serializing payload output");
+                    PayloadOffer {
+                        kind: output.kind,
+                        version: output.version,
+                        payload: Box::new(
+                            <dyn erased_serde::Deserializer>::erase(value),
+                        ),
+                    }
+                }));
+
+            // Import guest state
+            MigrateMulti::import(target.as_ref(), &mut offers, &ctx)
+                .expect("can import PciVirtioSock");
+
+            // After import, the guest would be resumed
+            Lifecycle::resume(target.as_ref());
+
+            // Attempt to open a connection via REQUEST, which should not
+            // succeed yet, because our event queue has no buffers in it yet.
+            let mut hdr = VsockPacketHeader::new();
+            hdr.set_src_cid(cid)
+                .set_dst_cid_raw(VSOCK_HOST_CID)
+                .set_src_port(SRC_PORT)
+                .set_dst_port(DST_PORT)
+                .set_len(0)
+                .set_socket_type(VsockSocketType::Stream)
+                .set_op(VsockPacketOp::Request)
+                .set_buf_alloc(65536)
+                .set_fwd_cnt(0);
+            let d_tx = tx_writer.add_readable(tvqs.mem_acc(), hdr.as_bytes());
+            tx_writer.publish_avail(tvqs.mem_acc(), d_tx);
+            let tx_vq = target
+                .virtio_state
+                .queues
+                .get(VSOCK_TX_QUEUE)
+                .expect("device has a tx queue");
+            VirtioDevice::queue_notify(target.as_ref(), tx_vq);
+
+            std::thread::sleep(Duration::from_millis(100));
+            assert_eq!(
+                tx_writer.used_idx(tvqs.mem_acc()),
+                0,
+                "tx packet processed while the transport reset was needed"
+            );
+
+            // Pretend the guest updates its event queue with new buffers. A
+            // well behaved guest should have kept these available from the
+            // start.
+            let d_ev = ev_writer.add_writable(tvqs.mem_acc(), 4);
+            ev_writer.publish_avail(tvqs.mem_acc(), d_ev);
+            let ev_vq = target
+                .virtio_state
+                .queues
+                .get(VSOCK_EVENT_QUEUE)
+                .expect("device has an event queue");
+            VirtioDevice::queue_notify(target.as_ref(), ev_vq);
+
+            let deadline = test_deadline();
+            while ev_writer.used_idx(tvqs.mem_acc()) < 1 {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for transport reset delivery"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+
+            let elem = ev_writer.read_used_elem(tvqs.mem_acc(), 0);
+            assert_eq!(elem.id, u32::from(d_ev));
+            assert_eq!(elem.len, 4, "event is a single le32 id");
+            let event = ev_writer.read_desc_data(tvqs.mem_acc(), d_ev, 4);
+            assert_eq!(
+                event,
+                VIRTIO_VSOCK_EVENT_TRANSPORT_RESET.to_le_bytes(),
+                "delivered event is VIRTIO_VSOCK_EVENT_TRANSPORT_RESET"
+            );
+
+            // Once we were able to send a VIRTIO_VSOCK_EVENT_TRANSPORT_RESET to
+            // the guest we should now see the REQUEST acknowledged.
+            let deadline = test_deadline();
+            while tx_writer.used_idx(tvqs.mem_acc()) < 1 {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for the gated tx packet"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let tx_elem = tx_writer.read_used_elem(tvqs.mem_acc(), 0);
+            assert_eq!(tx_elem.id, u32::from(d_tx));
+
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while rx_writer.used_idx(tvqs.mem_acc()) < 1 {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for the handshake RESPONSE"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let rx_elem = rx_writer.read_used_elem(tvqs.mem_acc(), 0);
+            assert_eq!(rx_elem.id, u32::from(d_rx));
+            let buf = rx_writer.read_desc_data(
+                tvqs.mem_acc(),
+                d_rx,
+                rx_elem.len as usize,
+            );
+            let resp_hdr = VsockPacketHeader::read_from_bytes(
+                &buf[..std::mem::size_of::<VsockPacketHeader>()],
+            )
+            .expect("rx buffer holds a packet header");
+            assert_eq!(resp_hdr.op(), Some(VsockPacketOp::Response));
+            assert_eq!(resp_hdr.src_cid(), VSOCK_HOST_CID);
+            assert_eq!(resp_hdr.dst_cid(), cid.get());
+            assert_eq!(resp_hdr.src_port(), DST_PORT);
+            assert_eq!(resp_hdr.dst_port(), SRC_PORT);
+
+            // Tear down the source and target vsock devices.
+            Lifecycle::pause(target.as_ref());
+            Lifecycle::halt(source.as_ref());
+            Lifecycle::halt(target.as_ref());
+        }
     }
 }

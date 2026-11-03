@@ -11,7 +11,6 @@ use std::io::Read;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::sync::Barrier;
 use std::sync::Condvar;
 use std::sync::Mutex;
 use std::thread::JoinHandle;
@@ -23,6 +22,7 @@ use nix::poll::PollFlags;
 use slog::{error, info, warn, Logger};
 
 use crate::hw::virtio::vsock::VsockVq;
+use crate::hw::virtio::vsock::VSOCK_EVENT_QUEUE;
 use crate::hw::virtio::vsock::VSOCK_RX_QUEUE;
 use crate::hw::virtio::vsock::VSOCK_TX_QUEUE;
 use crate::vsock::packet::VsockPacket;
@@ -47,7 +47,8 @@ const DEFAULT_QUIESCE_TIMEOUT: Duration = Duration::from_secs(2);
 enum VsockEvent {
     TxQueue = 0,
     RxQueue = 1,
-    Pause = 2,
+    EventQueue = 2,
+    Pause = 3,
 }
 
 impl TryFrom<usize> for VsockEvent {
@@ -57,7 +58,8 @@ impl TryFrom<usize> for VsockEvent {
         match value {
             0 => Ok(Self::TxQueue),
             1 => Ok(Self::RxQueue),
-            2 => Ok(Self::Pause),
+            2 => Ok(Self::EventQueue),
+            3 => Ok(Self::Pause),
             unknown => Err(unknown),
         }
     }
@@ -91,12 +93,22 @@ impl PollerState {
     }
 }
 
+/// Whether the guest is needs a `VIRTIO_VSOCK_EVENT_TRANSPORT_RESET` or
+/// not.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum TransportResetState {
+    NotNeeded,
+    Needed,
+}
+
 /// Commands that can be sent to a paused `poller_loop`.
 enum PausedCmd {
     /// Continue execution
-    Resume,
+    Resume { oneshot: mpsc::SyncSender<()> },
     /// Cleanup all connection state and queued packets
     Reset { oneshot: mpsc::SyncSender<()> },
+    /// Tell the guest to drop its established connections
+    SendTransportReset { oneshot: mpsc::SyncSender<()> },
     /// Shutdown the event-loop
     Halt,
 }
@@ -128,25 +140,36 @@ impl VsockPollerNotify {
         match id {
             VSOCK_RX_QUEUE => self.port_send(VsockEvent::RxQueue),
             VSOCK_TX_QUEUE => self.port_send(VsockEvent::TxQueue),
+            VSOCK_EVENT_QUEUE => self.port_send(VsockEvent::EventQueue),
             _ => Ok(()),
         }
     }
 
-    pub fn pause(&self) -> std::io::Result<()> {
+    pub fn pause_evloop(&self) -> std::io::Result<()> {
         self.port_send(VsockEvent::Pause)
     }
 
-    pub fn resume(&self) {
-        self.pause_tx.send(PausedCmd::Resume).unwrap();
+    pub fn resume_evloop(&self) {
+        let (tx, rx) = mpsc::sync_channel(0);
+        self.pause_tx.send(PausedCmd::Resume { oneshot: tx }).unwrap();
+        rx.recv().unwrap();
     }
 
-    pub fn reset(&self) {
+    pub fn reset_evloop(&self) {
         let (tx, rx) = mpsc::sync_channel(0);
         self.pause_tx.send(PausedCmd::Reset { oneshot: tx }).unwrap();
         rx.recv().unwrap();
     }
 
-    pub fn halt(&self) {
+    pub fn send_transport_reset(&self) {
+        let (tx, rx) = mpsc::sync_channel(0);
+        self.pause_tx
+            .send(PausedCmd::SendTransportReset { oneshot: tx })
+            .unwrap();
+        rx.recv().unwrap();
+    }
+
+    pub fn halt_evloop(&self) {
         self.pause_tx.send(PausedCmd::Halt).unwrap();
     }
 
@@ -193,7 +216,6 @@ struct ClosingConn {
 
 pub struct VsockPoller {
     log: Logger,
-    start_barrier: Arc<Barrier>,
     /// The guest context id
     guest_cid: GuestCid,
     /// Port mappings we are proxying packets to and from
@@ -214,6 +236,8 @@ pub struct VsockPoller {
     rx_blocked: Vec<ConnKey>,
     /// Connections waiting to be reaped
     quiescing: VecDeque<ClosingConn>,
+    /// Whether a `VIRTIO_VSOCK_EVENT_TRANSPORT_RESET` is owed to the guest.
+    transport_reset: TransportResetState,
 }
 
 impl VsockPoller {
@@ -223,7 +247,6 @@ impl VsockPoller {
     /// the guest VM and host sockets.
     pub fn new(
         log: Logger,
-        start_barrier: Arc<Barrier>,
         cid: GuestCid,
         queues: VsockVq,
         port_mappings: IdHashMap<VsockPortMapping>,
@@ -257,7 +280,6 @@ impl VsockPoller {
 
         Ok(Self {
             log,
-            start_barrier,
             guest_cid: cid,
             port_mappings,
             port_fd: Arc::new(unsafe { OwnedFd::from_raw_fd(port_fd) }),
@@ -269,6 +291,7 @@ impl VsockPoller {
             rx: Default::default(),
             rx_blocked: Default::default(),
             quiescing: Default::default(),
+            transport_reset: TransportResetState::NotNeeded,
         })
     }
 
@@ -591,12 +614,36 @@ impl VsockPoller {
         }
     }
 
+    /// Attempt to deliver a transport reset to the guest. If succesful, update
+    /// the state and process any events we refused to handle before.
+    fn try_send_transport_reset(&mut self) {
+        if self.transport_reset != TransportResetState::Needed {
+            return;
+        }
+        match self.queues.send_transport_reset() {
+            Ok(()) => {
+                self.transport_reset = TransportResetState::NotNeeded;
+                self.handle_tx_queue_event();
+                self.handle_rx_queue_event();
+            }
+            Err(e) => error!(&self.log, "failed to send transport reset: {e}"),
+        }
+    }
+
     /// Handle a user event. Returns `true` if the event loop should pause.
     fn handle_user_event(&mut self, event: VsockEvent) -> bool {
         let mut should_pause = false;
+        let needs_reset =
+            matches!(self.transport_reset, TransportResetState::Needed);
+
         match event {
+            // Don't handle any guest->host events until the a transport reset
+            // has been delivered to the guest. We will handle any missed events
+            // once we have been successful.
+            VsockEvent::TxQueue if needs_reset => {}
             VsockEvent::TxQueue => self.handle_tx_queue_event(),
             VsockEvent::RxQueue => self.handle_rx_queue_event(),
+            VsockEvent::EventQueue => self.try_send_transport_reset(),
             VsockEvent::Pause => should_pause = true,
         }
         should_pause
@@ -908,37 +955,32 @@ impl VsockPoller {
         }
     }
 
-    // This is the gerneral flow of the single-threaded processing event-loop:
+    // This is the general flow of the single-threaded processing event-loop:
     //
-    //                 ┌─────────virtio-socket─event-loop───────┐
-    //                 │                                        │
-    //                 │         ┌─────────────────────┐        │
-    //                 │         │ start (set_running) ◄────┐   │
-    //                 │         └──────────┬──────────┘    │   │
-    // ┌───────────┐   │                    │               │   │
-    // │vq rx event│   │                    │               │   │
-    // │vq tx event│   │         ┌──────────▼──────────┐    │   │
-    // │fd pollset ├───┼─────────►   handle_events()   │    │   │
-    // │pause event│   │         └──────────┬──────────┘    │   │
-    // └───────────┘   │                    │               │   │
-    //                 │                    │               │   │
-    //                 │         ┌──────────▼──────────┐    │   │
-    //                 │         │ paused (set_stopped)│    │   │
-    //                 │         └──────────┬──────────┘    │   │
-    //                 │                    │               │   │
-    //                 │                    │               │   │
-    //                 │             ┌──────▼───────┐       │   │
-    //                 │             │   pause_rx   │       │   │
-    //                 │             │              │       │   │
-    //                 │             │  - resume────┼───────┘   │
-    //                 │             │  - reset─────┼─►cleanup  │
-    //                 │             │  - halt───┐  │   state   │
-    //                 │             │           │  │           │
-    //                 │             └───────────┼──┘           │
-    //                 │                         │              │
-    //                 └─────────────────────────┼──────────────┘
-    //                                           ▼
-    //                                          Exit
+    //                                          ┌─────────────┐
+    //                                          │ vq rx event │
+    //           thread spawn                   │ vq tx event │
+    //                │                         │ fd pollset  │
+    //                │                         │ pause event │
+    //                │                         └──────┬──────┘
+    //                │                                │
+    // ┌──────────────┼──virtio-socket─event-loop──────┼─────────────┐
+    // │              ▼                                │             │
+    // │  ┌──────────────────────┐         ┌───────────▼───────────┐ │
+    // │┌►│ paused (set_stopped) ◄───pause─┤ handle_events()       │ │
+    // ││ └───────────┬──────────┘         └───────────▲───────────┘ │
+    // ││             │                                │             │
+    // ││      ┌──────▼───────┐                        │             │
+    // ││      │   pause_rx   │            ┌───────────┴───────────┐ │
+    // ││      │    run ──────┼────────────► running (set_running) │ │
+    // ││      │ ┌─ reset     │            └───────────────────────┘ │
+    // ││      │ │  halt ─┐   │                                      │
+    // ││      └─┼────────┤───┘                                      │
+    // ││        ▼        │                                          │
+    // │└─ cleanup state  │                                          │
+    // └──────────────────┼──────────────────────────────────────────┘
+    //                    ▼
+    //                   Exit
     //
     // The event-loop is executing in a dedicated thread and therefore must
     // be able to handle triggers from propolis as it manages the device
@@ -953,46 +995,41 @@ impl VsockPoller {
     // every tracked fd and later re-associating them, this allows us to yield
     // execution until one of the desired next state events is delivered.
     fn poller_loop(&mut self) {
-        // Wait until propolis tells us to start the virtio-socket device.
-        // If we are never told to start that is okay as there will be no need
-        // to ever transition the device from running->paused->halt.
-        //
-        // TODO: If propolis-server is started but the VM is never transitioned
-        // to running this will leave a useless thread around that will be
-        // cleanned up when propolis-server exits. This also means if one sends
-        // a new instance spec to the pre-existing propolis-server we will
-        // accumulate these "dead" threads, howerver we never do this in the
-        // actual product.
-        self.start_barrier.wait();
-
         loop {
-            // We are running!
-            self.state.set_running();
+            match self.pause_rx.recv() {
+                Ok(PausedCmd::Resume { oneshot }) => {
+                    oneshot.send(()).unwrap();
 
-            // Handle events until we are told to pause.
-            self.handle_events();
+                    // We are running!
+                    self.state.set_running();
 
-            // Transition to stopped and await for next steps.
-            self.state.set_stopped();
+                    // If we were migrated we need to send a transport reset.
+                    self.try_send_transport_reset();
 
-            loop {
-                match self.pause_rx.recv() {
-                    Ok(PausedCmd::Resume) => break,
-                    Ok(PausedCmd::Reset { oneshot }) => {
-                        self.reset();
-                        oneshot.send(()).unwrap();
-                    }
-                    Ok(PausedCmd::Halt) => {
-                        self.reset();
-                        return;
-                    }
-                    Err(_) => {
-                        error!(
+                    // Handle events until we are told to pause.
+                    self.handle_events();
+
+                    // Transition to stopped and await for next steps.
+                    self.state.set_stopped();
+                }
+                Ok(PausedCmd::Reset { oneshot }) => {
+                    self.reset();
+                    oneshot.send(()).unwrap();
+                }
+                Ok(PausedCmd::SendTransportReset { oneshot }) => {
+                    self.transport_reset = TransportResetState::Needed;
+                    oneshot.send(()).unwrap();
+                }
+                Ok(PausedCmd::Halt) => {
+                    self.reset();
+                    return;
+                }
+                Err(_) => {
+                    error!(
                         &self.log,
                         "all VsockPoller pause_tx senders have been dropped"
                     );
-                        return;
-                    }
+                    return;
                 }
             }
         }
@@ -1003,7 +1040,7 @@ impl VsockPoller {
         self.rx.clear();
         self.rx_blocked.clear();
         self.quiescing.clear();
-        self.queues.clear_rx_chain();
+        self.transport_reset = TransportResetState::NotNeeded;
     }
 }
 
@@ -1070,7 +1107,6 @@ mod test {
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use std::sync::Barrier;
     use std::time::Duration;
 
     use iddqd::IdHashMap;
@@ -1078,7 +1114,9 @@ mod test {
     use zerocopy::{FromBytes, IntoBytes};
 
     use crate::hw::virtio::testutil::{QueueWriter, TestVirtQueues, VqSize};
-    use crate::hw::virtio::vsock::{VsockVq, VSOCK_RX_QUEUE, VSOCK_TX_QUEUE};
+    use crate::hw::virtio::vsock::{
+        VsockVq, VSOCK_EVENT_QUEUE, VSOCK_RX_QUEUE, VSOCK_TX_QUEUE,
+    };
     use crate::vsock::packet::{
         VsockPacketFlags, VsockPacketHeader, VsockPacketOp, VsockSocketType,
     };
@@ -1116,6 +1154,7 @@ mod test {
         tvqs: TestVirtQueues,
         rx_writer: QueueWriter,
         tx_writer: QueueWriter,
+        ev_writer: QueueWriter,
     }
 
     impl VsockTestHarness {
@@ -1126,12 +1165,14 @@ mod test {
                 VqSize::new(1),          // Event
             ]);
 
-            // RX and TX use separate data regions
+            // RX, TX, and Event use separate data regions
             let rx_writer = tvqs.writer(VSOCK_RX_QUEUE as usize, 0);
             let tx_writer =
                 tvqs.writer(VSOCK_TX_QUEUE as usize, PAGE_SIZE * 16);
+            let ev_writer =
+                tvqs.writer(VSOCK_EVENT_QUEUE as usize, PAGE_SIZE * 32);
 
-            Self { tvqs, rx_writer, tx_writer }
+            Self { tvqs, rx_writer, tx_writer, ev_writer }
         }
 
         fn make_vsock_vq(&self) -> VsockVq {
@@ -1200,6 +1241,31 @@ mod test {
             self.rx_writer.used_idx(self.tvqs.mem_acc())
         }
 
+        /// Add a writable event buffer (sized for `virtio_vsock_event`) to
+        /// the event queue and publish it.
+        fn add_event_buffer(&mut self) -> u16 {
+            let d = self.ev_writer.add_writable(self.tvqs.mem_acc(), 4);
+            self.ev_writer.publish_avail(self.tvqs.mem_acc(), d);
+            d
+        }
+
+        fn event_used_idx(&self) -> u16 {
+            self.ev_writer.used_idx(self.tvqs.mem_acc())
+        }
+
+        /// Read a `virtio_vsock_event` id from an event queue used entry.
+        fn read_event(&self, used_index: u16) -> u32 {
+            let mem_acc = self.tvqs.mem_acc();
+            let elem = self.ev_writer.read_used_elem(mem_acc, used_index);
+            assert_eq!(elem.len, 4, "event used entry holds one le32 id");
+            let buf = self.ev_writer.read_desc_data(
+                mem_acc,
+                elem.id as u16,
+                elem.len as usize,
+            );
+            u32::from_le_bytes(buf.try_into().expect("4 byte event"))
+        }
+
         fn tx_used_idx(&self) -> u16 {
             self.tx_writer.used_idx(self.tvqs.mem_acc())
         }
@@ -1235,21 +1301,13 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let start_barrier = Arc::new(Barrier::new(2));
-        let poller = VsockPoller::new(
-            log,
-            start_barrier.clone(),
-            guest_cid,
-            vq,
-            backends,
-        )
-        .unwrap();
+        let poller = VsockPoller::new(log, guest_cid, vq, backends).unwrap();
 
         harness.add_rx_writable(256);
 
         let notify = poller.notify_handle();
         let handle = poller.run();
-        start_barrier.wait();
+        notify.resume_evloop();
 
         let mut hdr = VsockPacketHeader::new();
         hdr.set_src_cid(guest_cid)
@@ -1276,8 +1334,8 @@ mod test {
         assert_eq!(resp_hdr.dst_port(), guest_port);
         assert_eq!(resp_hdr.socket_type(), Some(VsockSocketType::Stream));
 
-        notify.pause().unwrap();
-        notify.halt();
+        notify.pause_evloop().unwrap();
+        notify.halt_evloop();
         handle.join().unwrap();
     }
 
@@ -1288,21 +1346,14 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let start_barrier = Arc::new(Barrier::new(2));
-        let poller = VsockPoller::new(
-            log,
-            start_barrier.clone(),
-            guest_cid,
-            vq,
-            IdHashMap::new(),
-        )
-        .unwrap();
+        let poller =
+            VsockPoller::new(log, guest_cid, vq, IdHashMap::new()).unwrap();
 
         harness.add_rx_writable(256);
 
         let notify = poller.notify_handle();
         let handle = poller.run();
-        start_barrier.wait();
+        notify.resume_evloop();
 
         let mut hdr = VsockPacketHeader::new();
         hdr.set_src_cid(guest_cid)
@@ -1328,8 +1379,8 @@ mod test {
         assert_eq!(resp_hdr.src_port(), 8080);
         assert_eq!(resp_hdr.dst_port(), 5555);
 
-        notify.pause().unwrap();
-        notify.halt();
+        notify.pause_evloop().unwrap();
+        notify.halt_evloop();
         handle.join().unwrap();
     }
 
@@ -1344,15 +1395,7 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let start_barrier = Arc::new(Barrier::new(2));
-        let poller = VsockPoller::new(
-            log,
-            start_barrier.clone(),
-            guest_cid,
-            vq,
-            backends,
-        )
-        .unwrap();
+        let poller = VsockPoller::new(log, guest_cid, vq, backends).unwrap();
 
         for _ in 0..4 {
             harness.add_rx_writable(4096);
@@ -1360,7 +1403,7 @@ mod test {
 
         let notify = poller.notify_handle();
         let handle = poller.run();
-        start_barrier.wait();
+        notify.resume_evloop();
 
         // Send REQUEST
         let mut req_hdr = VsockPacketHeader::new();
@@ -1410,8 +1453,8 @@ mod test {
         accepted.read_exact(&mut buf).unwrap();
         assert_eq!(&buf, payload);
 
-        notify.pause().unwrap();
-        notify.halt();
+        notify.pause_evloop().unwrap();
+        notify.halt_evloop();
         handle.join().unwrap();
     }
 
@@ -1426,15 +1469,7 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let start_barrier = Arc::new(Barrier::new(2));
-        let poller = VsockPoller::new(
-            log,
-            start_barrier.clone(),
-            guest_cid,
-            vq,
-            backends,
-        )
-        .unwrap();
+        let poller = VsockPoller::new(log, guest_cid, vq, backends).unwrap();
 
         // Provide plenty of RX descriptors for RESPONSE + credit updates
         for _ in 0..16 {
@@ -1443,7 +1478,7 @@ mod test {
 
         let notify = poller.notify_handle();
         let handle = poller.run();
-        start_barrier.wait();
+        notify.resume_evloop();
 
         // Establish connection
         let mut req_hdr = VsockPacketHeader::new();
@@ -1516,7 +1551,9 @@ mod test {
         accepted.read_exact(&mut buf).unwrap();
         assert!(buf.iter().all(|&b| b == 0xAB));
 
-        // Look for a CREDIT_UPDATE in the RX used entries
+        // Look for a CREDIT_UPDATE in the RX used entries.
+        // NB: It arrives asynchronously so we attempt to wait on the condition.
+        wait_for_condition(|| harness.rx_used_idx() >= 2, 5000);
         let rx_used = harness.rx_used_idx();
         assert!(rx_used >= 2, "expected at least RESPONSE + CREDIT_UPDATE");
 
@@ -1535,8 +1572,8 @@ mod test {
         }
         assert!(found_credit_update, "expected a CREDIT_UPDATE on RX queue");
 
-        notify.pause().unwrap();
-        notify.halt();
+        notify.pause_evloop().unwrap();
+        notify.halt_evloop();
         handle.join().unwrap();
     }
 
@@ -1551,15 +1588,7 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let start_barrier = Arc::new(Barrier::new(2));
-        let poller = VsockPoller::new(
-            log,
-            start_barrier.clone(),
-            guest_cid,
-            vq,
-            backends,
-        )
-        .unwrap();
+        let poller = VsockPoller::new(log, guest_cid, vq, backends).unwrap();
 
         for _ in 0..4 {
             harness.add_rx_writable(4096);
@@ -1567,7 +1596,7 @@ mod test {
 
         let notify = poller.notify_handle();
         let handle = poller.run();
-        start_barrier.wait();
+        notify.resume_evloop();
 
         // Send REQUEST
         let mut req_hdr = VsockPacketHeader::new();
@@ -1621,8 +1650,8 @@ mod test {
             Ok(n) => panic!("expected EOF or error, got {n} bytes"),
         }
 
-        notify.pause().unwrap();
-        notify.halt();
+        notify.pause_evloop().unwrap();
+        notify.halt_evloop();
         handle.join().unwrap();
     }
 
@@ -1637,15 +1666,7 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let start_barrier = Arc::new(Barrier::new(2));
-        let poller = VsockPoller::new(
-            log,
-            start_barrier.clone(),
-            guest_cid,
-            vq,
-            backends,
-        )
-        .unwrap();
+        let poller = VsockPoller::new(log, guest_cid, vq, backends).unwrap();
 
         // Pre-populate RX queue with writable descriptors for RESPONSE + data
         for _ in 0..8 {
@@ -1654,7 +1675,7 @@ mod test {
 
         let notify = poller.notify_handle();
         let handle = poller.run();
-        start_barrier.wait();
+        notify.resume_evloop();
 
         // Write REQUEST packet into TX queue
         let mut req_hdr = VsockPacketHeader::new();
@@ -1722,8 +1743,8 @@ mod test {
         assert_eq!(resp_hdr.dst_port(), guest_port);
         assert_eq!(&host_buf, host_payload, "host->guest data mismatch");
 
-        notify.pause().unwrap();
-        notify.halt();
+        notify.pause_evloop().unwrap();
+        notify.halt_evloop();
         handle.join().unwrap();
     }
 
@@ -1738,22 +1759,14 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let start_barrier = Arc::new(Barrier::new(2));
-        let poller = VsockPoller::new(
-            log,
-            start_barrier.clone(),
-            guest_cid,
-            vq,
-            backends,
-        )
-        .unwrap();
+        let poller = VsockPoller::new(log, guest_cid, vq, backends).unwrap();
 
         // Provide only one RX descriptor, just enough for the RESPONSE.
         harness.add_rx_writable(4096);
 
         let notify = poller.notify_handle();
         let handle = poller.run();
-        start_barrier.wait();
+        notify.resume_evloop();
 
         // Send REQUEST
         let mut req_hdr = VsockPacketHeader::new();
@@ -1802,8 +1815,8 @@ mod test {
         assert_eq!(rw_hdr.dst_port(), guest_port);
         assert_eq!(&payload, host_data);
 
-        notify.pause().unwrap();
-        notify.halt();
+        notify.pause_evloop().unwrap();
+        notify.halt_evloop();
         handle.join().unwrap();
     }
 
@@ -1823,15 +1836,7 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let start_barrier = Arc::new(Barrier::new(2));
-        let poller = VsockPoller::new(
-            log,
-            start_barrier.clone(),
-            guest_cid,
-            vq,
-            backends,
-        )
-        .unwrap();
+        let poller = VsockPoller::new(log, guest_cid, vq, backends).unwrap();
 
         // Provide initial RX descriptors for RESPONSE + credit updates
         for _ in 0..8 {
@@ -1840,7 +1845,7 @@ mod test {
 
         let notify = poller.notify_handle();
         let handle = poller.run();
-        start_barrier.wait();
+        notify.resume_evloop();
 
         // Establish connection
         // Use a large buf_alloc so host->guest credit doesn't run out
@@ -2021,8 +2026,8 @@ mod test {
         assert_eq!(host_to_guest.len(), total_bytes);
         assert!(host_to_guest == host_data, "host->guest data mismatch");
 
-        notify.pause().unwrap();
-        notify.halt();
+        notify.pause_evloop().unwrap();
+        notify.halt_evloop();
         handle.join().unwrap();
     }
 
@@ -2040,15 +2045,7 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let start_barrier = Arc::new(Barrier::new(2));
-        let poller = VsockPoller::new(
-            log,
-            start_barrier.clone(),
-            guest_cid,
-            vq,
-            backends,
-        )
-        .unwrap();
+        let poller = VsockPoller::new(log, guest_cid, vq, backends).unwrap();
 
         // Provide RX descriptors for RESPONSE + SHUTDOWN
         for _ in 0..4 {
@@ -2057,7 +2054,7 @@ mod test {
 
         let notify = poller.notify_handle();
         let handle = poller.run();
-        start_barrier.wait();
+        notify.resume_evloop();
 
         // Establish connection
         let mut req_hdr = VsockPacketHeader::new();
@@ -2114,8 +2111,8 @@ mod test {
         assert_eq!(hdr.src_port(), vsock_port);
         assert_eq!(hdr.dst_port(), guest_port);
 
-        notify.pause().unwrap();
-        notify.halt();
+        notify.pause_evloop().unwrap();
+        notify.halt_evloop();
         handle.join().unwrap();
     }
 
@@ -2130,15 +2127,7 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let start_barrier = Arc::new(Barrier::new(2));
-        let poller = VsockPoller::new(
-            log,
-            start_barrier.clone(),
-            guest_cid,
-            vq,
-            backends,
-        )
-        .unwrap();
+        let poller = VsockPoller::new(log, guest_cid, vq, backends).unwrap();
 
         // Pre-populate RX queue with writable descriptors for RESPONSE + data
         for _ in 0..8 {
@@ -2147,7 +2136,7 @@ mod test {
 
         let notify = poller.notify_handle();
         let handle = poller.run();
-        start_barrier.wait();
+        notify.resume_evloop();
 
         // Write REQUEST packet into TX queue
         let mut req_hdr = VsockPacketHeader::new();
@@ -2228,8 +2217,8 @@ mod test {
         assert_eq!(rst_hdr.src_port(), vsock_port);
         assert_eq!(rst_hdr.dst_port(), guest_port);
 
-        notify.pause().unwrap();
-        notify.halt();
+        notify.pause_evloop().unwrap();
+        notify.halt_evloop();
         handle.join().unwrap();
     }
 
@@ -2247,15 +2236,7 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let start_barrier = Arc::new(Barrier::new(2));
-        let poller = VsockPoller::new(
-            log,
-            start_barrier.clone(),
-            guest_cid,
-            vq,
-            backends,
-        )
-        .unwrap();
+        let poller = VsockPoller::new(log, guest_cid, vq, backends).unwrap();
 
         for _ in 0..4 {
             harness.add_rx_writable(4096);
@@ -2263,7 +2244,7 @@ mod test {
 
         let notify = poller.notify_handle();
         let handle = poller.run();
-        start_barrier.wait();
+        notify.resume_evloop();
 
         // Establish a connection
         let mut req_hdr = VsockPacketHeader::new();
@@ -2288,12 +2269,9 @@ mod test {
         wait_for_condition(|| harness.rx_used_idx() >= 1, 5000);
 
         // Pause then reset.
-        notify.pause().unwrap();
+        notify.pause_evloop().unwrap();
         notify.wait_stopped();
-        notify.reset();
-
-        // NOTE: We don't have a way to actually validate that the reset call
-        // above has not left behind a `GuestAddr` as apart of the `VsockVq`.
+        notify.reset_evloop();
 
         // The host-side TCP socket should now be closed because the
         // poller dropped all connections during reset.
@@ -2304,8 +2282,8 @@ mod test {
             Ok(n) => panic!("expected EOF or error, got {n} bytes"),
         }
 
-        notify.pause().unwrap();
-        notify.halt();
+        notify.pause_evloop().unwrap();
+        notify.halt_evloop();
         handle.join().unwrap();
     }
 
@@ -2322,15 +2300,7 @@ mod test {
         let mut harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let start_barrier = Arc::new(Barrier::new(2));
-        let poller = VsockPoller::new(
-            log,
-            start_barrier.clone(),
-            guest_cid,
-            vq,
-            backends,
-        )
-        .unwrap();
+        let poller = VsockPoller::new(log, guest_cid, vq, backends).unwrap();
 
         for _ in 0..8 {
             harness.add_rx_writable(4096);
@@ -2338,7 +2308,7 @@ mod test {
 
         let notify = poller.notify_handle();
         let handle = poller.run();
-        start_barrier.wait();
+        notify.resume_evloop();
 
         // Establish a connection
         let mut req_hdr = VsockPacketHeader::new();
@@ -2363,9 +2333,9 @@ mod test {
         wait_for_condition(|| harness.rx_used_idx() >= 1, 5000);
 
         // Pause and resume — connection state should survive.
-        notify.pause().unwrap();
+        notify.pause_evloop().unwrap();
         notify.wait_stopped();
-        notify.resume();
+        notify.resume_evloop();
 
         // Write data from the host side through the still-open TCP
         // socket. The poller should deliver it to the guest.
@@ -2379,8 +2349,8 @@ mod test {
         assert_eq!(rw_hdr.op(), Some(VsockPacketOp::ReadWrite));
         assert_eq!(&data, host_payload);
 
-        notify.pause().unwrap();
-        notify.halt();
+        notify.pause_evloop().unwrap();
+        notify.halt_evloop();
         handle.join().unwrap();
     }
 
@@ -2391,22 +2361,73 @@ mod test {
         let harness = VsockTestHarness::new();
         let vq = harness.make_vsock_vq();
         let log = test_logger();
-        let start_barrier = Arc::new(Barrier::new(2));
-        let poller = VsockPoller::new(
-            log,
-            start_barrier.clone(),
-            guest_cid,
-            vq,
-            IdHashMap::new(),
-        )
-        .unwrap();
+        let poller =
+            VsockPoller::new(log, guest_cid, vq, IdHashMap::new()).unwrap();
 
         let notify = poller.notify_handle();
         let handle = poller.run();
-        start_barrier.wait();
+        notify.resume_evloop();
+        notify.pause_evloop().unwrap();
+        notify.halt_evloop();
+        handle.join().unwrap();
+    }
 
-        notify.pause().unwrap();
-        notify.halt();
+    #[test]
+    fn transport_reset_event_delivered_on_resume() {
+        let guest_cid = GuestCid::try_from(50).unwrap();
+
+        let mut harness = VsockTestHarness::new();
+        let vq = harness.make_vsock_vq();
+        let log = test_logger();
+        let poller =
+            VsockPoller::new(log, guest_cid, vq, IdHashMap::new()).unwrap();
+
+        // The "guest" queued an event buffer before the device moved.
+        harness.add_event_buffer();
+
+        let notify = poller.notify_handle();
+        let handle = poller.run();
+
+        // Signal while paused (as a migration import would), then resume.
+        notify.send_transport_reset();
+        notify.resume_evloop();
+
+        wait_for_condition(|| harness.event_used_idx() >= 1, 5000);
+        assert_eq!(harness.read_event(0), 0 /* TRANSPORT_RESET */);
+
+        notify.pause_evloop().unwrap();
+        notify.halt_evloop();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn transport_reset_event_retried_on_event_queue_kick() {
+        let guest_cid = GuestCid::try_from(50).unwrap();
+
+        let mut harness = VsockTestHarness::new();
+        let vq = harness.make_vsock_vq();
+        let log = test_logger();
+        let poller =
+            VsockPoller::new(log, guest_cid, vq, IdHashMap::new()).unwrap();
+
+        let notify = poller.notify_handle();
+        let handle = poller.run();
+
+        // Signal and resume with no event buffer available: the event
+        // cannot be delivered yet and must stay pending.
+        notify.send_transport_reset();
+        notify.resume_evloop();
+        assert_eq!(harness.event_used_idx(), 0);
+
+        // The guest now supplies a buffer and kicks the event queue.
+        harness.add_event_buffer();
+        notify.queue_notify(VSOCK_EVENT_QUEUE).unwrap();
+
+        wait_for_condition(|| harness.event_used_idx() >= 1, 5000);
+        assert_eq!(harness.read_event(0), 0 /* TRANSPORT_RESET */);
+
+        notify.pause_evloop().unwrap();
+        notify.halt_evloop();
         handle.join().unwrap();
     }
 }
