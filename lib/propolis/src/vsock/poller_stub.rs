@@ -2,8 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::sync::Arc;
-use std::sync::Barrier;
 use std::thread::JoinHandle;
 
 use iddqd::IdHashMap;
@@ -29,15 +27,15 @@ impl VsockPollerNotify {
         ));
     }
 
-    pub fn pause(&self) -> std::io::Result<()> {
+    pub fn pause_evloop(&self) -> std::io::Result<()> {
         Ok(())
     }
 
-    pub fn resume(&self) {}
+    pub fn resume_evloop(&self) {}
 
-    pub fn reset(&self) {}
+    pub fn reset_evloop(&self) {}
 
-    pub fn halt(&self) {}
+    pub fn halt_evloop(&self) {}
 
     pub fn wait_stopped(&self) {}
 }
@@ -47,7 +45,6 @@ pub struct VsockPoller;
 impl VsockPoller {
     pub fn new(
         _log: Logger,
-        _start_barrier: Arc<Barrier>,
         _cid: GuestCid,
         _queues: VsockVq,
         _port_mappings: IdHashMap<VsockPortMapping>,
