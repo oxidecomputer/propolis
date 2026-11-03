@@ -2,7 +2,7 @@
 #:
 #: name = "test-gimlet"
 #: variety = "basic"
-#: target = "lab-2.0-gimlet"
+#: target = "lab-3.0-gimlet"
 #: rust_toolchain = false
 #: skip_clone = true
 #:
