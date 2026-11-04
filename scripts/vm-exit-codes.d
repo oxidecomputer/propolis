@@ -85,10 +85,11 @@ fbt::svm_launch:return {
 }
 
 fbt::svm_vmexit:entry {
-	self->vcpu = &((struct svm_softc*)arg0)->vcpu[arg1];
-	self->ctrl = self->vcpu->vmcb.ctrl;
-	self->state = self->vcpu->vmcb.state;
-	self->vmexit = (struct vm_exit*)arg2;
+	self->vcpu = args[0];
+	self->vmcb = self->vcpu->vmcb;
+	self->ctrl = self->vmcb->ctrl;
+	self->state = self->vmcb->state;
+	self->vmexit = args[1];
 
 	@exits[self->ctrl.exitcode] = count();
 
