@@ -155,6 +155,19 @@ impl InstanceContext {
                 .await;
                 Ok(())
             }
+            // allowed to change the fate of an ACPI shutdown to a reboot
+            (
+                api::InstanceState::Stopping,
+                api::InstanceStateRequested::Reboot
+                | api::InstanceStateRequested::AcpiReboot,
+            ) if self
+                .last_state_change
+                .as_ref()
+                .map(|change| change.acpi_timeout_secs.is_some())
+                .unwrap_or(false) =>
+            {
+                Ok(())
+            }
             (
                 current,
                 api::InstanceStateRequested::Reboot
