@@ -2,8 +2,8 @@
 #:
 #: name = "falcon"
 #: variety = "basic"
-#: target = "helios-2.0"
-#: rust_toolchain = "stable"
+#: target = "helios-3.0"
+#: rust_toolchain = true
 #: output_rules = [
 #:   "/work/release/*",
 #: ]
