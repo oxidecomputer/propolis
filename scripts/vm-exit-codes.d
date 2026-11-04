@@ -86,7 +86,7 @@ fbt::svm_launch:return {
 
 fbt::svm_vmexit:entry {
 	self->vcpu = args[0];
-        self->vmcb = self->vcpu->vmcb;
+	self->vmcb = self->vcpu->vmcb;
 	self->ctrl = self->vmcb->ctrl;
 	self->state = self->vmcb->state;
 	self->vmexit = args[1];
