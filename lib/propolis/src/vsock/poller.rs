@@ -984,7 +984,6 @@ impl VsockPoller {
         self.rx.clear();
         self.rx_blocked.clear();
         self.quiescing.clear();
-        self.queues.clear_rx_chain();
     }
 }
 
@@ -2186,9 +2185,6 @@ mod test {
         notify.pause_evloop().unwrap();
         notify.wait_stopped();
         notify.reset_evloop();
-
-        // NOTE: We don't have a way to actually validate that the reset call
-        // above has not left behind a `GuestAddr` as apart of the `VsockVq`.
 
         // The host-side TCP socket should now be closed because the
         // poller dropped all connections during reset.
