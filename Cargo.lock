@@ -763,9 +763,9 @@ dependencies = [
 
 [[package]]
 name = "camino"
-version = "1.2.2"
+version = "1.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e629a66d692cb9ff1a1c664e41771b3dcaf961985a9774c0eb0bd1b51cf60a48"
+checksum = "bbbad30e4b4c14a39e3cc8aed085a12a327257c316619c93581e017bc52be591"
 dependencies = [
  "serde_core",
 ]
@@ -902,9 +902,9 @@ dependencies = [
 
 [[package]]
 name = "chrono"
-version = "0.4.44"
+version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c673075a2e0e5f4a1dde27ce9dee1ea4558c7ffe648f576438a20ca1d2acc4b0"
+checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
  "js-sys",
@@ -2167,10 +2167,62 @@ dependencies = [
 ]
 
 [[package]]
-name = "dropshot-api-manager"
-version = "0.7.2"
+name = "dropshot"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04789d14d7af239289cf53064f28f3b3e4fbefc0d716ebdb45a2a76d9a59d8a6"
+checksum = "4a9e64e150bf661306cc9fa32c25996cb37025edebcbe55e80669750aa90b703"
+dependencies = [
+ "async-compression",
+ "async-stream",
+ "async-trait",
+ "base64 0.23.1",
+ "bytes",
+ "camino",
+ "chrono",
+ "debug-ignore",
+ "dropshot_endpoint 0.18.0",
+ "form_urlencoded",
+ "futures",
+ "hostname 0.4.2",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "indexmap 2.14.0",
+ "multer",
+ "openapiv3",
+ "paste",
+ "percent-encoding",
+ "rustls 0.23.41",
+ "schemars 0.8.22",
+ "scopeguard",
+ "semver 1.0.28",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
+ "sha1 0.11.0",
+ "slog",
+ "slog-async",
+ "slog-bunyan",
+ "slog-json",
+ "slog-term",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls 0.26.4",
+ "tokio-util",
+ "toml 1.1.2+spec-1.1.0",
+ "usdt 0.6.0",
+ "uuid",
+ "version_check",
+ "waitgroup",
+]
+
+[[package]]
+name = "dropshot-api-manager"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "638600c0fcc6b8aa0e30576ce7505639f2753474f4b90e222cf19cfd3a897643"
 dependencies = [
  "anyhow",
  "atomicwrites",
@@ -2178,7 +2230,7 @@ dependencies = [
  "clap",
  "debug-ignore",
  "drift",
- "dropshot 0.17.1",
+ "dropshot 0.18.0",
  "dropshot-api-manager-types",
  "fs-err",
  "git-stub",
@@ -2201,9 +2253,9 @@ dependencies = [
 
 [[package]]
 name = "dropshot-api-manager-types"
-version = "0.7.2"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e89e6f3e5558d7eab06739cbc92b178605f20693715e7640eee6405fd655582"
+checksum = "bfd52348da2ad7f65156bfec30234a723170944046d0411d7f334d7ccd6a63a3"
 dependencies = [
  "anyhow",
  "camino",
@@ -2240,6 +2292,21 @@ dependencies = [
  "serde",
  "serde_tokenstream 0.2.3",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "dropshot_endpoint"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7dfe21674cd808e8b344cc9d3ea107108846effc782c535ddf0bd2753443226"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "semver 1.0.28",
+ "serde",
+ "serde_tokenstream 0.3.0",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -6026,7 +6093,7 @@ dependencies = [
  "camino",
  "cfg-if",
  "cpuid_utils",
- "dropshot 0.17.1",
+ "dropshot 0.18.0",
  "errno 0.2.8",
  "fatfs",
  "flate2",
@@ -6109,7 +6176,7 @@ dependencies = [
  "byteorder",
  "chrono",
  "cpuid_utils",
- "dropshot 0.17.1",
+ "dropshot 0.18.0",
  "futures",
  "http",
  "itertools 0.13.0",
@@ -6973,7 +7040,7 @@ dependencies = [
  "anyhow",
  "base64 0.21.7",
  "clap",
- "dropshot 0.17.1",
+ "dropshot 0.18.0",
  "futures",
  "hyper",
  "progenitor 0.15.1",
@@ -7024,7 +7091,7 @@ dependencies = [
  "const_format",
  "cpuid_utils",
  "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=bd62980710dd3d6d3524aa7f6617127942b75002)",
- "dropshot 0.17.1",
+ "dropshot 0.18.0",
  "erased-serde 0.4.5",
  "expectorate",
  "futures",
@@ -7080,7 +7147,7 @@ name = "propolis-server-api"
 version = "0.1.0"
 dependencies = [
  "crucible-client-types 0.1.0 (git+https://github.com/oxidecomputer/crucible?rev=bd62980710dd3d6d3524aa7f6617127942b75002)",
- "dropshot 0.17.1",
+ "dropshot 0.18.0",
  "dropshot-api-manager-types",
  "propolis-api-types-versions 0.0.0",
 ]
@@ -7689,7 +7756,7 @@ dependencies = [
  "ascii",
  "bitflags 2.9.4",
  "clap",
- "dropshot 0.17.1",
+ "dropshot 0.18.0",
  "futures",
  "image",
  "rgb_frame",
