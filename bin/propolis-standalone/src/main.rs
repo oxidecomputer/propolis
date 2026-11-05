@@ -778,7 +778,7 @@ impl Instance {
 fn build_machine(
     log: &slog::Logger,
     name: &str,
-    max_cpu: u8,
+    max_cpu: u16,
     lowmem: usize,
     highmem: usize,
     use_reservoir: bool,
@@ -902,7 +902,7 @@ struct SmbiosParams {
     memory_size: usize,
     rom_size: usize,
     rom_version: String,
-    num_cpus: u8,
+    num_cpus: u16,
     cpuid_ident: Option<CpuidValues>,
     cpuid_procname: Option<[CpuidValues; 3]>,
 }
@@ -975,6 +975,10 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
         .and_then(|e| cpuid::parse_brand_string(e).ok())
         .unwrap_or("".to_string());
 
+    let num_cpus: u8 = params.num_cpus.try_into().map_err(|_| {
+        anyhow::anyhow!("SMBIOS tables cannot yet express >255 CPUs")
+    })?;
+
     let smb_type4 = smbios::table::Type4 {
         proc_type: type4::ProcType::Central,
         proc_family,
@@ -982,12 +986,14 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
         proc_id,
         proc_version: proc_version.as_str().try_into().unwrap_or_default(),
         status: type4::ProcStatus::Enabled,
-        // unknown
+        // "Processor Upgrade" of 2 means "Unknown" as in "Unknown upgrade
+        // method". This is somewhat more appropriate than any other value,
+        // which all suggest a socket is involved.
         proc_upgrade: 0x2,
-        // make core and thread counts equal for now
-        core_count: params.num_cpus,
-        core_enabled: params.num_cpus,
-        thread_count: params.num_cpus,
+        core_count: num_cpus,
+        core_enabled: num_cpus,
+        // TODO: fill in thread count from smt
+        thread_count: num_cpus,
         proc_characteristics: type4::Characteristics::IS_64_BIT
             | type4::Characteristics::MULTI_CORE,
         ..Default::default()
@@ -1103,7 +1109,7 @@ fn generate_bootorder(
 
 fn generate_acpi_tables(
     acpi_variant: acpi::AcpiVariant,
-    num_cpus: u8,
+    num_cpus: u16,
     lowmem: usize,
     inventory: &Inventory,
     device_metadata: &DeviceMetadataMap,
@@ -1584,18 +1590,27 @@ fn setup_instance(
         .add_cpuid(&mut base_profile)
         .context("failed to add hypervisor cpuid leaves")?;
 
+    let cpus = config.main.cpus;
+
+    if cpus % config.main.sockets != 0 {
+        anyhow::bail!(
+            "vCPUs do not evenly divide into sockets: {} % {} != 0",
+            cpus,
+            config.main.sockets
+        );
+    }
+    let cpus_per_socket = cpus / config.main.sockets;
+
     for vcpu in machine.vcpus.iter() {
-        let vcpu_profile = propolis::cpuid::Specializer::new()
-            .with_vcpu_count(
-                std::num::NonZeroU8::new(config.main.cpus).unwrap(),
-                true,
-            )
-            .with_vcpuid(vcpu.id)
-            .with_cache_topo()
-            .clear_cpu_topo(cpuid::TopoKind::iter())
-            .with_cpu_topo(cpuid::TopoKind::supported())
-            .execute(base_profile.clone())
-            .context("failed to specialize cpuid profile")?;
+        let vcpu_profile = propolis::cpuid::Specializer::new(
+            std::num::NonZeroU16::new(cpus_per_socket).unwrap(),
+        )
+        .with_vcpuid(vcpu.id)
+        .with_cache_topo()
+        .clear_cpu_topo(cpuid::TopoKind::iter())
+        .with_cpu_topo(config.main.smt, cpuid::TopoKind::supported())
+        .execute(base_profile.clone())
+        .context("failed to specialize cpuid profile")?;
 
         vcpu.set_cpuid(vcpu_profile)?;
         vcpu.set_default_capabs()?;

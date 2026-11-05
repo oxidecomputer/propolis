@@ -47,10 +47,25 @@ impl Config {
     }
 }
 
+fn default_smt() -> bool {
+    true
+}
+
+fn default_sockets() -> u16 {
+    1
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Main {
     pub name: String,
-    pub cpus: u8,
+    pub cpus: u16,
+
+    // TODO: I'd *really* like to know what the Hygon 4-way SMT CPUID leaves look like..
+    #[serde(default = "default_smt")]
+    pub smt: bool,
+    #[serde(default = "default_sockets")]
+    pub sockets: u16,
+
     pub bootrom: String,
     pub bootrom_version: Option<String>,
     pub memory: usize,

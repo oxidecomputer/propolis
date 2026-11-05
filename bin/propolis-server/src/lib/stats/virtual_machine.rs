@@ -63,7 +63,7 @@ pub struct VirtualMachine {
 
 impl VirtualMachine {
     pub fn new(
-        n_vcpus: u8,
+        n_vcpus: u16,
         properties: &propolis_api_types::instance::InstanceProperties,
     ) -> Self {
         Self {

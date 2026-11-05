@@ -9,10 +9,7 @@
 use std::collections::BTreeMap;
 
 use propolis_api_types::instance_spec::{
-    components::{
-        board::Board as InstanceSpecBoard,
-        devices::{BootSettings, SerialPort as SerialPortDesc},
-    },
+    components::devices::{BootSettings, SerialPort as SerialPortDesc},
     SpecKey,
 };
 use propolis_api_types_versions::{
@@ -137,8 +134,14 @@ impl TryFrom<Spec> for v1::instance_spec::InstanceSpec {
             spec.components.insert(key, val);
         }
 
-        let board = InstanceSpecBoard {
-            cpus: board.cpus,
+        let cpus_u8: u8 = board.cpus.try_into().map_err(|_| {
+            LegacyApiSpecError::IncompatibleComponent(
+                "v1 Board cannot express >255 vCPUs".to_string(),
+            )
+        })?;
+
+        let board = v1::components::board::Board {
+            cpus: cpus_u8,
             memory_mb: board.memory_mb,
             chipset: board.chipset,
             guest_hv_interface: board.guest_hv_interface,

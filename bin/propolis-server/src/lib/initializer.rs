@@ -4,7 +4,7 @@
 
 use std::convert::TryInto;
 use std::fs::File;
-use std::num::{NonZeroU8, NonZeroUsize};
+use std::num::{NonZeroU16, NonZeroUsize};
 use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -51,6 +51,7 @@ use propolis::intr_pins;
 use propolis::vmm::{self, Builder, Machine};
 use propolis::vsock::GuestCid;
 use propolis_api_types::instance::InstanceProperties;
+use propolis_api_types::instance_spec::components::board::CpuTopology;
 use propolis_api_types::instance_spec::components::devices::SerialPortNumber;
 use propolis_api_types::instance_spec::{self, SpecKey};
 use propolis_types::{CpuidIdent, CpuidVendor};
@@ -118,6 +119,9 @@ pub enum MachineInitError {
 
     #[error("failed to start attestation server")]
     AttestationServer(#[source] std::io::Error),
+
+    #[error("unsupported VM configuration")]
+    UnsupportedCpuConfig(&'static str),
 
     #[cfg(feature = "falcon")]
     #[error("softnpu p9 device missing")]
@@ -1220,7 +1224,7 @@ impl MachineInitializer<'_> {
     fn generate_smbios(
         &self,
         bootrom_version: &Option<String>,
-    ) -> smbios::TableBytes {
+    ) -> Result<smbios::TableBytes, MachineInitError> {
         use smbios::table::{type0, type1, type16, type4};
 
         let rom_size =
@@ -1328,6 +1332,12 @@ impl MachineInitializer<'_> {
             .and_then(|vals| propolis::cpuid::parse_brand_string(vals).ok())
             .unwrap_or_default();
 
+        let num_cpus: u8 = self.spec.board.cpus.try_into().map_err(|_| {
+            MachineInitError::UnsupportedCpuConfig(
+                "more CPUs than expressible in Type 4 SMBIOS v2.7 tables",
+            )
+        })?;
+
         let smb_type4 = smbios::table::Type4 {
             proc_type: type4::ProcType::Central,
             proc_family,
@@ -1338,9 +1348,9 @@ impl MachineInitializer<'_> {
             // unknown
             proc_upgrade: 0x2,
             // make core and thread counts equal for now
-            core_count: self.spec.board.cpus,
-            core_enabled: self.spec.board.cpus,
-            thread_count: self.spec.board.cpus,
+            core_count: num_cpus,
+            core_enabled: num_cpus,
+            thread_count: num_cpus,
             proc_characteristics: type4::Characteristics::IS_64_BIT
                 | type4::Characteristics::MULTI_CORE,
             ..Default::default()
@@ -1382,7 +1392,7 @@ impl MachineInitializer<'_> {
         smb_tables.add(0x1700.into(), &smb_type17).unwrap();
         smb_tables.add(0x3200.into(), &smb_type32).unwrap();
 
-        smb_tables.commit()
+        Ok(smb_tables.commit())
     }
 
     fn generate_e820(&self) -> Result<Entry, MachineInitError> {
@@ -1469,7 +1479,7 @@ impl MachineInitializer<'_> {
     fn generate_acpi_tables(
         &self,
         acpi_variant: acpi::AcpiVariant,
-        cpus: u8,
+        cpus: u16,
     ) -> Result<fwcfg::formats::AcpiTables, MachineInitError> {
         let (lowmem, _) = get_spec_guest_ram_limits(self.spec);
         let generators: Vec<_> = self
@@ -1509,7 +1519,7 @@ impl MachineInitializer<'_> {
     /// Should not be called before [`Self::initialize_rom()`].
     pub fn initialize_fwcfg(
         &mut self,
-        cpus: u8,
+        cpus: u16,
         bootrom_version: &Option<String>,
         acpi_variant: acpi::AcpiVariant,
     ) -> Result<Arc<ramfb::RamFb>, MachineInitError> {
@@ -1522,7 +1532,7 @@ impl MachineInitializer<'_> {
             .map_err(|e| MachineInitError::FwcfgInsertFailed("cpu count", e))?;
 
         let smbios::TableBytes { entry_point, structure_table } =
-            self.generate_smbios(bootrom_version);
+            self.generate_smbios(bootrom_version)?;
         fwcfg
             .insert_named(
                 "etc/smbios/smbios-tables",
@@ -1585,6 +1595,22 @@ impl MachineInitializer<'_> {
     /// tracking their kstats.
     pub async fn initialize_cpus(&mut self) -> Result<(), MachineInitError> {
         let hv_interface = self.machine.guest_hv_interface.as_ref();
+
+        // Compute `vcpu_count` as a u16 this far up mostly because having an
+        // error crop up *only* when the VM has a thread-per-socket topology
+        // would be an easy and unfortunately plausible testing miss.
+        //
+        // If this is reached, we've presumably expanded Board to accept more
+        // than u16 CPUs. It is proabably fine to adapt
+        // legacy_single_thread_sockets() below to also take whatever wider type
+        // we've moved to.
+        let vcpu_count =
+            u16::try_from(self.machine.vcpus.len()).map_err(|_| {
+                MachineInitError::UnsupportedCpuConfig(
+                    "more than u16::MAX vCPUs",
+                )
+            })?;
+
         for vcpu in self.machine.vcpus.iter() {
             // Report that the guest is running on bhyve.
             //
@@ -1596,33 +1622,35 @@ impl MachineInitializer<'_> {
                     requests to set hypervisor leaves",
             );
 
-            // Instead of `TopoKind::supported`, we use an intentionally-reduced
-            // list of Intel-only leaves for the moment. This is because if we
-            // specialize leaves used by AMD (or just both vendors), we'll
-            // change the topology a guest sees.
+            // Instead of `TopoKind::supported`, the instance spec selects what
+            // leaves may get specialized topology data. This is to maintain the
+            // reported topology of VMs created either before CPU platforms or
+            // with platforms that inadvertently reported `board.cpus`-many
+            // single-core sockets.
             //
-            // The initial CPU platform defined in Nexus (Omicron#8728) hews to
-            // the pre-specialization topology, which won't have leaf B at all.
-            // Before that is sent, though, we'll see the present-but-zero
-            // leaves from bhyve, which we would happily specialize into
-            // something reflecting the guest if requested here. Once
-            // Omicron#8728 lands and propolis-server receives explicit CPUID
-            // profiles, we can add AMD leaves here too.
-            let cpu_topo_leaves = [TopoKind::Std4];
+            // While it's probably OK to go change that, one would not expect
+            // their CPU sockets to unify across a reboot.
+            let mut cpu_topo_leaves = vec![];
+            let topo = if let Some(topo) = self.spec.board.cpu_topology.as_ref()
+            {
+                cpu_topo_leaves = TopoKind::supported().collect();
+                *topo
+            } else {
+                cpu_topo_leaves.push(TopoKind::Std4);
+                CpuTopology::legacy_single_thread_sockets(vcpu_count)
+            };
 
-            let specialized = propolis::cpuid::Specializer::new()
-                .with_vcpu_count(
-                    NonZeroU8::new(self.spec.board.cpus).unwrap(),
-                    true,
-                )
-                .with_vcpuid(vcpu.id)
-                .with_cache_topo()
-                .clear_cpu_topo(TopoKind::iter())
-                .with_cpu_topo(cpu_topo_leaves.into_iter())
-                .execute(set)
-                .map_err(|e| {
-                    MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
-                })?;
+            let specialized = propolis::cpuid::Specializer::new(
+                NonZeroU16::new(self.spec.board.cpus).unwrap(),
+            )
+            .with_cpu_topo(topo.has_smt, cpu_topo_leaves.into_iter())
+            .with_vcpuid(vcpu.id)
+            .with_cache_topo()
+            .clear_cpu_topo(TopoKind::iter())
+            .execute(set)
+            .map_err(|e| {
+                MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
+            })?;
 
             info!(self.log, "setting CPUID for vCPU";
                     "vcpu" => vcpu.id,
