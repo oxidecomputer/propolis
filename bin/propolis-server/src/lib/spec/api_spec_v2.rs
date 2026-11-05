@@ -49,12 +49,13 @@ impl TryFrom<v2::instance_spec::InstanceSpec> for Spec {
 /// Parses a v2 instance spec into a [`SpecBuilder`], validating component
 /// names, PCI paths, and backend references along the way. Callers can add
 /// additional (non-v2) components to the builder before calling `finish()`.
+#[allow(clippy::useless_conversion)]
 pub(crate) fn v2_to_spec_builder(
     value: v2::instance_spec::InstanceSpec,
 ) -> Result<SpecBuilder, LegacyApiSpecError> {
     let v3_spec: v3::instance_spec::InstanceSpec = value.into();
 
-    crate::spec::api_spec_v3::v3_to_spec_builder(v3_spec)
+    crate::spec::api_spec_v3::v3_to_spec_builder(v3_spec).map_err(|e| e.into())
 }
 
 pub(crate) fn amend(
@@ -123,7 +124,8 @@ mod test {
             .expect("SMBIOS type 1 input preserved");
         assert_eq!(&smbios_input, smbios);
 
-        let v6_spec = v6::instance_spec::InstanceSpec::from(spec.clone());
+        let v6_spec =
+            v6::instance_spec::InstanceSpec::try_from(spec.clone()).unwrap();
         let smbios =
             v6_spec.smbios.as_ref().expect("SMBIOS type 1 input preserved");
         assert_eq!(&smbios_input, smbios);

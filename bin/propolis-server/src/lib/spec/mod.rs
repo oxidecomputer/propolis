@@ -19,17 +19,24 @@
 //!
 //! ## New Versions
 //!
-//! When adding a new API version, particularly when those API versions inclue a
-//! new defintion for `InstanceSpec`, you will probably want to:
+//! When adding a new API version, particularly when those API versions include
+//! a new definition for [`InstanceSpec`], you will probably want to:
 //!
 //! * add a new `api_spec_vN` module for the new version, with conversions from
-//!   `Spec` to the `vN::instance_spec::InstanceSpec` via the previous version
-//!   and from `vN::instance_spec::InstanceSpec` to `Spec` via
+//!   [`Spec`] to the `vN::instance_spec::InstanceSpec` via the previous version
+//!   and from `vN::instance_spec::InstanceSpec` to [`Spec`] via
 //!   `latest_to_spec_builder()`
-//! * adjust the formerly-latest module's `vN_to_spec_builder` to call
-//!   `vN_to_spec_builder` and (try) converting `InstanceSpec` upwards to match.
-//! * adjust the formerly-latest module's `Spec` to `InstanceSpec` conversion to
-//!   be fallible, using `LegacyApiSpecError` instead of `ApiSpecError`
+//! * adjust the formerly-latest module's `vN_to_spec_builder` to call the new
+//!   `vN_to_spec_builder` and (try) converting [`InstanceSpec`] upwards to
+//!   match. The formerly-latest module's `vN_to_spec_builder` should also
+//!   return [`LegacyApiSpecError`].
+//! * if the new API version modifies [`Component`] you will also need to add
+//!   `From<StorageDevice>` and `From<StorageBackend>` implementations.
+//! * add a new `VersionedInstanceSpec`. Refer to `migrate/types.rs` for more
+//!   information.
+//! * update the propolis-server API types and definition. Refer to
+//!   `crates/propolis-api-types-versions/src/lib.rs` and
+//!   `crates/propolis-server-api/src/lib.rs` for more information.
 
 use std::collections::BTreeMap;
 
@@ -52,7 +59,6 @@ use propolis_api_types::instance_spec::{
 use propolis_api_types::instance_spec::{
     Component, InstanceSpec, SmbiosType1Input,
 };
-use propolis_api_types_versions::latest;
 use thiserror::Error;
 
 #[cfg(feature = "failure-injection")]
@@ -120,14 +126,12 @@ pub(crate) enum LegacyApiSpecError {
 }
 
 /// `propolis-server` relies on `TryInto` to convert the API-provided
-/// `InstanceSpec` to an internal `Spec`. When adding a new API version to
-/// `propolis-server` you will probably want to take this implementation and
-/// copy it into the no-longer-latest `api_spec_v*` module.
+/// `InstanceSpec` to an internal `Spec`.
 impl TryFrom<InstanceSpec> for Spec {
     type Error = ApiSpecError;
 
     fn try_from(value: InstanceSpec) -> Result<Self, Self::Error> {
-        Ok(api_spec_v6::v6_to_spec_builder(value)?.finish())
+        Ok(api_spec_latest::latest_to_spec_builder(value)?.finish())
     }
 }
 
@@ -187,6 +191,14 @@ pub(crate) struct Spec {
     // If (when!) we remove `v1` types - they are wholly from before any kind of
     // live migration was supported - this can be de-Option'd.
     pub smbios_type1_input: Option<SmbiosType1Input>,
+}
+
+impl Spec {
+    pub(crate) fn into_instance_spec(self) -> InstanceSpec {
+        self.try_into().unwrap_or_else(|e| {
+            unreachable!("instance spec conversion not expected to fail: {e}");
+        })
+    }
 }
 
 /// The VM's mainboard.
@@ -279,15 +291,6 @@ impl StorageDevice {
     }
 }
 
-impl From<StorageDevice> for latest::instance_spec::Component {
-    fn from(value: StorageDevice) -> Self {
-        match value {
-            StorageDevice::Virtio(d) => Self::VirtioDisk(d),
-            StorageDevice::Nvme(d) => Self::NvmeDisk(d),
-        }
-    }
-}
-
 impl TryFrom<Component> for StorageDevice {
     type Error = ComponentTypeMismatch;
 
@@ -322,16 +325,6 @@ impl StorageBackend {
             StorageBackend::Crucible(be) => be.readonly,
             StorageBackend::File(be) => be.readonly,
             StorageBackend::Blob(be) => be.readonly,
-        }
-    }
-}
-
-impl From<StorageBackend> for Component {
-    fn from(value: StorageBackend) -> Self {
-        match value {
-            StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),
-            StorageBackend::File(be) => Self::FileStorageBackend(be),
-            StorageBackend::Blob(be) => Self::BlobStorageBackend(be),
         }
     }
 }
