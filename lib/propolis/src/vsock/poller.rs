@@ -22,6 +22,7 @@ use nix::poll::PollFlags;
 use slog::{error, info, warn, Logger};
 
 use crate::hw::virtio::vsock::VsockVq;
+use crate::hw::virtio::vsock::VSOCK_EVENT_QUEUE;
 use crate::hw::virtio::vsock::VSOCK_RX_QUEUE;
 use crate::hw::virtio::vsock::VSOCK_TX_QUEUE;
 use crate::vsock::packet::VsockPacket;
@@ -46,7 +47,8 @@ const DEFAULT_QUIESCE_TIMEOUT: Duration = Duration::from_secs(2);
 enum VsockEvent {
     TxQueue = 0,
     RxQueue = 1,
-    Pause = 2,
+    EventQueue = 2,
+    Pause = 3,
 }
 
 impl TryFrom<usize> for VsockEvent {
@@ -56,7 +58,8 @@ impl TryFrom<usize> for VsockEvent {
         match value {
             0 => Ok(Self::TxQueue),
             1 => Ok(Self::RxQueue),
-            2 => Ok(Self::Pause),
+            2 => Ok(Self::EventQueue),
+            3 => Ok(Self::Pause),
             unknown => Err(unknown),
         }
     }
@@ -90,12 +93,22 @@ impl PollerState {
     }
 }
 
+/// Whether the guest is needs a `VIRTIO_VSOCK_EVENT_TRANSPORT_RESET` or
+/// not.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum TransportResetState {
+    NotNeeded,
+    Needed,
+}
+
 /// Commands that can be sent to a paused `poller_loop`.
 enum PausedCmd {
     /// Continue execution
     Resume { oneshot: mpsc::SyncSender<()> },
     /// Cleanup all connection state and queued packets
     Reset { oneshot: mpsc::SyncSender<()> },
+    /// Tell the guest to drop its established connections
+    SendTransportReset { oneshot: mpsc::SyncSender<()> },
     /// Shutdown the event-loop
     Halt,
 }
@@ -127,6 +140,7 @@ impl VsockPollerNotify {
         match id {
             VSOCK_RX_QUEUE => self.port_send(VsockEvent::RxQueue),
             VSOCK_TX_QUEUE => self.port_send(VsockEvent::TxQueue),
+            VSOCK_EVENT_QUEUE => self.port_send(VsockEvent::EventQueue),
             _ => Ok(()),
         }
     }
@@ -144,6 +158,14 @@ impl VsockPollerNotify {
     pub fn reset_evloop(&self) {
         let (tx, rx) = mpsc::sync_channel(0);
         self.pause_tx.send(PausedCmd::Reset { oneshot: tx }).unwrap();
+        rx.recv().unwrap();
+    }
+
+    pub fn send_transport_reset(&self) {
+        let (tx, rx) = mpsc::sync_channel(0);
+        self.pause_tx
+            .send(PausedCmd::SendTransportReset { oneshot: tx })
+            .unwrap();
         rx.recv().unwrap();
     }
 
@@ -214,6 +236,8 @@ pub struct VsockPoller {
     rx_blocked: Vec<ConnKey>,
     /// Connections waiting to be reaped
     quiescing: VecDeque<ClosingConn>,
+    /// Whether a `VIRTIO_VSOCK_EVENT_TRANSPORT_RESET` is owed to the guest.
+    transport_reset: TransportResetState,
 }
 
 impl VsockPoller {
@@ -267,6 +291,7 @@ impl VsockPoller {
             rx: Default::default(),
             rx_blocked: Default::default(),
             quiescing: Default::default(),
+            transport_reset: TransportResetState::NotNeeded,
         })
     }
 
@@ -589,12 +614,36 @@ impl VsockPoller {
         }
     }
 
+    /// Attempt to deliver a transport reset to the guest. If succesful, update
+    /// the state and process any events we refused to handle before.
+    fn try_send_transport_reset(&mut self) {
+        if self.transport_reset != TransportResetState::Needed {
+            return;
+        }
+        match self.queues.send_transport_reset() {
+            Ok(()) => {
+                self.transport_reset = TransportResetState::NotNeeded;
+                self.handle_tx_queue_event();
+                self.handle_rx_queue_event();
+            }
+            Err(e) => error!(&self.log, "failed to send transport reset: {e}"),
+        }
+    }
+
     /// Handle a user event. Returns `true` if the event loop should pause.
     fn handle_user_event(&mut self, event: VsockEvent) -> bool {
         let mut should_pause = false;
+        let needs_reset =
+            matches!(self.transport_reset, TransportResetState::Needed);
+
         match event {
+            // Don't handle any guest->host events until the a transport reset
+            // has been delivered to the guest. We will handle any missed events
+            // once we have been successful.
+            VsockEvent::TxQueue if needs_reset => {}
             VsockEvent::TxQueue => self.handle_tx_queue_event(),
             VsockEvent::RxQueue => self.handle_rx_queue_event(),
+            VsockEvent::EventQueue => self.try_send_transport_reset(),
             VsockEvent::Pause => should_pause = true,
         }
         should_pause
@@ -954,6 +1003,9 @@ impl VsockPoller {
                     // We are running!
                     self.state.set_running();
 
+                    // If we were migrated we need to send a transport reset.
+                    self.try_send_transport_reset();
+
                     // Handle events until we are told to pause.
                     self.handle_events();
 
@@ -962,6 +1014,10 @@ impl VsockPoller {
                 }
                 Ok(PausedCmd::Reset { oneshot }) => {
                     self.reset();
+                    oneshot.send(()).unwrap();
+                }
+                Ok(PausedCmd::SendTransportReset { oneshot }) => {
+                    self.transport_reset = TransportResetState::Needed;
                     oneshot.send(()).unwrap();
                 }
                 Ok(PausedCmd::Halt) => {
@@ -984,6 +1040,7 @@ impl VsockPoller {
         self.rx.clear();
         self.rx_blocked.clear();
         self.quiescing.clear();
+        self.transport_reset = TransportResetState::NotNeeded;
     }
 }
 
@@ -1057,7 +1114,9 @@ mod test {
     use zerocopy::{FromBytes, IntoBytes};
 
     use crate::hw::virtio::testutil::{QueueWriter, TestVirtQueues, VqSize};
-    use crate::hw::virtio::vsock::{VsockVq, VSOCK_RX_QUEUE, VSOCK_TX_QUEUE};
+    use crate::hw::virtio::vsock::{
+        VsockVq, VSOCK_EVENT_QUEUE, VSOCK_RX_QUEUE, VSOCK_TX_QUEUE,
+    };
     use crate::vsock::packet::{
         VsockPacketFlags, VsockPacketHeader, VsockPacketOp, VsockSocketType,
     };
@@ -1095,6 +1154,7 @@ mod test {
         tvqs: TestVirtQueues,
         rx_writer: QueueWriter,
         tx_writer: QueueWriter,
+        ev_writer: QueueWriter,
     }
 
     impl VsockTestHarness {
@@ -1105,12 +1165,14 @@ mod test {
                 VqSize::new(1),          // Event
             ]);
 
-            // RX and TX use separate data regions
+            // RX, TX, and Event use separate data regions
             let rx_writer = tvqs.writer(VSOCK_RX_QUEUE as usize, 0);
             let tx_writer =
                 tvqs.writer(VSOCK_TX_QUEUE as usize, PAGE_SIZE * 16);
+            let ev_writer =
+                tvqs.writer(VSOCK_EVENT_QUEUE as usize, PAGE_SIZE * 32);
 
-            Self { tvqs, rx_writer, tx_writer }
+            Self { tvqs, rx_writer, tx_writer, ev_writer }
         }
 
         fn make_vsock_vq(&self) -> VsockVq {
@@ -1177,6 +1239,31 @@ mod test {
 
         fn rx_used_idx(&self) -> u16 {
             self.rx_writer.used_idx(self.tvqs.mem_acc())
+        }
+
+        /// Add a writable event buffer (sized for `virtio_vsock_event`) to
+        /// the event queue and publish it.
+        fn add_event_buffer(&mut self) -> u16 {
+            let d = self.ev_writer.add_writable(self.tvqs.mem_acc(), 4);
+            self.ev_writer.publish_avail(self.tvqs.mem_acc(), d);
+            d
+        }
+
+        fn event_used_idx(&self) -> u16 {
+            self.ev_writer.used_idx(self.tvqs.mem_acc())
+        }
+
+        /// Read a `virtio_vsock_event` id from an event queue used entry.
+        fn read_event(&self, used_index: u16) -> u32 {
+            let mem_acc = self.tvqs.mem_acc();
+            let elem = self.ev_writer.read_used_elem(mem_acc, used_index);
+            assert_eq!(elem.len, 4, "event used entry holds one le32 id");
+            let buf = self.ev_writer.read_desc_data(
+                mem_acc,
+                elem.id as u16,
+                elem.len as usize,
+            );
+            u32::from_le_bytes(buf.try_into().expect("4 byte event"))
         }
 
         fn tx_used_idx(&self) -> u16 {
@@ -2280,6 +2367,65 @@ mod test {
         let notify = poller.notify_handle();
         let handle = poller.run();
         notify.resume_evloop();
+        notify.pause_evloop().unwrap();
+        notify.halt_evloop();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn transport_reset_event_delivered_on_resume() {
+        let guest_cid = GuestCid::try_from(50).unwrap();
+
+        let mut harness = VsockTestHarness::new();
+        let vq = harness.make_vsock_vq();
+        let log = test_logger();
+        let poller =
+            VsockPoller::new(log, guest_cid, vq, IdHashMap::new()).unwrap();
+
+        // The "guest" queued an event buffer before the device moved.
+        harness.add_event_buffer();
+
+        let notify = poller.notify_handle();
+        let handle = poller.run();
+
+        // Signal while paused (as a migration import would), then resume.
+        notify.send_transport_reset();
+        notify.resume_evloop();
+
+        wait_for_condition(|| harness.event_used_idx() >= 1, 5000);
+        assert_eq!(harness.read_event(0), 0 /* TRANSPORT_RESET */);
+
+        notify.pause_evloop().unwrap();
+        notify.halt_evloop();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn transport_reset_event_retried_on_event_queue_kick() {
+        let guest_cid = GuestCid::try_from(50).unwrap();
+
+        let mut harness = VsockTestHarness::new();
+        let vq = harness.make_vsock_vq();
+        let log = test_logger();
+        let poller =
+            VsockPoller::new(log, guest_cid, vq, IdHashMap::new()).unwrap();
+
+        let notify = poller.notify_handle();
+        let handle = poller.run();
+
+        // Signal and resume with no event buffer available: the event
+        // cannot be delivered yet and must stay pending.
+        notify.send_transport_reset();
+        notify.resume_evloop();
+        assert_eq!(harness.event_used_idx(), 0);
+
+        // The guest now supplies a buffer and kicks the event queue.
+        harness.add_event_buffer();
+        notify.queue_notify(VSOCK_EVENT_QUEUE).unwrap();
+
+        wait_for_condition(|| harness.event_used_idx() >= 1, 5000);
+        assert_eq!(harness.read_event(0), 0 /* TRANSPORT_RESET */);
+
         notify.pause_evloop().unwrap();
         notify.halt_evloop();
         handle.join().unwrap();

@@ -370,6 +370,10 @@ impl VsockProxy {
         self.poller.reset_evloop();
     }
 
+    pub fn send_transport_reset(&self) {
+        self.poller.send_transport_reset();
+    }
+
     pub fn halt(&self) {
         self.poller.halt_evloop();
         self.poller.wait_stopped();
