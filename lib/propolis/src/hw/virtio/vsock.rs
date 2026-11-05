@@ -6,15 +6,18 @@ use lazy_static::lazy_static;
 use slog::Logger;
 use std::sync::Arc;
 
+use crate::accessors::Guard;
 use crate::accessors::MemAccessor;
 use crate::common::*;
 use crate::hw::pci;
 use crate::hw::virtio;
+use crate::hw::virtio::queue::AvailChain;
 use crate::hw::virtio::queue::Chain;
 use crate::hw::virtio::queue::VirtQueue;
 use crate::hw::virtio::queue::VqSize;
 use crate::migrate::*;
 use crate::util::regmap::RegMap;
+use crate::vmm::mem::MemAccessed;
 use crate::vmm::MemCtx;
 use crate::vsock::packet::VsockPacket;
 use crate::vsock::packet::VsockPacketError;
@@ -40,36 +43,25 @@ pub const VSOCK_EVENT_QUEUE: u16 = 0x2;
 /// This guarantees we have space to send a packet to the guest before reading
 /// data from a host socket, preventing data loss if the queue is full.
 ///
-/// The permit holds a mutable reference to `VsockVq`, ensuring only one permit
-/// can exist at a time (enforced at compile time). If dropped without calling
-/// `write`, the chain is retained in `VsockVq` for reuse.
+/// NB: The underlying descriptor chain is not consumed until a call to
+/// [`RxPermit::write`] is made. Droopping the [`RxPermit`] is a no-op without a
+/// call to write is a no-op.
 pub struct RxPermit<'a> {
-    vq: &'a mut VsockVq,
+    avail: AvailChain<'a>,
+    mem: Guard<'a, MemAccessed>,
 }
 
 impl RxPermit<'_> {
     /// Returns the maximum data payload that can fit in this descriptor chain.
     pub fn available_data_space(&self) -> usize {
         let header_size = std::mem::size_of::<VsockPacketHeader>();
-        self.vq
-            .rx_chain
-            .as_ref()
-            .expect("has chain")
-            .remain_write_bytes()
-            .saturating_sub(header_size)
+        self.avail.chain().remain_write_bytes().saturating_sub(header_size)
     }
 
-    pub fn write(self, header: &VsockPacketHeader, data: &[u8]) {
-        // TODO: cannot access memory?
-        let mem = self.vq.acc_mem.access().expect("mem access for write");
-        let queue =
-            self.vq.queues.get(VSOCK_RX_QUEUE as usize).expect("rx queue");
-
-        // NB: `RxPermit` should only be created if the owning `VsockVq`
-        // actually has a `Some(Chain)`. Unfortuantely there doesn't seem to be
-        // a way to enforce this at compile time.
-        let mut chain = self.vq.rx_chain.take().expect("has chain");
-        chain.write(header, &mem);
+    pub fn write(mut self, header: &VsockPacketHeader, data: &[u8]) {
+        let mem = &*self.mem;
+        let chain = self.avail.chain_mut();
+        chain.write(header, mem);
 
         if !data.is_empty() {
             let mut done = 0;
@@ -86,15 +78,13 @@ impl RxPermit<'_> {
         }
 
         probes::vsock_pkt_rx!(|| header);
-        queue.push_used(&mut chain, &mem);
+        self.avail.push_used(mem);
     }
 }
 
 pub struct VsockVq {
     queues: Vec<Arc<VirtQueue>>,
     acc_mem: MemAccessor,
-    /// Cached rx chain for permit reuse when dropped without write
-    rx_chain: Option<Chain>,
 }
 
 impl VsockVq {
@@ -102,13 +92,13 @@ impl VsockVq {
         queues: Vec<Arc<VirtQueue>>,
         acc_mem: MemAccessor,
     ) -> Self {
-        Self { queues, acc_mem, rx_chain: None }
+        Self { queues, acc_mem }
     }
 
     /// Try to acquire a permit for sending a packet to the guest.
     ///
-    /// Returns `Some(RxPermit)` if a descriptor chain is available,
-    /// `None` if the rx queue is full.
+    /// Returns `Some(RxPermit)` if a descriptor chain is available, `None`
+    /// if the rx queue is full.
     pub fn try_rx_permit(&mut self) -> Option<RxPermit<'_>> {
         let vq = self.queues.get(VSOCK_RX_QUEUE as usize)?;
         // See propolis#1110 & propolis#1115
@@ -121,22 +111,9 @@ impl VsockVq {
             return None;
         }
 
-        // Reuse cached chain or pop a new one
-        if self.rx_chain.is_none() {
-            // TODO: cannot access memory?
-            let mem = self.acc_mem.access().expect("mem access for write");
-            let mut chain = Chain::with_capacity(10);
-            if let Some(_) = vq.pop_avail(&mut chain, &mem) {
-                self.rx_chain = Some(chain);
-            }
-        }
-
-        // We only return a permit iff we know that we are holding onto a valid
-        // descriptor chain that can be used by the borrowing `RxPermit`
-        match self.rx_chain {
-            Some(_) => Some(RxPermit { vq: self }),
-            None => None,
-        }
+        let mem = self.acc_mem.access()?;
+        let avail = vq.peek_avail(&mem)?;
+        Some(RxPermit { avail, mem })
     }
 
     /// Receive all available packets from the TX queue.
@@ -160,15 +137,6 @@ impl VsockVq {
         vq.push_used(&mut chain, &mem);
 
         Some(packet)
-    }
-
-    /// Drop any cached descriptor chain.
-    ///
-    /// This MUST be called when reseting the virtio-socket device so
-    /// that we don't use stale `GuestAddr`s across device resets.
-    #[cfg(target_os = "illumos")]
-    pub(crate) fn clear_rx_chain(&mut self) {
-        self.rx_chain = None;
     }
 }
 
