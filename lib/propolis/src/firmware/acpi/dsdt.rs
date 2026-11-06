@@ -39,7 +39,7 @@ use std::cell::RefCell;
 use super::aml::{devids, methods, names, paths, *};
 use super::{
     AcpiVariant, GPE0_BLK_ADDR, GPE0_BLK_LEN, IO_APIC_ADDR, IO_APIC_LEN,
-    LOCAL_APIC_ADDR, LOCAL_APIC_LEN, PCI_LINK_IRQS,
+    LOCAL_APIC_ADDR, LOCAL_APIC_LEN, PCI_LINK_IRQS, SCI_IRQ,
 };
 use crate::common::DeviceMetadataMap;
 use crate::hw::{chipset::i440fx, pci, qemu};
@@ -702,7 +702,7 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                         true,
                         PCI_LINK_IRQS
                             .iter()
-                            .filter(|i| **i != i440fx::SCI_IRQ) // The SCI has special handling LNKS.
+                            .filter(|i| **i != SCI_IRQ) // The SCI has special handling LNKS.
                             .map(|i| *i as u32)
                             .collect(),
                     )]),

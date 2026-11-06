@@ -1249,6 +1249,11 @@ fn setup_instance(
     guard.inventory.register(&chipset_lpc);
     guard.inventory.register(&chipset_pm);
 
+    // ACPI
+    let sci_pin = chipset_lpc.irq_pin(acpi::SCI_IRQ).unwrap();
+    let acpi = acpi::Acpi::create(sci_pin.into());
+    guard.inventory.register(&acpi);
+
     // RTC: populate time and CMOS
     let rtc = chipset_lpc.rtc.as_ref();
     rtc.memsize_to_nvram(lowmem as u32, highmem as u64)?;
