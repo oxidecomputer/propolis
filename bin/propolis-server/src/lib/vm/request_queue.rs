@@ -229,9 +229,6 @@ pub(crate) enum RequestDeniedReason {
 
     #[error("Instance failed to start or halted due to a failure")]
     InstanceFailed,
-
-    #[error("Cannot supply timeout with non-ACPI-shutdown state requests")]
-    TimeoutOnNonAcpiState,
 }
 
 /// A kind of request that can be popped from the queue and then completed.

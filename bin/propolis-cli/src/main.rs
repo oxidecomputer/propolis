@@ -39,10 +39,7 @@ use uuid::Uuid;
 
 use propolis_client::{
     support::{InstanceSerialConsoleHelper, WSClientOffset},
-    types::{
-        InstanceStateChange, InstanceStateRequested, InstanceVcrReplace,
-        MigrationState,
-    },
+    types::{InstanceStateRequested, InstanceVcrReplace, MigrationState},
     Client,
 };
 
@@ -452,8 +449,11 @@ fn parse_state(state: &str) -> anyhow::Result<InstanceStateRequested> {
         "run" => Ok(InstanceStateRequested::Run),
         "stop" => Ok(InstanceStateRequested::Stop),
         "reboot" => Ok(InstanceStateRequested::Reboot),
-        "acpi-stop" => Ok(InstanceStateRequested::AcpiStop),
-        "acpi-reboot" => Ok(InstanceStateRequested::AcpiReboot),
+        // XXX: timeouts to be replaced after parse
+        "acpi-stop" => Ok(InstanceStateRequested::AcpiStop { timeout_secs: 0 }),
+        "acpi-reboot" => {
+            Ok(InstanceStateRequested::AcpiReboot { timeout_secs: 0 })
+        }
         _ => Err(anyhow!(
             "invalid requested state, must be one of: \
             'run', 'stop', 'reboot', 'acpi-stop', 'acpi-reboot'"
@@ -581,11 +581,10 @@ async fn get_instance(client: &Client) -> anyhow::Result<()> {
 async fn put_instance(
     client: &Client,
     state: InstanceStateRequested,
-    acpi_timeout_secs: Option<u64>,
 ) -> anyhow::Result<()> {
     client
         .instance_state_put()
-        .body(InstanceStateChange { state, acpi_timeout_secs })
+        .body(state)
         .send()
         .await
         .with_context(|| anyhow!("failed to set instance state"))?;
@@ -968,8 +967,17 @@ async fn main() -> anyhow::Result<()> {
             .await?
         }
         Command::Get => get_instance(&client).await?,
-        Command::State { state, acpi_timeout_secs } => {
-            put_instance(&client, state, acpi_timeout_secs).await?
+        Command::State { mut state, acpi_timeout_secs } => {
+            match &mut state {
+                InstanceStateRequested::AcpiStop { timeout_secs }
+                | InstanceStateRequested::AcpiReboot { timeout_secs } => {
+                    *timeout_secs = acpi_timeout_secs.ok_or(anyhow!(
+                        "acpi-stop and acpi-reboot states must provide timeout"
+                    ))?
+                }
+                _ => {}
+            }
+            put_instance(&client, state).await?
         }
         Command::Serial { byte_offset } => {
             serial(addr, byte_offset, log).await?

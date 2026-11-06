@@ -218,7 +218,7 @@ pub trait PropolisServerApi {
     }]
     async fn instance_state_put(
         rqctx: RequestContext<Self::Context>,
-        request: TypedBody<latest::instance::InstanceStateChange>,
+        request: TypedBody<latest::instance::InstanceStateRequested>,
     ) -> Result<HttpResponseUpdatedNoContent, HttpError>;
 
     #[endpoint {
@@ -233,10 +233,9 @@ pub trait PropolisServerApi {
     ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
         Self::instance_state_put(
             rqctx,
-            latest::instance::InstanceStateChange {
-                state: request.into_inner().into(),
-                acpi_timeout_secs: None,
-            }
+            latest::instance::InstanceStateRequested::from(
+                request.into_inner(),
+            )
             .into(),
         )
         .await

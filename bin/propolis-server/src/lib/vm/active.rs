@@ -8,13 +8,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use propolis_api_types::instance::{
-    InstanceProperties, InstanceStateChange, InstanceStateRequested,
+    InstanceProperties, InstanceStateRequested,
 };
 use propolis_api_types::instance_spec::SpecKey;
 use slog::info;
 use uuid::Uuid;
 
-use crate::vm::request_queue::{ExternalRequest, RequestDeniedReason};
+use crate::vm::request_queue::ExternalRequest;
 use crate::vm::SoftShutdownFate;
 
 use super::{
@@ -59,31 +59,25 @@ impl ActiveVm {
     /// Pushes a state change request to the VM's state change queue.
     pub(crate) fn put_state(
         &self,
-        requested: InstanceStateChange,
+        requested: InstanceStateRequested,
     ) -> Result<(), VmError> {
         info!(self.log, "requested state via API";
-              "state" => ?requested.state,
-              "timeout" => ?requested.acpi_timeout_secs);
+              "state" => ?requested);
 
-        let timeout = requested.acpi_timeout_secs.map(Duration::from_secs);
-        let ext_req = match requested.state {
-            InstanceStateRequested::Run
-            | InstanceStateRequested::Stop
-            | InstanceStateRequested::Reboot
-                if timeout.is_some() =>
-            {
-                return Err(RequestDeniedReason::TimeoutOnNonAcpiState.into());
-            }
+        let ext_req = match requested {
             InstanceStateRequested::Run => ExternalRequest::start(),
             InstanceStateRequested::Stop => ExternalRequest::stop(),
             InstanceStateRequested::Reboot => ExternalRequest::reboot(),
-            InstanceStateRequested::AcpiStop => {
-                ExternalRequest::acpi_shutdown(SoftShutdownFate::Stop, timeout)
+            InstanceStateRequested::AcpiStop { timeout_secs } => {
+                ExternalRequest::acpi_shutdown(
+                    SoftShutdownFate::Stop,
+                    Some(Duration::from_secs(timeout_secs)),
+                )
             }
-            InstanceStateRequested::AcpiReboot => {
+            InstanceStateRequested::AcpiReboot { timeout_secs } => {
                 ExternalRequest::acpi_shutdown(
                     SoftShutdownFate::Reboot,
-                    timeout,
+                    Some(Duration::from_secs(timeout_secs)),
                 )
             }
         };

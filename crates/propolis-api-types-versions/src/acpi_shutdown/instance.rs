@@ -12,8 +12,16 @@ pub enum InstanceStateRequested {
     Run,
     Stop,
     Reboot,
-    AcpiStop,
-    AcpiReboot,
+    AcpiStop {
+        /// The number of seconds to wait after sending ACPI `PWRBTN_STS` before
+        /// forcing the guest to stop.
+        timeout_secs: u64,
+    },
+    AcpiReboot {
+        /// The number of seconds to wait after sending ACPI `PWRBTN_STS` before
+        /// forcing the guest to reboot.
+        timeout_secs: u64,
+    },
 }
 
 impl From<InstanceStateRequestedV1> for InstanceStateRequested {
@@ -24,14 +32,4 @@ impl From<InstanceStateRequestedV1> for InstanceStateRequested {
             InstanceStateRequestedV1::Reboot => Self::Reboot,
         }
     }
-}
-
-/// Requested state change of an Instance.
-#[derive(Clone, Copy, Deserialize, Serialize, JsonSchema)]
-pub struct InstanceStateChange {
-    /// The desired state for the Instance.
-    pub state: InstanceStateRequested,
-    /// The number of seconds to wait after sending ACPI `PWRBTN_STS` before
-    /// forcing stop/reset. (Only valid for AcpiStop and AcpiReboot states.)
-    pub acpi_timeout_secs: Option<u64>,
 }

@@ -24,7 +24,7 @@ mod api_types;
 use api_types::types::{self as api, InstanceEnsureRequest};
 pub use api_types::MockMode;
 
-#[derive(Debug, Eq, PartialEq, Error)]
+#[derive(Debug, Error)]
 pub enum Error {
     #[error("Failed to send simulated state change update through channel")]
     TransitionSendFail,
@@ -47,7 +47,7 @@ pub struct InstanceContext {
     serial_task: serial::SerialTask,
     state_watcher_rx: watch::Receiver<MockState>,
     state_watcher_tx: watch::Sender<MockState>,
-    last_state_change: Option<api::InstanceStateChange>,
+    last_state_change: Option<api::InstanceStateRequested>,
 }
 
 struct MockState {
@@ -103,7 +103,7 @@ impl InstanceContext {
     pub async fn set_target_state(
         &mut self,
         log: &Logger,
-        target: api::InstanceStateRequested,
+        target: &api::InstanceStateRequested,
     ) -> Result<(), Error> {
         match (self.current_state(), target) {
             (
@@ -129,7 +129,7 @@ impl InstanceContext {
             (
                 api::InstanceState::Running,
                 api::InstanceStateRequested::Reboot
-                | api::InstanceStateRequested::AcpiReboot,
+                | api::InstanceStateRequested::AcpiReboot { timeout_secs: _ },
             ) => {
                 self.queue_states(
                     log,
@@ -143,7 +143,7 @@ impl InstanceContext {
             }
             (
                 api::InstanceState::Running,
-                api::InstanceStateRequested::AcpiStop,
+                api::InstanceStateRequested::AcpiStop { timeout_secs: _ },
             ) => {
                 self.queue_states(
                     log,
@@ -159,21 +159,26 @@ impl InstanceContext {
             (
                 api::InstanceState::Stopping,
                 api::InstanceStateRequested::Reboot
-                | api::InstanceStateRequested::AcpiReboot,
-            ) if self
-                .last_state_change
-                .as_ref()
-                .map(|change| change.acpi_timeout_secs.is_some())
-                .unwrap_or(false) =>
+                | api::InstanceStateRequested::AcpiReboot { timeout_secs: _ },
+            ) if matches!(
+                self.last_state_change.as_ref(),
+                Some(
+                    api::InstanceStateRequested::AcpiStop { .. }
+                        | api::InstanceStateRequested::AcpiReboot { .. }
+                )
+            ) =>
             {
                 Ok(())
             }
             (
                 current,
                 api::InstanceStateRequested::Reboot
-                | api::InstanceStateRequested::AcpiReboot
-                | api::InstanceStateRequested::AcpiStop,
-            ) => Err(Error::InvalidTransition { current, requested: target }),
+                | api::InstanceStateRequested::AcpiReboot { timeout_secs: _ }
+                | api::InstanceStateRequested::AcpiStop { timeout_secs: _ },
+            ) => Err(Error::InvalidTransition {
+                current,
+                requested: target.to_owned(),
+            }),
             (_, api::InstanceStateRequested::Run) => {
                 self.queue_states(log, &[api::InstanceState::Running]).await;
                 Ok(())
@@ -374,7 +379,7 @@ async fn instance_state_monitor(
 }]
 async fn instance_state_put(
     rqctx: RequestContext<Arc<Context>>,
-    request: TypedBody<api::InstanceStateChange>,
+    request: TypedBody<api::InstanceStateRequested>,
 ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
     let mut instance = rqctx.context().instance.lock().await;
     let instance = instance.as_mut().ok_or_else(|| {
@@ -383,14 +388,13 @@ async fn instance_state_put(
         )
     })?;
     let requested_state = request.into_inner();
-    instance
-        .set_target_state(&rqctx.log, requested_state.state)
-        .await
-        .map_err(|err| {
+    instance.set_target_state(&rqctx.log, &requested_state).await.map_err(
+        |err| {
             HttpError::for_internal_error(format!(
                 "Failed to transition: {err}"
             ))
-        })?;
+        },
+    )?;
     instance.last_state_change = Some(requested_state);
     Ok(HttpResponseUpdatedNoContent {})
 }
@@ -595,7 +599,7 @@ async fn mock_step(
 }]
 async fn mock_last_state_requested_get(
     rqctx: RequestContext<Arc<Context>>,
-) -> Result<HttpResponseOk<api::InstanceStateChange>, HttpError> {
+) -> Result<HttpResponseOk<api::InstanceStateRequested>, HttpError> {
     let instance = rqctx.context().instance.lock().await;
     let instance = instance.as_ref().ok_or_else(|| {
         HttpError::for_internal_error(

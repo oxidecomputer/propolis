@@ -37,7 +37,7 @@ use propolis_client::{
         InstanceEnsureRequest, InstanceGetResponse,
         InstanceInitializationMethod, InstanceMigrateStatusResponse,
         InstanceSerialConsoleHistoryResponse, InstanceState,
-        InstanceStateChange, InstanceStateRequested, MigrationState,
+        InstanceStateRequested, MigrationState,
     },
 };
 use propolis_client::{Client, ResponseValue};
@@ -558,18 +558,18 @@ impl TestVm {
     /// Sets the VM to the running state without first sending an instance
     /// ensure request.
     pub async fn run(&self) -> PropolisClientResult<()> {
-        self.put_instance_state(InstanceStateRequested::Run, None).await
+        self.put_instance_state(InstanceStateRequested::Run).await
     }
 
     /// Stops the VM.
     pub async fn stop(&self) -> PropolisClientResult<()> {
-        self.put_instance_state(InstanceStateRequested::Stop, None).await
+        self.put_instance_state(InstanceStateRequested::Stop).await
     }
 
     /// Resets the VM by requesting the `Reboot` state from the server (as
     /// distinct from requesting a reboot from within the guest).
     pub async fn reset(&self) -> PropolisClientResult<()> {
-        self.put_instance_state(InstanceStateRequested::Reboot, None).await
+        self.put_instance_state(InstanceStateRequested::Reboot).await
     }
 
     /// Sends a power button press, and forcefully stops the VM after the given
@@ -578,10 +578,9 @@ impl TestVm {
         &self,
         timeout_secs: u64,
     ) -> PropolisClientResult<()> {
-        self.put_instance_state(
-            InstanceStateRequested::AcpiStop,
-            Some(timeout_secs),
-        )
+        self.put_instance_state(InstanceStateRequested::AcpiStop {
+            timeout_secs,
+        })
         .await
     }
 
@@ -591,10 +590,9 @@ impl TestVm {
         &self,
         timeout_secs: u64,
     ) -> PropolisClientResult<()> {
-        self.put_instance_state(
-            InstanceStateRequested::AcpiReboot,
-            Some(timeout_secs),
-        )
+        self.put_instance_state(InstanceStateRequested::AcpiReboot {
+            timeout_secs,
+        })
         .await
     }
 
@@ -602,14 +600,9 @@ impl TestVm {
     async fn put_instance_state(
         &self,
         state: InstanceStateRequested,
-        acpi_timeout_secs: Option<u64>,
     ) -> PropolisClientResult<()> {
         info!(?state, "Requesting instance state change");
-        self.client
-            .instance_state_put()
-            .body(InstanceStateChange { state, acpi_timeout_secs })
-            .send()
-            .await
+        self.client.instance_state_put().body(state).send().await
     }
 
     /// Issues a Propolis client `instance_get` request.
@@ -1226,10 +1219,7 @@ async fn try_ensure_vm_destroyed(client: &Client) {
     debug!("trying to ensure Propolis server VM is destroyed");
     if let Err(error) = client
         .instance_state_put()
-        .body(InstanceStateChange {
-            state: InstanceStateRequested::Stop,
-            acpi_timeout_secs: None,
-        })
+        .body(InstanceStateRequested::Stop)
         .send()
         .await
     {

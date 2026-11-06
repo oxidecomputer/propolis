@@ -72,7 +72,6 @@ pub mod instance {
     pub use crate::v6::api::InstanceEnsureRequest;
     pub use crate::v6::api::InstanceInitializationMethod;
 
-    pub use crate::v7::instance::InstanceStateChange;
     pub use crate::v7::instance::InstanceStateRequested;
 }
 
