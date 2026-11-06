@@ -367,10 +367,10 @@ impl PropolisServerApi for PropolisServerImpl {
         request: TypedBody<InstanceStateRequested>,
     ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
         let ctx = rqctx.context();
-        let requested_state = request.into_inner();
+        let requested_change = request.into_inner();
         let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
         let result = vm
-            .put_state(requested_state)
+            .put_state(requested_change)
             .map(|_| HttpResponseUpdatedNoContent {})
             .map_err(|e| match e {
                 VmError::WaitingToInitialize => HttpError::for_unavail(
@@ -391,7 +391,7 @@ impl PropolisServerApi for PropolisServerImpl {
             });
 
         if result.is_ok() {
-            if let InstanceStateRequested::Reboot = requested_state {
+            if let InstanceStateRequested::Reboot = requested_change {
                 let stats = MutexGuard::map(
                     vm.services().oximeter.lock().await,
                     |state| &mut state.stats,

@@ -572,6 +572,30 @@ impl TestVm {
         self.put_instance_state(InstanceStateRequested::Reboot).await
     }
 
+    /// Sends a power button press, and forcefully stops the VM after the given
+    /// timeout if the guest hasn't shut itself down by then.
+    pub async fn acpi_shutdown(
+        &self,
+        timeout_secs: u64,
+    ) -> PropolisClientResult<()> {
+        self.put_instance_state(InstanceStateRequested::AcpiStop {
+            timeout_secs,
+        })
+        .await
+    }
+
+    /// Reboots the VM after a guest shutdown triggered by a power button press,
+    /// or forcefully after the given timeout if the guest does not shut down.
+    pub async fn acpi_reset(
+        &self,
+        timeout_secs: u64,
+    ) -> PropolisClientResult<()> {
+        self.put_instance_state(InstanceStateRequested::AcpiReboot {
+            timeout_secs,
+        })
+        .await
+    }
+
     #[instrument(skip_all, fields(vm = self.spec.vm_name, vm_id = %self.id))]
     async fn put_instance_state(
         &self,
