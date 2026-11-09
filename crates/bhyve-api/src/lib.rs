@@ -541,6 +541,10 @@ unsafe fn ioctl(
 #[repr(u32)]
 #[derive(Copy, Clone)]
 pub enum ApiVersion {
+    /// Make vCPU sets a vmm-specific type, and let `VM_GET_CPUS` accept any
+    /// `cpusetsize` up to a page (illumos 18526/18527).
+    V19 = 19,
+
     /// Initial support for CPU perf. counters on AMD
     V18 = 18,
 
@@ -590,7 +594,7 @@ pub enum ApiVersion {
 }
 impl ApiVersion {
     pub const fn current() -> Self {
-        Self::V18
+        Self::V19
     }
 }
 
