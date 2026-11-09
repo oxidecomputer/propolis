@@ -107,12 +107,12 @@ for dsc need to match what is in this file.
 Using a third window, create the VM and add the crucible disk like this:
 
 ```
-propolis-cli -s 127.0.0.1 -p 55400 new crub --crucible-disks crucible-disks.json
+propolis-cli -s 127.0.0.1:55400 new crub --crucible-disks crucible-disks.json
 ```
 
 Then, start the VM:
 ```
-propolis-cli -s 127.0.0.1 -p 55400 state run
+propolis-cli -s 127.0.0.1:55400 state run
 ```
 
 ## Replace a downstairs.
@@ -142,7 +142,7 @@ and `target[2]` is different.  Send this replace.json file over to the server
 with this propolis-cli command:
 
 ```
-propolis-cli -s 127.0.0.1 -p 55400 vcr -u 0cedae45-3d6e-4d90-b2cb-56f1a1a42a89 --vcr-replace ./replace.json
+propolis-cli -s 127.0.0.1:55400 vcr -u 0cedae45-3d6e-4d90-b2cb-56f1a1a42a89 --vcr-replace ./replace.json
 ```
 
 This should result in more messages on the propolis-server window, and,
