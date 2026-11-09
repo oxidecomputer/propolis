@@ -88,7 +88,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use propolis_api_types_versions::v1::instance::ReplacementComponent;
+use propolis_api_types::instance::ReplacementComponent;
 use propolis_api_types_versions::{v1, v2, v3, v6};
 
 use std::collections::BTreeMap;

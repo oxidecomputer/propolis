@@ -48,31 +48,32 @@ pub mod components {
 }
 
 pub mod disk {
-    pub use crate::v1::disk::InstanceVCRReplace;
     pub use crate::v1::disk::SnapshotRequestPathParams;
     pub use crate::v1::disk::VCRRequestPathParams;
     pub use crate::v1::disk::VolumeStatusPathParams;
     pub use crate::v5::disk::VolumeStatus;
+
+    pub use crate::v7::disk::InstanceVcrReplace;
 }
 
 pub mod instance {
     pub use crate::v1::instance::ErrorCode;
-    pub use crate::v1::instance::Instance;
     pub use crate::v1::instance::InstanceEnsureResponse;
-    pub use crate::v1::instance::InstanceGetResponse;
     pub use crate::v1::instance::InstanceMetadata;
     pub use crate::v1::instance::InstanceNameParams;
     pub use crate::v1::instance::InstancePathParams;
     pub use crate::v1::instance::InstanceProperties;
-    pub use crate::v1::instance::InstanceState;
     pub use crate::v1::instance::InstanceStateChange;
     pub use crate::v1::instance::InstanceStateMonitorRequest;
-    pub use crate::v1::instance::InstanceStateMonitorResponse;
-    pub use crate::v1::instance::InstanceStateRequested;
-    pub use crate::v1::instance::ReplacementComponent;
 
-    pub use crate::v6::api::InstanceEnsureRequest;
-    pub use crate::v6::api::InstanceInitializationMethod;
+    pub use crate::v7::api::InstanceEnsureRequest;
+    pub use crate::v7::api::InstanceInitializationMethod;
+    pub use crate::v7::instance::Instance;
+    pub use crate::v7::instance::InstanceGetResponse;
+    pub use crate::v7::instance::InstanceState;
+    pub use crate::v7::instance::InstanceStateMonitorResponse;
+    pub use crate::v7::instance::InstanceStateRequested;
+    pub use crate::v7::instance::ReplacementComponent;
 }
 
 pub mod instance_spec {
@@ -87,17 +88,19 @@ pub mod instance_spec {
 
     pub use crate::v6::instance_spec::Component;
     pub use crate::v6::instance_spec::InstanceSpec;
-    pub use crate::v6::instance_spec::InstanceSpecGetResponse;
-    pub use crate::v6::instance_spec::InstanceSpecStatus;
+
+    pub use crate::v7::instance_spec::InstanceSpecGetResponse;
+    pub use crate::v7::instance_spec::InstanceSpecStatus;
 }
 
 pub mod migration {
     pub use crate::v1::migration::InstanceMigrateInitiateRequest;
     pub use crate::v1::migration::InstanceMigrateInitiateResponse;
     pub use crate::v1::migration::InstanceMigrateStartRequest;
-    pub use crate::v1::migration::InstanceMigrateStatusResponse;
-    pub use crate::v1::migration::InstanceMigrationStatus;
-    pub use crate::v1::migration::MigrationState;
+
+    pub use crate::v7::migration::InstanceMigrateStatusResponse;
+    pub use crate::v7::migration::InstanceMigrationStatus;
+    pub use crate::v7::migration::MigrationState;
 }
 
 pub mod serial {
