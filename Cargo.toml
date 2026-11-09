@@ -147,6 +147,7 @@ newtype_derive = "0.1.6"
 newtype-uuid = { version = "1.0.1", features = [ "v4" ] }
 # "feature" for `utsname`, "poll" for `PollFlags`
 nix = { version = "0.31", features = [ "feature", "poll" ] }
+num_enum = "0.7.6"
 owo-colors = "4"
 oxide-tokio-rt = "0.1.2"
 paste = "1.0.15"

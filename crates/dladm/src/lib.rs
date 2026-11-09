@@ -2,135 +2,164 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use std::ffi::CString;
-use std::io::{BufRead, BufReader, Error, ErrorKind, Result};
-use std::process::{Command, Stdio};
-use std::slice;
+//! Ultra-low overhead (no_std, no_alloc) access to the dladm subsystem.
+//!
+//! While all usages of this crate will neccesitate a standard library
+//! (you may notice the `libc` includes) the purpose of `no_std` and
+//! `no_alloc` here is to be a Good Citizen within the VMM. Secondarily,
+//! there is one less thing to reason about when dealing with this crate.
+
+#![no_std]
+
+use core::ffi::CStr;
+use core::ptr::NonNull;
+use core::slice;
+use libc::c_void;
+use sys::{dladm_handle, dladm_status, PropType, MAXLINKNAMELEN};
 
 #[allow(non_camel_case_types)]
 mod sys;
 
-use libc::c_void;
-use sys::{datalink_class, dladm_handle_t, dladm_status};
+pub use sys::{datalink_class_t, DlAdmOpt, DlMediaType};
 
-pub struct Handle {
-    inner: dladm_handle_t,
+pub type Result<T> = core::result::Result<T, DladmError>;
+
+#[derive(Debug)]
+pub enum DladmError {
+    /// Hoisted straight from `libdladm`.
+    DladmSubsystem(dladm_status),
+
+    NoMacAddrsOnLink,
+
+    MalformedMacAddr,
+
+    InvalidLinkName,
+
+    UnexpectedNullPtr,
 }
-impl Handle {
+
+impl DladmError {
+    pub fn as_static_str(&self) -> &'static str {
+        match self {
+            Self::DladmSubsystem(err) => err.into(),
+            Self::InvalidLinkName => "invalid link name",
+            Self::UnexpectedNullPtr => {
+                "dladm_open succeeded but returned a null pointer"
+            }
+            Self::NoMacAddrsOnLink => "no mac addrs found on link",
+            Self::MalformedMacAddr => {
+                "no mac addr on the link had the correct length (6B)"
+            }
+        }
+    }
+}
+
+/// Rust-flavoured wrapper around `libdladm`.
+/// Brokers access to dladm without execing the dladm CLI.
+/// Ultimately `libdladm` communicates over doors with `dlmgmtd`,
+/// a daemon managed by SMF's `svc:/network/datalink-management:default`.
+pub struct Dladm {
+    inner: NonNull<dladm_handle>,
+}
+
+impl Dladm {
+    /// Open a handle to the `dladm` subsystem.
     pub fn new() -> Result<Self> {
-        let mut hdl: dladm_handle_t = std::ptr::null_mut();
-        Self::handle_dladm_err(unsafe {
-            sys::dladm_open(&mut hdl as *mut dladm_handle_t)
-        })?;
-        Ok(Self { inner: hdl })
+        let mut hdl: *mut dladm_handle = core::ptr::null_mut();
+        Self::handle_dladm_err(unsafe { sys::dladm_open(&mut hdl) })?;
+
+        let Some(ptr) = NonNull::new(hdl) else {
+            return Err(DladmError::UnexpectedNullPtr);
+        };
+
+        Ok(Self { inner: ptr })
     }
 
-    pub fn query_link(&self, name: &str) -> Result<LinkInfo> {
-        let name_cstr = CString::new(name).unwrap();
-        let mut link_id: sys::datalink_id_t = 0;
-        let mut class: i32 = 0;
+    pub fn describe_link(&self, name: &str) -> Result<LinkInfo> {
+        let nb = name.as_bytes();
+
+        const SPACE_NEEDED_FOR_NULL_TERMINATOR: usize = 1;
+
+        if nb.is_empty()
+            || nb.len() + SPACE_NEEDED_FOR_NULL_TERMINATOR > MAXLINKNAMELEN
+        {
+            return Err(DladmError::InvalidLinkName);
+        }
+
+        let mut buf = [0u8; MAXLINKNAMELEN];
+        let n = nb.len().min(MAXLINKNAMELEN - SPACE_NEEDED_FOR_NULL_TERMINATOR);
+        buf[..n].copy_from_slice(&nb[..n]);
+
+        let Ok(link_name) = CStr::from_bytes_until_nul(&buf) else {
+            return Err(DladmError::InvalidLinkName);
+        };
+
+        let mut link_id = 0;
+        let mut class = datalink_class_t::empty();
+        let mut flags = DlAdmOpt::empty();
+        let mut media = 0;
+
+        // SAFETY: All pointers we're passing to libdladm are valid
+        // for their upcoming accesses.
+        // The link name is a stack-allocated C-string that we've
+        // ensured contains exactly one null terminator.
         Self::handle_dladm_err(unsafe {
             sys::dladm_name2info(
-                self.inner,
-                name_cstr.to_bytes_with_nul().as_ptr(),
-                &mut link_id as *mut sys::datalink_id_t,
-                std::ptr::null_mut(),
+                self.inner.as_ptr(),
+                link_name.as_ptr(),
+                &mut link_id,
+                &mut flags,
                 &mut class,
-                std::ptr::null_mut(),
+                &mut media,
             )
         })?;
 
-        let mut res = LinkInfo { link_id, ..Default::default() };
+        let media = DlpiMediaType::new(media);
 
-        match datalink_class::from_repr(class) {
-            // acceptable values: this supports both VNICs
-            // and direct use of XDE/OPTE ports.
-            Some(datalink_class::DATALINK_CLASS_VNIC) => {
-                Self::get_vnic_mac(name, &mut res.mac_addr[..])?;
-            }
-            Some(datalink_class::DATALINK_CLASS_MISC) => {
-                self.get_misc_mac(link_id, &mut res.mac_addr[..])?;
-            }
-            Some(c) => {
-                return Err(Error::new(
-                    ErrorKind::InvalidInput,
-                    format!("{name} is not vnic/misc class, but {c:?}"),
-                ));
-            }
-            None => {
-                return Err(Error::new(
-                    ErrorKind::InvalidInput,
-                    format!("{name} is of invalid class {class:x}"),
-                ));
+        let mut res = LinkInfo {
+            link_id,
+            class,
+            flags,
+            media,
+            mtu: None,
+            mac_addr: [0; 6],
+        };
+
+        self.pick_first_mac(res.link_id, &mut res.mac_addr)?;
+
+        let mut buffer = [0; sys::DLADM_STRSIZE];
+        let mut len = 1u32;
+
+        Self::handle_dladm_err(unsafe {
+            sys::dladm_get_linkprop(
+                self.inner.as_ptr(),
+                res.link_id,
+                PropType::Current,
+                MTU_PROP_NAME.as_ptr(),
+                &mut buffer.as_mut_ptr(),
+                &mut len,
+            )
+        })?;
+
+        if len > 0 {
+            // SAFETY: it's a pointer to a stack alloc.
+            let mtu_string = unsafe { CStr::from_ptr(buffer.as_ptr()) };
+
+            if let Ok(s) = mtu_string.to_str() {
+                if let Ok(mtu) = s.parse() {
+                    res.mtu = Some(mtu);
+                }
             }
         }
-
-        res.mtu = Self::get_mtu(name).ok();
 
         Ok(res)
     }
-    fn get_mtu(name: &str) -> Result<u16> {
-        // dladm show-linkprop -c -o value -p mtu <NIC_NAME>
-        // 1500
-        let output = Command::new("dladm")
-            .args(["show-linkprop", "-c", "-o", "value", "-p", "mtu"])
-            .arg(name)
-            .stderr(Stdio::null())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .output()?;
-        if !output.status.success() {
-            return Err(Error::other("failed dladm"));
-        }
-        BufReader::new(&output.stdout[..])
-            .lines()
-            .next()
-            .and_then(Result::ok)
-            .and_then(|line| line.parse::<u16>().ok())
-            .ok_or_else(|| Error::other("invalid mtu"))
-    }
-    fn get_vnic_mac(name: &str, mac: &mut [u8]) -> Result<()> {
-        // dladm show-vnic -p -o macaddress <VNIC_NAME>
-        // 2:8:20:2d:e9:24
-        let output = Command::new("dladm")
-            .args(["show-vnic", "-p", "-o", "macaddress"])
-            .arg(name)
-            .stderr(Stdio::null())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .output()?;
-        if !output.status.success() {
-            return Err(Error::other("failed dladm"));
-        }
-        let addr = BufReader::new(&output.stdout[..])
-            .lines()
-            .next()
-            .and_then(Result::ok)
-            .and_then(|line| {
-                let fields: Vec<u8> = line
-                    .split(':')
-                    .filter_map(|f| u8::from_str_radix(f, 16).ok())
-                    .collect();
-                match fields.len() {
-                    ETHERADDRL => Some(fields),
-                    _ => None,
-                }
-            })
-            .ok_or_else(|| Error::other("cannot query mac addr"))?;
-        mac.copy_from_slice(&addr[..]);
-        Ok(())
-    }
-    fn get_misc_mac(
+
+    fn pick_first_mac(
         &self,
         linkid: sys::datalink_id_t,
         mac: &mut [u8],
     ) -> Result<()> {
-        // Unfortunately, XDE/OPTE creates 'misc' type devices, as it is
-        // a pseudo device. `dladm` has no built-in commands for these,
-        // and macaddr queries for all other link types go through their
-        // dedicated `dladm show-<X>` commands. As a consequence, we have
-        // to go to libdladm/libdllink directly here.
-
         // One-off callback function and arg struct.
         // This will use the first seen mac address attached to the link.
         unsafe extern "C" fn per_macaddr(
@@ -166,7 +195,7 @@ impl Handle {
         // to state is only held inside the callback.
         Self::handle_dladm_err(unsafe {
             sys::dladm_walk_macaddr(
-                self.inner,
+                self.inner.as_ptr(),
                 linkid,
                 &mut state as *mut _ as *mut c_void,
                 per_macaddr,
@@ -174,11 +203,9 @@ impl Handle {
         })?;
 
         if state.n_seen == 0 {
-            return Err(Error::other("no mac addrs found on link"));
+            return Err(DladmError::NoMacAddrsOnLink);
         } else if !state.written {
-            return Err(Error::other(
-                "no mac addrs on link had correct length (6B)",
-            ));
+            return Err(DladmError::MalformedMacAddr);
         }
 
         Ok(())
@@ -189,22 +216,47 @@ impl Handle {
             .unwrap_or(dladm_status::DLADM_STATUS_FAILED)
         {
             dladm_status::DLADM_STATUS_OK => Ok(()),
-            e => Err(Error::other(format!("{e:?}"))),
+            e => Err(DladmError::DladmSubsystem(e)),
         }
     }
 }
-impl Drop for Handle {
+
+impl Drop for Dladm {
     fn drop(&mut self) {
-        unsafe { sys::dladm_close(self.inner) }
-        self.inner = std::ptr::null_mut();
+        // Recall that dladm_handle_t is not just a close-able fd.
+        // dladm_close performs the necessary cleanups.
+        unsafe { sys::dladm_close(self.inner.as_mut()) }
     }
 }
 
 const ETHERADDRL: usize = 6;
 
-#[derive(Copy, Clone, Default)]
+static MTU_PROP_NAME: &CStr = c"mtu";
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum DlpiMediaType {
+    Known(DlMediaType),
+
+    /// Almost certainly this variant will never be constructed.
+    /// We include it for guaranteed forwards-compatibility.
+    Unknown(u32),
+}
+
+impl DlpiMediaType {
+    fn new(value: u32) -> Self {
+        match DlMediaType::try_from(value) {
+            Ok(d) => Self::Known(d),
+            _ => Self::Unknown(value),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
 pub struct LinkInfo {
     pub link_id: u32,
     pub mtu: Option<u16>,
     pub mac_addr: [u8; ETHERADDRL],
+    pub class: datalink_class_t,
+    pub flags: DlAdmOpt,
+    pub media: DlpiMediaType,
 }
