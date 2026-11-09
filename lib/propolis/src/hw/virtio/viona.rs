@@ -4,9 +4,7 @@
 
 #![cfg_attr(not(target_os = "illumos"), allow(dead_code, unused_imports))]
 
-use std::future;
 use std::io::{self, Error, ErrorKind};
-use std::net::SocketAddrV6;
 use std::num::NonZeroU16;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::{Arc, Condvar, Mutex, Weak};
@@ -29,8 +27,6 @@ use super::queue::{self, VirtQueue, VirtQueues, VqSize};
 use super::{VirtioDevice, VqChange, VqIntr};
 
 use bit_field::BitField;
-use futures::prelude::future::BoxFuture;
-use futures::FutureExt;
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use tokio::io::unix::AsyncFd;
@@ -523,7 +519,6 @@ impl PciVirtioViona {
         vnic_name: &str,
         vm: &VmmHdl,
         viona_params: Option<DeviceParams>,
-        log: &slog::Logger,
     ) -> io::Result<Arc<PciVirtioViona>> {
         Self::new_with_queue_sizes(
             vnic_name,
@@ -532,7 +527,6 @@ impl PciVirtioViona {
             CTL_QUEUE_SIZE,
             vm,
             viona_params,
-            log,
         )
     }
 
@@ -543,7 +537,6 @@ impl PciVirtioViona {
         ctl_queue_size: VqSize,
         vm: &VmmHdl,
         viona_params: Option<DeviceParams>,
-        log: &slog::Logger,
     ) -> io::Result<Arc<PciVirtioViona>> {
         let dlhdl = dladm::Handle::new()?;
         let info = dlhdl.query_link(vnic_name)?;
@@ -551,7 +544,7 @@ impl PciVirtioViona {
         let opte_port = match info.link_class {
             dladm::LinkClass::Vnic => None,
             dladm::LinkClass::Xde => {
-                Some(OptePort::new(vnic_name.to_owned(), log))
+                Some(OptePort::new(vnic_name.to_owned()))
             }
         };
 
@@ -2151,13 +2144,10 @@ mod test {
                 enable_pcie: false,
             },
         );
-        let log = slog::Logger::root(slog::Discard, slog::o!());
         let viona_dev = PciVirtioViona::new(
             vnic_name,
             &machine.hdl,
             None,
-            "[::1]:0".parse().unwrap(),
-            &log,
         )
         .expect("can create test vnic");
 

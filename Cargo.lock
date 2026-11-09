@@ -762,6 +762,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "c8str"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97a407440c9adcc134ae4dc48cfd082fc5d5e8742c8876b55149071d349b9905"
+
+[[package]]
 name = "camino"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3714,6 +3720,14 @@ dependencies = [
 [[package]]
 name = "illumos-sys-hdrs"
 version = "0.1.0"
+source = "git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-experiment#09edd038e55769693312c454895634f7fc324dde"
+dependencies = [
+ "bitflags 2.9.4",
+]
+
+[[package]]
+name = "illumos-sys-hdrs"
+version = "0.1.0"
 source = "git+https://github.com/oxidecomputer/opte?rev=2c6efefe14321dafe7e9e80129d38316adb2d238#2c6efefe14321dafe7e9e80129d38316adb2d238"
 dependencies = [
  "bitflags 2.9.4",
@@ -3723,14 +3737,6 @@ dependencies = [
 name = "illumos-sys-hdrs"
 version = "0.1.0"
 source = "git+https://github.com/oxidecomputer/opte?rev=e547d07b08c3f3d6c821c9eb7a958adcffce6e56#e547d07b08c3f3d6c821c9eb7a958adcffce6e56"
-dependencies = [
- "bitflags 2.9.4",
-]
-
-[[package]]
-name = "illumos-sys-hdrs"
-version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/opte?rev=fd2d6ad625cef6fb903660e57dcd4729ff66a6fe#fd2d6ad625cef6fb903660e57dcd4729ff66a6fe"
 dependencies = [
  "bitflags 2.9.4",
 ]
@@ -4229,6 +4235,15 @@ dependencies = [
 [[package]]
 name = "kstat-macro"
 version = "0.1.0"
+source = "git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-experiment#09edd038e55769693312c454895634f7fc324dde"
+dependencies = [
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "kstat-macro"
+version = "0.1.0"
 source = "git+https://github.com/oxidecomputer/opte?rev=2c6efefe14321dafe7e9e80129d38316adb2d238#2c6efefe14321dafe7e9e80129d38316adb2d238"
 dependencies = [
  "quote",
@@ -4239,15 +4254,6 @@ dependencies = [
 name = "kstat-macro"
 version = "0.1.0"
 source = "git+https://github.com/oxidecomputer/opte?rev=e547d07b08c3f3d6c821c9eb7a958adcffce6e56#e547d07b08c3f3d6c821c9eb7a958adcffce6e56"
-dependencies = [
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "kstat-macro"
-version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/opte?rev=fd2d6ad625cef6fb903660e57dcd4729ff66a6fe#fd2d6ad625cef6fb903660e57dcd4729ff66a6fe"
 dependencies = [
  "quote",
  "syn 2.0.117",
@@ -5435,6 +5441,24 @@ dependencies = [
 [[package]]
 name = "opte"
 version = "0.1.0"
+source = "git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-experiment#09edd038e55769693312c454895634f7fc324dde"
+dependencies = [
+ "bitflags 2.9.4",
+ "dyn-clone",
+ "illumos-sys-hdrs 0.1.0 (git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-experiment)",
+ "ingot 0.2.1",
+ "kstat-macro 0.1.0 (git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-experiment)",
+ "opte-api 0.1.0 (git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-experiment)",
+ "postcard",
+ "ref-cast",
+ "serde",
+ "version_check",
+ "zerocopy 0.8.27",
+]
+
+[[package]]
+name = "opte"
+version = "0.1.0"
 source = "git+https://github.com/oxidecomputer/opte?rev=2c6efefe14321dafe7e9e80129d38316adb2d238#2c6efefe14321dafe7e9e80129d38316adb2d238"
 dependencies = [
  "bitflags 2.9.4",
@@ -5471,21 +5495,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "opte"
+name = "opte-api"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/opte?rev=fd2d6ad625cef6fb903660e57dcd4729ff66a6fe#fd2d6ad625cef6fb903660e57dcd4729ff66a6fe"
+source = "git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-experiment#09edd038e55769693312c454895634f7fc324dde"
 dependencies = [
- "bitflags 2.9.4",
- "dyn-clone",
- "illumos-sys-hdrs 0.1.0 (git+https://github.com/oxidecomputer/opte?rev=fd2d6ad625cef6fb903660e57dcd4729ff66a6fe)",
+ "illumos-sys-hdrs 0.1.0 (git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-experiment)",
  "ingot 0.2.1",
- "kstat-macro 0.1.0 (git+https://github.com/oxidecomputer/opte?rev=fd2d6ad625cef6fb903660e57dcd4729ff66a6fe)",
- "opte-api 0.1.0 (git+https://github.com/oxidecomputer/opte?rev=fd2d6ad625cef6fb903660e57dcd4729ff66a6fe)",
  "postcard",
- "ref-cast",
  "serde",
- "version_check",
- "zerocopy 0.8.27",
+ "smoltcp",
 ]
 
 [[package]]
@@ -5515,15 +5533,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "opte-api"
+name = "opte-ioctl"
 version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/opte?rev=fd2d6ad625cef6fb903660e57dcd4729ff66a6fe#fd2d6ad625cef6fb903660e57dcd4729ff66a6fe"
+source = "git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-experiment#09edd038e55769693312c454895634f7fc324dde"
 dependencies = [
- "illumos-sys-hdrs 0.1.0 (git+https://github.com/oxidecomputer/opte?rev=fd2d6ad625cef6fb903660e57dcd4729ff66a6fe)",
- "ingot 0.2.1",
+ "libc",
+ "libnet",
+ "opte 0.1.0 (git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-experiment)",
+ "oxide-vpc 0.1.0 (git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-experiment)",
  "postcard",
  "serde",
- "smoltcp",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -5549,20 +5569,6 @@ dependencies = [
  "libnet",
  "opte 0.1.0 (git+https://github.com/oxidecomputer/opte?rev=e547d07b08c3f3d6c821c9eb7a958adcffce6e56)",
  "oxide-vpc 0.1.0 (git+https://github.com/oxidecomputer/opte?rev=e547d07b08c3f3d6c821c9eb7a958adcffce6e56)",
- "postcard",
- "serde",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "opte-ioctl"
-version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/opte?rev=fd2d6ad625cef6fb903660e57dcd4729ff66a6fe#fd2d6ad625cef6fb903660e57dcd4729ff66a6fe"
-dependencies = [
- "libc",
- "libnet",
- "opte 0.1.0 (git+https://github.com/oxidecomputer/opte?rev=fd2d6ad625cef6fb903660e57dcd4729ff66a6fe)",
- "oxide-vpc 0.1.0 (git+https://github.com/oxidecomputer/opte?rev=fd2d6ad625cef6fb903660e57dcd4729ff66a6fe)",
  "postcard",
  "serde",
  "thiserror 2.0.18",
@@ -5617,6 +5623,20 @@ dependencies = [
 [[package]]
 name = "oxide-vpc"
 version = "0.1.0"
+source = "git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-experiment#09edd038e55769693312c454895634f7fc324dde"
+dependencies = [
+ "c8str",
+ "cfg-if",
+ "illumos-sys-hdrs 0.1.0 (git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-experiment)",
+ "opte 0.1.0 (git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-experiment)",
+ "serde",
+ "uuid",
+ "zerocopy 0.8.27",
+]
+
+[[package]]
+name = "oxide-vpc"
+version = "0.1.0"
 source = "git+https://github.com/oxidecomputer/opte?rev=2c6efefe14321dafe7e9e80129d38316adb2d238#2c6efefe14321dafe7e9e80129d38316adb2d238"
 dependencies = [
  "cfg-if",
@@ -5638,19 +5658,6 @@ dependencies = [
  "opte 0.1.0 (git+https://github.com/oxidecomputer/opte?rev=e547d07b08c3f3d6c821c9eb7a958adcffce6e56)",
  "serde",
  "tabwriter",
- "uuid",
- "zerocopy 0.8.27",
-]
-
-[[package]]
-name = "oxide-vpc"
-version = "0.1.0"
-source = "git+https://github.com/oxidecomputer/opte?rev=fd2d6ad625cef6fb903660e57dcd4729ff66a6fe#fd2d6ad625cef6fb903660e57dcd4729ff66a6fe"
-dependencies = [
- "cfg-if",
- "illumos-sys-hdrs 0.1.0 (git+https://github.com/oxidecomputer/opte?rev=fd2d6ad625cef6fb903660e57dcd4729ff66a6fe)",
- "opte 0.1.0 (git+https://github.com/oxidecomputer/opte?rev=fd2d6ad625cef6fb903660e57dcd4729ff66a6fe)",
- "serde",
  "uuid",
  "zerocopy 0.8.27",
 ]
@@ -6933,7 +6940,7 @@ dependencies = [
  "libloading",
  "nexus-client",
  "nix 0.31.3",
- "opte-ioctl 0.1.0 (git+https://github.com/oxidecomputer/opte?rev=fd2d6ad625cef6fb903660e57dcd4729ff66a6fe)",
+ "opte-ioctl 0.1.0 (git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-experiment)",
  "oximeter",
  "p9ds",
  "paste",

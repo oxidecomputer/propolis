@@ -2,42 +2,36 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use crate::common::Lifecycle;
 use crate::migrate::MigrateCtx;
 use crate::migrate::MigrateStateError;
-use crate::migrate::Migrator;
 use crate::migrate::PayloadOffers;
 use crate::migrate::PayloadOutputs;
-use futures::future::BoxFuture;
-use futures::FutureExt;
 use opte_ioctl::OpteHdl;
-use slog::info;
-use std::future;
-use std::net::SocketAddrV6;
-use std::sync::Arc;
-use std::sync::Mutex;
-use tokio::sync::oneshot;
 
 /// Handle to the OPTE port backing an XDE-class viona device.
 pub struct OptePort {
     port_name: String,
-
-    // TODO remove once we have a real backend?
-    log: slog::Logger,
 }
 
 impl OptePort {
-    pub fn new(port_name: String, log: &slog::Logger) -> Self {
-        let log = log.new(slog::o!("port" => port_name.clone()));
-        Self { port_name, log }
+    pub fn new(port_name: String) -> Self {
+        Self { port_name }
     }
 
     pub(super) fn pause(&self) {
-        info!(self.log, "TODO: pause OPTE port?");
+        // TODO-robustness: It seems like we want to return the error, but
+        // that's a larger project. See
+        // https://github.com/oxidecomputer/propolis/issues/1251.
+        let hdl = OpteHdl::open().expect("handled error");
+        hdl.pause(&self.port_name).expect("handled error");
     }
 
     pub(super) fn resume(&self) {
-        info!(self.log, "TODO: resume OPTE port?");
+        // TODO-robustness: It seems like we want to return the error, but
+        // that's a larger project. See
+        // https://github.com/oxidecomputer/propolis/issues/1251.
+        let hdl = OpteHdl::open().expect("handled error");
+        hdl.resume(&self.port_name).expect("handled error");
     }
 
     pub(super) fn export(
@@ -51,18 +45,20 @@ impl OptePort {
                 operation: "open device",
                 error,
             })?;
-        let state =
-            port.dump_layer(&self.port_name, "firewall").map_err(|error| {
+        let lfts = port.export_lfts(&self.port_name).
+            map_err(|error| {
                 MigrateStateError::Opte {
                     port: self.port_name.clone(),
-                    operation: "dump firewall layer",
+                    operation: "export LFTs",
                     error,
                 }
             })?;
-        let message = format!("firewall layer state = {state:?}");
-        info!(self.log, "TODO: exporting fake OPTE state"; "state" => &message);
-        let state =
-            migrate::OptePortStateV1 { blob: message.as_bytes().to_vec() };
+        let blob = serde_json::to_vec(&lfts).map_err(|error| {
+            MigrateStateError::DeserializationFailed(
+                format!("Failed to serialize LFTs as JSON: {error}")
+            )
+        })?;
+        let state = migrate::OptePortStateV1 { blob };
         output.push(state.into())
     }
 
@@ -71,10 +67,25 @@ impl OptePort {
         offer: &mut PayloadOffers,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let input: migrate::OptePortStateV1 = offer.take()?;
-        let message = String::from_utf8_lossy(&input.blob);
-        info!(self.log, "TODO: importing fake OPTE state"; "state" => message);
-        Ok(())
+        let migrate::OptePortStateV1 { blob } = offer.take()?;
+        let port =
+            OpteHdl::open().map_err(|error| MigrateStateError::Opte {
+                port: self.port_name.clone(),
+                operation: "open device",
+                error,
+            })?;
+        let export = serde_json::from_slice(&blob).map_err(|error| {
+            MigrateStateError::DeserializationFailed(
+                format!("Failed to deserialize LFTs as JSON: {error}")
+            )
+        })?;
+        port.import_lfts(&self.port_name, export)
+            .map(|_| ())
+            .map_err(|error| MigrateStateError::Opte {
+                port: self.port_name.clone(),
+                operation: "import LFTs",
+                error,
+            })
     }
 }
 

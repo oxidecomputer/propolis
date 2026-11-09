@@ -1382,7 +1382,6 @@ fn setup_instance(
                             hw::virtio::viona::CTL_QUEUE_SIZE,
                             &hdl,
                             viona_params,
-                            log,
                         )?;
                     guard.inventory.register_instance(&viona, &bdf.to_string());
                     chipset_pci_attach(bdf, viona);
