@@ -6,6 +6,7 @@ use crate::migrate::MigrateCtx;
 use crate::migrate::MigrateStateError;
 use crate::migrate::PayloadOffers;
 use crate::migrate::PayloadOutputs;
+use opte_api::PortLftExport;
 use opte_ioctl::OpteHdl;
 use slog::debug;
 use slog::error;
@@ -81,20 +82,29 @@ impl OptePort {
             operation: "open device",
             error,
         })?;
-        let lfts = hdl.export_lfts(&self.port_name).map_err(|error| {
+        debug!(self.log, "exporting OPTE port state");
+        let export = hdl.export_lfts(&self.port_name).map_err(|error| {
             MigrateStateError::Opte {
                 port: self.port_name.clone(),
                 operation: "export LFTs",
                 error,
             }
         })?;
-        let blob = serde_json::to_vec(&lfts).map_err(|error| {
+        debug!(
+            self.log,
+            "exported OPTE state";
+            "n_layers" => export.layers.len(),
+            "n_pairs" => export
+                .layers
+                .iter()
+                .map(|layer| layer.pairs.len()).sum::<usize>(),
+        );
+        let blob = serde_json::to_vec(&export).map_err(|error| {
             MigrateStateError::DeserializationFailed(format!(
                 "Failed to serialize LFTs as JSON: {error}"
             ))
         })?;
         let state = migrate::OptePortStateV1 { blob };
-        debug!(self.log, "exported OPTE state"; "lfts" => ?lfts);
         output.push(state.into())
     }
 
@@ -109,21 +119,31 @@ impl OptePort {
             operation: "open device",
             error,
         })?;
-        let export = serde_json::from_slice(&blob).map_err(|error| {
-            MigrateStateError::DeserializationFailed(format!(
-                "Failed to deserialize LFTs as JSON: {error}"
-            ))
-        })?;
-        // NOTE: Import only works on ports in the `Ready` state, so reset it
-        // to that state first.
-        hdl.pause(&self.port_name).map_err(|error| {
+        let export: PortLftExport<_> =
+            serde_json::from_slice(&blob).map_err(|error| {
+                MigrateStateError::DeserializationFailed(format!(
+                    "Failed to deserialize LFTs as JSON: {error}"
+                ))
+            })?;
+        // NOTE: Reset the port to ensure it's in the `Ready` state, required
+        // for importing.
+        hdl.reset(&self.port_name).map_err(|error| {
             MigrateStateError::Opte {
                 port: self.port_name.clone(),
                 operation: "reset port",
                 error,
             }
         })?;
-        debug!(self.log, "importing OPTE state"; "lfts" => ?&export);
+        debug!(
+            self.log,
+            "importing OPTE port state";
+            "n_layers" => export.layers.len(),
+            "n_pairs" => export
+                .layers
+                .iter()
+                .map(|layer| layer.pairs.len()).sum::<usize>(),
+        );
+        trace!(self.log, "full LFT state"; "lfts" => ?&export);
         hdl.import_lfts(&self.port_name, export).map_err(|error| {
             MigrateStateError::Opte {
                 port: self.port_name.clone(),
@@ -131,7 +151,7 @@ impl OptePort {
                 error,
             }
         })?;
-        debug!(self.log, "imported OPTE state");
+        debug!(self.log, "imported OPTE port state");
         Ok(())
     }
 }

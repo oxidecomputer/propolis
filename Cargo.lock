@@ -5513,6 +5513,7 @@ source = "git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-
 dependencies = [
  "illumos-sys-hdrs 0.1.0 (git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-experiment)",
  "ingot 0.2.1",
+ "ipnetwork",
  "postcard",
  "serde",
  "smoltcp",
@@ -6952,6 +6953,7 @@ dependencies = [
  "libloading",
  "nexus-client",
  "nix 0.31.3",
+ "opte-api 0.1.0 (git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-experiment)",
  "opte-ioctl 0.1.0 (git+https://github.com/oxidecomputer/opte?branch=ben%2Fdnm-lft-export-experiment)",
  "oximeter",
  "p9ds",
