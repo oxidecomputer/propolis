@@ -32,8 +32,10 @@ rfb.workspace = true
 slog.workspace = true
 serde.workspace = true
 serde_arrays.workspace = true
+serde_bytes.workspace = true
 erased-serde.workspace = true
 serde_json.workspace = true
+slog-error-chain.workspace = true
 sha2.workspace = true
 strum = { workspace = true, features = ["derive"] }
 uuid.workspace = true

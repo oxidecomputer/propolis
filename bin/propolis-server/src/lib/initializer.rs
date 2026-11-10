@@ -1038,6 +1038,7 @@ impl MachineInitializer<'_> {
                 &nic.backend_spec.vnic_name,
                 &self.machine.hdl,
                 params,
+                &self.log,
             )
             .with_context(|| {
                 format!("failed to create viona device {device_name:?}")

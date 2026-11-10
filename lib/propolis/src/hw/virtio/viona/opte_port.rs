@@ -7,31 +7,68 @@ use crate::migrate::MigrateStateError;
 use crate::migrate::PayloadOffers;
 use crate::migrate::PayloadOutputs;
 use opte_ioctl::OpteHdl;
+use slog::debug;
+use slog::error;
+use slog::trace;
+use slog::Logger;
+use slog_error_chain::InlineErrorChain;
 
 /// Handle to the OPTE port backing an XDE-class viona device.
 pub struct OptePort {
     port_name: String,
+    log: Logger,
 }
 
 impl OptePort {
-    pub fn new(port_name: String) -> Self {
-        Self { port_name }
+    pub fn new(port_name: String, log: &Logger) -> Self {
+        let log = log.new(slog::o!("port" => port_name.clone()));
+        Self { port_name, log }
+    }
+
+    // TODO-robustness: It seems like we want to return an error from the
+    // methods here, rather than panicking, but that's a larger project. See
+    // https://github.com/oxidecomputer/propolis/issues/1251.
+    fn opte_handle(&self) -> OpteHdl {
+        match OpteHdl::open() {
+            Ok(hdl) => {
+                trace!(self.log, "Opened OPTE handle");
+                hdl
+            }
+            Err(e) => {
+                error!(
+                    self.log,
+                    "error opening OPTE handle";
+                    InlineErrorChain::new(&e),
+                );
+                panic!("failed to open OPTE handle: {e}");
+            }
+        }
     }
 
     pub(super) fn pause(&self) {
-        // TODO-robustness: It seems like we want to return the error, but
-        // that's a larger project. See
-        // https://github.com/oxidecomputer/propolis/issues/1251.
-        let hdl = OpteHdl::open().expect("handled error");
-        hdl.pause(&self.port_name).expect("handled error");
+        let hdl = self.opte_handle();
+        if let Err(e) = hdl.pause(&self.port_name) {
+            error!(
+                self.log,
+                "failed to pause OPTE port";
+                InlineErrorChain::new(&e),
+            );
+            panic!("failed to pause OPTE port: {e}");
+        };
+        debug!(self.log, "paused OPTE port");
     }
 
     pub(super) fn resume(&self) {
-        // TODO-robustness: It seems like we want to return the error, but
-        // that's a larger project. See
-        // https://github.com/oxidecomputer/propolis/issues/1251.
-        let hdl = OpteHdl::open().expect("handled error");
-        hdl.resume(&self.port_name).expect("handled error");
+        let hdl = self.opte_handle();
+        if let Err(e) = hdl.resume(&self.port_name) {
+            error!(
+                self.log,
+                "failed to resume OPTE port";
+                InlineErrorChain::new(&e),
+            );
+            panic!("failed to resume OPTE port: {e}");
+        };
+        debug!(self.log, "resumed OPTE port");
     }
 
     pub(super) fn export(
@@ -39,26 +76,25 @@ impl OptePort {
         output: &mut PayloadOutputs,
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
-        let port =
-            OpteHdl::open().map_err(|error| MigrateStateError::Opte {
+        let hdl = OpteHdl::open().map_err(|error| MigrateStateError::Opte {
+            port: self.port_name.clone(),
+            operation: "open device",
+            error,
+        })?;
+        let lfts = hdl.export_lfts(&self.port_name).map_err(|error| {
+            MigrateStateError::Opte {
                 port: self.port_name.clone(),
-                operation: "open device",
+                operation: "export LFTs",
                 error,
-            })?;
-        let lfts = port.export_lfts(&self.port_name).
-            map_err(|error| {
-                MigrateStateError::Opte {
-                    port: self.port_name.clone(),
-                    operation: "export LFTs",
-                    error,
-                }
-            })?;
+            }
+        })?;
         let blob = serde_json::to_vec(&lfts).map_err(|error| {
-            MigrateStateError::DeserializationFailed(
-                format!("Failed to serialize LFTs as JSON: {error}")
-            )
+            MigrateStateError::DeserializationFailed(format!(
+                "Failed to serialize LFTs as JSON: {error}"
+            ))
         })?;
         let state = migrate::OptePortStateV1 { blob };
+        debug!(self.log, "exported OPTE state"; "lfts" => ?lfts);
         output.push(state.into())
     }
 
@@ -68,24 +104,35 @@ impl OptePort {
         _ctx: &MigrateCtx,
     ) -> Result<(), MigrateStateError> {
         let migrate::OptePortStateV1 { blob } = offer.take()?;
-        let port =
-            OpteHdl::open().map_err(|error| MigrateStateError::Opte {
-                port: self.port_name.clone(),
-                operation: "open device",
-                error,
-            })?;
-        let export = serde_json::from_slice(&blob).map_err(|error| {
-            MigrateStateError::DeserializationFailed(
-                format!("Failed to deserialize LFTs as JSON: {error}")
-            )
+        let hdl = OpteHdl::open().map_err(|error| MigrateStateError::Opte {
+            port: self.port_name.clone(),
+            operation: "open device",
+            error,
         })?;
-        port.import_lfts(&self.port_name, export)
-            .map(|_| ())
-            .map_err(|error| MigrateStateError::Opte {
+        let export = serde_json::from_slice(&blob).map_err(|error| {
+            MigrateStateError::DeserializationFailed(format!(
+                "Failed to deserialize LFTs as JSON: {error}"
+            ))
+        })?;
+        // NOTE: Import only works on ports in the `Ready` state, so reset it
+        // to that state first.
+        hdl.pause(&self.port_name).map_err(|error| {
+            MigrateStateError::Opte {
+                port: self.port_name.clone(),
+                operation: "reset port",
+                error,
+            }
+        })?;
+        debug!(self.log, "importing OPTE state"; "lfts" => ?&export);
+        hdl.import_lfts(&self.port_name, export).map_err(|error| {
+            MigrateStateError::Opte {
                 port: self.port_name.clone(),
                 operation: "import LFTs",
                 error,
-            })
+            }
+        })?;
+        debug!(self.log, "imported OPTE state");
+        Ok(())
     }
 }
 
@@ -95,6 +142,7 @@ pub mod migrate {
 
     #[derive(Deserialize, Serialize)]
     pub struct OptePortStateV1 {
+        #[serde(with = "serde_bytes")]
         pub blob: Vec<u8>,
     }
 

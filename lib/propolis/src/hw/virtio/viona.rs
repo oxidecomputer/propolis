@@ -519,6 +519,7 @@ impl PciVirtioViona {
         vnic_name: &str,
         vm: &VmmHdl,
         viona_params: Option<DeviceParams>,
+        log: &slog::Logger,
     ) -> io::Result<Arc<PciVirtioViona>> {
         Self::new_with_queue_sizes(
             vnic_name,
@@ -527,6 +528,7 @@ impl PciVirtioViona {
             CTL_QUEUE_SIZE,
             vm,
             viona_params,
+            log,
         )
     }
 
@@ -537,6 +539,7 @@ impl PciVirtioViona {
         ctl_queue_size: VqSize,
         vm: &VmmHdl,
         viona_params: Option<DeviceParams>,
+        log: &slog::Logger,
     ) -> io::Result<Arc<PciVirtioViona>> {
         let dlhdl = dladm::Handle::new()?;
         let info = dlhdl.query_link(vnic_name)?;
@@ -544,7 +547,7 @@ impl PciVirtioViona {
         let opte_port = match info.link_class {
             dladm::LinkClass::Vnic => None,
             dladm::LinkClass::Xde => {
-                Some(OptePort::new(vnic_name.to_owned()))
+                Some(OptePort::new(vnic_name.to_owned(), log))
             }
         };
 
@@ -1315,6 +1318,9 @@ impl Lifecycle for PciVirtioViona {
             .expect("can reset viona promiscuous state");
     }
     fn start(&self) -> anyhow::Result<()> {
+        if let Some(port) = self.opte_port.as_ref() {
+            port.resume();
+        }
         self.run();
         self.indicator.start();
         Ok(())
@@ -1329,11 +1335,10 @@ impl Lifecycle for PciVirtioViona {
         // reinitialization operation if any ioport hooks persist at that time.
         let _ = self.hdl.set_notify_io_port(None);
         let _ = self.hdl.set_notify_mmio_addr(None);
-
+        self.indicator.pause();
         if let Some(opte_port) = self.opte_port.as_ref() {
             opte_port.pause();
         }
-        self.indicator.pause();
     }
     fn resume(&self) {
         if let Some(opte_port) = self.opte_port.as_ref() {
@@ -2144,12 +2149,10 @@ mod test {
                 enable_pcie: false,
             },
         );
-        let viona_dev = PciVirtioViona::new(
-            vnic_name,
-            &machine.hdl,
-            None,
-        )
-        .expect("can create test vnic");
+        let log = slog::Logger::root(slog::Discard, slog::o!());
+        let viona_dev =
+            PciVirtioViona::new(vnic_name, &machine.hdl, None, &log)
+                .expect("can create test vnic");
 
         chipset_hb.pci_attach(i440fx::DEFAULT_HB_BDF, chipset_hb.clone(), None);
         chipset_hb.attach(&machine);
