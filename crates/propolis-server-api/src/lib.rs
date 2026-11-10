@@ -8,7 +8,7 @@ use dropshot::{
     WebsocketChannelResult, WebsocketConnection,
 };
 use dropshot_api_manager_types::api_versions;
-use propolis_api_types_versions::{latest, v1, v2, v3, v6};
+use propolis_api_types_versions::{latest, v1, v2, v3, v6, v7};
 
 api_versions!([
     // WHEN CHANGING THE API (part 1 of 2):
@@ -22,7 +22,8 @@ api_versions!([
     // |  example for the next person.
     // v
     // (next_int, IDENT),
-    (7, ACPI_SHUTDOWN),
+    (8, ACPI_SHUTDOWN),
+    (7, OPENAPI_LINT),
     (6, NVME_WRITE_CACHE),
     (5, CRUCIBLE_VOLUME_INFO),
     (4, DROPSHOT_BUMP_WEBSOCKET),
@@ -50,7 +51,7 @@ pub trait PropolisServerApi {
     #[endpoint {
         method = PUT,
         path = "/instance",
-        versions = VERSION_NVME_WRITE_CACHE..
+        versions = VERSION_OPENAPI_LINT..
     }]
     async fn instance_ensure(
         rqctx: RequestContext<Self::Context>,
@@ -59,6 +60,26 @@ pub trait PropolisServerApi {
         HttpResponseCreated<latest::instance::InstanceEnsureResponse>,
         HttpError,
     >;
+
+    #[endpoint {
+        operation_id = "instance_ensure",
+        method = PUT,
+        path = "/instance",
+        versions = VERSION_NVME_WRITE_CACHE..VERSION_OPENAPI_LINT
+    }]
+    async fn instance_ensure_v6(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<v6::api::InstanceEnsureRequest>,
+    ) -> Result<
+        HttpResponseCreated<v1::instance::InstanceEnsureResponse>,
+        HttpError,
+    > {
+        Self::instance_ensure(
+            rqctx,
+            request.map(v7::api::InstanceEnsureRequest::from),
+        )
+        .await
+    }
 
     #[endpoint {
         operation_id = "instance_ensure",
@@ -73,7 +94,7 @@ pub trait PropolisServerApi {
         HttpResponseCreated<v1::instance::InstanceEnsureResponse>,
         HttpError,
     > {
-        Self::instance_ensure(
+        Self::instance_ensure_v6(
             rqctx,
             request.map(v6::api::InstanceEnsureRequest::from),
         )
@@ -123,7 +144,7 @@ pub trait PropolisServerApi {
     #[endpoint {
         method = GET,
         path = "/instance/spec",
-        versions = VERSION_NVME_WRITE_CACHE..
+        versions = VERSION_OPENAPI_LINT..
     }]
     async fn instance_spec_get(
         rqctx: RequestContext<Self::Context>,
@@ -131,6 +152,23 @@ pub trait PropolisServerApi {
         HttpResponseOk<latest::instance_spec::InstanceSpecGetResponse>,
         HttpError,
     >;
+
+    #[endpoint {
+        operation_id = "instance_spec_get",
+        method = GET,
+        path = "/instance/spec",
+        versions = VERSION_NVME_WRITE_CACHE..VERSION_OPENAPI_LINT
+    }]
+    async fn instance_spec_get_v6(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<
+        HttpResponseOk<v6::instance_spec::InstanceSpecGetResponse>,
+        HttpError,
+    > {
+        Ok(Self::instance_spec_get(rqctx)
+            .await?
+            .map(v6::instance_spec::InstanceSpecGetResponse::from))
+    }
 
     #[endpoint {
         operation_id = "instance_spec_get",
@@ -144,7 +182,7 @@ pub trait PropolisServerApi {
         HttpResponseOk<v3::instance_spec::InstanceSpecGetResponse>,
         HttpError,
     > {
-        Ok(Self::instance_spec_get(rqctx)
+        Ok(Self::instance_spec_get_v6(rqctx)
             .await?
             .map(v3::instance_spec::InstanceSpecGetResponse::from))
     }
@@ -194,14 +232,31 @@ pub trait PropolisServerApi {
     #[endpoint {
         method = GET,
         path = "/instance",
+        versions = VERSION_OPENAPI_LINT..
     }]
     async fn instance_get(
         rqctx: RequestContext<Self::Context>,
     ) -> Result<HttpResponseOk<latest::instance::InstanceGetResponse>, HttpError>;
 
     #[endpoint {
+        operation_id = "instance_get",
+        method = GET,
+        path = "/instance",
+        versions = ..VERSION_OPENAPI_LINT
+    }]
+    async fn instance_get_v1(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<HttpResponseOk<v1::instance::InstanceGetResponse>, HttpError>
+    {
+        Ok(Self::instance_get(rqctx)
+            .await?
+            .map(v1::instance::InstanceGetResponse::from))
+    }
+
+    #[endpoint {
         method = GET,
         path = "/instance/state-monitor",
+        versions = VERSION_OPENAPI_LINT..
     }]
     async fn instance_state_monitor(
         rqctx: RequestContext<Self::Context>,
@@ -210,6 +265,24 @@ pub trait PropolisServerApi {
         HttpResponseOk<latest::instance::InstanceStateMonitorResponse>,
         HttpError,
     >;
+
+    #[endpoint {
+        operation_id = "instance_state_monitor",
+        method = GET,
+        path = "/instance/state-monitor",
+        versions = ..VERSION_OPENAPI_LINT
+    }]
+    async fn instance_state_monitor_v1(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<v1::instance::InstanceStateMonitorRequest>,
+    ) -> Result<
+        HttpResponseOk<v1::instance::InstanceStateMonitorResponse>,
+        HttpError,
+    > {
+        Ok(Self::instance_state_monitor(rqctx, request)
+            .await?
+            .map(v1::instance::InstanceStateMonitorResponse::from))
+    }
 
     #[endpoint {
         method = PUT,
@@ -225,11 +298,11 @@ pub trait PropolisServerApi {
         operation_id = "instance_state_put",
         method = PUT,
         path = "/instance/state",
-        versions = ..VERSION_ACPI_SHUTDOWN
+        versions = VERSION_OPENAPI_LINT..VERSION_ACPI_SHUTDOWN
     }]
-    async fn instance_state_put_v6(
+    async fn instance_state_put_v7(
         rqctx: RequestContext<Self::Context>,
-        request: TypedBody<v1::instance::InstanceStateRequested>,
+        request: TypedBody<v7::instance::InstanceStateRequested>,
     ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
         Self::instance_state_put(
             rqctx,
@@ -237,6 +310,23 @@ pub trait PropolisServerApi {
                 request.into_inner(),
             )
             .into(),
+        )
+        .await
+    }
+
+    #[endpoint {
+        operation_id = "instance_state_put",
+        method = PUT,
+        path = "/instance/state",
+        versions = ..VERSION_OPENAPI_LINT
+    }]
+    async fn instance_state_put_v1(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<v1::instance::InstanceStateRequested>,
+    ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
+        Self::instance_state_put_v7(
+            rqctx,
+            request.map(v7::instance::InstanceStateRequested::from),
         )
         .await
     }
@@ -314,7 +404,8 @@ pub trait PropolisServerApi {
 
     #[endpoint {
         method = GET,
-        path = "/instance/migration-status"
+        path = "/instance/migration-status",
+        versions = VERSION_OPENAPI_LINT..
     }]
     async fn instance_migrate_status(
         rqctx: RequestContext<Self::Context>,
@@ -323,15 +414,49 @@ pub trait PropolisServerApi {
         HttpError,
     >;
 
+    #[endpoint {
+        operation_id = "instance_migrate_status",
+        method = GET,
+        path = "/instance/migration-status",
+        versions = ..VERSION_OPENAPI_LINT
+    }]
+    async fn instance_migrate_status_v1(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<
+        HttpResponseOk<v1::migration::InstanceMigrateStatusResponse>,
+        HttpError,
+    > {
+        Ok(Self::instance_migrate_status(rqctx)
+            .await?
+            .map(v1::migration::InstanceMigrateStatusResponse::from))
+    }
+
     /// Issues a snapshot request to a crucible backend.
     #[endpoint {
         method = POST,
         path = "/instance/disk/{id}/snapshot/{snapshot_id}",
+        versions = VERSION_OPENAPI_LINT..
     }]
     async fn instance_issue_crucible_snapshot_request(
         rqctx: RequestContext<Self::Context>,
         path_params: Path<latest::disk::SnapshotRequestPathParams>,
-    ) -> Result<HttpResponseOk<()>, HttpError>;
+    ) -> Result<HttpResponseUpdatedNoContent, HttpError>;
+
+    /// Issues a snapshot request to a crucible backend.
+    #[endpoint {
+        operation_id = "instance_issue_crucible_snapshot_request",
+        method = POST,
+        path = "/instance/disk/{id}/snapshot/{snapshot_id}",
+        versions = ..VERSION_OPENAPI_LINT
+    }]
+    async fn instance_issue_crucible_snapshot_request_v1(
+        rqctx: RequestContext<Self::Context>,
+        path_params: Path<v1::disk::SnapshotRequestPathParams>,
+    ) -> Result<HttpResponseOk<()>, HttpError> {
+        Self::instance_issue_crucible_snapshot_request(rqctx, path_params)
+            .await?;
+        Ok(HttpResponseOk(()))
+    }
 
     /// Gets the status of a Crucible volume backing a disk
     #[endpoint {
@@ -360,19 +485,56 @@ pub trait PropolisServerApi {
     #[endpoint {
         method = PUT,
         path = "/instance/disk/{id}/vcr",
+        versions = VERSION_OPENAPI_LINT..
     }]
     async fn instance_issue_crucible_vcr_request(
         rqctx: RequestContext<Self::Context>,
         path_params: Path<latest::disk::VCRRequestPathParams>,
-        request: TypedBody<latest::disk::InstanceVCRReplace>,
+        request: TypedBody<latest::disk::InstanceVcrReplace>,
     ) -> Result<HttpResponseOk<crucible_client_types::ReplaceResult>, HttpError>;
+
+    /// Issues a volume_construction_request replace to a crucible backend.
+    #[endpoint {
+        operation_id = "instance_issue_crucible_vcr_request",
+        method = PUT,
+        path = "/instance/disk/{id}/vcr",
+        versions = ..VERSION_OPENAPI_LINT
+    }]
+    async fn instance_issue_crucible_vcr_request_v1(
+        rqctx: RequestContext<Self::Context>,
+        path_params: Path<v1::disk::VCRRequestPathParams>,
+        request: TypedBody<v1::disk::InstanceVCRReplace>,
+    ) -> Result<HttpResponseOk<crucible_client_types::ReplaceResult>, HttpError>
+    {
+        Self::instance_issue_crucible_vcr_request(
+            rqctx,
+            path_params,
+            request.map(v7::disk::InstanceVcrReplace::from),
+        )
+        .await
+    }
 
     /// Issues an NMI to the instance.
     #[endpoint {
         method = POST,
         path = "/instance/nmi",
+        versions = VERSION_OPENAPI_LINT..
     }]
     async fn instance_issue_nmi(
         rqctx: RequestContext<Self::Context>,
-    ) -> Result<HttpResponseOk<()>, HttpError>;
+    ) -> Result<HttpResponseUpdatedNoContent, HttpError>;
+
+    /// Issues an NMI to the instance.
+    #[endpoint {
+        operation_id = "instance_issue_nmi",
+        method = POST,
+        path = "/instance/nmi",
+        versions = ..VERSION_OPENAPI_LINT
+    }]
+    async fn instance_issue_nmi_v1(
+        rqctx: RequestContext<Self::Context>,
+    ) -> Result<HttpResponseOk<()>, HttpError> {
+        Self::instance_issue_nmi(rqctx).await?;
+        Ok(HttpResponseOk(()))
+    }
 }

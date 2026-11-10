@@ -5,9 +5,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::v1::instance::InstanceStateRequested as InstanceStateRequestedV1;
+use crate::v7::instance::InstanceStateRequested as InstanceStateRequestedV7;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "state", content = "value")]
 pub enum InstanceStateRequested {
     Run,
     Stop,
@@ -24,12 +25,12 @@ pub enum InstanceStateRequested {
     },
 }
 
-impl From<InstanceStateRequestedV1> for InstanceStateRequested {
-    fn from(value: InstanceStateRequestedV1) -> Self {
+impl From<InstanceStateRequestedV7> for InstanceStateRequested {
+    fn from(value: InstanceStateRequestedV7) -> Self {
         match value {
-            InstanceStateRequestedV1::Run => Self::Run,
-            InstanceStateRequestedV1::Stop => Self::Stop,
-            InstanceStateRequestedV1::Reboot => Self::Reboot,
+            InstanceStateRequestedV7::Run => Self::Run,
+            InstanceStateRequestedV7::Stop => Self::Stop,
+            InstanceStateRequestedV7::Reboot => Self::Reboot,
         }
     }
 }
