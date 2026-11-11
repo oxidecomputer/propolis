@@ -541,6 +541,8 @@ unsafe fn ioctl(
 #[repr(u32)]
 #[derive(Copy, Clone)]
 pub enum ApiVersion {
+    /// Add support for 15-bit Extended MSI Destination ID enlightenment
+    V21 = 21,
     /// Add support for guest initiated x2APIC mode changes.
     /// `VM_SET_X2APIC_STATE` no longer forcibly switches the guest's x2APIC
     /// state and only controls whether the x2APIC bit is exposed via the
@@ -599,7 +601,7 @@ pub enum ApiVersion {
 }
 impl ApiVersion {
     pub const fn current() -> Self {
-        Self::V20
+        Self::V21
     }
 }
 
