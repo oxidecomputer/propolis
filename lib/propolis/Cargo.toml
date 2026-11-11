@@ -50,7 +50,6 @@ nix.workspace = true
 vm-attest.workspace = true
 itertools.workspace = true
 opte-ioctl.workspace = true
-opte-api.workspace = true
 
 # falcon
 libloading = { workspace = true, optional = true }

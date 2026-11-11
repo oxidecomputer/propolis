@@ -103,7 +103,6 @@ vm-attest = { git = "https://github.com/oxidecomputer/vm-attest", rev = "deaf020
 # TODO-john how will we ensure this stays in sync with omicron?
 #opte-ioctl = { git = "https://github.com/oxidecomputer/opte", rev = "fd2d6ad625cef6fb903660e57dcd4729ff66a6fe" }
 opte-ioctl = { git = "https://github.com/oxidecomputer/opte", branch = "ben/dnm-lft-export-experiment" }
-opte-api = { git = "https://github.com/oxidecomputer/opte", branch = "ben/dnm-lft-export-experiment" }
 
 # External dependencies
 acpi_tables = { git = 'https://github.com/oxidecomputer/acpi_tables.git', tag = "v0.2.1-oxide.1" }

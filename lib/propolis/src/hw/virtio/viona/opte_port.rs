@@ -6,7 +6,7 @@ use crate::migrate::MigrateCtx;
 use crate::migrate::MigrateStateError;
 use crate::migrate::PayloadOffers;
 use crate::migrate::PayloadOutputs;
-use opte_api::PortLftExport;
+use opte_ioctl::api::PortLftExport;
 use opte_ioctl::OpteHdl;
 use slog::debug;
 use slog::error;
@@ -119,14 +119,14 @@ impl OptePort {
             operation: "open device",
             error,
         })?;
-        let export: PortLftExport<_> =
+        let export: PortLftExport =
             serde_json::from_slice(&blob).map_err(|error| {
                 MigrateStateError::DeserializationFailed(format!(
                     "Failed to deserialize LFTs as JSON: {error}"
                 ))
             })?;
-        // NOTE: Reset the port to ensure it's in the `Ready` state, required
-        // for importing.
+        // Reset the port, putting it into the `Ready` state required for an
+        // import.
         hdl.reset(&self.port_name).map_err(|error| {
             MigrateStateError::Opte {
                 port: self.port_name.clone(),

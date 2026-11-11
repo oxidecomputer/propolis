@@ -38,7 +38,6 @@ pub use viona::PciVirtioViona;
 pub use vsock::PciVirtioSock;
 
 #[cfg(target_os = "illumos")]
-
 mod os {
     unsafe extern "C" {
         pub fn membar_enter();
