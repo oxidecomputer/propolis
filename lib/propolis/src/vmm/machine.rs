@@ -125,7 +125,7 @@ impl Machine {
 
         let bus_mmio = Arc::new(MmioBus::new(MAX_PHYSMEM));
         let bus_pio = Arc::new(PioBus::new());
-        let guest_hv_interface = Arc::new(BhyveGuestInterface);
+        let guest_hv_interface = Arc::new(BhyveGuestInterface::new());
 
         let vcpus = vec![Vcpu::new(
             hdl.clone(),
@@ -273,7 +273,7 @@ impl Builder {
         let guest_hv_interface = self
             .guest_hv_interface
             .take()
-            .unwrap_or(Arc::new(BhyveGuestInterface));
+            .unwrap_or(Arc::new(BhyveGuestInterface::new()));
 
         guest_hv_interface.attach(&acc_mem, hdl.clone());
         let vcpus = (0..self.max_cpu)

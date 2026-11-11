@@ -92,15 +92,23 @@ pub struct Main {
 /// may influence many aspects of a VM. Most immediately, different interfaces
 /// have different CPUID leaves, but can also support para-virtualized features
 /// such as additional hypercalls and MSRs.
-#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum HypervisorInterface {
-    #[default]
-    Bhyve,
+    Bhyve {
+        #[serde(default)]
+        ext_msi_dest_id: bool,
+    },
 
     HyperV {
         reference_tsc: bool,
     },
+}
+
+impl Default for HypervisorInterface {
+    fn default() -> Self {
+        HypervisorInterface::Bhyve { ext_msi_dest_id: false }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]

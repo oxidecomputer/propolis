@@ -499,7 +499,7 @@ async fn initialize_vm_objects(
 
     let guest_hv_interface = match &spec.board.guest_hv_interface {
         GuestHypervisorInterface::Bhyve => {
-            Arc::new(BhyveGuestInterface) as Arc<dyn Enlightenment>
+            Arc::new(BhyveGuestInterface::new()) as Arc<dyn Enlightenment>
         }
         GuestHypervisorInterface::HyperV { features } => {
             let mut hv_features = HyperVFeatures::default();

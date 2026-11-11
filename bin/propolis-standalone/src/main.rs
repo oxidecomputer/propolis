@@ -811,8 +811,10 @@ fn build_machine(
     )?;
 
     let hv = match hv_interface {
-        config::HypervisorInterface::Bhyve => {
-            Arc::new(bhyve::BhyveGuestInterface) as Arc<dyn Enlightenment>
+        config::HypervisorInterface::Bhyve { ext_msi_dest_id } => {
+            let feats = bhyve::Features { ext_msi_dest_id: *ext_msi_dest_id };
+            Arc::new(bhyve::BhyveGuestInterface::with_features(feats)?)
+                as Arc<dyn Enlightenment>
         }
         config::HypervisorInterface::HyperV { reference_tsc } => {
             let hv_feats = hyperv::Features { reference_tsc: *reference_tsc };

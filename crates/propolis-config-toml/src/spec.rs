@@ -115,7 +115,10 @@ impl TryFrom<&super::Config> for SpecConfig {
             .hv_interface
             .as_ref()
             .map(|hv| match hv {
-                HypervisorInterface::Bhyve => GuestHypervisorInterface::Bhyve,
+                HypervisorInterface::Bhyve { ext_msi_dest_id: _ } => {
+                    // XXX(luqman) update api spec version to accept features
+                    GuestHypervisorInterface::Bhyve
+                }
                 HypervisorInterface::HyperV { reference_tsc } => {
                     let mut features = BTreeSet::new();
                     if *reference_tsc {
