@@ -541,6 +541,11 @@ unsafe fn ioctl(
 #[repr(u32)]
 #[derive(Copy, Clone)]
 pub enum ApiVersion {
+    /// Add support for guest initiated x2APIC mode changes.
+    /// `VM_SET_X2APIC_STATE` no longer forcibly switches the guest's x2APIC
+    /// state and only controls whether the x2APIC bit is exposed via the
+    /// legacy cpuid emulation.
+    V20 = 20,
     /// `VM_GET_CPUS` accepts a set of any size up to a page, and fails with
     /// `ERANGE` if the set is too small to hold every member
     V19 = 19,
@@ -594,7 +599,7 @@ pub enum ApiVersion {
 }
 impl ApiVersion {
     pub const fn current() -> Self {
-        Self::V19
+        Self::V20
     }
 }
 
