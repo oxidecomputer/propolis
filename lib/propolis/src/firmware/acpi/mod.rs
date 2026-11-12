@@ -32,11 +32,12 @@ pub mod dsdt;
 pub mod facs;
 pub mod fadt;
 pub mod file_sink;
-pub mod gpe;
 pub mod madt;
 pub mod rsdp;
 pub mod ssdt_edk2;
 pub mod xsdt;
+
+mod gpe;
 
 pub use dsdt::{Dsdt, DsdtConfig, DsdtDeviceType, DsdtGenerator, DsdtScope};
 pub use facs::{Facs, FacsConfig};

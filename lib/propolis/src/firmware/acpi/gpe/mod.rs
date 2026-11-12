@@ -238,6 +238,7 @@ impl RegisterBlock {
     /// Panics if the [`Event`] is not [`Trigger::Level`] or if the GPE number
     /// is less than the register block base, or greater than the maximum GPE
     /// number handled by this register block (`base + 8 * len / 2 - 1`).
+    #[allow(unused)]
     pub fn set_level(&self, gpe: Event, is_asserted: bool) {
         let bit = self.gpe_bit(gpe, Trigger::Level);
         self.inner.lock().unwrap().set_level(bit, is_asserted);
@@ -249,6 +250,7 @@ impl RegisterBlock {
     /// # Panics
     ///
     /// Refer to [`RegisterBlock::set_level`] for more information.
+    #[allow(unused)]
     pub fn import_level(&self, gpe: Event, is_asserted: bool) {
         let bit = self.gpe_bit(gpe, Trigger::Level);
         self.inner.lock().unwrap().import_level(bit, is_asserted);
