@@ -22,6 +22,7 @@ api_versions!([
     // |  example for the next person.
     // v
     // (next_int, IDENT),
+    (8, ACPI_SHUTDOWN),
     (7, OPENAPI_LINT),
     (6, NVME_WRITE_CACHE),
     (5, CRUCIBLE_VOLUME_INFO),
@@ -286,12 +287,32 @@ pub trait PropolisServerApi {
     #[endpoint {
         method = PUT,
         path = "/instance/state",
-        versions = VERSION_OPENAPI_LINT..
+        versions = VERSION_ACPI_SHUTDOWN..
     }]
     async fn instance_state_put(
         rqctx: RequestContext<Self::Context>,
         request: TypedBody<latest::instance::InstanceStateRequested>,
     ) -> Result<HttpResponseUpdatedNoContent, HttpError>;
+
+    #[endpoint {
+        operation_id = "instance_state_put",
+        method = PUT,
+        path = "/instance/state",
+        versions = VERSION_OPENAPI_LINT..VERSION_ACPI_SHUTDOWN
+    }]
+    async fn instance_state_put_v7(
+        rqctx: RequestContext<Self::Context>,
+        request: TypedBody<v7::instance::InstanceStateRequested>,
+    ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
+        Self::instance_state_put(
+            rqctx,
+            latest::instance::InstanceStateRequested::from(
+                request.into_inner(),
+            )
+            .into(),
+        )
+        .await
+    }
 
     #[endpoint {
         operation_id = "instance_state_put",
@@ -303,7 +324,7 @@ pub trait PropolisServerApi {
         rqctx: RequestContext<Self::Context>,
         request: TypedBody<v1::instance::InstanceStateRequested>,
     ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
-        Self::instance_state_put(
+        Self::instance_state_put_v7(
             rqctx,
             request.map(v7::instance::InstanceStateRequested::from),
         )

@@ -72,8 +72,9 @@ pub mod instance {
     pub use crate::v7::instance::InstanceGetResponse;
     pub use crate::v7::instance::InstanceState;
     pub use crate::v7::instance::InstanceStateMonitorResponse;
-    pub use crate::v7::instance::InstanceStateRequested;
     pub use crate::v7::instance::ReplacementComponent;
+
+    pub use crate::v8::instance::InstanceStateRequested;
 }
 
 pub mod instance_spec {

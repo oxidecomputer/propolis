@@ -43,3 +43,5 @@ pub mod v5;
 pub mod v6;
 #[path = "openapi_lint/mod.rs"]
 pub mod v7;
+#[path = "acpi_shutdown/mod.rs"]
+pub mod v8;
