@@ -1457,14 +1457,20 @@ pub mod formats {
             let fadt_offset = self.add_fadt(facs_offset, dsdt_offset);
 
             let madt_offset = self.add_madt();
-            let ssdt_offset = self.add_ssdt_edk2();
+            let ssdt_edk2_offset = self.add_ssdt_edk2();
+            let ssdt_pci_hotplug_offset = self.add_ssdt_pci_hotplug();
 
             // OVMF actually ignores the XSDT and RSDP tables provided via
             // fw_cfg and always generates its own versions, but include them
             // here regardless for completeness.
             //
             // https://github.com/oxidecomputer/edk2/blob/f33871f488bfbbc080e0f7e3881e04d0db0b6367/OvmfPkg/AcpiPlatformDxe/QemuFwCfgAcpi.c#L891-L899
-            let xsdt_entries = vec![fadt_offset, madt_offset, ssdt_offset];
+            let xsdt_entries = vec![
+                fadt_offset,
+                madt_offset,
+                ssdt_edk2_offset,
+                ssdt_pci_hotplug_offset,
+            ];
             let xsdt_offset = self.add_xsdt(xsdt_entries);
 
             self.add_rsdp(xsdt_offset);
@@ -1531,7 +1537,7 @@ pub mod formats {
             ssdt.to_aml_bytes(&mut self.tables);
 
             #[cfg(feature = "acpi-debug")]
-            ssdt.to_aml_bytes(&mut acpi::FileSink::new("./acpi/ssdt.dat"));
+            ssdt.to_aml_bytes(&mut acpi::FileSink::new("./acpi/ssdt_edk2.dat"));
 
             // Mark the FWDT OperationRegion offset field as a pointer to the
             // FWDT data.
@@ -1541,6 +1547,22 @@ pub mod formats {
                 (ssdt_offset + acpi::ssdt_edk2::FWDT_ADDR_OFFSET) as u32,
                 acpi::ssdt_edk2::FWDT_ADDR_LEN as u8,
             );
+
+            // Recalculate checksum after changes.
+            self.reset_checksum(ssdt_offset);
+
+            ssdt_offset
+        }
+
+        fn add_ssdt_pci_hotplug(&mut self) -> usize {
+            let ssdt = acpi::SsdtPciHotplug { slots: (2..=10).collect() };
+            let ssdt_offset = self.tables.len();
+            ssdt.to_aml_bytes(&mut self.tables);
+
+            #[cfg(feature = "acpi-debug")]
+            ssdt.to_aml_bytes(&mut acpi::FileSink::new(
+                "./acpi/ssdt_pci_hotplug.dat",
+            ));
 
             // Recalculate checksum after changes.
             self.reset_checksum(ssdt_offset);

@@ -373,7 +373,10 @@ impl MachineInitializer<'_> {
                 // possible to move ACPI out of chipset once those operations
                 // are fully handled in ACPI.
                 let sci_pin = chipset_lpc.irq_pin(acpi::SCI_IRQ).unwrap();
-                let acpi = acpi::Acpi::create(sci_pin.into());
+                let acpi = acpi::Acpi::create(
+                    sci_pin.into(),
+                    self.log.new(slog::o!("device" => "acpi")),
+                );
 
                 let chipset_pm = i440fx::Piix3PM::create(
                     self.machine.hdl.clone(),

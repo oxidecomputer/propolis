@@ -37,6 +37,25 @@ pub fn io_port(port: u16, alignment: u8, length: u8) -> aml::IO {
     aml::IO::new(port, port, alignment, length)
 }
 
+bitflags! {
+    /// Return value for `_STA` method.
+    ///
+    /// ACPI rev. 6.6 section 6.3.7 "_STA (Device Status)"
+    #[derive(Copy, Clone)]
+    pub struct DeviceStatus: u32 {
+        const PRESENT = 1;
+        const ENABLED = 1 << 1;
+        const SHOW_IN_UI = 1 << 2;
+        const FUNCTIONING = 1 << 3;
+        const BATTERY_PRESENT = 1 << 4;
+    }
+}
+impl Aml for DeviceStatus {
+    fn to_aml_bytes(&self, sink: &mut dyn AmlSink) {
+        self.bits().to_aml_bytes(sink);
+    }
+}
+
 /// Wrapper for an `Aml` that only writes the AML bytecode to the sink if the
 /// target [`AcpiVariant`] is present in the filter.
 pub struct AcpiVariantFilter<'a> {
@@ -142,6 +161,8 @@ pub mod paths {
     // ACPI rev. 6.6 section 6.3.7 "_STA (Device Status)"
     path!(sta, "_STA");
 
+    path!(sun, "_SUN");
+
     // Object that specifies a device's unique persistent ID, or a control
     // method that generates it.
     //
@@ -171,8 +192,12 @@ pub mod names {
     name!(ddn);
     name!(hid);
     name!(prs);
-    name!(sta);
     name!(uid);
+    name!(sun);
+
+    pub fn sta(sta: super::DeviceStatus) -> aml::Name {
+        aml::Name::new(paths::sta(), &sta)
+    }
 }
 
 /// Constructors for ACPI methods defined in the ACPI specification.
@@ -275,6 +300,9 @@ pub mod devids {
 
     // --Peripheral Buses--
     pub const PCI_BUS: &'static str = "PNP0A03";
+
+    // --Generic Devices--
+    pub const GENERIC_CONTAINER: &'static str = "PNP0A06";
 
     // --Real Time Clock, BIOS, System board devices--
     pub const AT_SPEAKER_SOUND: &'static str = "PNP0800";
