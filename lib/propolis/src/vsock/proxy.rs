@@ -370,6 +370,8 @@ impl VsockProxy {
         self.poller.reset_evloop();
     }
 
+    // This must only be called while the device is paused otherwise we will
+    // be blocked by the backend not currently processing [`PauseCmd`]s.
     pub fn send_transport_reset(&self) {
         self.poller.send_transport_reset();
     }

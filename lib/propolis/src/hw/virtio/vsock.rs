@@ -324,6 +324,7 @@ impl MigrateMulti for PciVirtioSock {
 
         // Upon import, our vsock poller has no state and the spec indicates
         // that we need to tell the guest to reset its established connections.
+        // NB: this is safe because we start with the device paused upon import.
         self.backend.send_transport_reset();
 
         Ok(())

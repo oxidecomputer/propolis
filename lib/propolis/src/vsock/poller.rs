@@ -637,10 +637,10 @@ impl VsockPoller {
             matches!(self.transport_reset, TransportResetState::Needed);
 
         match event {
-            // Don't handle any guest->host events until the a transport reset
+            // Don't handle any guest<-->host events until the a transport reset
             // has been delivered to the guest. We will handle any missed events
             // once we have been successful.
-            VsockEvent::TxQueue if needs_reset => {}
+            VsockEvent::TxQueue | VsockEvent::RxQueue if needs_reset => {}
             VsockEvent::TxQueue => self.handle_tx_queue_event(),
             VsockEvent::RxQueue => self.handle_rx_queue_event(),
             VsockEvent::EventQueue => self.try_send_transport_reset(),
@@ -923,7 +923,9 @@ impl VsockPoller {
 
                 match event.source {
                     EventSource::User => {
-                        should_pause = match VsockEvent::try_from(event.user) {
+                        // Note that we need the OR here, or we could lose the
+                        // pause event when processing a batch of events.
+                        should_pause |= match VsockEvent::try_from(event.user) {
                             Ok(event) => self.handle_user_event(event),
                             Err(unknown_event) => {
                                 error!(
@@ -998,10 +1000,11 @@ impl VsockPoller {
         loop {
             match self.pause_rx.recv() {
                 Ok(PausedCmd::Resume { oneshot }) => {
-                    oneshot.send(()).unwrap();
-
                     // We are running!
                     self.state.set_running();
+
+                    // Notify our caller.
+                    oneshot.send(()).unwrap();
 
                     // If we were migrated we need to send a transport reset.
                     self.try_send_transport_reset();
