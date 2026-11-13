@@ -35,9 +35,11 @@ pub mod file_sink;
 pub mod madt;
 pub mod rsdp;
 pub mod ssdt_edk2;
+pub mod ssdt_pci_hotplug;
 pub mod xsdt;
 
 mod gpe;
+mod hotplug;
 
 pub use dsdt::{Dsdt, DsdtConfig, DsdtDeviceType, DsdtGenerator, DsdtScope};
 pub use facs::{Facs, FacsConfig};
@@ -53,7 +55,12 @@ pub use rsdp::{
     RSDP_XSDT_ADDR_OFFSET,
 };
 pub use ssdt_edk2::{SsdtEdk2, SsdtEdk2Config};
+pub use ssdt_pci_hotplug::{
+    SsdtPciHotplug, PCI_HOTPLUG_BASE_ADDR, PCI_HOTPLUG_BASE_LEN,
+};
 pub use xsdt::{Xsdt, XsdtConfig, XSDT_HEADER_LEN};
+
+use hotplug::PciHotplug;
 
 // Values used to reference table checksums to recompute them after values are
 // changed during table generation.
@@ -126,6 +133,8 @@ pub struct Acpi {
 
     // Register block for general-purpose events.
     gpe0: gpe::RegisterBlock,
+
+    pci_hotplug: PciHotplug,
 }
 
 impl Acpi {
@@ -140,17 +149,27 @@ impl Acpi {
             gpe0_sci_pin,
         );
 
-        Arc::new(Self { sci_gate, gpe0 })
+        Arc::new(Self { sci_gate, gpe0, pci_hotplug: PciHotplug::new() })
     }
 
     pub fn attach(self: &Arc<Self>, pio: &PioBus) {
-        let this = Arc::clone(self);
+        let this_gpe0 = Arc::clone(self);
+        let gpe0_piofn = Arc::new(move |port: u16, rwo: RWOp| {
+            this_gpe0.gpe0.pio_rw(port, rwo)
+        }) as Arc<PioFn>;
 
-        let gpe0_piofn =
-            Arc::new(move |port: u16, rwo: RWOp| this.gpe0.pio_rw(port, rwo))
-                as Arc<PioFn>;
+        let this_hotplug = Arc::clone(self);
+        let pci_hotplug_piofn = Arc::new(move |port: u16, rwo: RWOp| {
+            this_hotplug.pci_hotplug.pio_rw(port, rwo)
+        }) as Arc<PioFn>;
 
         pio.register(GPE0_BLK_ADDR, GPE0_BLK_LEN.into(), gpe0_piofn).unwrap();
+        pio.register(
+            PCI_HOTPLUG_BASE_ADDR,
+            PCI_HOTPLUG_BASE_LEN.into(),
+            pci_hotplug_piofn.clone(),
+        )
+        .unwrap();
     }
 
     pub fn pci_hotplug(&self) {

@@ -910,7 +910,12 @@ impl<'a> Aml for PciRootBridgeLpc<'a> {
                             aml::FieldUpdateRule::Preserve,
                             vec![aml::FieldEntry::Named(*b"PEPT", 8)],
                         ),
-                        &names::sta(&0x0f_u64),
+                        &names::sta(
+                            DeviceStatus::PRESENT
+                                | DeviceStatus::ENABLED
+                                | DeviceStatus::SHOW_IN_UI
+                                | DeviceStatus::FUNCTIONING,
+                        ),
                         &aml::Method::new(
                             "RDPT".into(),
                             0,
@@ -1035,7 +1040,11 @@ impl<'a> Aml for Lnk<'a> {
                 vec![
                     &names::hid(&aml::EISAName::new(devids::PCI_INT_LINK)),
                     &names::uid(&aml::ZERO),
-                    &names::sta(&0x0b_u64),
+                    &names::sta(
+                        DeviceStatus::PRESENT
+                            | DeviceStatus::ENABLED
+                            | DeviceStatus::FUNCTIONING,
+                    ),
                     &methods::srs(1, NOT_SERIALIZED, vec![]),
                     &methods::dis(0, NOT_SERIALIZED, vec![]),
                     &names::prs(&aml::ResourceTemplate::new(vec![
