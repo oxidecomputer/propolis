@@ -20,7 +20,7 @@ use crate::v1::instance_spec::CpuidVendor;
 /// with topology information that are not mentioend here probably indicate a
 /// bug (at best, those leaves will probably indicate collection of single-core
 /// sockets in the machine.)
-#[derive(Copy, Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Copy, Clone, PartialEq, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TopoLeaves {
     pub std_4: bool,
@@ -42,7 +42,7 @@ pub struct TopoLeaves {
 // and we'll want to faithfully indicate information about what processors are
 // physically adjacent .... *probably*; doing that it harder to migrate without
 // starting to lie.
-#[derive(Copy, Clone, Deserialize, Serialize, Debug, JsonSchema)]
+#[derive(Copy, Clone, PartialEq, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CpuTopology {
     pub has_smt: bool,
