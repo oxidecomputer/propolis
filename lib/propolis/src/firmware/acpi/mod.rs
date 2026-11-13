@@ -21,8 +21,10 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::common::Lifecycle;
+use crate::hw::pci::Bdf;
 use crate::intr_pins::{IntrPin, OrGate};
 use crate::migrate::*;
 use crate::pio::PioBus;
@@ -35,9 +37,11 @@ pub mod file_sink;
 pub mod madt;
 pub mod rsdp;
 pub mod ssdt_edk2;
+pub mod ssdt_pci_hotplug;
 pub mod xsdt;
 
 mod gpe;
+mod pci_hotplug;
 
 pub use dsdt::{Dsdt, DsdtConfig, DsdtDeviceType, DsdtGenerator, DsdtScope};
 pub use facs::{Facs, FacsConfig};
@@ -53,7 +57,10 @@ pub use rsdp::{
     RSDP_XSDT_ADDR_OFFSET,
 };
 pub use ssdt_edk2::{SsdtEdk2, SsdtEdk2Config};
+pub use ssdt_pci_hotplug::SsdtPciHotplug;
 pub use xsdt::{Xsdt, XsdtConfig, XSDT_HEADER_LEN};
+
+use pci_hotplug::PciHotplug;
 
 // Values used to reference table checksums to recompute them after values are
 // changed during table generation.
@@ -92,13 +99,37 @@ const LOCAL_APIC_ADDR: u32 = 0xfee0_0000;
 // PAGE_SIZE (4096) in bhyve, but this value was inherited from EDK2.
 const LOCAL_APIC_LEN: u32 = 0x10_0000;
 
-// Register used for PCI hotplug. This value was chosen to match QEMU and the
-// original EDK2 ACPI tables.
+// Register used for ACPI general-purpose events (GPEs).
 //
-// Refer to the `piix4_acpi_system_hot_add_init` function in QEMU for more
-// information.
+// This value was chosen to match QEMU and the original EDK2 ACPI tables. Refer
+// to the `piix4_acpi_system_hot_add_init` function in QEMU source code for
+// more information.
 const GPE0_BLK_ADDR: u16 = 0xafe0;
 const GPE0_BLK_LEN: u8 = 4;
+
+pub type EjectFn = Box<dyn FnOnce() + Send>;
+
+#[derive(Debug, Eq, PartialEq, Error)]
+pub enum Error {
+    #[error("invalid bdf {0}")]
+    InvalidBdf(Bdf),
+}
+
+/// List of ACPI general-purpose events (GPEs) handled by Propolis.
+///
+/// When adding a new GPE, ensure it doesn't conflict with any of the existing
+/// events (even if it has a different trigger).
+#[derive(Clone, Copy, Debug)]
+pub enum Gpe {
+    PciHotplug,
+}
+impl Gpe {
+    pub const fn event(self) -> gpe::Event {
+        match self {
+            Gpe::PciHotplug => gpe::Event::new(1, gpe::Trigger::Edge),
+        }
+    }
+}
 
 pub struct Acpi {
     // The SCI state can be driven by multiple inputs that OR'ed to determine
@@ -110,10 +141,11 @@ pub struct Acpi {
 
     // Register block for general-purpose events.
     gpe0: Arc<gpe::RegisterBlock>,
-}
 
+    pci_hotplug: Arc<PciHotplug>,
+}
 impl Acpi {
-    pub fn create(sci_pin: Arc<dyn IntrPin>) -> Arc<Self> {
+    pub fn create(sci_pin: Arc<dyn IntrPin>, log: slog::Logger) -> Arc<Self> {
         let sci_gate = OrGate::new(sci_pin);
 
         let gpe0_sci_pin = sci_gate.new_input();
@@ -124,18 +156,38 @@ impl Acpi {
             gpe0_sci_pin,
         ));
 
-        Arc::new(Self { sci_gate, gpe0 })
+        let pci_hotplug = Arc::new(PciHotplug::new(
+            log.new(slog::o!("component" => "pci_hotplug")),
+        ));
+
+        Arc::new(Self { sci_gate, gpe0, pci_hotplug })
     }
 
     pub fn attach(self: &Arc<Self>, pio: &PioBus) {
         self.gpe0.attach(pio);
+        self.pci_hotplug.attach(pio);
+    }
+
+    pub fn pci_hotplug(&self, bdf: Bdf) -> Result<(), Error> {
+        self.pci_hotplug.hotplug(bdf)?;
+        self.gpe0.trigger(Gpe::PciHotplug.event());
+        Ok(())
+    }
+
+    pub fn pci_hot_unplug(
+        &self,
+        bdf: Bdf,
+        ejfn: Option<EjectFn>,
+    ) -> Result<(), Error> {
+        self.pci_hotplug.hot_unplug(bdf, ejfn)?;
+        self.gpe0.trigger(Gpe::PciHotplug.event());
+        Ok(())
     }
 
     pub fn sci_pin(&self) -> Arc<dyn IntrPin> {
         self.sci_gate.new_input()
     }
 }
-
 impl Lifecycle for Acpi {
     fn type_name(&self) -> &'static str {
         "acpi"
@@ -147,7 +199,6 @@ impl Lifecycle for Acpi {
         Migrator::Multi(self)
     }
 }
-
 impl MigrateMulti for Acpi {
     fn export(
         &self,
@@ -174,10 +225,13 @@ mod test {
     use crate::intr_pins::test::TestPin;
     use crate::migrate::test::MigrationDriver;
 
+    use slog::{Discard, Logger};
+
     #[test]
     fn sci() {
         let sci_output = Arc::new(TestPin::new());
-        let acpi = Acpi::create(sci_output.clone());
+        let log = Logger::root(Discard, slog::o!());
+        let acpi = Acpi::create(sci_output.clone(), log);
 
         let sci_input = acpi.sci_pin();
 
@@ -207,7 +261,8 @@ mod test {
         // Populate source.
         let src = {
             let sci = Arc::new(TestPin::new());
-            let src = Acpi::create(sci);
+            let log = Logger::root(Discard, slog::o!());
+            let src = Acpi::create(sci, log);
 
             // Guest sets EN bits to enable GPEs.
             gpe::test::pio_write(&src.gpe0, gpe::Register::En(0), 0b0101_0100);
@@ -232,7 +287,8 @@ mod test {
 
         // Create and migrate destination.
         let sci = Arc::new(TestPin::new());
-        let dest = Acpi::create(sci.clone());
+        let log = Logger::root(Discard, slog::o!());
+        let dest = Acpi::create(sci.clone(), log);
         MigrationDriver::new().migrate(src.as_ref(), dest.as_ref());
 
         [

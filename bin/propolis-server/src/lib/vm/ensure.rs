@@ -553,8 +553,7 @@ async fn initialize_vm_objects(
             as Arc<dyn super::guest_event::ChipsetEventHandler>),
     )?;
 
-    // TODO(luiz): initialize ACPI once exposed via the API.
-    // init.initialize_acpi(&chipset);
+    init.initialize_acpi(&chipset);
     init.initialize_rtc(&chipset)?;
     init.initialize_hpet();
 

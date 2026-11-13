@@ -231,10 +231,6 @@ impl RegisterBlock {
     /// Panics if the [`Event`] is not [`Trigger::Edge`] or if the GPE number
     /// is less than the register block base, or greater than the maximum GPE
     /// number handled by this register block (`base + 8 * len / 2 - 1`).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no edge-triggered GPEs yet")
-    )]
     pub fn trigger(&self, gpe: Event) {
         let bit = self.gpe_bit(gpe, Trigger::Edge);
         self.inner.lock().unwrap().raise(bit);
