@@ -874,7 +874,9 @@ impl VsockPoller {
 
                 match event.source {
                     EventSource::User => {
-                        should_pause = match VsockEvent::try_from(event.user) {
+                        // Note that we need the OR here, or we could lose the
+                        // pause event when processing a batch of events.
+                        should_pause |= match VsockEvent::try_from(event.user) {
                             Ok(event) => self.handle_user_event(event),
                             Err(unknown_event) => {
                                 error!(
@@ -949,10 +951,11 @@ impl VsockPoller {
         loop {
             match self.pause_rx.recv() {
                 Ok(PausedCmd::Resume { oneshot }) => {
-                    oneshot.send(()).unwrap();
-
                     // We are running!
                     self.state.set_running();
+
+                    // Notify our caller.
+                    oneshot.send(()).unwrap();
 
                     // Handle events until we are told to pause.
                     self.handle_events();
