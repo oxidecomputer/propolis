@@ -116,8 +116,7 @@ enum Command {
     /// Transition the instance to a new state
     State {
         /// The requested state
-        #[clap(value_parser = parse_state)]
-        state: InstanceStateRequested,
+        state: String,
         /// The number of seconds to wait after sending ACPI PWRBTN_STS before
         /// forcing stop/reset. (Only valid on acpi-stop and acpi-reboot states)
         acpi_timeout_secs: Option<u64>,
@@ -444,16 +443,26 @@ impl VmConfig {
     }
 }
 
-fn parse_state(state: &str) -> anyhow::Result<InstanceStateRequested> {
-    match state.to_lowercase().as_str() {
-        "run" => Ok(InstanceStateRequested::Run),
-        "stop" => Ok(InstanceStateRequested::Stop),
-        "reboot" => Ok(InstanceStateRequested::Reboot),
-        // XXX: timeouts to be replaced after parse
-        "acpi-stop" => Ok(InstanceStateRequested::AcpiStop { timeout_secs: 0 }),
-        "acpi-reboot" => {
-            Ok(InstanceStateRequested::AcpiReboot { timeout_secs: 0 })
+fn parse_state(
+    state: &str,
+    timeout_secs: Option<u64>,
+) -> anyhow::Result<InstanceStateRequested> {
+    match (state.to_lowercase().as_str(), timeout_secs) {
+        ("run", None) => Ok(InstanceStateRequested::Run),
+        ("stop", None) => Ok(InstanceStateRequested::Stop),
+        ("reboot", None) => Ok(InstanceStateRequested::Reboot),
+        ("acpi-stop", Some(timeout_secs)) => {
+            Ok(InstanceStateRequested::AcpiStop { timeout_secs })
         }
+        ("acpi-reboot", Some(timeout_secs)) => {
+            Ok(InstanceStateRequested::AcpiReboot { timeout_secs })
+        }
+        ("run" | "stop" | "reboot", Some(_)) => Err(anyhow!(
+            "only 'acpi-stop' and 'acpi-reboot' states accept a timeout value"
+        )),
+        ("acpi-stop" | "acpi-reboot", None) => Err(anyhow!(
+            "'acpi-stop' and 'acpi-reboot' states require a timeout value"
+        )),
         _ => Err(anyhow!(
             "invalid requested state, must be one of: \
             'run', 'stop', 'reboot', 'acpi-stop', 'acpi-reboot'"
@@ -967,17 +976,9 @@ async fn main() -> anyhow::Result<()> {
             .await?
         }
         Command::Get => get_instance(&client).await?,
-        Command::State { mut state, acpi_timeout_secs } => {
-            match &mut state {
-                InstanceStateRequested::AcpiStop { timeout_secs }
-                | InstanceStateRequested::AcpiReboot { timeout_secs } => {
-                    *timeout_secs = acpi_timeout_secs.ok_or(anyhow!(
-                        "acpi-stop and acpi-reboot states must provide timeout"
-                    ))?
-                }
-                _ => {}
-            }
-            put_instance(&client, state).await?
+        Command::State { state, acpi_timeout_secs } => {
+            put_instance(&client, parse_state(&state, acpi_timeout_secs)?)
+                .await?
         }
         Command::Serial { byte_offset } => {
             serial(addr, byte_offset, log).await?

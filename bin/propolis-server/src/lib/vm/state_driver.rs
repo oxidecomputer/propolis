@@ -906,8 +906,8 @@ impl StateDriver {
 
                 // TODO? in future we may watch for OSPM clearing the status bit
                 // (per ACPI 4.8.2.2.1.1) after above chipset.acpi_shutdown call
-                // call to determine whether the guest has acknowledged the push
-                // of the power button. mayhap consider adding a tighter timeout
+                // to determine whether the guest has acknowledged the push of
+                // the power button. mayhap consider adding a tighter timeout
                 // task to terminate/reboot sooner if the kernel is so wedged or
                 // absent that it didn't even respond to pulling PWRBTN_STS high
 
