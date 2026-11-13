@@ -33,7 +33,9 @@ BEGIN {
 	target_vm = $1;
 }
 
-fbt::vcpu_emulate_cpuid:entry / arg0 == target_vm / {
+fbt::vcpu_emulate_cpuid:entry /
+	arg0 == target_vm
+/ {
 	self->rax = (uint64_t*)arg2;
 	self->rbx = (uint64_t*)arg3;
 	self->rcx = (uint64_t*)arg4;

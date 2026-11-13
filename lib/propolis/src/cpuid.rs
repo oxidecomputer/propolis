@@ -557,6 +557,18 @@ impl Specializer {
                             edx: 0,
                         },
                     );
+
+                    let ext_features = CpuidIdent::leaf(0x8000_0001);
+                    // If the CPUID profile defines leaf 0x8000_001E, we should
+                    // also set the bit in Extended Processor and Feature
+                    // Identifier that indicates the extended topology leaves
+                    // are meaningful.
+                    if let Some(features) = set.get_mut(ext_features) {
+                        // APM volume 3, "CPUID Fn8000_0001_ECX Feature
+                        // Identifiers"
+                        const TOPO_EXTENSIONS_BIT: u32 = 1 << 22;
+                        features.ecx |= TOPO_EXTENSIONS_BIT;
+                    }
                 }
             }
         }

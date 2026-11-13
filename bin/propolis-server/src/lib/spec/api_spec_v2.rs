@@ -77,7 +77,7 @@ pub(crate) fn amend(
 #[cfg(test)]
 mod test {
     use propolis_api_types_versions::latest::components::board::{
-        Board, Chipset, Cpuid, GuestHypervisorInterface, I440Fx,
+        Board, CpuTopology, Chipset, Cpuid, GuestHypervisorInterface, I440Fx,
     };
     use propolis_api_types_versions::latest::{
         self,
@@ -108,6 +108,7 @@ mod test {
                     entries: vec![],
                     vendor: CpuidVendor::Amd,
                 }),
+                cpu_topology: CpuTopology::single_socket_smt(),
             },
             components: Default::default(),
             smbios: Some(smbios_input.clone()),
