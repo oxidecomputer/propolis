@@ -920,7 +920,7 @@ async fn main() -> anyhow::Result<()> {
     let log = create_logger(&opt);
 
     let addr = SocketAddr::new(opt.server, opt.port);
-    let client = Client::new(&format!("http://{addr}"));
+    let client = Client::new(&format!("http://{addr}"))?;
 
     match opt.cmd {
         Command::New {
@@ -964,7 +964,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Migrate { dst_server, dst_port, dst_uuid, crucible_disks } => {
             let dst_addr = SocketAddr::new(dst_server, dst_port);
-            let dst_client = Client::new(&format!("http://{dst_addr}"));
+            let dst_client = Client::new(&format!("http://{dst_addr}"))?;
             let dst_uuid = dst_uuid.unwrap_or_else(Uuid::new_v4);
             let disks = if let Some(crucible_disks) = crucible_disks {
                 parse_json_file(&crucible_disks)?
