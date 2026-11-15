@@ -80,25 +80,18 @@ fbt::vm_run:entry {
 	self->next_exit_reason = "unknown";
 }
 
-fbt::svm_launch:return {
-	self->vcpu = (struct svm_vcpu *)NULL;
-}
-
 fbt::svm_vmexit:entry {
-	self->vcpu = args[0];
-	self->vmcb = self->vcpu->vmcb;
-	self->ctrl = self->vmcb->ctrl;
-	self->state = self->vmcb->state;
+	this->vmcb = args[0]->vmcb;
 	self->vmexit = args[1];
 
-	@exits[self->ctrl.exitcode] = count();
+	@exits[this->vmcb->ctrl.exitcode] = count();
 
-	if (self->ctrl.exitcode == VMEXIT_IOIO) {
-		this->opsz = (self->ctrl.exitinfo1 >> 4) & 7;
-		this->addrsz = (self->ctrl.exitinfo1 >> 7) & 7;
+	if (this->vmcb->ctrl.exitcode == VMEXIT_IOIO) {
+		this->opsz = (this->vmcb->ctrl.exitinfo1 >> 4) & 7;
+		this->addrsz = (this->vmcb->ctrl.exitinfo1 >> 7) & 7;
 		@io_info[
-		  self->ctrl.exitinfo1 >> 16,
-		  self->ctrl.exitinfo1 & 1 == 0 ? "out" : "in",
+		  this->vmcb->ctrl.exitinfo1 >> 16,
+		  this->vmcb->ctrl.exitinfo1 & 1 == 0 ? "out" : "in",
 		  this->opsz == 1 ? "8b" :
 		    this->opsz == 2 ? "16b" :
 		      this->opsz == 4 ? "32b" : "bogus",
@@ -108,30 +101,30 @@ fbt::svm_vmexit:entry {
 		] = count();
 	}
 
-	if (self->ctrl.exitcode == VMEXIT_NPF) {
+	if (this->vmcb->ctrl.exitcode == VMEXIT_NPF) {
 		@npf_info[
-			self->ctrl.exitinfo2,
-			self->state.rip,
+			this->vmcb->ctrl.exitinfo2,
+			this->vmcb->state.rip,
 			/*
 			 * Instruction/Data access
 			 */
-			(self->ctrl.exitinfo1 >> 4) & 1 ? "I" : "D",
+			(this->vmcb->ctrl.exitinfo1 >> 4) & 1 ? "I" : "D",
 			/*
 			 * Processor read 1 in a PTE's reserved bits
 			 */
-			(self->ctrl.exitinfo1 >> 3) & 1 ? "R" : "-",
+			(this->vmcb->ctrl.exitinfo1 >> 3) & 1 ? "R" : "-",
 			/*
 			 * User/Supervisor (CPL=3 or not 3)
 			 */
-			(self->ctrl.exitinfo1 >> 2) & 1 ? "U" : "S",
+			(this->vmcb->ctrl.exitinfo1 >> 2) & 1 ? "U" : "S",
 			/*
 			 * Access is write or read
 			 */
-			(self->ctrl.exitinfo1 >> 1) & 1 ? "W" : "R",
+			(this->vmcb->ctrl.exitinfo1 >> 1) & 1 ? "W" : "R",
 			/*
 			 * Page is present or not
 			 */
-			(self->ctrl.exitinfo1 >> 0) & 1 ? "P" : "-"
+			(this->vmcb->ctrl.exitinfo1 >> 0) & 1 ? "P" : "-"
 		] = count();
 	}
 }
