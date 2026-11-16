@@ -100,18 +100,11 @@ impl IntrPin for LNKPin {
 
 struct IrqConfig {
     pic: Arc<LegacyPIC>,
-
     lnk_pins: [Arc<LNKPin>; 4],
-
-    #[allow(unused)]
-    // XXX: wire up SCI notifications
-    sci_pin: Arc<LNKPin>,
 }
 impl IrqConfig {
     fn create(hdl: Arc<VmmHdl>) -> Arc<Self> {
         let pic = LegacyPIC::new(hdl);
-        let sci_pin = Arc::new(LNKPin::new());
-        sci_pin.reassign(pic.pin_handle(SCI_IRQ));
         Arc::new(Self {
             pic,
             lnk_pins: [
@@ -120,7 +113,6 @@ impl IrqConfig {
                 Arc::new(LNKPin::new()),
                 Arc::new(LNKPin::new()),
             ],
-            sci_pin,
         })
     }
     fn set_lnk_route(&self, idx: usize, irq: Option<u8>) {
@@ -139,8 +131,6 @@ pub const PIR_END: usize = PIR_OFFSET + PIR_LEN;
 
 pub const PIR_MASK_DISABLE: u8 = 0x80;
 const PIR_MASK_IRQ: u8 = 0x0f;
-
-pub const SCI_IRQ: u8 = 0x9;
 
 fn valid_pir_irq(irq: u8) -> bool {
     // Existing ACPI tables allow 3-7, 9-12, 14-15
