@@ -51,7 +51,7 @@ use propolis::intr_pins;
 use propolis::vmm::{self, Builder, Machine};
 use propolis::vsock::GuestCid;
 use propolis_api_types::instance::InstanceProperties;
-use propolis_api_types::instance_spec::components::board::CpuTopology;
+use propolis_api_types::instance_spec::components::board::TopoLeaves;
 use propolis_api_types::instance_spec::components::devices::SerialPortNumber;
 use propolis_api_types::instance_spec::{self, SpecKey};
 use propolis_types::{CpuidIdent, CpuidVendor};
@@ -1590,26 +1590,48 @@ impl MachineInitializer<'_> {
         Ok(ramfb)
     }
 
+    fn topo_cpuid_leaves(&self) -> Result<Vec<TopoKind>, MachineInitError> {
+        // This is trying to find a local minima of annoying.. the alternative
+        // here would to have `CpuTopology` hold a `Vec<TopoKind>` directly.
+        // That opens questions like, what is the semantic of including a leaf
+        // multiple times? And we would want another glue type between the
+        // `propolis-server`-internal `TopoKind` that we use, to whatever
+        // version's external `TopoKind`. On those axes, it would be mildly
+        // simpler to just have a bag of bools for what leaves we want to
+        // specialize in this CPU topology.
+        //
+        // The downside of a bag of bools is that we have to map them to the
+        // internal `TopoKinds` enum at some point. This is that point. This
+        // conversion is incredibly typo-sensitive: would you spot
+        // `if std_4 { topo_leaves.push(TopoKind::StdB); }`? But converting
+        // across `TopoKinds` enums in versioned conversions would be similarly
+        // sensitive, and at least with a bag of booleans the fields are named
+        // and `std_4: std_b` would stand out.
+        let mut topo_leaves = Vec::new();
+
+        let TopoLeaves { std_4, std_b, ext_8, ext_1e } =
+            self.spec.board.cpu_topology.topo_leaves;
+
+        if std_4 {
+            topo_leaves.push(TopoKind::Std4);
+        }
+        if std_b {
+            topo_leaves.push(TopoKind::StdB);
+        }
+        if ext_8 {
+            topo_leaves.push(TopoKind::Ext8);
+        }
+        if ext_1e {
+            topo_leaves.push(TopoKind::Ext1E);
+        }
+        Ok(topo_leaves)
+    }
+
     /// Initialize virtual CPUs by first setting their capabilities, inserting
     /// them into the device map, and then, if a kstat sampler is provided,
     /// tracking their kstats.
     pub async fn initialize_cpus(&mut self) -> Result<(), MachineInitError> {
         let hv_interface = self.machine.guest_hv_interface.as_ref();
-
-        // Compute `vcpu_count` as a u16 this far up mostly because having an
-        // error crop up *only* when the VM has a thread-per-socket topology
-        // would be an easy and unfortunately plausible testing miss.
-        //
-        // If this is reached, we've presumably expanded Board to accept more
-        // than u16 CPUs. It is proabably fine to adapt
-        // legacy_single_thread_sockets() below to also take whatever wider type
-        // we've moved to.
-        let vcpu_count =
-            u16::try_from(self.machine.vcpus.len()).map_err(|_| {
-                MachineInitError::UnsupportedCpuConfig(
-                    "more than u16::MAX vCPUs",
-                )
-            })?;
 
         for vcpu in self.machine.vcpus.iter() {
             // Report that the guest is running on bhyve.
@@ -1622,6 +1644,7 @@ impl MachineInitializer<'_> {
                     requests to set hypervisor leaves",
             );
 
+            let has_smt = self.spec.board.cpu_topology.has_smt;
             // Instead of `TopoKind::supported`, the instance spec selects what
             // leaves may get specialized topology data. This is to maintain the
             // reported topology of VMs created either before CPU platforms or
@@ -1630,20 +1653,12 @@ impl MachineInitializer<'_> {
             //
             // While it's probably OK to go change that, one would not expect
             // their CPU sockets to unify across a reboot.
-            let mut cpu_topo_leaves = vec![];
-            let topo = if let Some(topo) = self.spec.board.cpu_topology.as_ref()
-            {
-                cpu_topo_leaves = TopoKind::supported().collect();
-                *topo
-            } else {
-                cpu_topo_leaves.push(TopoKind::Std4);
-                CpuTopology::legacy_single_thread_sockets(vcpu_count)
-            };
+            let cpu_topo_leaves = self.topo_cpuid_leaves()?;
 
             let specialized = propolis::cpuid::Specializer::new(
                 NonZeroU16::new(self.spec.board.cpus).unwrap(),
             )
-            .with_cpu_topo(topo.has_smt, cpu_topo_leaves.into_iter())
+            .with_cpu_topo(has_smt, cpu_topo_leaves.into_iter())
             .with_vcpuid(vcpu.id)
             .with_cache_topo()
             .clear_cpu_topo(TopoKind::iter())

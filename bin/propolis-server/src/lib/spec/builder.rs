@@ -112,7 +112,7 @@ impl SpecBuilder {
                     memory_mb: board.memory_mb,
                     chipset: board.chipset,
                     guest_hv_interface: board.guest_hv_interface,
-                    cpu_topology: Some(board.cpu_topology),
+                    cpu_topology: board.cpu_topology,
                     acpi_variant: propolis::firmware::acpi::AcpiVariant::V0,
                 },
                 cpuid,
@@ -407,7 +407,7 @@ impl SpecBuilder {
 mod test {
     use propolis_api_types::instance_spec::components::{
         backends::{BlobStorageBackend, VirtioNetworkBackend},
-        board::{CpuTopology, Chipset, GuestHypervisorInterface, I440Fx},
+        board::{Chipset, CpuTopology, GuestHypervisorInterface, I440Fx},
         devices::{VirtioDisk, VirtioNic},
     };
     use uuid::Uuid;
@@ -423,7 +423,7 @@ mod test {
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
             guest_hv_interface: GuestHypervisorInterface::Bhyve,
             acpi_variant: propolis::firmware::acpi::AcpiVariant::V0,
-            cpu_topology: Some(CpuTopology::single_socket_smt()),
+            cpu_topology: CpuTopology::single_socket_smt(),
         };
 
         SpecBuilder {

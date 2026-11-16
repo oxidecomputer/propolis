@@ -77,7 +77,7 @@ pub(crate) fn amend(
 #[cfg(test)]
 mod test {
     use propolis_api_types_versions::latest::components::board::{
-        Board, CpuTopology, Chipset, Cpuid, GuestHypervisorInterface, I440Fx,
+        Board, Chipset, CpuTopology, Cpuid, GuestHypervisorInterface, I440Fx,
     };
     use propolis_api_types_versions::latest::{
         self,

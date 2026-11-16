@@ -5,13 +5,10 @@
 //! VM mainboard components. Every VM has a board, even if it has no other
 //! peripherals.
 
-use std::collections::BTreeSet;
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::v1::components::board::{Chipset, Cpuid, GuestHypervisorInterface};
-use crate::v1::instance_spec::CpuidVendor;
 
 /// A collection of CPUID leaves to specialize for a board's `CpuTopology`.
 ///

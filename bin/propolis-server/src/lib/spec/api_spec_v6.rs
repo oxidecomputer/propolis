@@ -93,7 +93,10 @@ pub(crate) fn v6_to_spec_builder(
     api_spec_v7::v7_to_spec_builder(v7_spec)
 }
 
-fn amend_component(
+// pub(crate) as the next version (v7) still uses
+// `v6::instance_spec::Component`, so this conversion is applicable in that
+// module as well.
+pub(crate) fn amend_component(
     id: &SpecKey,
     to_amend: &mut v6::instance_spec::Component,
     replacement: &ReplacementComponent,

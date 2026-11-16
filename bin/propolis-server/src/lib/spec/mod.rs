@@ -203,10 +203,7 @@ pub(crate) struct Board {
     pub memory_mb: u64,
     pub chipset: Chipset,
     pub guest_hv_interface: GuestHypervisorInterface,
-    // TODO: should this be non-option..? if yes: the option being set or not is
-    // what tells the specializer to care about leaves B and ext 1Eh, so .. how
-    // should that happen.
-    pub cpu_topology: Option<CpuTopology>,
+    pub cpu_topology: CpuTopology,
 
     // XXX: expose via the API once more variants are implemented.
     pub acpi_variant: AcpiVariant,
@@ -219,9 +216,7 @@ impl Default for Board {
             memory_mb: 0,
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
             guest_hv_interface: GuestHypervisorInterface::Bhyve,
-            // TODO: just making sure that adding CPU topology support doesn't
-            // change old instance spec semantics..
-            cpu_topology: None,
+            cpu_topology: CpuTopology::single_socket_smt(),
             acpi_variant: AcpiVariant::V0,
         }
     }

@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::v1::components::backends;
 use crate::v1::instance::{InstanceProperties, InstanceState};
 use crate::v1::instance_spec::SpecKey;
 use crate::v2::instance_spec::SmbiosType1Input;
@@ -39,8 +38,31 @@ pub struct InstanceSpecGetResponse {
 
 impl From<InstanceSpec> for v6::instance_spec::InstanceSpec {
     fn from(new: InstanceSpec) -> Self {
+        let Board {
+            cpus,
+            memory_mb,
+            chipset,
+            guest_hv_interface,
+            cpuid,
+            // This `From` impl, like others, is lossy. It should probably be a
+            // try_from and fail if this is not the implied default topology in
+            // v6.
+            cpu_topology: _,
+        } = new.board;
+
+        // Like above, this is lossy, should instead be an error in a TryFrom.
+        let clamped_cpus = std::cmp::min(cpus, u8::MAX as u16) as u8;
+
+        let old_board = crate::v1::components::board::Board {
+            cpus: clamped_cpus,
+            memory_mb,
+            chipset,
+            guest_hv_interface,
+            cpuid,
+        };
+
         Self {
-            board: panic!("TODO: convert board down"), // new.board,
+            board: old_board,
             components: new.components,
             smbios: new.smbios,
         }

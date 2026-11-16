@@ -235,8 +235,6 @@ impl Specializer {
         // The number of logical threads available to the guest.
         let num_vcpu = u32::from(self.num_vcpu.get());
 
-        // TODO: check that the provided CPU topology does actually match the indicated CPU count.
-
         // The number of logical processors the guest should see. If we
         // indicate that SMT is enabled, then vCPUs are presented as pairs
         // of sibling threads on vproc-many processors.

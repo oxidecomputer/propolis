@@ -8,19 +8,28 @@
 use std::collections::BTreeMap;
 
 use propolis_api_types::instance_spec::SpecKey;
-use propolis_api_types_versions::{v1::instance::ReplacementComponent, v6, v7};
+use propolis_api_types_versions::{v1::instance::ReplacementComponent, v7};
 
 use super::{builder::SpecBuilder, ApiSpecError, Spec};
 use crate::migrate::MigrateError;
-use crate::spec::api_spec_latest;
+use crate::spec::{api_spec_latest, api_spec_v6};
 
 impl From<Spec> for v7::instance_spec::InstanceSpec {
-    fn from(mut val: Spec) -> Self {
-        let v6_spec = val;
-        // v7 adds a CpuTopology field to the instance's Board. TODO: remove it, convert the rest,
-        // add it back.
+    fn from(mut spec: Spec) -> Self {
+        let (v6_spec, topo) = {
+            // v7 adds a CpuTopology field to the instance's Board. Remove it,
+            // convert the rest, add it back.
+            let older_topo =
+                v7::instance_spec::CpuTopology::legacy_single_thread_sockets(
+                    spec.board.cpus,
+                );
+            let topo =
+                std::mem::replace(&mut spec.board.cpu_topology, older_topo);
+            (spec, topo)
+        };
 
         let mut spec: v7::instance_spec::InstanceSpec = v6_spec.into();
+        spec.board.cpu_topology = topo;
 
         spec
     }
@@ -35,58 +44,8 @@ pub(crate) fn v7_to_spec_builder(
     api_spec_latest::latest_to_spec_builder(value)
 }
 
-fn amend_component(
-    id: &SpecKey,
-    to_amend: &mut v6::instance_spec::Component,
-    replacement: &ReplacementComponent,
-) -> Result<(), MigrateError> {
-    match replacement {
-        #[cfg(not(feature = "failure-injection"))]
-        ReplacementComponent::MigrationFailureInjector(_) => {
-            return Err(MigrateError::InstanceSpecsIncompatible(format!(
-                "replacing migration failure injector {id} is \
-                    impossible because the feature is compiled out"
-            )));
-        }
-
-        #[cfg(feature = "failure-injection")]
-        ReplacementComponent::MigrationFailureInjector(comp) => {
-            let v6::instance_spec::Component::MigrationFailureInjector(src) =
-                to_amend
-            else {
-                return Err(MigrateError::wrong_type(
-                    id,
-                    "migration failure injector",
-                ));
-            };
-
-            *src = comp.clone();
-        }
-        ReplacementComponent::CrucibleStorageBackend(comp) => {
-            let v6::instance_spec::Component::CrucibleStorageBackend(src) =
-                to_amend
-            else {
-                return Err(MigrateError::wrong_type(id, "crucible backend"));
-            };
-
-            *src = comp.clone();
-        }
-        ReplacementComponent::VirtioNetworkBackend(comp) => {
-            let v6::instance_spec::Component::VirtioNetworkBackend(src) =
-                to_amend
-            else {
-                return Err(MigrateError::wrong_type(id, "viona backend"));
-            };
-
-            *src = comp.clone();
-        }
-    }
-
-    Ok(())
-}
-
 pub(crate) fn amend(
-    spec: &mut v6::instance_spec::InstanceSpec,
+    spec: &mut v7::instance_spec::InstanceSpec,
     replacements: &BTreeMap<SpecKey, ReplacementComponent>,
 ) -> Result<(), MigrateError> {
     for (id, replacement) in replacements {
@@ -96,7 +55,9 @@ pub(crate) fn amend(
             )));
         };
 
-        amend_component(id, to_amend, replacement)?;
+        // v7 only changes `Board`, so the components which need amending are still the old v6
+        // forms. That means we can just reuse the corresponding v6 `amend_component()`..
+        api_spec_v6::amend_component(id, to_amend, replacement)?;
     }
 
     Ok(())
