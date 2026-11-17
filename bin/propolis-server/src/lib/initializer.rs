@@ -1654,6 +1654,7 @@ impl MachineInitializer<'_> {
             // While it's probably OK to go change that, one would not expect
             // their CPU sockets to unify across a reboot.
             let cpu_topo_leaves = self.topo_cpuid_leaves()?;
+            info!(self.log, "computed cpu topo leaves {:?}", cpu_topo_leaves);
 
             let specialized = propolis::cpuid::Specializer::new(
                 NonZeroU16::new(self.spec.board.cpus).unwrap(),

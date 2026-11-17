@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use propolis_api_types::instance_spec::SpecKey;
-use propolis_api_types_versions::{v1::instance::ReplacementComponent, v7};
+use propolis_api_types_versions::{v1::instance::ReplacementComponent, v6, v7};
 
 use super::{builder::SpecBuilder, ApiSpecError, Spec};
 use crate::migrate::MigrateError;
@@ -25,8 +25,11 @@ impl From<Spec> for v7::instance_spec::InstanceSpec {
                 );
             let topo =
                 std::mem::replace(&mut spec.board.cpu_topology, older_topo);
-            (spec, topo)
+            let v6_spec: v6::instance_spec::InstanceSpec = spec.into();
+            (v6_spec, topo)
         };
+
+        eprintln!("ok, spec to v7 instance spec..");
 
         let mut spec: v7::instance_spec::InstanceSpec = v6_spec.into();
         spec.board.cpu_topology = topo;

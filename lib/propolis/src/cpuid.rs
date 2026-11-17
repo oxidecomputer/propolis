@@ -266,19 +266,48 @@ impl Specializer {
             if !self.cpu_topo_populate.contains(topo) {
                 // We aren't fixing up this leaf, we're just asked to entirely
                 // discard it.
-                set.remove_leaf(leaf);
+                match topo {
+                    TopoKind::Std4 |
+                    TopoKind::StdB => {
+                        // To "clear" the topology indicated by leaves 4 or Bh,
+                        // we'll remove the leaf outright. Proceeding with a
+                        // cleared leaf 4 is probably undesirable, since it's
+                        // likely that the standard CPUID leaf limit will imply
+                        // it's valid even as we've zeroed it, and a guest will
+                        // interpret the zeroes as the intended values.
+                        set.remove_leaf(leaf);
+                    }
+                    TopoKind::Std1F => {
+                        // TODO: handle 0x1f topo info
+                    }
+                    TopoKind::Ext8 => {
+                        // We can't just remove leaf 8000_0008 if we're
+                        // "clearing" the topology: if it's included by the
+                        // extended leaf limit then the address size identifiers
+                        // in EAX are likely needed by guests, and the bits in
+                        // EBX may be interesting.
+                        let leaf_ident = CpuidIdent::leaf(0x8000_0008);
+                        if let Some(features) = set.get_mut(leaf_ident) {
+                            // APM volume 3, "CPUID Fn8000_0008_ECX Size
+                            // Identifiers". Mask of both ApicIdSize and NC.
+                            const TOPO_FIELDS_MASK: u32 = 0x00_00_f0_ff;
+                            features.ecx &= !TOPO_FIELDS_MASK;
+                        }
+                    }
+                    TopoKind::Ext1E => {
+                        set.remove_leaf(leaf);
 
-                if *topo == TopoKind::Ext1E {
-                    let ext_features = CpuidIdent::leaf(0x8000_0001);
-                    // If the CPUID profile defines leaf 0x8000_0001, Extended
-                    // Processor and Feature Identifier, make sure the bit that
-                    // would indicate leaf Ext1E support is clear. We've just
-                    // discarded the leaf, so there's no meaningful data here.
-                    if let Some(features) = set.get_mut(ext_features) {
-                        // APM volume 3, "CPUID Fn8000_0001_ECX Feature
-                        // Identifiers"
-                        const TOPO_EXTENSIONS_BIT: u32 = 1 << 22;
-                        features.ecx &= !TOPO_EXTENSIONS_BIT;
+                        let ext_features = CpuidIdent::leaf(0x8000_0001);
+                        // If the CPUID profile defines leaf 0x8000_0001, Extended
+                        // Processor and Feature Identifier, make sure the bit that
+                        // would indicate leaf Ext1E support is clear. We've just
+                        // discarded the leaf, so there's no meaningful data here.
+                        if let Some(features) = set.get_mut(ext_features) {
+                            // APM volume 3, "CPUID Fn8000_0001_ECX Feature
+                            // Identifiers"
+                            const TOPO_EXTENSIONS_BIT: u32 = 1 << 22;
+                            features.ecx &= !TOPO_EXTENSIONS_BIT;
+                        }
                     }
                 }
 

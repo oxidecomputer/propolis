@@ -12,6 +12,7 @@ acpi_tables.workspace = true
 anyhow.workspace = true
 backoff.workspace = true
 byteorder.workspace = true
+cfg-if.workspace = true
 chrono.workspace = true
 cpuid_utils.workspace = true
 dropshot.workspace = true

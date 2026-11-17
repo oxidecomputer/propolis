@@ -6107,6 +6107,7 @@ dependencies = [
  "anyhow",
  "backoff",
  "byteorder",
+ "cfg-if",
  "chrono",
  "cpuid_utils",
  "dropshot 0.17.1",

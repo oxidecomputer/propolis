@@ -351,8 +351,8 @@ impl VmConfig {
                     sockets,
                     topo_leaves: TopoLeaves {
                         std_4: true,
-                        std_b: false,
-                        ext_8: false,
+                        std_b: true,
+                        ext_8: true,
                         ext_1e: false,
                     },
                 },
