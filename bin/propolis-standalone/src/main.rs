@@ -1592,7 +1592,7 @@ fn setup_instance(
 
     let cpus = config.main.cpus;
 
-    if cpus % config.main.sockets != 0 {
+    if !cpus.is_multiple_of(config.main.sockets) {
         anyhow::bail!(
             "vCPUs do not evenly divide into sockets: {} % {} != 0",
             cpus,

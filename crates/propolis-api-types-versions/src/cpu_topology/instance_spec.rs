@@ -101,7 +101,7 @@ impl From<v6::instance_spec::InstanceSpec> for InstanceSpec {
                 memory_mb: old.board.memory_mb,
                 chipset: old.board.chipset,
                 guest_hv_interface: old.board.guest_hv_interface,
-                cpuid: old.board.cpuid.map(|cpuid| cpuid.into()),
+                cpuid: old.board.cpuid,
                 cpu_topology: CpuTopology::legacy_single_thread_sockets(cpus),
             },
             components: old.components,

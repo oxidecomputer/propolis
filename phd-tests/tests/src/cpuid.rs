@@ -464,7 +464,7 @@ async fn check_cache_topo(
 /// (yet?)
 enum CpuVendor {
     Intel,
-    AMD,
+    Amd,
 }
 
 fn host_cpu_vendor() -> CpuVendor {
@@ -483,7 +483,7 @@ fn host_cpu_vendor() -> CpuVendor {
     }
     match &vendor_bytes {
         b"GenuineIntel" => CpuVendor::Intel,
-        b"AuthenticAMD" => CpuVendor::AMD,
+        b"AuthenticAMD" => CpuVendor::Amd,
         other => {
             let brand_string = String::from_utf8_lossy(other.as_slice());
             panic!("unknown CPUID brand string: {}", brand_string);
@@ -506,7 +506,7 @@ async fn guest_cpu_legacy_topo_test(ctx: &TestCtx) {
     // decisions which would break guests to change.
     let legacy_topo = match host_cpu_vendor() {
         CpuVendor::Intel => CpuTopology::single_socket_smt(),
-        CpuVendor::AMD => CpuTopology::legacy_single_thread_sockets(2),
+        CpuVendor::Amd => CpuTopology::legacy_single_thread_sockets(2),
     };
 
     let vm = launch_cpuid_smoke_test_vm_with_topo(
@@ -532,12 +532,12 @@ async fn guest_cpu_legacy_topo_test(ctx: &TestCtx) {
             let num_cpus = guest_topo.cpus().await;
             format!("0-{}", num_cpus - 1)
         }
-        CpuVendor::AMD => "0".to_string(),
+        CpuVendor::Amd => "0".to_string(),
     };
 
     match host_cpu_vendor() {
         CpuVendor::Intel => check_smt_topo(&guest_topo).await,
-        CpuVendor::AMD => check_legacy_topo(&guest_topo).await,
+        CpuVendor::Amd => check_legacy_topo(&guest_topo).await,
     };
 
     check_cache_topo(&guest_topo, 2, &expected_l3_share).await;
@@ -574,7 +574,7 @@ async fn guest_cpu_single_socket_smt(ctx: &TestCtx) {
 
     let expected_l1_caches = match host_cpu_vendor() {
         CpuVendor::Intel => 2,
-        CpuVendor::AMD => {
+        CpuVendor::Amd => {
             // TODO: PHD does not yet get the full CPUID profile leaves that
             // Omicron would send a real Propolis in the product, which means
             // that the CPU topology we test against here is Propolis'

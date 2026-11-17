@@ -501,7 +501,7 @@ impl Specializer {
                     let ext_8h = set
                         .get_mut(ext_features)
                         .expect("leaf to specialize exists");
-                    ext_8h.ecx & !0xff;
+                    ext_8h.ecx &= !0xff;
                     if num_vcpu >= 256 {
                         return Err(SpecializeError::IncompatibleTopology {
                             leaf,
@@ -551,7 +551,7 @@ impl Specializer {
                         ebx |= compute_unit_id as u32;
                     } else {
                         // No SMT means the zero-based threads-per-compute-unit is 0.
-                        ebx & !0x0000ff00;
+                        ebx &= !0x0000ff00;
                         // bits 7:0 hold the compute-unit-id. Like above, the
                         // compute unit ID selection is arbitrary (that we know
                         // of).
