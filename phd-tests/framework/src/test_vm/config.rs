@@ -8,10 +8,11 @@ use anyhow::Context;
 use cpuid_utils::CpuidIdent;
 use propolis_client::{
     instance_spec::{
-        Board, BootOrderEntry, BootSettings, Chipset, Component, Cpuid,
-        CpuTopology, CpuidEntry, CpuidVendor, GuestHypervisorInterface, InstanceMetadata,
-        InstanceSpec, MigrationFailureInjector, NvmeDisk, PciPath, SerialPort,
-        SerialPortNumber, SpecKey, VirtioDisk, VirtioSocket,
+        Board, BootOrderEntry, BootSettings, Chipset, Component, CpuTopology,
+        Cpuid, CpuidEntry, CpuidVendor, GuestHypervisorInterface,
+        InstanceMetadata, InstanceSpec, MigrationFailureInjector, NvmeDisk,
+        PciPath, SerialPort, SerialPortNumber, SpecKey, VirtioDisk,
+        VirtioSocket,
     },
     support::nvme_serial_from_str,
 };

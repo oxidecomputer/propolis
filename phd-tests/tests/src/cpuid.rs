@@ -5,7 +5,9 @@
 use cpuid_utils::{CpuidIdent, CpuidSet, CpuidValues};
 use phd_framework::{test_vm::MigrationTimeout, TestVm};
 use phd_testcase::*;
-use propolis_client::instance_spec::{CpuTopology, CpuidEntry, InstanceSpecStatus};
+use propolis_client::instance_spec::{
+    CpuTopology, CpuidEntry, InstanceSpecStatus,
+};
 use tracing::info;
 use uuid::Uuid;
 
@@ -344,7 +346,7 @@ async fn check_legacy_topo(guest_topo: &LinuxGuestTopo<'_>) {
     for (idx, item) in guest_topo.physical_package_ids().await.enumerate() {
         let item: usize = item.try_into().unwrap();
         assert_eq!(idx, item);
-    };
+    }
 
     // Single-thread sockets, so no SMT.
     assert!(!guest_topo.has_smt().await);
@@ -367,7 +369,6 @@ async fn check_legacy_topo(guest_topo: &LinuxGuestTopo<'_>) {
             }
         }));
     }
-
 }
 
 // Between the way we set initial APIC IDs and the way Linux numbers logical
@@ -415,7 +416,11 @@ async fn check_smt_topo(guest_topo: &LinuxGuestTopo<'_>) {
 // We should see L1i, L1d, L2, and L3 caches, where L1 and L2 caches are shared
 // iff SMT is enabled. L3's sharing depends on the CPU topology, so what we
 // should expect is really only known by the caller.
-async fn check_cache_topo(guest_topo: &LinuxGuestTopo<'_>, expected_l1_caches: usize, l3_sharing: &str) {
+async fn check_cache_topo(
+    guest_topo: &LinuxGuestTopo<'_>,
+    expected_l1_caches: usize,
+    l3_sharing: &str,
+) {
     let caches = guest_topo.cache_info().await;
     let has_smt = guest_topo.has_smt().await;
 
@@ -441,10 +446,10 @@ async fn check_cache_topo(guest_topo: &LinuxGuestTopo<'_>, expected_l1_caches: u
         match expected_l1_caches {
             1 => {
                 panic!("expected one L1 cache, found {}", l1_count);
-            },
+            }
             2 => {
                 panic!("expected L1d and L1i caches, found {}", l1_count);
-            },
+            }
             other => {
                 panic!("expected {} L1 caches, found {}", other, l1_count);
             }
@@ -504,7 +509,12 @@ async fn guest_cpu_legacy_topo_test(ctx: &TestCtx) {
         CpuVendor::AMD => CpuTopology::legacy_single_thread_sockets(2),
     };
 
-    let vm = launch_cpuid_smoke_test_vm_with_topo(ctx, "guest_cpu_legacy_topo_test", Some(legacy_topo)).await?;
+    let vm = launch_cpuid_smoke_test_vm_with_topo(
+        ctx,
+        "guest_cpu_legacy_topo_test",
+        Some(legacy_topo),
+    )
+    .await?;
 
     // The topology-checking is Linux-specific, though it should be appropriate
     // for all Linux distributions. For other OSes, just warn and skip for now.
@@ -521,10 +531,8 @@ async fn guest_cpu_legacy_topo_test(ctx: &TestCtx) {
         CpuVendor::Intel => {
             let num_cpus = guest_topo.cpus().await;
             format!("0-{}", num_cpus - 1)
-        },
-        CpuVendor::AMD => {
-            "0".to_string()
         }
+        CpuVendor::AMD => "0".to_string(),
     };
 
     match host_cpu_vendor() {
@@ -543,7 +551,12 @@ async fn guest_cpu_single_socket_smt(ctx: &TestCtx) {
     // should show.
     let test_topo = CpuTopology::single_socket_smt();
 
-    let vm = launch_cpuid_smoke_test_vm_with_topo(ctx, "guest_cpu_single_socket_smt", Some(test_topo)).await?;
+    let vm = launch_cpuid_smoke_test_vm_with_topo(
+        ctx,
+        "guest_cpu_single_socket_smt",
+        Some(test_topo),
+    )
+    .await?;
 
     // The topology-checking is Linux-specific, though it should be appropriate
     // for all Linux distributions. For other OSes, just warn and skip for now.

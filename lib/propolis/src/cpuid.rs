@@ -267,8 +267,7 @@ impl Specializer {
                 // We aren't fixing up this leaf, we're just asked to entirely
                 // discard it.
                 match topo {
-                    TopoKind::Std4 |
-                    TopoKind::StdB => {
+                    TopoKind::Std4 | TopoKind::StdB => {
                         // To "clear" the topology indicated by leaves 4 or Bh,
                         // we'll remove the leaf outright. Proceeding with a
                         // cleared leaf 4 is probably undesirable, since it's
