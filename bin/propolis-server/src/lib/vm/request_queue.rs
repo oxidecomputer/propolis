@@ -414,11 +414,15 @@ impl ExternalRequestQueue {
             }
             ExternalRequest::State(StateChangeRequest::Reboot) => {
                 assert!(!self.awaiting_reboot);
+                // if a force reboot comes in while awaiting an acpi shutdown,
+                // the former takes priority (the reboot is honored immediately
+                // and the shutdown's timeout is aborted)
                 self.awaiting_shutdown = false;
                 self.awaiting_reboot = true;
             }
             ExternalRequest::State(StateChangeRequest::Stop) => {
                 assert!(!self.awaiting_stop);
+                // as above, force stop overrides acpi shutdowns
                 self.awaiting_shutdown = false;
                 self.awaiting_stop = true;
             }

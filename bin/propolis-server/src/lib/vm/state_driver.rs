@@ -283,8 +283,8 @@ impl InputQueue {
         guard.external_requests.notify_stopped();
     }
 
-    /// Notifies the external request queue that the instance guest has
-    /// completed its externally-requested shutdown process.
+    /// Notifies the external request queue that the guest has completed its
+    /// externally-requested shutdown process.
     fn notify_shutdown(&self) {
         let mut guard = self.inner.lock().unwrap();
         guard.external_requests.notify_shutdown();
@@ -745,7 +745,16 @@ impl StateDriver {
             };
 
             match req {
-                ExternalRequest::State(StateChangeRequest::Stop) => {
+                ExternalRequest::State(
+                    StateChangeRequest::Stop
+                    // Requests to 'gracefully' shut down a guest that hasn't
+                    // actually started any vCPUs are treated as a hard Stop
+                    // to respect operator intent.
+                    | StateChangeRequest::ACPIShutdown {
+                        fate: SoftShutdownFate::Stop,
+                        ..
+                    },
+                ) => {
                     info!(
                         &self.log,
                         "got request to stop while still starting"
@@ -794,7 +803,10 @@ impl StateDriver {
                     StateChangeRequest::Start
                     | StateChangeRequest::MigrateAsSource { .. }
                     | StateChangeRequest::Reboot
-                    | StateChangeRequest::ACPIShutdown { .. },
+                    | StateChangeRequest::ACPIShutdown {
+                        fate: SoftShutdownFate::Reboot,
+                        ..
+                    },
                 ) => {
                     unreachable!(
                         "external request {r:?} shouldn't be queued while \
@@ -891,7 +903,9 @@ impl StateDriver {
                 fate,
                 timeout,
             }) => {
-                if let Some((fate_mut, Some(_))) = &mut self.soft_off {
+                let guard = self.objects.lock_exclusive().await;
+
+                if let Some((fate_mut, _)) = &mut self.soft_off {
                     // timeout already in progress, don't start timeout task
                     // anew or send further PWRBTN_STS, but do change the
                     // post-shutdown fate
@@ -899,9 +913,7 @@ impl StateDriver {
                     return HandleEventOutcome::Continue;
                 }
 
-                let guard = self.objects.lock_exclusive().await;
                 let chipset = guard.chipset();
-
                 chipset.acpi_shutdown();
 
                 // TODO? in future we may watch for OSPM clearing the status bit
@@ -914,6 +926,7 @@ impl StateDriver {
                 let fate_strong = Arc::new(tokio::sync::Mutex::new(fate));
                 // timeout task to hard-stop/reset if guest takes too long
                 let Some(timeout) = timeout else {
+                    // if request doesn't have a timeout, don't set a timer
                     self.soft_off = Some((fate_strong, None));
                     return HandleEventOutcome::Continue;
                 };
@@ -1012,14 +1025,26 @@ impl StateDriver {
         // shut down while we're waiting for it to do so, have us reboot it
         // here, and then have the timeout task hard-reboot minutes later
         // once it's come back up)
-        if let Some((_, Some(timeout_task))) = self.soft_off.take() {
+        if let Some(timeout_task) =
+            self.soft_off.as_mut().and_then(|(_, tt)| tt.take())
+        {
             timeout_task.abort();
         }
 
         self.external_state
             .update(ExternalStateUpdate::Instance(InstanceState::Rebooting));
 
-        self.objects.lock_exclusive().await.reboot().await;
+        {
+            let mut guard = self.objects.lock_exclusive().await;
+            // not a VmObject per se, but sensitive to race conditions with
+            // respect to its lock acquisition: handle_external_request early-
+            // returns for subsequent ACPIShutdown reqs if there's an active
+            // .soft_off already, and if it were None a timeout task would be
+            // spawned to hard-reboot/stop a guest after the reboot we're doing
+            // here completes.
+            self.soft_off = None;
+            guard.reboot().await;
+        }
 
         // Notify other consumers that the instance successfully rebooted and is
         // now back to Running.
@@ -1034,7 +1059,9 @@ impl StateDriver {
         // (if the guest has raced us with a power signal, turning off what
         // is already off is fine - but we certainly don't want someone turning
         // the instance back *on* later, then our old timeout task offs it)
-        if let Some((_, Some(timeout_task))) = self.soft_off.take() {
+        if let Some(timeout_task) =
+            self.soft_off.as_mut().and_then(|(_, tt)| tt.take())
+        {
             timeout_task.abort();
         }
 
@@ -1043,6 +1070,10 @@ impl StateDriver {
 
         {
             let mut guard = self.objects.lock_exclusive().await;
+            // not a VmObject per se, but sensitive to race conditions with
+            // respect to its lock acquisition (per comment in do_reboot,
+            // albeit less important here in practice as we're halting anyway)
+            self.soft_off = None;
 
             // Entities expect to be paused before being halted. Note that the VM
             // may be paused already if it is being torn down after a successful
