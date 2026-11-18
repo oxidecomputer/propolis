@@ -97,6 +97,7 @@ use propolis::common::DeviceMetadataMap;
 use propolis::enlightenment::{
     self,
     bhyve::BhyveGuestInterface,
+    bhyve::Features as BhyveFeatures,
     hyperv::{Features as HyperVFeatures, HyperV},
     Enlightenment,
 };
@@ -104,7 +105,7 @@ use propolis_api_types::instance::{
     InstanceEnsureResponse, InstanceProperties, InstanceState,
 };
 use propolis_api_types::instance_spec::components::board::{
-    GuestHypervisorInterface, HyperVFeatureFlag,
+    BhyveFeatureFlag, GuestHypervisorInterface, HyperVFeatureFlag,
 };
 use propolis_api_types::migration::InstanceMigrateInitiateResponse;
 use slog::{debug, info};
@@ -498,8 +499,18 @@ async fn initialize_vm_objects(
     let vmm_log = log.new(slog::o!("component" => "vmm"));
 
     let guest_hv_interface = match &spec.board.guest_hv_interface {
-        GuestHypervisorInterface::Bhyve => {
-            Arc::new(BhyveGuestInterface::new()) as Arc<dyn Enlightenment>
+        GuestHypervisorInterface::Bhyve { features } => {
+            let mut bhyve_features = BhyveFeatures::default();
+            for f in features {
+                match f {
+                    BhyveFeatureFlag::ExtMsiDestId => {
+                        bhyve_features.ext_msi_dest_id = true
+                    }
+                }
+            }
+
+            let bhyve = BhyveGuestInterface::with_features(bhyve_features)?;
+            Arc::new(bhyve) as Arc<dyn Enlightenment>
         }
         GuestHypervisorInterface::HyperV { features } => {
             let mut hv_features = HyperVFeatures::default();
@@ -507,6 +518,9 @@ async fn initialize_vm_objects(
                 match f {
                     HyperVFeatureFlag::ReferenceTsc => {
                         hv_features.reference_tsc = true
+                    }
+                    HyperVFeatureFlag::ExtendedIoapicRte => {
+                        hv_features.extended_ioapic_rte = true
                     }
                 }
             }

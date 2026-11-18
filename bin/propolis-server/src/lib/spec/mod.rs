@@ -70,6 +70,7 @@ pub(crate) mod api_spec_v1;
 pub(crate) mod api_spec_v2;
 pub(crate) mod api_spec_v3;
 pub(crate) mod api_spec_v6;
+pub(crate) mod api_spec_v8;
 pub(crate) mod builder;
 
 /// An error that can arise in converting
@@ -127,7 +128,7 @@ impl TryFrom<InstanceSpec> for Spec {
     type Error = ApiSpecError;
 
     fn try_from(value: InstanceSpec) -> Result<Self, Self::Error> {
-        Ok(api_spec_v6::v6_to_spec_builder(value)?.finish())
+        Ok(api_spec_v8::v8_to_spec_builder(value)?.finish())
     }
 }
 
@@ -213,7 +214,7 @@ impl Default for Board {
             cpus: 0,
             memory_mb: 0,
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
-            guest_hv_interface: GuestHypervisorInterface::Bhyve,
+            guest_hv_interface: GuestHypervisorInterface::default(),
             acpi_variant: AcpiVariant::V0,
         }
     }

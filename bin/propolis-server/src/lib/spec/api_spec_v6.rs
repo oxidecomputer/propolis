@@ -9,14 +9,19 @@ use std::collections::BTreeMap;
 
 use propolis_api_types::instance::ReplacementComponent;
 use propolis_api_types::instance_spec::SpecKey;
-use propolis_api_types_versions::{v3, v6};
+use propolis_api_types_versions::{v3, v6, v8};
 
-use super::{builder::SpecBuilder, ApiSpecError, Disk, Spec, StorageDevice};
+use super::{
+    builder::SpecBuilder, ApiSpecError, Disk, LegacyApiSpecError, Spec,
+    StorageDevice,
+};
 use crate::migrate::MigrateError;
 use crate::spec::api_spec_latest;
 
-impl From<Spec> for v6::instance_spec::InstanceSpec {
-    fn from(mut val: Spec) -> Self {
+impl TryFrom<Spec> for v6::instance_spec::InstanceSpec {
+    type Error = LegacyApiSpecError;
+
+    fn try_from(mut val: Spec) -> Result<Self, Self::Error> {
         // v6 adds a new field on NvmeDisk. Such disks probably can't be
         // converted to v3 components and would cause a conversion from
         // Spec->v3::instance_spec::InstanceSpec to fail. So, extract those
@@ -36,15 +41,7 @@ impl From<Spec> for v6::instance_spec::InstanceSpec {
         }
         val.disks.retain(|_, disk| !v6_only_disk(disk));
 
-        let v3_spec: v3::instance_spec::InstanceSpec =
-            val.try_into().unwrap_or_else(|e| {
-                unreachable!(
-                    "Converting to Spec without v6 bits to v3 failed: {e}. \
-                        This is currently impossible. When Spec to \
-                        v6::instance_spec::InstanceSpec becomes fallible, \
-                        this should `?`."
-                );
-            });
+        let v3_spec: v3::instance_spec::InstanceSpec = val.try_into()?;
 
         let mut spec: v6::instance_spec::InstanceSpec = v3_spec.into();
 
@@ -78,7 +75,7 @@ impl From<Spec> for v6::instance_spec::InstanceSpec {
             insert_component(&mut spec, backend_id, backend_component);
         }
 
-        spec
+        Ok(spec)
     }
 }
 
@@ -88,10 +85,15 @@ impl From<Spec> for v6::instance_spec::InstanceSpec {
 pub(crate) fn v6_to_spec_builder(
     value: v6::instance_spec::InstanceSpec,
 ) -> Result<SpecBuilder, ApiSpecError> {
-    api_spec_latest::latest_to_spec_builder(value)
+    // Converting v6 to v8 is lossless, so just do that and piggyback on the
+    // latest `InstanceSpec->SpecBuilder`.
+    let v8_spec: v8::instance_spec::InstanceSpec = value.into();
+    api_spec_latest::latest_to_spec_builder(v8_spec)
 }
 
-fn amend_component(
+// v8 instance specs use the same `Component` type as v6, so this is also used
+// to amend v8 specs.
+pub(crate) fn amend_component(
     id: &SpecKey,
     to_amend: &mut v6::instance_spec::Component,
     replacement: &ReplacementComponent,

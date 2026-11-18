@@ -98,7 +98,7 @@ mod test {
                 cpus: 4,
                 memory_mb: 512,
                 chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
-                guest_hv_interface: GuestHypervisorInterface::Bhyve,
+                guest_hv_interface: GuestHypervisorInterface::default(),
                 // Providing *any* CPUID settings keeps Propolis from querying
                 // bhyve for defaults to use instead, which requires .. byhve
                 // *and* VMM access. Provide a (useless) empty CPUID set so this
@@ -122,7 +122,8 @@ mod test {
             .expect("SMBIOS type 1 input preserved");
         assert_eq!(&smbios_input, smbios);
 
-        let v6_spec = v6::instance_spec::InstanceSpec::from(spec.clone());
+        let v6_spec =
+            v6::instance_spec::InstanceSpec::try_from(spec.clone()).unwrap();
         let smbios =
             v6_spec.smbios.as_ref().expect("SMBIOS type 1 input preserved");
         assert_eq!(&smbios_input, smbios);

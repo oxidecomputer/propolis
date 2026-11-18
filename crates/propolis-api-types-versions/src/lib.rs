@@ -43,3 +43,5 @@ pub mod v5;
 pub mod v6;
 #[path = "openapi_lint/mod.rs"]
 pub mod v7;
+#[path = "ext_msi_dest_id/mod.rs"]
+pub mod v8;

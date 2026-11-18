@@ -144,7 +144,7 @@ mod test {
                 cpus: 4,
                 memory_mb: 512,
                 chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
-                guest_hv_interface: GuestHypervisorInterface::Bhyve,
+                guest_hv_interface: GuestHypervisorInterface::default(),
                 // Providing *any* CPUID settings keeps Propolis from querying
                 // bhyve for defaults to use instead, which requires .. byhve
                 // *and* VMM access. Provide a (useless) empty CPUID set so this
@@ -179,7 +179,8 @@ mod test {
                 .finish();
         assert!(spec.vsock.is_some());
 
-        let v6_spec = v6::instance_spec::InstanceSpec::from(spec.clone());
+        let v6_spec =
+            v6::instance_spec::InstanceSpec::try_from(spec.clone()).unwrap();
         let v6_comp: v6::instance_spec::Component = vsock_comp.clone();
         assert_eq!(v6_spec.components.get(&vsock_id), Some(&v6_comp));
 
