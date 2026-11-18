@@ -252,3 +252,88 @@ impl IntrPin for NoOpPin {
     }
     fn import_state(&self, _: bool) {}
 }
+
+#[cfg(test)]
+pub mod test {
+    use super::*;
+
+    pub struct TestPin {
+        state: Mutex<TestPinState>,
+    }
+    impl TestPin {
+        pub fn new() -> Self {
+            Self {
+                state: Mutex::new(TestPinState {
+                    is_asserted: false,
+                    rises: 0,
+                    falls: 0,
+                    pulses: 0,
+                }),
+            }
+        }
+
+        // Number of times the pin went from deasserted to asserted.
+        pub fn rises(&self) -> usize {
+            self.state.lock().unwrap().rises
+        }
+
+        // Number of times the pin went from asserted to deasserted.
+        pub fn falls(&self) -> usize {
+            self.state.lock().unwrap().falls
+        }
+
+        // Number of times the pin was pulsed. A pulse also generates a rise
+        // and a fall.
+        pub fn pulses(&self) -> usize {
+            self.state.lock().unwrap().pulses
+        }
+    }
+    impl IntrPin for TestPin {
+        fn assert(&self) {
+            self.state.lock().unwrap().assert();
+        }
+        fn deassert(&self) {
+            self.state.lock().unwrap().deassert();
+        }
+        fn pulse(&self) {
+            self.state.lock().unwrap().pulse();
+        }
+        fn is_asserted(&self) -> bool {
+            self.state.lock().unwrap().is_asserted
+        }
+        fn import_state(&self, is_asserted: bool) {
+            self.state.lock().unwrap().import_state(is_asserted);
+        }
+    }
+
+    struct TestPinState {
+        is_asserted: bool,
+        rises: usize,
+        falls: usize,
+        pulses: usize,
+    }
+    impl TestPinState {
+        fn assert(&mut self) {
+            if !self.is_asserted {
+                self.is_asserted = true;
+                self.rises += 1;
+            }
+        }
+        fn deassert(&mut self) {
+            if self.is_asserted {
+                self.is_asserted = false;
+                self.falls += 1;
+            }
+        }
+        fn pulse(&mut self) {
+            if !self.is_asserted {
+                self.rises += 1;
+                self.falls += 1;
+                self.pulses += 1;
+            }
+        }
+        fn import_state(&mut self, is_asserted: bool) {
+            self.is_asserted = is_asserted;
+        }
+    }
+}

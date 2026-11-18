@@ -1139,10 +1139,13 @@ mod migrate {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::common::MB;
     use crate::hw::pci::device::test::*;
     use crate::hw::pci::test::Scaffold;
     use crate::hw::pci::{self, Endpoint};
+    use crate::intr_pins::test::TestPin;
     use crate::intr_pins::NoOpPin;
+    use crate::vmm::PhysMap;
     use crate::vmm::VmmHdl;
 
     use slog::{Discard, Logger};
@@ -1240,5 +1243,92 @@ mod test {
         let _bus = setup_attach(&scaffold, pm.clone());
 
         cfg_write(pm.as_ref() as &dyn Endpoint);
+    }
+
+    #[test]
+    fn pm_sci_lifecycle() {
+        let hdl = Arc::new(VmmHdl::new_test(0).unwrap());
+        let scaffold = Scaffold::new();
+        let log = Logger::root(Discard, slog::o!());
+        let power_pin = Arc::new(NoOpPin {});
+        let sci_pin = Arc::new(TestPin::new());
+
+        let pm = Piix3PM::create(hdl, power_pin, sci_pin.clone(), log);
+        let _bus = setup_attach(&scaffold, pm.clone());
+
+        let pio_read = |reg: PmReg| -> [u8; 2] {
+            let mut buf = [0, 0];
+            let offset = match reg {
+                PmReg::PmSts => 0,
+                PmReg::PmEn => 2,
+                _ => panic!("unexpected register {:?}", reg),
+            };
+            let mut ro = ReadOp::from_buf(offset, &mut buf);
+            pm.pio_rw(0, RWOp::Read(&mut ro));
+            buf
+        };
+
+        let pio_write = |reg: PmReg, data: [u8; 2]| {
+            let offset = match reg {
+                PmReg::PmSts => 0,
+                PmReg::PmEn => 2,
+                _ => panic!("unexpected register {:?}", reg),
+            };
+            let mut wo = WriteOp::from_buf(offset, &data);
+            pm.pio_rw(0, RWOp::Write(&mut wo));
+        };
+
+        // Guest enables power button.
+        pio_write(PmReg::PmEn, PmEn::PWRBTN_EN.bits().to_le_bytes());
+
+        // SCI not asserted before ACPI shutdown request is received.
+        assert!(!sci_pin.is_asserted());
+
+        // PWRBTN_STS set and SCI asserted after ACPI shutdown request is
+        // received.
+        pm.acpi_shutdown();
+        assert_eq!(pio_read(PmReg::PmSts), [0x00, 0x01]);
+        assert!(sci_pin.is_asserted());
+
+        // Guest W1C PWRBTN_STS.
+        pio_write(PmReg::PmSts, PmSts::PWRBTN_STS.bits().to_le_bytes());
+        assert_eq!(pio_read(PmReg::PmSts), [0x00, 0x00]);
+        assert!(!sci_pin.is_asserted());
+
+        // Reset PM.
+        pm.acpi_shutdown();
+        assert!(sci_pin.is_asserted());
+        pm.reset();
+        assert!(!sci_pin.is_asserted());
+
+        // Migrate PM with shutdown in progress.
+        pio_write(PmReg::PmEn, PmEn::PWRBTN_EN.bits().to_le_bytes());
+        pm.acpi_shutdown();
+        assert!(sci_pin.is_asserted());
+
+        // Export and import payload.
+        let phys_map = PhysMap::new_test(2 * MB).finalize();
+        let acc_mem = phys_map.access().unwrap();
+        let ctx = MigrateCtx { mem: &acc_mem };
+
+        let mut outputs = PayloadOutputs::new();
+        pm.export(&mut outputs, &ctx).unwrap();
+
+        let mut offers =
+            PayloadOffers::new(outputs.into_iter().map(|output| {
+                let value = serde_json::to_value(&output.payload).unwrap();
+                PayloadOffer {
+                    kind: output.kind,
+                    version: output.version,
+                    payload: Box::new(<dyn erased_serde::Deserializer>::erase(
+                        value,
+                    )),
+                }
+            }));
+
+        pm.import(&mut offers, &ctx).unwrap();
+
+        // SCI still asserted.
+        assert!(sci_pin.is_asserted());
     }
 }
