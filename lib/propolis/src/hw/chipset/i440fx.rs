@@ -857,7 +857,7 @@ impl Piix3PM {
     pub fn acpi_shutdown(&self) {
         let mut regs = self.regs.lock().unwrap();
         regs.pm_status.insert(PmSts::PWRBTN_STS);
-        self.sci_pin.pulse();
+        self.update_sci(&regs);
     }
 
     fn pio_rw(&self, _port: u16, mut rwo: RWOp) {
@@ -1001,6 +1001,24 @@ impl Piix3PM {
             }
             PmReg::Reserved => {}
         }
+        self.update_sci(&regs);
+    }
+
+    fn update_sci(&self, regs: &PMRegs) {
+        let should_assert = self.should_assert_sci(regs);
+        if should_assert != self.sci_pin.is_asserted() {
+            self.sci_pin.set_state(should_assert)
+        }
+    }
+
+    fn import_sci(&self, regs: &PMRegs) {
+        self.sci_pin.import_state(self.should_assert_sci(regs));
+    }
+
+    fn should_assert_sci(&self, regs: &PMRegs) -> bool {
+        let pm_enabled = (regs.pm_ena & PmEn::PWRBTN_EN).bits();
+        let pm_status = (regs.pm_status & PmSts::PWRBTN_STS).bits();
+        pm_enabled & pm_status != 0
     }
 }
 impl pci::Device for Piix3PM {
@@ -1026,7 +1044,11 @@ impl Lifecycle for Piix3PM {
         // Reset PM-specific registers.  If/when modifications to `pm_base` are
         // allowed, it will need to be more cognizant of the state inside the
         // BhyvePmTimer device.
-        self.regs.lock().unwrap().reset();
+        {
+            let mut regs = self.regs.lock().unwrap();
+            regs.reset();
+            self.update_sci(&regs);
+        }
 
         self.pmtimer.reset();
     }
@@ -1065,6 +1087,7 @@ impl MigrateMulti for Piix3PM {
         let xlated_regs: PMRegs = data.try_into()?;
 
         *self.regs.lock().unwrap() = xlated_regs;
+        self.import_sci(&xlated_regs);
 
         MigrateMulti::import(&self.pci_state, offer, ctx)?;
 
