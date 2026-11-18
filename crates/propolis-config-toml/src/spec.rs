@@ -119,7 +119,12 @@ impl TryFrom<&super::Config> for SpecConfig {
                     // XXX(luqman) update api spec version to accept features
                     GuestHypervisorInterface::Bhyve
                 }
-                HypervisorInterface::HyperV { reference_tsc } => {
+                HypervisorInterface::HyperV {
+                    reference_tsc,
+                    extended_ioapic_rte: _,
+                } => {
+                    // XXX(luqman) update api spec version to accept
+                    // extended_ioapic_rte
                     let mut features = BTreeSet::new();
                     if *reference_tsc {
                         features.insert(HyperVFeatureFlag::ReferenceTsc);

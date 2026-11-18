@@ -102,6 +102,8 @@ pub enum HypervisorInterface {
 
     HyperV {
         reference_tsc: bool,
+        #[serde(default)]
+        extended_ioapic_rte: bool,
     },
 }
 

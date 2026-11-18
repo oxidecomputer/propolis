@@ -816,9 +816,15 @@ fn build_machine(
             Arc::new(bhyve::BhyveGuestInterface::with_features(feats)?)
                 as Arc<dyn Enlightenment>
         }
-        config::HypervisorInterface::HyperV { reference_tsc } => {
-            let hv_feats = hyperv::Features { reference_tsc: *reference_tsc };
-            Arc::new(hyperv::HyperV::new(log, hv_feats))
+        config::HypervisorInterface::HyperV {
+            reference_tsc,
+            extended_ioapic_rte,
+        } => {
+            let hv_feats = hyperv::Features {
+                reference_tsc: *reference_tsc,
+                extended_ioapic_rte: *extended_ioapic_rte,
+            };
+            Arc::new(hyperv::HyperV::new(log, hv_feats)?)
                 as Arc<dyn Enlightenment>
         }
     };

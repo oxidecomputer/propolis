@@ -511,7 +511,7 @@ async fn initialize_vm_objects(
                 }
             }
 
-            let hv = HyperV::new(&vmm_log, hv_features);
+            let hv = HyperV::new(&vmm_log, hv_features)?;
             Arc::new(hv) as Arc<dyn Enlightenment>
         }
     };
