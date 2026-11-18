@@ -50,22 +50,22 @@ impl VcpuTasks {
 
         // We take in an `Option<Vec<..>>` but a `Vec<Option<..>>` is more
         // convenient for spawning below, so we have to shuffle values a bit..
-        let mut bindings = vec![None; machine.vcpus.len()];
+        let mut bindings = vec![None; machine.num_vcpus()];
         if let Some(bind_cpus) = bind_cpus {
-            if bind_cpus.len() != machine.vcpus.len() {
+            if bind_cpus.len() != machine.num_vcpus() {
                 return Err(VcpuTaskError::CpuBindingMismatch {
                     bindings: bind_cpus.len(),
-                    vcpus: machine.vcpus.len(),
+                    vcpus: machine.num_vcpus(),
                 });
             }
-            for i in 0..machine.vcpus.len() {
+            for i in 0..machine.num_vcpus() {
                 bindings[i] = Some(bind_cpus[i]);
             }
         }
 
         let mut tasks = Vec::new();
         for (vcpu, bind_cpu) in
-            machine.vcpus.iter().map(Arc::clone).zip(bindings)
+            machine.vcpus().into_iter().cloned().zip(bindings)
         {
             let (task, ctrl) =
                 propolis::tasks::TaskHdl::new_held(Some(vcpu.barrier_fn()));

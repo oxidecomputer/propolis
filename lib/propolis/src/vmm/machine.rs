@@ -29,7 +29,8 @@ pub const MAX_PHYSMEM: usize = 0x1000_0000_0000;
 /// The aggregate representation of a virtual machine.
 pub struct Machine {
     pub hdl: Arc<VmmHdl>,
-    pub vcpus: Vec<Arc<Vcpu>>,
+    // Private so the invariants documented on `vcpus()` can't be broken.
+    vcpus: Vec<Arc<Vcpu>>,
 
     pub map_physmem: PhysMap,
     pub bus_mmio: Arc<MmioBus>,
@@ -48,6 +49,23 @@ impl Machine {
         self.hdl.reinit(true)?;
         self.map_physmem.post_reinit()?;
         Ok(())
+    }
+
+    /// The machine's vCPUs, sorted by ascending ID. There is always at least
+    /// one, and the first is the bootstrap processor (vCPU 0).
+    pub fn vcpus(&self) -> impl IntoIterator<Item = &Arc<Vcpu>> + '_ {
+        &self.vcpus
+    }
+
+    /// The bootstrap processor (vCPU 0).
+    pub fn bsp(&self) -> &Arc<Vcpu> {
+        // When the Machine is created, we're guaranteed at least one vcpu
+        &self.vcpus[0]
+    }
+
+    /// The number of vCPUs in the machine.
+    pub fn num_vcpus(&self) -> usize {
+        self.vcpus.len()
     }
 
     /// (Re)Initialize vCPUs per x86 spec
@@ -95,10 +113,10 @@ impl Machine {
         }
     }
 
+    /// Send a Non Maskable Interrupt (NMI) to the BSP (vCPU 0).
     pub fn inject_nmi(&self) -> Result<()> {
-        // When the Machine is created, we're guaranteed at least one vcpu, so
-        // just send the NMI to the first one.
-        self.vcpus[0].inject_nmi()
+        // The BSP (vCPU 0) always exists so just the NMI to it.
+        self.bsp().inject_nmi()
     }
 }
 impl Drop for Machine {

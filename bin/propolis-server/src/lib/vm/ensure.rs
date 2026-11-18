@@ -613,8 +613,7 @@ async fn initialize_vm_objects(
 
     let total_cpus = pbind::online_cpus()?;
     let vcpu_count: i32 = machine
-        .vcpus
-        .len()
+        .num_vcpus()
         .try_into()
         .map_err(|_| anyhow::anyhow!("more than 2^31 vCPUs"))?;
 

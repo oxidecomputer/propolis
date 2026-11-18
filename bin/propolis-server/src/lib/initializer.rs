@@ -1585,7 +1585,7 @@ impl MachineInitializer<'_> {
     /// tracking their kstats.
     pub async fn initialize_cpus(&mut self) -> Result<(), MachineInitError> {
         let hv_interface = self.machine.guest_hv_interface.as_ref();
-        for vcpu in self.machine.vcpus.iter() {
+        for vcpu in self.machine.vcpus() {
             // Report that the guest is running on bhyve.
             //
             // The CPUID set in the spec is not allowed to contain any leaves in

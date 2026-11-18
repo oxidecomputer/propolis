@@ -311,8 +311,7 @@ impl Instance {
                 let total_cpus =
                     pbind::online_cpus().expect("can get processor count");
                 let vcpu_count: i32 = machine
-                    .vcpus
-                    .len()
+                    .num_vcpus()
                     .try_into()
                     .expect("vCPU count <= MAXCPU < i32::MAX");
 
@@ -329,12 +328,12 @@ impl Instance {
                 bind_cpus
             }
             Some(config::BindingStrategy::Any) | None => {
-                vec![None; machine.vcpus.len()]
+                vec![None; machine.num_vcpus()]
             }
         };
 
         for (vcpu, bind_cpu) in
-            machine.vcpus.iter().map(Arc::clone).zip(bind_cpus)
+            machine.vcpus().into_iter().cloned().zip(bind_cpus)
         {
             let (task, ctrl) =
                 propolis::tasks::TaskHdl::new_held(Some(vcpu.barrier_fn()));
@@ -1218,7 +1217,7 @@ fn setup_instance(
     drop(romfp);
 
     // Add vCPUs to inventory, since they count as devices
-    for vcpu in machine.vcpus.iter() {
+    for vcpu in machine.vcpus() {
         guard.inventory.register_instance(vcpu, &vcpu.id.to_string())
     }
 
@@ -1592,7 +1591,7 @@ fn setup_instance(
         .add_cpuid(&mut base_profile)
         .context("failed to add hypervisor cpuid leaves")?;
 
-    for vcpu in machine.vcpus.iter() {
+    for vcpu in machine.vcpus() {
         let vcpu_profile = propolis::cpuid::Specializer::new()
             .with_vcpu_count(
                 std::num::NonZeroU8::new(config.main.cpus).unwrap(),

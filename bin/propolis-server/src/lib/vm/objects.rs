@@ -400,7 +400,7 @@ impl VmObjectsLocked {
 
     /// Resets a VM's kernel vCPU objects to their initial states.
     fn reset_vcpu_state(&self) {
-        for vcpu in self.machine.vcpus.iter() {
+        for vcpu in self.machine.vcpus() {
             info!(self.log, "resetting vCPU {}", vcpu.id);
             vcpu.activate().unwrap();
             vcpu.reboot_state().unwrap();
