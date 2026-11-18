@@ -1990,9 +1990,7 @@ mod test {
     };
     use crate::hw::virtio::PciVirtioViona;
     use crate::lifecycle::Lifecycle;
-    use crate::migrate::{
-        MigrateCtx, MigrateMulti, PayloadOffer, PayloadOffers, PayloadOutputs,
-    };
+    use crate::migrate::test::MigrationDriver;
     use crate::Machine;
     use std::env::VarError;
     use std::process::Command;
@@ -2019,46 +2017,13 @@ mod test {
         }
 
         fn migrate(self) -> TestCtx {
-            let mut dev_payloads = PayloadOutputs::new();
-            let acc_mem =
-                self.machine.acc_mem.access().expect("machine has memory");
-            let ctx = MigrateCtx { mem: &acc_mem };
-            <PciVirtioViona>::export(&self.dev, &mut dev_payloads, &ctx)
-                .expect("can export PciVirtioViona");
-            let mut payloads = Vec::new();
-            for output in dev_payloads.into_iter() {
-                let bytes = serde_json::to_string(&output.payload)
-                    .expect("serializing payload output");
-                let serialized = (output.kind, output.version, bytes);
-                payloads.push(serialized);
-            }
-
-            // Loosely follow the structure of `import_device` as `propolis-server` would; the
-            // combination of type erasure and borrows make this somewhat more complicated than it
-            // would ideally be..
-            let mut desers = Vec::new();
-            for (_, _, bytes) in payloads.iter() {
-                desers.push(serde_json::Deserializer::from_str(&bytes));
-            }
-            let mut offers = Vec::new();
-            for ((kind, version, _bytes), deser) in
-                payloads.iter().zip(desers.iter_mut())
-            {
-                let deserialized =
-                    Box::new(<dyn erased_serde::Deserializer>::erase(deser));
-                offers.push(PayloadOffer {
-                    kind,
-                    version: *version,
-                    payload: deserialized,
-                });
-            }
-            let mut offers = PayloadOffers::new(offers);
+            let payload = MigrationDriver::with_mem(&self.machine.acc_mem)
+                .export(self.dev.as_ref());
 
             let vnic_name = self.vnic_name.clone();
             let underlying_nic = self.underlying_nic.clone();
             let test_name = self.test_name;
 
-            std::mem::drop(acc_mem);
             std::mem::drop(self);
 
             delete_vnic(&vnic_name);
@@ -2066,14 +2031,8 @@ mod test {
 
             let new_ctx =
                 create_test_ctx(test_name, &underlying_nic, &vnic_name);
-            let acc_mem = new_ctx
-                .machine
-                .acc_mem
-                .access()
-                .expect("new machine has memory");
-            let new_migrate = MigrateCtx { mem: &acc_mem };
-            <PciVirtioViona>::import(&new_ctx.dev, &mut offers, &new_migrate)
-                .expect("can import PciVirtioViona");
+            MigrationDriver::with_mem(&new_ctx.machine.acc_mem)
+                .import(new_ctx.dev.as_ref(), payload);
             Lifecycle::start(new_ctx.dev.as_ref())
                 .expect("can start viona device");
             new_ctx
