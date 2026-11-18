@@ -1316,7 +1316,8 @@ pub mod formats {
     /// Instance configuration that are relevant when building the ACPI tables.
     pub struct AcpiConfig<'a> {
         pub acpi_variant: acpi::AcpiVariant,
-        pub num_cpus: u8,
+        /// APIC IDs of the VM's vCPUs, in ascending order.
+        pub apic_ids: &'a [u32],
         pub pci_window_32: PciWindow,
         pub pci_window_64: PciWindow,
         pub dsdt_generators: &'a [&'a dyn acpi::DsdtGenerator],
@@ -1591,7 +1592,7 @@ pub mod formats {
         fn add_madt(&mut self) -> usize {
             let madt_config = acpi::MadtConfig {
                 acpi_variant: self.config.acpi_variant,
-                num_cpus: self.config.num_cpus,
+                apic_ids: self.config.apic_ids.to_vec(),
             };
             let madt = acpi::Madt::new(madt_config);
             let madt_offset = self.tables.len();

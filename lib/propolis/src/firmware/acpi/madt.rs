@@ -21,13 +21,20 @@ const TIMER_GSI: u32 = 2;
 
 const LOCAL_APIC_INT_NUMBER: u8 = 1;
 
+/// The xAPIC broadcast ID, which can't be assigned to a processor. APIC IDs at
+/// or above this must be described with Processor Local x2APIC structures.
+const XAPIC_BROADCAST_ID: u8 = 0xff;
+
 /// Configuration for generating a MADT table.
 pub struct MadtConfig {
     /// The ACPI table variant to use.
     pub acpi_variant: AcpiVariant,
 
-    /// Number of vCPUs in the VM.
-    pub num_cpus: u8,
+    /// APIC IDs of the VM's vCPUs, in ascending order.
+    ///
+    /// Only APIC IDs below 255 are supported, since higher IDs require
+    /// Processor Local x2APIC structures, which aren't implemented yet.
+    pub apic_ids: Vec<u32>,
 }
 
 /// The MADT/APIC table describes the interrupts for the entire system.
@@ -64,10 +71,14 @@ impl Aml for Madt {
 
         // Processor Local APIC.
         // ACPI rev. 6.6 section 5.2.12.2 "Processor Local APIC Structure"
-        for i in 0..self.config.num_cpus {
+        for &apic_id in self.config.apic_ids.iter() {
+            let apic_id = u8::try_from(apic_id)
+                .ok()
+                .filter(|&id| id != XAPIC_BROADCAST_ID)
+                .expect("APIC IDs >= 255 unsupported");
             table.add_structure(madt::ProcessorLocalApic::new(
-                i,
-                i,
+                apic_id,
+                apic_id,
                 madt::EnabledStatus::Enabled,
             ));
         }

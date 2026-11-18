@@ -57,6 +57,7 @@ pub enum SpecializeError {
 pub struct Specializer {
     has_smt: bool,
     num_vcpu: Option<NonZeroU8>,
+    max_vcpuid: Option<u32>,
     vcpuid: Option<i32>,
     cpu_topo_populate: BTreeSet<TopoKind>,
     cpu_topo_clear: BTreeSet<TopoKind>,
@@ -72,10 +73,36 @@ impl Specializer {
         Self { num_vcpu: Some(count), has_smt, ..self }
     }
 
+    /// Specify the largest vCPU ID in the instance.
+    ///
+    /// bhyve uses a vCPU's ID as its APIC ID. If the instance's vCPU IDs are
+    /// not contiguous from 0, the topology information must cover the whole
+    /// range of APIC IDs rather than just the number of vCPUs, so that the
+    /// guest sees all of its vCPUs in one package sharing one L3 cache.
+    ///
+    /// If this is not specified, vCPU IDs are assumed to be contiguous.
+    pub fn with_max_vcpuid(self, max_vcpuid: i32) -> Self {
+        let max_vcpuid =
+            u32::try_from(max_vcpuid).expect("vCPU IDs are non-negative");
+        Self { max_vcpuid: Some(max_vcpuid), ..self }
+    }
+
     /// Specify vCPU ID to specialize for
     pub fn with_vcpuid(self, vcpuid: i32) -> Self {
-        assert!((vcpuid as usize) < crate::vcpu::MAXCPU);
+        // bhyve vCPU IDs may be sparse, so this can't be checked against the
+        // vCPU count.
+        assert!(vcpuid >= 0);
         Self { vcpuid: Some(vcpuid), ..self }
+    }
+
+    /// The number of APIC IDs spanned by the instance's vCPUs: one more than
+    /// the largest vCPU ID, or the number of vCPUs if IDs are contiguous.
+    fn apic_id_span(&self) -> Option<u32> {
+        let num_vcpu = u32::from(self.num_vcpu?.get());
+        Some(match self.max_vcpuid {
+            Some(max) => num_vcpu.max(max + 1),
+            None => num_vcpu,
+        })
     }
 
     /// Specify CPU topology types to render into the specialized [CpuidSet]
@@ -163,7 +190,7 @@ impl Specializer {
         set: &mut CpuidSet,
     ) -> Result<(), SpecializeError> {
         assert!(self.do_cache_topo);
-        let num = self.num_vcpu.unwrap().get();
+        let span = self.apic_id_span().unwrap();
         for ecx in 0..u32::MAX {
             match set.get_mut(CpuidIdent::subleaf(0x8000001d, ecx)) {
                 None => break,
@@ -179,9 +206,11 @@ impl Specializer {
                             }
                         }
                         0b011 => {
-                            // L3 shared by all vCPUs
+                            // L3 shared by all vCPUs. Guests find the vCPUs
+                            // that share a cache by masking off low bits of
+                            // their APIC IDs, so this must span all of them.
                             // TODO: segregate by sockets, if configured
-                            u32::from(num)
+                            span
                         }
                         _ => {
                             // unceremonious handling of unexpected cache levels
@@ -204,6 +233,11 @@ impl Specializer {
             .num_vcpu
             .ok_or(SpecializeError::MissingVcpuCount)
             .map(|n| u32::from(n.get()))?;
+
+        // The number of APIC IDs spanned by the guest's vCPUs. This is
+        // `num_vcpu` unless the vCPU IDs are sparse.
+        let apic_id_span =
+            self.apic_id_span().expect("num_vcpu was checked above");
 
         // The number of logical processors the guest should see. If we
         // indicate that SMT is enabled, then vCPUs are presented as pairs
@@ -351,7 +385,10 @@ impl Specializer {
                             }
                         } else {
                             subleaf.eax &= !LEAF4_EAX_VCPU_MASK;
-                            let shifted_vcpu = (num_vcpu - 1) << 14;
+                            // Guests find the vCPUs sharing this cache by
+                            // masking off low bits of their APIC IDs, so this
+                            // must span all of them.
+                            let shifted_vcpu = (apic_id_span - 1) << 14;
                             if shifted_vcpu & !LEAF4_EAX_VCPU_MASK != 0 {
                                 return Err(
                                     SpecializeError::IncompatibleTopology {
@@ -415,6 +452,13 @@ impl Specializer {
                     // you should trip over this quickly if you've bumped up
                     // VM_MAXCPU and you may have hardware to compare against at
                     // that point.
+                    //
+                    // If the vCPU IDs (and so APIC IDs) are sparse, though,
+                    // widen the shift to cover the largest one. Otherwise
+                    // vCPUs with APIC IDs of 256 and above would appear to be
+                    // in a different package.
+                    let core_shift = 8u32
+                        .max(u32::BITS - (apic_id_span - 1).leading_zeros());
                     if num_vcpu >= 256 {
                         return Err(SpecializeError::IncompatibleTopology {
                             leaf,
@@ -428,7 +472,7 @@ impl Specializer {
                     set.insert(
                         CpuidIdent::subleaf(leaf, 1),
                         CpuidValues {
-                            eax: 0x8,
+                            eax: core_shift,
                             ebx: num_vcpu,
                             ecx: 0x201,
                             edx: vcpuid,
@@ -512,4 +556,82 @@ pub fn parse_brand_string(
 
     // trim any bounding whitespace which remains
     Ok(untrimmed.trim().to_string())
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// L1 data cache and unified L3 cache descriptors for leaf 4.
+    const LEAF4_L1D_EAX: u32 = 0x21;
+    const LEAF4_L3_EAX: u32 = 0x63;
+
+    fn base_set() -> CpuidSet {
+        let mut set = CpuidSet::new(CpuidVendor::Intel);
+        set.insert(CpuidIdent::leaf(1), CpuidValues::default()).unwrap();
+        for (i, eax) in [LEAF4_L1D_EAX, LEAF4_L3_EAX].into_iter().enumerate() {
+            set.insert(
+                CpuidIdent::subleaf(4, i as u32),
+                CpuidValues { eax, ..Default::default() },
+            )
+            .unwrap();
+        }
+        set.insert(CpuidIdent::subleaf(4, 2), CpuidValues::default()).unwrap();
+        set.insert(CpuidIdent::subleaf(0xb, 0), CpuidValues::default())
+            .unwrap();
+        set
+    }
+
+    fn specialize(num_vcpu: u8, max_vcpuid: Option<i32>, id: i32) -> CpuidSet {
+        let mut spec = Specializer::new()
+            .with_vcpu_count(NonZeroU8::new(num_vcpu).unwrap(), true)
+            .with_vcpuid(id)
+            .with_cpu_topo([TopoKind::Std4, TopoKind::StdB].into_iter());
+        if let Some(max) = max_vcpuid {
+            spec = spec.with_max_vcpuid(max);
+        }
+        spec.execute(base_set()).unwrap()
+    }
+
+    /// Returns (initial APIC ID from leaf 1, leaf B core-level shift, leaf B
+    /// x2APIC ID, number of APIC IDs sharing L3 per leaf 4).
+    fn topo(set: &CpuidSet) -> (u32, u32, u32, u32) {
+        let leaf1 = set.get(CpuidIdent::leaf(1)).unwrap();
+        let leafb = set.get(CpuidIdent::subleaf(0xb, 1)).unwrap();
+        let l3 = set.get(CpuidIdent::subleaf(4, 1)).unwrap();
+        (leaf1.ebx >> 24, leafb.eax, leafb.edx, ((l3.eax >> 14) & 0xfff) + 1)
+    }
+
+    #[test]
+    fn contiguous_ids_unchanged_by_max_vcpuid() {
+        // Specifying the max vCPU ID for a contiguous set of IDs must not
+        // change what guests see.
+        for id in 0..4 {
+            let implicit = specialize(4, None, id);
+            let explicit = specialize(4, Some(3), id);
+            implicit.is_equivalent_to(&explicit).unwrap();
+            assert_eq!(topo(&explicit), (id as u32, 8, id as u32, 4));
+        }
+    }
+
+    #[test]
+    fn sparse_ids_span_all_apic_ids() {
+        for id in [0, 1, 256, 257] {
+            let set = specialize(4, Some(257), id);
+            let (initial_id, core_shift, x2apic_id, l3_sharing) = topo(&set);
+
+            // Leaf 1 can only report the low 8 bits of the APIC ID.
+            assert_eq!(initial_id, id as u32 & 0xff);
+            assert_eq!(x2apic_id, id as u32);
+
+            // All vCPUs must appear to be in the same package...
+            assert_eq!(core_shift, 9);
+            assert_eq!(x2apic_id >> core_shift, 0);
+
+            // ...and share an L3 cache.
+            assert_eq!(l3_sharing, 258);
+            let l3_bits = u32::BITS - (l3_sharing - 1).leading_zeros();
+            assert_eq!(x2apic_id >> l3_bits, 0);
+        }
+    }
 }

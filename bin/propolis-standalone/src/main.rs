@@ -777,7 +777,7 @@ impl Instance {
 fn build_machine(
     log: &slog::Logger,
     name: &str,
-    max_cpu: u8,
+    vcpu_ids: &[u16],
     lowmem: usize,
     highmem: usize,
     use_reservoir: bool,
@@ -791,7 +791,7 @@ fn build_machine(
             ..Default::default()
         },
     )?
-    .max_cpus(max_cpu)?
+    .vcpu_ids(vcpu_ids.iter().copied())?
     .add_mem_region(0, lowmem, "lowmem")?
     .add_rom_region(0x1_0000_0000 - MAX_ROM_SIZE, MAX_ROM_SIZE, "bootrom")?
     .add_mmio_region(0xc000_0000, 0x2000_0000, "dev32")?
@@ -1110,7 +1110,7 @@ fn generate_bootorder(
 
 fn generate_acpi_tables(
     acpi_variant: acpi::AcpiVariant,
-    num_cpus: u8,
+    apic_ids: &[u32],
     lowmem: usize,
     inventory: &Inventory,
     device_metadata: &DeviceMetadataMap,
@@ -1138,7 +1138,7 @@ fn generate_acpi_tables(
 
     let config = &fwcfg::formats::AcpiConfig {
         acpi_variant,
-        num_cpus,
+        apic_ids,
         pci_window_32,
         pci_window_64: fwcfg::formats::PciWindow::empty(),
         dsdt_generators: &generators,
@@ -1156,6 +1156,26 @@ fn setup_instance(
 ) -> anyhow::Result<(Instance, Arc<UDSock>)> {
     let vm_name = &config.main.name;
     let cpus = config.main.cpus;
+    let vcpu_ids: Vec<u16> = match &config.main.vcpu_ids {
+        Some(ids) => {
+            if ids.len() != usize::from(cpus) {
+                anyhow::bail!(
+                    "vcpu_ids has {} entries but cpus is {cpus}",
+                    ids.len()
+                );
+            }
+            // bhyve uses vCPU IDs as APIC IDs, and the MADT can't yet
+            // describe APIC IDs that require x2APIC (propolis#956).
+            if let Some(id) = ids.iter().find(|&&id| id >= 0xff) {
+                anyhow::bail!(
+                    "vcpu_ids contains {id}, but IDs >= 255 are not yet \
+                     supported"
+                );
+            }
+            ids.clone()
+        }
+        None => (0..u16::from(cpus)).collect(),
+    };
 
     let memsize: usize = config.main.memory * MB;
     let lowmem = memsize.min(3 * GB);
@@ -1180,11 +1200,11 @@ fn setup_instance(
     }
 
     slog::info!(log, "Creating VM with {} vCPUs, {} lowmem, {} highmem",
-        cpus, lowmem, highmem;);
+        cpus, lowmem, highmem; "vcpu_ids" => ?vcpu_ids);
     let machine = build_machine(
         log,
         vm_name,
-        cpus,
+        &vcpu_ids,
         lowmem,
         highmem,
         use_reservoir,
@@ -1551,7 +1571,7 @@ fn setup_instance(
 
     let acpi_entries = generate_acpi_tables(
         config.main.acpi_variant,
-        cpus,
+        &machine.apic_ids(),
         lowmem,
         &guard.inventory,
         &device_metadata,
@@ -1591,12 +1611,14 @@ fn setup_instance(
         .add_cpuid(&mut base_profile)
         .context("failed to add hypervisor cpuid leaves")?;
 
+    let max_vcpuid = machine.max_vcpu_id();
     for vcpu in machine.vcpus() {
         let vcpu_profile = propolis::cpuid::Specializer::new()
             .with_vcpu_count(
                 std::num::NonZeroU8::new(config.main.cpus).unwrap(),
                 true,
             )
+            .with_max_vcpuid(max_vcpuid)
             .with_vcpuid(vcpu.id)
             .with_cache_topo()
             .clear_cpu_topo(cpuid::TopoKind::iter())

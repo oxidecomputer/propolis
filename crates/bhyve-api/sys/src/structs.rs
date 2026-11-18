@@ -306,6 +306,15 @@ pub struct vm_reinit {
 
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
+pub struct vm_cpu_topology {
+    pub sockets: u16,
+    pub cores: u16,
+    pub threads: u16,
+    pub maxcpus: u16,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Default)]
 pub struct vm_vcpu_reset {
     pub vcpuid: c_int,
     // kind values defined in vcpu_reset_kind

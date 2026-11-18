@@ -51,6 +51,14 @@ impl Config {
 pub struct Main {
     pub name: String,
     pub cpus: u8,
+    /// IDs to assign to the VM's vCPUs. There must be `cpus` of them and they
+    /// must include 0. bhyve uses a vCPU's ID as its APIC ID, so sparse IDs
+    /// (e.g. `[0, 1, 128, 129]`) can be used to test guest handling of
+    /// non-contiguous APIC IDs. IDs must currently be below 255, since higher
+    /// APIC IDs require x2APIC MADT entries, which aren't yet supported.
+    ///
+    /// Default: `0..cpus`
+    pub vcpu_ids: Option<Vec<u16>>,
     pub bootrom: String,
     pub bootrom_version: Option<String>,
     pub memory: usize,

@@ -68,6 +68,24 @@ impl Machine {
         self.vcpus.len()
     }
 
+    /// The highest vCPU ID in the machine. vCPU IDs may be sparse, so this
+    /// can exceed `num_vcpus() - 1`.
+    pub fn max_vcpu_id(&self) -> i32 {
+        self.vcpus.last().expect("machine has at least one vCPU").id
+    }
+
+    /// APIC IDs of the machine's vCPUs, in ascending order.
+    ///
+    /// bhyve uses a vCPU's ID as its APIC ID, so these are the vCPU IDs.
+    pub fn apic_ids(&self) -> Vec<u32> {
+        self.vcpus
+            .iter()
+            .map(|vcpu| {
+                u32::try_from(vcpu.id).expect("vCPU IDs are non-negative")
+            })
+            .collect()
+    }
+
     /// (Re)Initialize vCPUs per x86 spec
     pub fn vcpu_x86_setup(&self) -> Result<()> {
         for vcpu in self.vcpus.iter() {
@@ -196,7 +214,7 @@ impl Machine {
 pub struct Builder {
     inner_hdl: Option<Arc<VmmHdl>>,
     physmap: Option<PhysMap>,
-    max_cpu: u8,
+    vcpu_ids: Vec<u16>,
     guest_hv_interface: Option<Arc<dyn Enlightenment>>,
 }
 impl Builder {
@@ -215,7 +233,7 @@ impl Builder {
         let physmap = Some(PhysMap::new(MAX_PHYSMEM, hdl.clone()));
         Ok(Self {
             inner_hdl: Some(hdl),
-            max_cpu: 1,
+            vcpu_ids: vec![0],
             guest_hv_interface: None,
             physmap,
         })
@@ -258,12 +276,46 @@ impl Builder {
         )?;
         Ok(self)
     }
-    /// Sets the maximum number of CPUs for the machine.
+    /// Sets the number of CPUs for the machine. The vCPUs are assigned
+    /// contiguous IDs starting from 0.
     pub fn max_cpus(mut self, max: u8) -> Result<Self> {
         if max == 0 || max > MAXCPU as u8 {
             Err(Error::new(ErrorKind::InvalidInput, "maxcpu out of range"))
         } else {
-            self.max_cpu = max;
+            self.vcpu_ids = (0..u16::from(max)).collect();
+            Ok(self)
+        }
+    }
+
+    /// Sets the IDs of the vCPUs to create for the machine.
+    ///
+    /// The IDs need not be contiguous. bhyve uses a vCPU's ID as its APIC ID,
+    /// so a sparse set of IDs (e.g. `[0, 1, 128, 129]`) lets a small VM
+    /// present APIC IDs that require x2APIC to address.
+    ///
+    /// The set must include ID 0 (the bootstrap processor) and may not contain
+    /// duplicates. Each ID must also be below the kernel VMM's per-VM limit,
+    /// which is checked by [`Builder::finalize`].
+    pub fn vcpu_ids(
+        mut self,
+        ids: impl IntoIterator<Item = u16>,
+    ) -> Result<Self> {
+        let mut ids: Vec<u16> = ids.into_iter().collect();
+        ids.sort_unstable();
+        let len = ids.len();
+        ids.dedup();
+
+        if ids.len() != len {
+            Err(Error::new(ErrorKind::InvalidInput, "duplicate vCPU ID"))
+        } else if ids.is_empty() || ids.len() > MAXCPU {
+            Err(Error::new(ErrorKind::InvalidInput, "vCPU count out of range"))
+        } else if ids[0] != 0 {
+            Err(Error::new(
+                ErrorKind::InvalidInput,
+                "vCPU IDs must include BSP (0)",
+            ))
+        } else {
+            self.vcpu_ids = ids;
             Ok(self)
         }
     }
@@ -280,6 +332,18 @@ impl Builder {
     /// Consumes `self` and creates a new [`Machine`] based
     /// on the provided memory regions.
     pub fn finalize(mut self) -> Result<Machine> {
+        let max_id = *self.vcpu_ids.last().expect("vcpu_ids is non-empty");
+        let vmm_maxcpu = self.inner_hdl.as_ref().unwrap().max_vcpus()?;
+        if max_id >= vmm_maxcpu {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "vCPU ID {max_id} exceeds the kernel VMM's limit of \
+                     {vmm_maxcpu} vCPUs"
+                ),
+            ));
+        }
+
         let hdl = self.inner_hdl.take().unwrap();
         let mut map = self.physmap.take().unwrap();
 
@@ -294,8 +358,10 @@ impl Builder {
             .unwrap_or(Arc::new(BhyveGuestInterface::new()));
 
         guest_hv_interface.attach(&acc_mem, hdl.clone());
-        let vcpus = (0..self.max_cpu)
-            .map(|id| {
+        let vcpus = self
+            .vcpu_ids
+            .iter()
+            .map(|&id| {
                 Vcpu::new(
                     hdl.clone(),
                     i32::from(id),

@@ -411,6 +411,17 @@ impl VmmHdl {
         unsafe { self.ioctl(bhyve_api::VM_SUSPEND, &mut data) }
     }
 
+    /// Query the number of vCPU IDs the kernel VMM supports for this VM. Valid
+    /// vCPU IDs are in `0..max_vcpus()`.
+    ///
+    /// bhyve allocates vCPUs lazily, by ID, on first use, so a VM may use any
+    /// (possibly sparse) set of IDs below this limit.
+    pub fn max_vcpus(&self) -> Result<u16> {
+        let mut topo = bhyve_api::vm_cpu_topology::default();
+        unsafe { self.ioctl(bhyve_api::VM_GET_TOPOLOGY, &mut topo) }?;
+        Ok(topo.maxcpus)
+    }
+
     pub fn reinit(&self, force_suspend: bool) -> Result<()> {
         let mut data = bhyve_api::vm_reinit { flags: 0 };
         if force_suspend {
