@@ -311,8 +311,7 @@ impl Instance {
                 let total_cpus =
                     pbind::online_cpus().expect("can get processor count");
                 let vcpu_count: i32 = machine
-                    .vcpus
-                    .len()
+                    .num_vcpus()
                     .try_into()
                     .expect("vCPU count <= MAXCPU < i32::MAX");
 
@@ -329,12 +328,12 @@ impl Instance {
                 bind_cpus
             }
             Some(config::BindingStrategy::Any) | None => {
-                vec![None; machine.vcpus.len()]
+                vec![None; machine.num_vcpus()]
             }
         };
 
         for (vcpu, bind_cpu) in
-            machine.vcpus.iter().map(Arc::clone).zip(bind_cpus)
+            machine.vcpus().into_iter().cloned().zip(bind_cpus)
         {
             let (task, ctrl) =
                 propolis::tasks::TaskHdl::new_held(Some(vcpu.barrier_fn()));
@@ -778,7 +777,7 @@ impl Instance {
 fn build_machine(
     log: &slog::Logger,
     name: &str,
-    max_cpu: u8,
+    vcpu_ids: &[u16],
     lowmem: usize,
     highmem: usize,
     use_reservoir: bool,
@@ -792,7 +791,7 @@ fn build_machine(
             ..Default::default()
         },
     )?
-    .max_cpus(max_cpu)?
+    .vcpu_ids(vcpu_ids.iter().copied())?
     .add_mem_region(0, lowmem, "lowmem")?
     .add_rom_region(0x1_0000_0000 - MAX_ROM_SIZE, MAX_ROM_SIZE, "bootrom")?
     .add_mmio_region(0xc000_0000, 0x2000_0000, "dev32")?
@@ -811,12 +810,20 @@ fn build_machine(
     )?;
 
     let hv = match hv_interface {
-        config::HypervisorInterface::Bhyve => {
-            Arc::new(bhyve::BhyveGuestInterface) as Arc<dyn Enlightenment>
+        config::HypervisorInterface::Bhyve { ext_msi_dest_id } => {
+            let feats = bhyve::Features { ext_msi_dest_id: *ext_msi_dest_id };
+            Arc::new(bhyve::BhyveGuestInterface::with_features(feats)?)
+                as Arc<dyn Enlightenment>
         }
-        config::HypervisorInterface::HyperV { reference_tsc } => {
-            let hv_feats = hyperv::Features { reference_tsc: *reference_tsc };
-            Arc::new(hyperv::HyperV::new(log, hv_feats))
+        config::HypervisorInterface::HyperV {
+            reference_tsc,
+            extended_ioapic_rte,
+        } => {
+            let hv_feats = hyperv::Features {
+                reference_tsc: *reference_tsc,
+                extended_ioapic_rte: *extended_ioapic_rte,
+            };
+            Arc::new(hyperv::HyperV::new(log, hv_feats)?)
                 as Arc<dyn Enlightenment>
         }
     };
@@ -1103,7 +1110,7 @@ fn generate_bootorder(
 
 fn generate_acpi_tables(
     acpi_variant: acpi::AcpiVariant,
-    num_cpus: u8,
+    apic_ids: &[u32],
     lowmem: usize,
     inventory: &Inventory,
     device_metadata: &DeviceMetadataMap,
@@ -1131,7 +1138,7 @@ fn generate_acpi_tables(
 
     let config = &fwcfg::formats::AcpiConfig {
         acpi_variant,
-        num_cpus,
+        apic_ids,
         pci_window_32,
         pci_window_64: fwcfg::formats::PciWindow::empty(),
         dsdt_generators: &generators,
@@ -1149,6 +1156,18 @@ fn setup_instance(
 ) -> anyhow::Result<(Instance, Arc<UDSock>)> {
     let vm_name = &config.main.name;
     let cpus = config.main.cpus;
+    let vcpu_ids: Vec<u16> = match &config.main.vcpu_ids {
+        Some(ids) => {
+            if ids.len() != usize::from(cpus) {
+                anyhow::bail!(
+                    "vcpu_ids has {} entries but cpus is {cpus}",
+                    ids.len()
+                );
+            }
+            ids.clone()
+        }
+        None => (0..u16::from(cpus)).collect(),
+    };
 
     let memsize: usize = config.main.memory * MB;
     let lowmem = memsize.min(3 * GB);
@@ -1173,11 +1192,11 @@ fn setup_instance(
     }
 
     slog::info!(log, "Creating VM with {} vCPUs, {} lowmem, {} highmem",
-        cpus, lowmem, highmem;);
+        cpus, lowmem, highmem; "vcpu_ids" => ?vcpu_ids);
     let machine = build_machine(
         log,
         vm_name,
-        cpus,
+        &vcpu_ids,
         lowmem,
         highmem,
         use_reservoir,
@@ -1210,7 +1229,7 @@ fn setup_instance(
     drop(romfp);
 
     // Add vCPUs to inventory, since they count as devices
-    for vcpu in machine.vcpus.iter() {
+    for vcpu in machine.vcpus() {
         guard.inventory.register_instance(vcpu, &vcpu.id.to_string())
     }
 
@@ -1544,7 +1563,7 @@ fn setup_instance(
 
     let acpi_entries = generate_acpi_tables(
         config.main.acpi_variant,
-        cpus,
+        &machine.apic_ids(),
         lowmem,
         &guard.inventory,
         &device_metadata,
@@ -1584,12 +1603,14 @@ fn setup_instance(
         .add_cpuid(&mut base_profile)
         .context("failed to add hypervisor cpuid leaves")?;
 
-    for vcpu in machine.vcpus.iter() {
+    let max_vcpuid = machine.max_vcpu_id();
+    for vcpu in machine.vcpus() {
         let vcpu_profile = propolis::cpuid::Specializer::new()
             .with_vcpu_count(
                 std::num::NonZeroU8::new(config.main.cpus).unwrap(),
                 true,
             )
+            .with_max_vcpuid(max_vcpuid)
             .with_vcpuid(vcpu.id)
             .with_cache_topo()
             .clear_cpu_topo(cpuid::TopoKind::iter())

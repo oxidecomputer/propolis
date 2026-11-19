@@ -26,6 +26,12 @@ memory = 1024
 # Override boot order (via communication to OVMF bootrom)
 # boot_order = ["net0", "block0"]
 
+# Assign specific (possibly sparse) IDs to the vCPUs, which bhyve also uses as
+# their APIC IDs. There must be `cpus` entries, including 0. IDs of 255 or
+# above require advertising x2APIC in the CPUID profile and x2APIC-capable
+# bootrom/guest. (default: 0..cpus)
+# vcpu_ids = [0, 1, 256, 257]
+
 [block_dev.alpine_iso]
 type = "file"
 path = "/path/to/alpine-extended-3.12.0-x86_64.iso"

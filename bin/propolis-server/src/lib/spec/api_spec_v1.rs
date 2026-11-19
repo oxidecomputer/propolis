@@ -10,13 +10,10 @@ use std::collections::BTreeMap;
 
 use propolis_api_types::instance::ReplacementComponent;
 use propolis_api_types::instance_spec::{
-    components::{
-        board::Board as InstanceSpecBoard,
-        devices::{BootSettings, SerialPort as SerialPortDesc},
-    },
+    components::devices::{BootSettings, SerialPort as SerialPortDesc},
     SpecKey,
 };
-use propolis_api_types_versions::{v1, v2, v3, v6};
+use propolis_api_types_versions::{v1, v2, v3, v6, v8};
 
 #[cfg(feature = "falcon")]
 use propolis_api_types::instance_spec::components::devices::SoftNpuPort as SoftNpuPortSpec;
@@ -136,11 +133,19 @@ impl TryFrom<Spec> for v1::instance_spec::InstanceSpec {
             spec.components.insert(key, val);
         }
 
-        let board = InstanceSpecBoard {
+        // Guest hypervisor interface features added in v8 can't be expressed
+        // in a v1 board.
+        let guest_hv_interface = board.guest_hv_interface.try_into().map_err(
+            |e: v8::components::board::InvalidV1GuestHypervisorInterface| {
+                LegacyApiSpecError::IncompatibleComponent(e.to_string())
+            },
+        )?;
+
+        let board = v1::components::board::Board {
             cpus: board.cpus,
             memory_mb: board.memory_mb,
             chipset: board.chipset,
-            guest_hv_interface: board.guest_hv_interface,
+            guest_hv_interface,
             cpuid: Some(cpuid.into_instance_spec_cpuid()),
         };
         let mut spec = v1::instance_spec::InstanceSpec {

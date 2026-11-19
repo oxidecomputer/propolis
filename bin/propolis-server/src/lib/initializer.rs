@@ -1469,7 +1469,6 @@ impl MachineInitializer<'_> {
     fn generate_acpi_tables(
         &self,
         acpi_variant: acpi::AcpiVariant,
-        cpus: u8,
     ) -> Result<fwcfg::formats::AcpiTables, MachineInitError> {
         let (lowmem, _) = get_spec_guest_ram_limits(self.spec);
         let generators: Vec<_> = self
@@ -1491,9 +1490,10 @@ impl MachineInitializer<'_> {
             PCI_MMIO32_END as u64,
         )?;
 
+        let apic_ids = self.machine.apic_ids();
         let config = &fwcfg::formats::AcpiConfig {
             acpi_variant,
-            num_cpus: cpus,
+            apic_ids: &apic_ids,
             pci_window_32,
             pci_window_64: fwcfg::formats::PciWindow::empty(),
             dsdt_generators: &generators,
@@ -1550,7 +1550,7 @@ impl MachineInitializer<'_> {
             .insert_named("etc/e820", e820_entry)
             .map_err(|e| MachineInitError::FwcfgInsertFailed("e820", e))?;
 
-        let acpi_entries = self.generate_acpi_tables(acpi_variant, cpus)?;
+        let acpi_entries = self.generate_acpi_tables(acpi_variant)?;
         fwcfg.insert_named("etc/acpi/tables", acpi_entries.tables).map_err(
             |e| MachineInitError::FwcfgInsertFailed("acpi/tables", e),
         )?;
@@ -1585,7 +1585,8 @@ impl MachineInitializer<'_> {
     /// tracking their kstats.
     pub async fn initialize_cpus(&mut self) -> Result<(), MachineInitError> {
         let hv_interface = self.machine.guest_hv_interface.as_ref();
-        for vcpu in self.machine.vcpus.iter() {
+        let max_vcpuid = self.machine.max_vcpu_id();
+        for vcpu in self.machine.vcpus() {
             // Report that the guest is running on bhyve.
             //
             // The CPUID set in the spec is not allowed to contain any leaves in
@@ -1615,6 +1616,7 @@ impl MachineInitializer<'_> {
                     NonZeroU8::new(self.spec.board.cpus).unwrap(),
                     true,
                 )
+                .with_max_vcpuid(max_vcpuid)
                 .with_vcpuid(vcpu.id)
                 .with_cache_topo()
                 .clear_cpu_topo(TopoKind::iter())

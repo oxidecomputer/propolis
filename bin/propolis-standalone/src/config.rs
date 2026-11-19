@@ -51,6 +51,13 @@ impl Config {
 pub struct Main {
     pub name: String,
     pub cpus: u8,
+    /// IDs to assign to the VM's vCPUs. There must be `cpus` of them and they
+    /// must include 0. bhyve uses a vCPU's ID as its APIC ID, so sparse IDs
+    /// (e.g. `[0, 1, 256, 257]`) can be used to test guest handling of
+    /// non-contiguous APIC IDs or x2APIC.
+    ///
+    /// Default: `0..cpus`
+    pub vcpu_ids: Option<Vec<u16>>,
     pub bootrom: String,
     pub bootrom_version: Option<String>,
     pub memory: usize,
@@ -92,15 +99,25 @@ pub struct Main {
 /// may influence many aspects of a VM. Most immediately, different interfaces
 /// have different CPUID leaves, but can also support para-virtualized features
 /// such as additional hypercalls and MSRs.
-#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum HypervisorInterface {
-    #[default]
-    Bhyve,
+    Bhyve {
+        #[serde(default)]
+        ext_msi_dest_id: bool,
+    },
 
     HyperV {
         reference_tsc: bool,
+        #[serde(default)]
+        extended_ioapic_rte: bool,
     },
+}
+
+impl Default for HypervisorInterface {
+    fn default() -> Self {
+        HypervisorInterface::Bhyve { ext_msi_dest_id: false }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Deserialize, Serialize)]

@@ -12,11 +12,12 @@ use std::{
 use crate::HypervisorInterface;
 use propolis_client::{
     instance_spec::{
-        BootOrderEntry, BootSettings, Component, Cpuid, CpuidVendor,
-        DlpiNetworkBackend, FileStorageBackend, GuestHypervisorInterface,
-        HyperVFeatureFlag, MigrationFailureInjector, NvmeDisk, P9fs, PciPath,
-        PciPciBridge, SoftNpuP9, SoftNpuPciPort, SoftNpuPort, SpecKey,
-        VirtioDisk, VirtioNetworkBackend, VirtioNic, VirtioSocket,
+        BhyveFeatureFlag, BootOrderEntry, BootSettings, Component, Cpuid,
+        CpuidVendor, DlpiNetworkBackend, FileStorageBackend,
+        GuestHypervisorInterface, HyperVFeatureFlag, MigrationFailureInjector,
+        NvmeDisk, P9fs, PciPath, PciPciBridge, SoftNpuP9, SoftNpuPciPort,
+        SoftNpuPort, SpecKey, VirtioDisk, VirtioNetworkBackend, VirtioNic,
+        VirtioSocket,
     },
     support::nvme_serial_from_str,
 };
@@ -115,11 +116,23 @@ impl TryFrom<&super::Config> for SpecConfig {
             .hv_interface
             .as_ref()
             .map(|hv| match hv {
-                HypervisorInterface::Bhyve => GuestHypervisorInterface::Bhyve,
-                HypervisorInterface::HyperV { reference_tsc } => {
+                HypervisorInterface::Bhyve { ext_msi_dest_id } => {
+                    let mut features = BTreeSet::new();
+                    if *ext_msi_dest_id {
+                        features.insert(BhyveFeatureFlag::ExtMsiDestId);
+                    }
+                    GuestHypervisorInterface::Bhyve { features }
+                }
+                HypervisorInterface::HyperV {
+                    reference_tsc,
+                    extended_ioapic_rte,
+                } => {
                     let mut features = BTreeSet::new();
                     if *reference_tsc {
                         features.insert(HyperVFeatureFlag::ReferenceTsc);
+                    }
+                    if *extended_ioapic_rte {
+                        features.insert(HyperVFeatureFlag::ExtendedIoapicRte);
                     }
                     GuestHypervisorInterface::HyperV { features }
                 }

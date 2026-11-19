@@ -9,7 +9,7 @@
 //! Where possible, constants in this module (such as MSR identifiers) are given
 //! names that match those used in the TLFS.
 
-use cpuid_utils::CpuidValues;
+use cpuid_utils::{CpuidIdent, CpuidValues};
 
 /// Hyper-V-compatible hypervisors are required to support hypervisor CPUID
 /// leaves up to 0x4000_0005.
@@ -53,7 +53,7 @@ pub(super) fn hyperv_leaf_0_values(max_leaf: u32) -> CpuidValues {
 /// Hyper-V leaf 0x4000_0001 contains an (ostensibly vendor-neutral) interface
 /// identifier. eax receives "Hv#1"; the other three outputs are reserved.
 pub(super) const HYPERV_LEAF_1_VALUES: CpuidValues =
-    CpuidValues { eax: 0x31237648, ebx: 0, ecx: 0, edx: 0 };
+    CpuidValues { eax: u32::from_le_bytes(*b"Hv#1"), ebx: 0, ecx: 0, edx: 0 };
 
 /// Hyper-V leaf 0x4000_0002 contains hypervisor version information. To avoid
 /// having to reason about what it means to expose a specific hypervisor version
@@ -97,6 +97,38 @@ pub(super) const HYPERV_LEAF_4_VALUES: CpuidValues =
 /// publishing 0s to this leaf.
 pub(super) const HYPERV_LEAF_5_VALUES: CpuidValues =
     CpuidValues { eax: 0, ebx: 0, ecx: 0, edx: 0 };
+
+/// Hyper-V leaf 0x4000_0081 is undocumented in the TLFS but referenced
+/// publicy in various open-source, Hyper-V-aware guests like Linux.
+/// Like 0x4000_0001, it returns an interface identifier ("VS#1") in eax
+/// and indicates the presence of leaf 0x4000_0082.
+pub(super) const HYPERV_VIRT_STACK_INTERFACE_LEAF: CpuidIdent =
+    CpuidIdent { leaf: 0x4000_0081, subleaf: None };
+
+/// Hyper-V leaf 0x4000_0081 carries the Hyper-V "Virtualization Stack"
+/// identifier in eax ("VS#1"), with ebx/ecx/edx set to 0. In contrast to
+/// Hyper-V leaf 0x4000_0001, this leaf seems to relate to the user-mode
+/// portion of the virtualization stack rather than the core hypervisor.
+pub(super) const HYPERV_VIRT_STACK_INTERFACE_LEAF_VALUES: CpuidValues =
+    CpuidValues { eax: u32::from_le_bytes(*b"VS#1"), ebx: 0, ecx: 0, edx: 0 };
+
+/// Hyper-V leaf 0x4000_0082 contains a set of bitflags indicating features
+/// exposed by the hypervisor and thus available to a guest. Outside of
+/// certain bits referenced publicly, this leaf is undocumented and any
+/// other bits are reserved and always set to 0.
+pub(super) const HYPERV_VIRT_STACK_PROPERTIES_LEAF: CpuidIdent =
+    CpuidIdent { leaf: 0x4000_0082, subleaf: None };
+
+bitflags::bitflags! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(super) struct HyperVLeaf82Eax: u32 {
+        /// This bit indicates support for 15-bit Extended Destination (APIC)
+        /// ID in I/O APIC Redirection Table Entries (RTEs) and MSIs.
+        /// For guests with support, this enables more than 255 vCPUs
+        /// without Interrupt Remapping/vIOMMU.
+        const EXTENDED_IOAPIC_RTE = 1 << 2;
+    }
+}
 
 /// Allows the guest to report its type and version information. See TLFS
 /// section 2.6 for details about this MSR's format.

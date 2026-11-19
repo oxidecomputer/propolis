@@ -61,6 +61,10 @@ const TYPE_NAME: &str = "hyperv-guest-interface";
 pub struct Features {
     /// Enables the reference time MSR and the reference TSC page.
     pub reference_tsc: bool,
+
+    /// Enables support for 15-bit Extended Destination IDs in I/O APIC
+    /// Redirection Table Entries and MSIs.
+    pub extended_ioapic_rte: bool,
 }
 
 /// Wrapper around a hypercall overlay page.
@@ -194,8 +198,21 @@ impl HyperV {
     /// enlightenment stack before starting any VM components that depend on it.
     /// Otherwise the stack may panic while the VM is running.
     ///
+    /// Certain features may require support from the kernel vmm component, so
+    /// this may fail if running on a version without the required
+    /// capabilities.
+    ///
     /// [`attach`]: super::Enlightenment::attach
-    pub fn new(log: &slog::Logger, features: Features) -> Self {
+    pub fn new(
+        log: &slog::Logger,
+        features: Features,
+    ) -> std::io::Result<Self> {
+        if features.extended_ioapic_rte
+            && bhyve_api::api_version()? < bhyve_api::ApiVersion::V21
+        {
+            return Err(std::io::ErrorKind::Unsupported.into());
+        }
+
         let acc_mem = MemAccessor::new_orphan();
         let log = log.new(slog::o!("component" => "hyperv"));
         info!(
@@ -204,13 +221,13 @@ impl HyperV {
             "features" => ?features
         );
 
-        Self {
+        Ok(Self {
             log,
             features,
             inner: Mutex::new(Inner::new(&features)),
             acc_mem,
             vmm_hdl: OnceLock::new(),
-        }
+        })
     }
 
     /// Returns a reference to this manager's VMM handle.
@@ -415,6 +432,22 @@ impl super::Enlightenment for HyperV {
 
         add_to_set(CpuidIdent::leaf(0x4000_0004), HYPERV_LEAF_4_VALUES);
         add_to_set(CpuidIdent::leaf(0x4000_0005), HYPERV_LEAF_5_VALUES);
+
+        let mut leaf_82_eax = HyperVLeaf82Eax::default();
+        if self.features.extended_ioapic_rte {
+            leaf_82_eax |= HyperVLeaf82Eax::EXTENDED_IOAPIC_RTE;
+        }
+
+        if !leaf_82_eax.is_empty() {
+            add_to_set(
+                HYPERV_VIRT_STACK_INTERFACE_LEAF,
+                HYPERV_VIRT_STACK_INTERFACE_LEAF_VALUES,
+            );
+            add_to_set(
+                HYPERV_VIRT_STACK_PROPERTIES_LEAF,
+                CpuidValues { eax: leaf_82_eax.bits(), ..Default::default() },
+            );
+        }
 
         // Set the maximum available CPUID leaf to the smallest value required
         // to expose all of the enlightenment's features.

@@ -263,7 +263,7 @@ pub(crate) fn restore(
     hdl.pause()?;
 
     // Ensure vCPUs are in the active state
-    for vcpu in machine.vcpus.iter() {
+    for vcpu in machine.vcpus() {
         vcpu.activate().context("Failed to activate vCPU")?;
     }
 

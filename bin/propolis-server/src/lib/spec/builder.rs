@@ -420,7 +420,7 @@ mod test {
             cpus: 4,
             memory_mb: 512,
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
-            guest_hv_interface: GuestHypervisorInterface::Bhyve,
+            guest_hv_interface: GuestHypervisorInterface::default(),
             acpi_variant: propolis::firmware::acpi::AcpiVariant::V0,
         };
 

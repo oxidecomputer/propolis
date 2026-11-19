@@ -17,13 +17,15 @@ pub mod components {
     }
 
     pub mod board {
-        pub use crate::v1::components::board::Board;
         pub use crate::v1::components::board::Chipset;
         pub use crate::v1::components::board::Cpuid;
         pub use crate::v1::components::board::CpuidEntry;
-        pub use crate::v1::components::board::GuestHypervisorInterface;
-        pub use crate::v1::components::board::HyperVFeatureFlag;
         pub use crate::v1::components::board::I440Fx;
+
+        pub use crate::v8::components::board::BhyveFeatureFlag;
+        pub use crate::v8::components::board::Board;
+        pub use crate::v8::components::board::GuestHypervisorInterface;
+        pub use crate::v8::components::board::HyperVFeatureFlag;
     }
 
     pub mod devices {
@@ -66,14 +68,15 @@ pub mod instance {
     pub use crate::v1::instance::InstanceStateChange;
     pub use crate::v1::instance::InstanceStateMonitorRequest;
 
-    pub use crate::v7::api::InstanceEnsureRequest;
-    pub use crate::v7::api::InstanceInitializationMethod;
     pub use crate::v7::instance::Instance;
     pub use crate::v7::instance::InstanceGetResponse;
     pub use crate::v7::instance::InstanceState;
     pub use crate::v7::instance::InstanceStateMonitorResponse;
     pub use crate::v7::instance::InstanceStateRequested;
     pub use crate::v7::instance::ReplacementComponent;
+
+    pub use crate::v8::api::InstanceEnsureRequest;
+    pub use crate::v8::api::InstanceInitializationMethod;
 }
 
 pub mod instance_spec {
@@ -87,10 +90,10 @@ pub mod instance_spec {
     pub use crate::v2::instance_spec::SmbiosType1Input;
 
     pub use crate::v6::instance_spec::Component;
-    pub use crate::v6::instance_spec::InstanceSpec;
 
-    pub use crate::v7::instance_spec::InstanceSpecGetResponse;
-    pub use crate::v7::instance_spec::InstanceSpecStatus;
+    pub use crate::v8::instance_spec::InstanceSpec;
+    pub use crate::v8::instance_spec::InstanceSpecGetResponse;
+    pub use crate::v8::instance_spec::InstanceSpecStatus;
 }
 
 pub mod migration {
