@@ -1252,6 +1252,7 @@ fn setup_instance(
     // ACPI
     let sci_pin = chipset_lpc.irq_pin(acpi::SCI_IRQ).unwrap();
     let acpi = acpi::Acpi::create(sci_pin.into());
+    acpi.attach(&machine.bus_pio);
     guard.inventory.register(&acpi);
 
     // RTC: populate time and CMOS

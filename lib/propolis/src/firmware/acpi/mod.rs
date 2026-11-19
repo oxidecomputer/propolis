@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::common::Lifecycle;
 use crate::intr_pins::{IntrPin, OrGate};
+use crate::migrate::*;
+use crate::pio::PioBus;
 
 pub mod aml;
 pub mod dsdt;
@@ -34,6 +36,8 @@ pub mod madt;
 pub mod rsdp;
 pub mod ssdt_edk2;
 pub mod xsdt;
+
+mod gpe;
 
 pub use dsdt::{Dsdt, DsdtConfig, DsdtDeviceType, DsdtGenerator, DsdtScope};
 pub use facs::{Facs, FacsConfig};
@@ -103,19 +107,152 @@ pub struct Acpi {
     //
     // Refer to Fig. 4.3 of the ACPI spec. v6.6 for more information.
     sci_gate: Arc<OrGate>,
+
+    // Register block for general-purpose events.
+    gpe0: Arc<gpe::RegisterBlock>,
 }
 
 impl Acpi {
     pub fn create(sci_pin: Arc<dyn IntrPin>) -> Arc<Self> {
-        Arc::new(Self { sci_gate: OrGate::new(sci_pin) })
+        let sci_gate = OrGate::new(sci_pin);
+
+        let gpe0_sci_pin = sci_gate.new_input();
+        let gpe0 = Arc::new(gpe::RegisterBlock::new(
+            GPE0_BLK_ADDR,
+            GPE0_BLK_LEN.into(),
+            0,
+            gpe0_sci_pin,
+        ));
+
+        Arc::new(Self { sci_gate, gpe0 })
+    }
+
+    pub fn attach(self: &Arc<Self>, pio: &PioBus) {
+        self.gpe0.attach(pio);
     }
 
     pub fn sci_pin(&self) -> Arc<dyn IntrPin> {
         self.sci_gate.new_input()
     }
 }
+
 impl Lifecycle for Acpi {
     fn type_name(&self) -> &'static str {
         "acpi"
+    }
+    fn reset(&self) {
+        self.gpe0.reset();
+    }
+    fn migrate(&self) -> Migrator<'_> {
+        Migrator::Multi(self)
+    }
+}
+
+impl MigrateMulti for Acpi {
+    fn export(
+        &self,
+        output: &mut PayloadOutputs,
+        ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
+        MigrateMulti::export(&*self.gpe0, output, ctx)?;
+        Ok(())
+    }
+
+    fn import(
+        &self,
+        offer: &mut PayloadOffers,
+        ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
+        MigrateMulti::import(&*self.gpe0, offer, ctx)?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::intr_pins::test::TestPin;
+    use crate::migrate::test::MigrationDriver;
+
+    #[test]
+    fn sci() {
+        let sci_output = Arc::new(TestPin::new());
+        let acpi = Acpi::create(sci_output.clone());
+
+        let sci_input = acpi.sci_pin();
+
+        // Enable and raise a GPE.
+        gpe::test::pio_write(&acpi.gpe0, gpe::Register::En(0), 0b0000_0100);
+        acpi.gpe0.trigger(gpe::Event::new(0x02, gpe::Trigger::Edge));
+        assert!(sci_output.is_asserted());
+
+        // Assert a second SCI input.
+        sci_input.assert();
+        assert!(sci_output.is_asserted());
+
+        // Disable GPE.
+        // SCI stays asserted because the second pin is asserted.
+        gpe::test::pio_write(&acpi.gpe0, gpe::Register::En(0), 0x00);
+        assert!(sci_output.is_asserted());
+
+        // Deassert second input.
+        // SCI is deasserted.
+        sci_input.deassert();
+        assert!(!sci_output.is_asserted());
+        assert_eq!(sci_output.rises(), 1);
+    }
+
+    #[test]
+    fn migrate() {
+        // Populate source.
+        let src = {
+            let sci = Arc::new(TestPin::new());
+            let src = Acpi::create(sci);
+
+            // Guest sets EN bits to enable GPEs.
+            gpe::test::pio_write(&src.gpe0, gpe::Register::En(0), 0b0101_0100);
+            gpe::test::pio_write(&src.gpe0, gpe::Register::En(1), 0b1010_1000);
+
+            // Platform triggers GPEs by setting STS bits.
+            [
+                // GPEs in STS[0].
+                gpe::Event::new(0x04, gpe::Trigger::Edge),
+                gpe::Event::new(0x06, gpe::Trigger::Edge),
+                // GPEs in STS[1].
+                gpe::Event::new(0x0b, gpe::Trigger::Edge),
+                gpe::Event::new(0x0d, gpe::Trigger::Edge),
+            ]
+            .iter()
+            .for_each(|gpe| {
+                src.gpe0.trigger(*gpe);
+            });
+
+            src
+        };
+
+        // Create and migrate destination.
+        let sci = Arc::new(TestPin::new());
+        let dest = Acpi::create(sci.clone());
+        MigrationDriver::new().migrate(src.as_ref(), dest.as_ref());
+
+        [
+            (gpe::Register::Sts(0), 0b0101_0000),
+            (gpe::Register::Sts(1), 0b0010_1000),
+            (gpe::Register::En(0), 0b0101_0100),
+            (gpe::Register::En(1), 0b1010_1000),
+        ]
+        .iter()
+        .for_each(|(reg, expect)| {
+            let got = gpe::test::pio_read(&dest.gpe0, *reg);
+            assert_eq!(
+                *expect, got,
+                "expected register {reg:?} to be {expect:08b}, got {got:08b}"
+            );
+        });
+
+        // SCI should be asserted, but it should not rise again after the
+        // migration to avoid generating a new interrupt in the destination.
+        assert!(sci.is_asserted());
+        assert_eq!(sci.rises(), 0);
     }
 }
