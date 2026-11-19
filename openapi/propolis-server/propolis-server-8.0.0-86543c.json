@@ -7,7 +7,7 @@
       "url": "https://oxide.computer",
       "email": "api@oxide.computer"
     },
-    "version": "7.0.0"
+    "version": "8.0.0"
   },
   "paths": {
     "/instance": {
@@ -1667,11 +1667,107 @@
         ]
       },
       "InstanceStateRequested": {
-        "type": "string",
-        "enum": [
-          "run",
-          "stop",
-          "reboot"
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "run"
+                ]
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "stop"
+                ]
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "reboot"
+                ]
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "acpi_stop"
+                ]
+              },
+              "value": {
+                "type": "object",
+                "properties": {
+                  "timeout_secs": {
+                    "description": "The number of seconds to wait after sending ACPI `PWRBTN_STS` before forcing the guest to stop.",
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "timeout_secs"
+                ]
+              }
+            },
+            "required": [
+              "state",
+              "value"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "acpi_reboot"
+                ]
+              },
+              "value": {
+                "type": "object",
+                "properties": {
+                  "timeout_secs": {
+                    "description": "The number of seconds to wait after sending ACPI `PWRBTN_STS` before forcing the guest to reboot.",
+                    "type": "integer",
+                    "format": "uint64",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "timeout_secs"
+                ]
+              }
+            },
+            "required": [
+              "state",
+              "value"
+            ]
+          }
         ]
       },
       "InstanceVcrReplace": {
