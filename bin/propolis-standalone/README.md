@@ -27,8 +27,10 @@ memory = 1024
 # boot_order = ["net0", "block0"]
 
 # Assign specific (possibly sparse) IDs to the vCPUs, which bhyve also uses as
-# their APIC IDs. There must be `cpus` entries, including 0 (default: 0..cpus)
-# vcpu_ids = [0, 1, 128, 129]
+# their APIC IDs. There must be `cpus` entries, including 0. IDs of 255 or
+# above require advertising x2APIC in the CPUID profile and x2APIC-capable
+# bootrom/guest. (default: 0..cpus)
+# vcpu_ids = [0, 1, 256, 257]
 
 [block_dev.alpine_iso]
 type = "file"

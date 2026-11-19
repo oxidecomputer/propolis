@@ -1164,14 +1164,6 @@ fn setup_instance(
                     ids.len()
                 );
             }
-            // bhyve uses vCPU IDs as APIC IDs, and the MADT can't yet
-            // describe APIC IDs that require x2APIC (propolis#956).
-            if let Some(id) = ids.iter().find(|&&id| id >= 0xff) {
-                anyhow::bail!(
-                    "vcpu_ids contains {id}, but IDs >= 255 are not yet \
-                     supported"
-                );
-            }
             ids.clone()
         }
         None => (0..u16::from(cpus)).collect(),

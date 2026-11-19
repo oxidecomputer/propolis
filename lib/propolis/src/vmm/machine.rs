@@ -290,7 +290,7 @@ impl Builder {
     /// Sets the IDs of the vCPUs to create for the machine.
     ///
     /// The IDs need not be contiguous. bhyve uses a vCPU's ID as its APIC ID,
-    /// so a sparse set of IDs (e.g. `[0, 1, 128, 129]`) lets a small VM
+    /// so a sparse set of IDs (e.g. `[0, 1, 256, 257]`) lets a small VM
     /// present APIC IDs that require x2APIC to address.
     ///
     /// The set must include ID 0 (the bootstrap processor) and may not contain
