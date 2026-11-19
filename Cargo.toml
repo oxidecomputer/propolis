@@ -93,8 +93,8 @@ oximeter = { git = "https://github.com/oxidecomputer/omicron", rev = "5fd53a9c9f
 sled-agent-client = { git = "https://github.com/oxidecomputer/omicron", rev = "5fd53a9c9ff2b0e47bfef3fe842b7516877b0162" }
 
 # Crucible
-crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "bd62980710dd3d6d3524aa7f6617127942b75002" }
-crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "bd62980710dd3d6d3524aa7f6617127942b75002" }
+crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "ab60c84355b9f2a8f83f3938d9395e636421a1f9" }
+crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "ab60c84355b9f2a8f83f3938d9395e636421a1f9" }
 
 # Attestation
 dice-verifier = { git = "https://github.com/oxidecomputer/dice-util", rev = "d7472bfa91aee859c3fe0bdc1dbb1e320285228e", features = ["sled-agent"] }
@@ -103,7 +103,7 @@ vm-attest = { git = "https://github.com/oxidecomputer/vm-attest", rev = "deaf020
 # External dependencies
 acpi_tables = { git = 'https://github.com/oxidecomputer/acpi_tables.git', tag = "v0.2.1-oxide.1" }
 anyhow = "1.0"
-async-trait = "0.1.88"
+async-trait = "0.1.92"
 backoff = "0.4.0"
 backtrace = "0.3.66"
 base64 = "0.21"
