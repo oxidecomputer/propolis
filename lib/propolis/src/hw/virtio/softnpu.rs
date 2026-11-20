@@ -775,6 +775,17 @@ fn handle_management_message(
             };
             pl.1.remove_table_entry(&tm.table, &tm.keyset_data);
         }
+        ManagementRequest::TableClear(tc) => {
+            let mut pl_opt = pipeline.lock().unwrap();
+            let pl = match &mut *pl_opt {
+                Some(pl) => pl,
+                None => return,
+            };
+
+            if !pl.1.clear_table_entries(&tc.table) {
+                warn!(log, "table clear: unknown table {}", tc.table);
+            }
+        }
         ManagementRequest::RadixRequest => {
             // the data is being sent back as ascii text because this is the
             // simplest way for the guest tty device to handle the data. control
