@@ -1516,7 +1516,9 @@ mod test {
         accepted.read_exact(&mut buf).unwrap();
         assert!(buf.iter().all(|&b| b == 0xAB));
 
-        // Look for a CREDIT_UPDATE in the RX used entries
+        // Look for a CREDIT_UPDATE in the RX used entries.
+        // NB: It arrives asynchronously so we attempt to wait on the condition.
+        wait_for_condition(|| harness.rx_used_idx() >= 2, 5000);
         let rx_used = harness.rx_used_idx();
         assert!(rx_used >= 2, "expected at least RESPONSE + CREDIT_UPDATE");
 
