@@ -88,26 +88,30 @@ pub struct VqAvail {
 }
 
 impl VqAvail {
-    /// If there's a request ready, pop it off the queue and return the
-    /// corresponding descriptor and available ring indicies.
-    fn read_next_avail(&mut self, rsize: u16, mem: &MemCtx) -> Option<VqReq> {
+    /// Read the entry at the front of the avail ring without consuming it. The
+    /// same entry will remain visible on subsequent peeks and pops.
+    fn peek_next_avail(&self, rsize: u16, mem: &MemCtx) -> Option<VqReq> {
         if !self.valid {
             return None;
         }
-        if let Some(idx) = mem.read::<u16>(self.gpa_idx) {
-            let ndesc = Wrapping(*idx) - self.cur_avail_idx;
-            if ndesc.0 != 0 && ndesc.0 <= rsize {
-                let avail_idx = self.cur_avail_idx.0 & (rsize - 1);
-                self.cur_avail_idx += Wrapping(1);
-
-                fence(Ordering::Acquire);
-                let addr = self.gpa_ring.offset::<u16>(avail_idx as usize);
-                return mem
-                    .read(addr)
-                    .map(|desc_idx| VqReq { desc_idx: *desc_idx, avail_idx });
-            }
+        let idx = mem.read::<u16>(self.gpa_idx)?;
+        let ndesc = Wrapping(*idx) - self.cur_avail_idx;
+        if ndesc.0 == 0 || ndesc.0 > rsize {
+            return None;
         }
-        None
+        let avail_idx = self.cur_avail_idx.0 & (rsize - 1);
+
+        fence(Ordering::Acquire);
+        let addr = self.gpa_ring.offset::<u16>(avail_idx as usize);
+        mem.read(addr).map(|desc_idx| VqReq { desc_idx: *desc_idx, avail_idx })
+    }
+
+    /// If there's a request ready, pop it off the queue and return the
+    /// corresponding descriptor and available ring indicies.
+    fn read_next_avail(&mut self, rsize: u16, mem: &MemCtx) -> Option<VqReq> {
+        let req = self.peek_next_avail(rsize, mem)?;
+        self.cur_avail_idx += Wrapping(1);
+        Some(req)
     }
 
     fn read_ring_descr(
@@ -494,17 +498,53 @@ impl VirtQueue {
         assert!(chain.idx.is_none());
         let mut avail = self.avail.lock().unwrap();
         let req = avail.read_next_avail(self.size(), mem)?;
-
-        let mut desc = avail.read_ring_descr(req.desc_idx, self.size(), mem)?;
-        let mut flags = DescFlag::from_bits_truncate(desc.flags);
-        let mut count = 0;
-        let mut len = 0;
-        chain.idx = Some(req.desc_idx);
         probes::virtio_vq_pop!(|| (
             self as *const VirtQueue as u64,
             req.desc_idx,
             req.avail_idx,
         ));
+        self.walk_chain(&avail, req, chain, mem)
+    }
+
+    /// Accumulates the descriptor chain at the front of the avail ring into
+    /// a `Chain`, returned as an [`AvailChain`], without consuming the queue
+    /// entry.
+    ///
+    /// The queue cursor is untouched: dropping the returned [`AvailChain`]
+    /// is a no-op and the same chain is returned by the next peek or pop.
+    /// Consuming it via [`AvailChain::push_used`] advances the cursor and
+    /// pushes the chain onto the used ring in one step.
+    pub fn peek_avail(&self, mem: &MemCtx) -> Option<AvailChain<'_>> {
+        let mut avail = self.avail.lock().unwrap();
+        let req = avail.peek_next_avail(self.size(), mem)?;
+        let pos = avail.cur_avail_idx;
+        let mut chain = Chain::with_capacity(10);
+        if self.walk_chain(&avail, req, &mut chain, mem).is_none() {
+            // TODO (#1190)
+            // If the chain is malformed we bump the index that would have
+            // happened in `avail.read_next_avail` so that we don't get stuck
+            // peeking the same malformed chain over and over. What we really
+            // need to do, is signal the error condition via DEVICE_NEEDS_RESET.
+            // Until then, we will leak these descriptors.
+            avail.cur_avail_idx += Wrapping(1);
+            return None;
+        }
+        Some(AvailChain { vq: self, req, cur_avail_idx_snap: pos, chain })
+    }
+
+    /// Given the [`VqReq`]'s `desc_idx`, fill the provided [`Chain`].
+    fn walk_chain(
+        &self,
+        avail: &VqAvail,
+        req: VqReq,
+        chain: &mut Chain,
+        mem: &MemCtx,
+    ) -> Option<(u16, u32)> {
+        let mut desc = avail.read_ring_descr(req.desc_idx, self.size(), mem)?;
+        let mut flags = DescFlag::from_bits_truncate(desc.flags);
+        let mut count = 0;
+        let mut len = 0;
+        chain.idx = Some(req.desc_idx);
 
         // non-indirect descriptor(s)
         while !flags.contains(DescFlag::INDIRECT) {
@@ -870,6 +910,59 @@ impl VirtQueue {
         self.is_control.store(state.is_control, Ordering::Release);
 
         Ok(())
+    }
+}
+
+/// The current descriptor chain read from the front of the avail ring, but not
+/// yet consumed.
+///
+/// Dropping the [`AvailChain`] is a no-op and leaves the data where it is,
+/// while calling [`AvailChain::push_used`] will advance the cursor and push the
+/// chain onto the used ring.
+///
+/// NB: This is here mostly for our virtio-socket implementation so that we do
+/// hold onto cached descriptors for the poller, which ensures there is only a
+/// single consumer of the guest's virt queues.
+pub struct AvailChain<'a> {
+    vq: &'a VirtQueue,
+    req: VqReq,
+    // a snapshot of `cur_avail_idx` when calling [`VirtQueue::peek_avail`],
+    // used to validate the VirtQueue only has a single consumer.
+    cur_avail_idx_snap: Wrapping<u16>,
+    chain: Chain,
+}
+
+impl AvailChain<'_> {
+    pub fn chain(&self) -> &Chain {
+        &self.chain
+    }
+
+    pub fn chain_mut(&mut self) -> &mut Chain {
+        &mut self.chain
+    }
+
+    /// Consume the chain, and advance the avail cursor. This pushes it onto
+    /// the used ring.
+    pub fn push_used(mut self, mem: &MemCtx) {
+        {
+            let mut avail = self.vq.avail.lock().unwrap();
+            // Our implementation of virtio queues allow for multiple consumers,
+            // which means racing consumers can step on each other. This should
+            // only be called when a single consumer is polling a virt queue,
+            // such as with virtio-socket. We assert here to indicate programmer
+            // error if we ever find things out of sync.
+            assert_eq!(
+                avail.cur_avail_idx, self.cur_avail_idx_snap,
+                "avail cursor moved since peek"
+            );
+            avail.cur_avail_idx += Wrapping(1);
+        }
+        probes::virtio_vq_pop!(|| (
+            self.vq as *const VirtQueue as u64,
+            self.req.desc_idx,
+            self.req.avail_idx,
+        ));
+        self.vq.push_used(&mut self.chain, mem);
     }
 }
 
