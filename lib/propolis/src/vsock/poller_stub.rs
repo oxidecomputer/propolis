@@ -37,6 +37,8 @@ impl VsockPollerNotify {
 
     pub fn halt_evloop(&self) {}
 
+    pub fn send_transport_reset(&self) {}
+
     pub fn wait_stopped(&self) {}
 }
 
