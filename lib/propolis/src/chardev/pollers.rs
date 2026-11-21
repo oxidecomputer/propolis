@@ -13,6 +13,21 @@ use crate::chardev::{BlockingSource, Sink, Source};
 use tokio::sync::Notify;
 use tokio::time::sleep;
 
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn source_buffer_wait_enter(_: &usdt::UniqueId) {}
+    fn source_buffer_wait_miss(
+        _: &usdt::UniqueId,
+        misses: u64,
+        miss_thresh: u64,
+    ) {
+    }
+    fn source_buffer_wait_buf_nonempty(_: &usdt::UniqueId) {}
+    fn source_buffer_wait_notified(_: &usdt::UniqueId) {}
+    fn source_buffer_wait_miss_threshold_await(_: &usdt::UniqueId) {}
+    fn source_buffer_wait_miss_threshold_notified(_: &usdt::UniqueId) {}
+}
+
 pub struct Params {
     pub poll_interval: Duration,
     pub poll_miss_thresh: usize,
@@ -110,6 +125,8 @@ impl SourceBuffer {
     }
 
     async fn wait(&self) {
+        let uid = usdt::UniqueId::new();
+        probes::source_buffer_wait_enter!(|| &uid);
         self.poll_active.store(true, Ordering::Release);
         let mut misses = 0;
         loop {
@@ -119,22 +136,30 @@ impl SourceBuffer {
                     if inner.buf.is_empty() {
                         inner.last_poll = Some(Instant::now());
                         misses += 1;
-                        if misses > self.params.poll_miss_thresh {
+                        let miss_thresh = self.params.poll_miss_thresh;
+                        probes::source_buffer_wait_miss!(|| {
+                            (&uid, misses as u64, miss_thresh as u64)
+                        });
+                        if misses > miss_thresh {
                             self.poll_active.store(false, Ordering::Release);
                             break;
                         }
                     } else {
+                        probes::source_buffer_wait_buf_nonempty!(|| &uid);
                         return;
                     }
                 },
                 _ = self.data_ready.notified() => {
+                    probes::source_buffer_wait_notified!(|| &uid);
                     return;
                 },
             };
         }
 
         // We have exceeded the miss threshold
+        probes::source_buffer_wait_miss_threshold_await!(|| &uid);
         self.data_ready.notified().await;
+        probes::source_buffer_wait_miss_threshold_notified!(|| &uid);
     }
 
     pub fn read_data(&self, buf: &mut [u8], source: &dyn Source) -> usize {
@@ -164,6 +189,8 @@ impl SourceBuffer {
                 {
                     return;
                 }
+            } else {
+                eprintln!("XXXXXXXXX someone's inner was full");
             }
         }
         self.data_ready.notify_one();

@@ -11,11 +11,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use crate::chardev::{pollers, Sink, Source};
+use crate::chardev::{Sink, Source, pollers};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf, SocketAddr};
 use tokio::net::UnixListener;
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf, SocketAddr};
+
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn chardev_sock_run_sink_read() {}
+    fn chardev_sock_run_sink_write(nread: usize) {}
+    fn chardev_sock_run_sink_closed() {}
+    fn chardev_sock_run_source_read() {}
+    fn chardev_sock_run_source_write(nread: usize) {}
+}
 
 const BUF_SIZE: usize = 512;
 const POLL_INTERVAL_MS: usize = 10;
@@ -154,11 +163,14 @@ impl UDSock {
     ) -> Result<()> {
         let mut buf = [0u8; BUF_SIZE];
         loop {
+            probes::chardev_sock_run_sink_read!(|| ());
             let num = readh.read(&mut buf).await?;
             if num == 0 {
+                probes::chardev_sock_run_sink_closed!(|| ());
                 // If the client is gone, we're done here
                 return Ok(());
             }
+            probes::chardev_sock_run_sink_write!(|| num);
             sink_buf.write(&buf[..num], sink).await;
         }
     }
@@ -169,8 +181,13 @@ impl UDSock {
     ) -> Result<()> {
         let mut buf = [0u8; BUF_SIZE];
         loop {
+            probes::chardev_sock_run_source_read!(|| ());
             if let Some(n) = source_buf.read(&mut buf, source).await {
-                writeh.write_all(&buf[..n]).await?;
+                probes::chardev_sock_run_source_write!(|| n);
+                if let Err(e) = writeh.write_all(&buf[..n]).await {
+                    eprintln!("{e}");
+                    return Err(e);
+                }
             }
         }
     }

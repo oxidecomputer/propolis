@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use super::uart16550::{migrate, Uart};
+use super::uart16550::{Uart, migrate};
 use crate::chardev::*;
 use crate::common::*;
 use crate::common::{DeviceMetadata, DeviceMetadataMap};
@@ -13,7 +13,16 @@ use crate::intr_pins::IntrPin;
 use crate::migrate::*;
 use crate::pio::{PioBus, PioFn};
 
-use acpi_tables::{aml, Aml, AmlSink};
+use acpi_tables::{Aml, AmlSink, aml};
+
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn lpc_reset() {}
+    fn lpc_sync_intr_assert() {}
+    fn lpc_sync_intr_deassert() {}
+    fn lpc_pio_rw_read(offset: u8, val: u8) {}
+    fn lpc_pio_rw_write(offset:u8, val: u8) {}
+}
 
 // Low Pin Count UART
 
@@ -32,9 +41,11 @@ struct UartState {
 impl UartState {
     fn sync_intr_pin(&self) {
         if self.uart.intr_state() {
-            self.irq_pin.assert()
+            self.irq_pin.assert();
+            probes::lpc_sync_intr_assert!(|| ())
         } else {
-            self.irq_pin.deassert()
+            self.irq_pin.deassert();
+            probes::lpc_sync_intr_deassert!(|| ())
         }
     }
 }
@@ -73,10 +84,16 @@ impl LpcUart {
 
         match rwo {
             RWOp::Read(ro) => {
-                ro.write_u8(state.uart.reg_read(ro.offset() as u8));
+                let offset = ro.offset() as u8;
+                let val = state.uart.reg_read(offset);
+                probes::lpc_pio_rw_read!(|| (offset, val));
+                ro.write_u8(val);
             }
             RWOp::Write(wo) => {
-                state.uart.reg_write(wo.offset() as u8, wo.read_u8());
+                let offset = wo.offset() as u8;
+                let val = wo.read_u8();
+                probes::lpc_pio_rw_write!(|| (offset, val));
+                state.uart.reg_write(offset, val);
             }
         }
         if state.auto_discard {
@@ -103,6 +120,7 @@ impl LpcUart {
         let mut state = self.state.lock().unwrap();
         state.uart.reset();
         state.sync_intr_pin();
+        probes::lpc_reset!(|| ());
     }
 }
 
