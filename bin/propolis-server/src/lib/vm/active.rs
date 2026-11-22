@@ -5,6 +5,7 @@
 //! Implements a wrapper around an active VM.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use propolis_api_types::instance::{
     InstanceProperties, InstanceStateRequested,
@@ -14,6 +15,7 @@ use slog::info;
 use uuid::Uuid;
 
 use crate::vm::request_queue::ExternalRequest;
+use crate::vm::SoftShutdownFate;
 
 use super::{
     objects::VmObjects, services::VmServices, CrucibleReplaceResultTx,
@@ -62,12 +64,25 @@ impl ActiveVm {
         info!(self.log, "requested state via API";
               "state" => ?requested);
 
+        let ext_req = match requested {
+            InstanceStateRequested::Run => ExternalRequest::start(),
+            InstanceStateRequested::Stop => ExternalRequest::stop(),
+            InstanceStateRequested::Reboot => ExternalRequest::reboot(),
+            InstanceStateRequested::AcpiStop { timeout_secs } => {
+                ExternalRequest::acpi_shutdown(
+                    SoftShutdownFate::Stop,
+                    Some(Duration::from_secs(timeout_secs)),
+                )
+            }
+            InstanceStateRequested::AcpiReboot { timeout_secs } => {
+                ExternalRequest::acpi_shutdown(
+                    SoftShutdownFate::Reboot,
+                    Some(Duration::from_secs(timeout_secs)),
+                )
+            }
+        };
         self.state_driver_queue
-            .queue_external_request(match requested {
-                InstanceStateRequested::Run => ExternalRequest::start(),
-                InstanceStateRequested::Stop => ExternalRequest::stop(),
-                InstanceStateRequested::Reboot => ExternalRequest::reboot(),
-            })
+            .queue_external_request(ext_req)
             .map_err(Into::into)
     }
 

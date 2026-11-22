@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use propolis_api_types::instance::ReplacementComponent;
 use propolis_api_types::instance_spec::{
     components::{
         board::Board as InstanceSpecBoard,
@@ -15,9 +16,7 @@ use propolis_api_types::instance_spec::{
     },
     SpecKey,
 };
-use propolis_api_types_versions::{
-    v1, v1::instance::ReplacementComponent, v2, v3, v6,
-};
+use propolis_api_types_versions::{v1, v2, v3, v6};
 
 #[cfg(feature = "falcon")]
 use propolis_api_types::instance_spec::components::devices::SoftNpuPort as SoftNpuPortSpec;

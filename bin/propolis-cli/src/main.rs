@@ -116,8 +116,10 @@ enum Command {
     /// Transition the instance to a new state
     State {
         /// The requested state
-        #[clap(value_parser = parse_state)]
-        state: InstanceStateRequested,
+        state: String,
+        /// The number of seconds to wait after sending ACPI PWRBTN_STS before
+        /// forcing stop/reset. (Only valid on acpi-stop and acpi-reboot states)
+        acpi_timeout_secs: Option<u64>,
     },
 
     /// Drop to a Serial console connected to the instance
@@ -441,13 +443,29 @@ impl VmConfig {
     }
 }
 
-fn parse_state(state: &str) -> anyhow::Result<InstanceStateRequested> {
-    match state.to_lowercase().as_str() {
-        "run" => Ok(InstanceStateRequested::Run),
-        "stop" => Ok(InstanceStateRequested::Stop),
-        "reboot" => Ok(InstanceStateRequested::Reboot),
+fn parse_state(
+    state: &str,
+    timeout_secs: Option<u64>,
+) -> anyhow::Result<InstanceStateRequested> {
+    match (state.to_lowercase().as_str(), timeout_secs) {
+        ("run", None) => Ok(InstanceStateRequested::Run),
+        ("stop", None) => Ok(InstanceStateRequested::Stop),
+        ("reboot", None) => Ok(InstanceStateRequested::Reboot),
+        ("acpi-stop", Some(timeout_secs)) => {
+            Ok(InstanceStateRequested::AcpiStop { timeout_secs })
+        }
+        ("acpi-reboot", Some(timeout_secs)) => {
+            Ok(InstanceStateRequested::AcpiReboot { timeout_secs })
+        }
+        ("run" | "stop" | "reboot", Some(_)) => Err(anyhow!(
+            "only 'acpi-stop' and 'acpi-reboot' states accept a timeout value"
+        )),
+        ("acpi-stop" | "acpi-reboot", None) => Err(anyhow!(
+            "'acpi-stop' and 'acpi-reboot' states require a timeout value"
+        )),
         _ => Err(anyhow!(
-            "invalid requested state, must be one of: 'run', 'stop', 'reboot"
+            "invalid requested state, must be one of: \
+            'run', 'stop', 'reboot', 'acpi-stop', 'acpi-reboot'"
         )),
     }
 }
@@ -920,7 +938,7 @@ async fn main() -> anyhow::Result<()> {
     let log = create_logger(&opt);
 
     let addr = SocketAddr::new(opt.server, opt.port);
-    let client = Client::new(&format!("http://{addr}"));
+    let client = Client::new(&format!("http://{addr}"))?;
 
     match opt.cmd {
         Command::New {
@@ -958,13 +976,16 @@ async fn main() -> anyhow::Result<()> {
             .await?
         }
         Command::Get => get_instance(&client).await?,
-        Command::State { state } => put_instance(&client, state).await?,
+        Command::State { state, acpi_timeout_secs } => {
+            put_instance(&client, parse_state(&state, acpi_timeout_secs)?)
+                .await?
+        }
         Command::Serial { byte_offset } => {
             serial(addr, byte_offset, log).await?
         }
         Command::Migrate { dst_server, dst_port, dst_uuid, crucible_disks } => {
             let dst_addr = SocketAddr::new(dst_server, dst_port);
-            let dst_client = Client::new(&format!("http://{dst_addr}"));
+            let dst_client = Client::new(&format!("http://{dst_addr}"))?;
             let dst_uuid = dst_uuid.unwrap_or_else(Uuid::new_v4);
             let disks = if let Some(crucible_disks) = crucible_disks {
                 parse_json_file(&crucible_disks)?

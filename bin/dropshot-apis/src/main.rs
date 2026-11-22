@@ -4,11 +4,14 @@
 
 use std::process::ExitCode;
 
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use camino::Utf8PathBuf;
 use clap::Parser;
 use dropshot_api_manager::{Environment, ManagedApiConfig, ManagedApis};
-use dropshot_api_manager_types::{ManagedApiMetadata, Versions};
+use dropshot_api_manager_types::{
+    ManagedApiMetadata, ValidationContext, Versions,
+};
+use openapiv3::OpenAPI;
 use propolis_server_api::*;
 
 pub fn environment() -> anyhow::Result<Environment> {
@@ -52,8 +55,24 @@ pub fn all_apis() -> anyhow::Result<ManagedApis> {
 
     let apis = ManagedApis::new(apis)
         .context("error creating ManagedApis")?
-        .with_git_stub_storage();
+        .with_git_stub_storage()
+        .with_validation(validate);
     Ok(apis)
+}
+
+fn validate(doc: &OpenAPI, mut cx: ValidationContext<'_>) {
+    // Lint the latest and non-blessed versions -- older blessed versions fail to lint but are
+    // immutable.
+    let is_latest_or_unblessed =
+        cx.is_latest() || cx.is_blessed() != Some(true);
+    if !is_latest_or_unblessed {
+        return;
+    }
+
+    let errors = openapi_lint::validate(doc);
+    for error in errors {
+        cx.report_error(anyhow!(error));
+    }
 }
 
 fn main() -> anyhow::Result<ExitCode> {

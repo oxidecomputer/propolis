@@ -541,6 +541,10 @@ unsafe fn ioctl(
 #[repr(u32)]
 #[derive(Copy, Clone)]
 pub enum ApiVersion {
+    /// `VM_GET_CPUS` accepts a set of any size up to a page, and fails with
+    /// `ERANGE` if the set is too small to hold every member
+    V19 = 19,
+
     /// Initial support for CPU perf. counters on AMD
     V18 = 18,
 
@@ -590,7 +594,7 @@ pub enum ApiVersion {
 }
 impl ApiVersion {
     pub const fn current() -> Self {
-        Self::V18
+        Self::V19
     }
 }
 

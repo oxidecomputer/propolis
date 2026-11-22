@@ -38,7 +38,7 @@ pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use propolis::attestation::server::AttestationServerConfig;
 use propolis_api_types::disk::{
-    InstanceVCRReplace, SnapshotRequestPathParams, VCRRequestPathParams,
+    InstanceVcrReplace, SnapshotRequestPathParams, VCRRequestPathParams,
     VolumeStatus, VolumeStatusPathParams,
 };
 use propolis_api_types::instance::{
@@ -534,7 +534,7 @@ impl PropolisServerApi for PropolisServerImpl {
     async fn instance_issue_crucible_snapshot_request(
         rqctx: RequestContext<Self::Context>,
         path_params: Path<SnapshotRequestPathParams>,
-    ) -> Result<HttpResponseOk<()>, HttpError> {
+    ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
         let vm = rqctx
             .context()
             .vm
@@ -555,7 +555,7 @@ impl PropolisServerApi for PropolisServerImpl {
             HttpError::for_bad_request(Some(e.to_string()), e.to_string())
         })?;
 
-        Ok(HttpResponseOk(()))
+        Ok(HttpResponseUpdatedNoContent {})
     }
 
     async fn disk_volume_status_v1(
@@ -617,7 +617,7 @@ impl PropolisServerApi for PropolisServerImpl {
     async fn instance_issue_crucible_vcr_request(
         rqctx: RequestContext<Self::Context>,
         path_params: Path<VCRRequestPathParams>,
-        request: TypedBody<InstanceVCRReplace>,
+        request: TypedBody<InstanceVcrReplace>,
     ) -> Result<HttpResponseOk<crucible_client_types::ReplaceResult>, HttpError>
     {
         let path_params = path_params.into_inner();
@@ -663,7 +663,7 @@ impl PropolisServerApi for PropolisServerImpl {
 
     async fn instance_issue_nmi(
         rqctx: RequestContext<Self::Context>,
-    ) -> Result<HttpResponseOk<()>, HttpError> {
+    ) -> Result<HttpResponseUpdatedNoContent, HttpError> {
         let vm = rqctx
             .context()
             .vm
@@ -672,7 +672,7 @@ impl PropolisServerApi for PropolisServerImpl {
             .ok_or_else(not_created_error)?;
         let _ = vm.objects().lock_shared().await.machine().inject_nmi();
 
-        Ok(HttpResponseOk(()))
+        Ok(HttpResponseUpdatedNoContent {})
     }
 }
 
