@@ -80,9 +80,8 @@ impl Specializer {
 
     /// Specify CPU topology types to render into the specialized [CpuidSet]
     ///
-    /// Without basic information such as the number of vCPUs (set by
-    /// [`Self::with_vcpu_count()`]), population of the requested topology
-    /// information may be incomplete.
+    /// Without an explicit CPU topology to be specialized for, the resulting
+    /// CPUID leaves will indicate `num_vcpu`-many sockets each with one thread.
     pub fn with_cpu_topo(
         self,
         has_smt: bool,
