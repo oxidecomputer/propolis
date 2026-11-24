@@ -80,6 +80,12 @@ impl VirtualMachine {
             vm_name: properties.vm_name(),
         }
     }
+
+    /// Return the number of vCPUs in this VM.
+    #[cfg(all(not(test), target_os = "illumos"))]
+    pub(crate) fn n_vcpus(&self) -> u32 {
+        self.n_vcpus
+    }
 }
 
 // NOTE: Delegate to the inner target type for this implementation.

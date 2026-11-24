@@ -54,6 +54,10 @@ const KSTAT_FIELDS: &[&str] = &[
 
 /// The name of the kstat module that contains the instance network interface
 /// metrics.
+/// The number of kstat fields tracked for each instance network interface.
+#[cfg(all(not(test), target_os = "illumos"))]
+pub(crate) const N_NIC_KSTAT_FIELDS: u32 = KSTAT_FIELDS.len() as _;
+
 const KSTAT_MODULE_NAME: &str = "viona";
 
 /// The name of the kstat that contains the instance network interface metrics.

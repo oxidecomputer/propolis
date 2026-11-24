@@ -17,7 +17,6 @@ use oximeter_producer::{Config, Error, Server};
 use slog::Logger;
 use uuid::Uuid;
 
-use crate::spec::Spec;
 use crate::{server::MetricsEndpointConfig, vm::NetworkInterfaceIds};
 
 mod network_interface;
@@ -59,17 +58,24 @@ const VCPU_KSTAT_INTERVAL: std::time::Duration =
 /// The kstat sampler includes a limit to its internal buffers for each target,
 /// to avoid growing without bound. We introduce this buffer as a multiplier
 /// for extra space.
+#[cfg(all(not(test), target_os = "illumos"))]
 const SAMPLE_BUFFER: u32 = 64;
 
-/// The kstat sampler includes a limit to its internal buffers for each target,
-/// to avoid growing without bound. This defaults to 500 samples. Since we have 5
-/// vCPU microstates for which we track occupancy and up to 64 vCPUs, we can
-/// easily run up against this default.
+/// The kstat sampler requires a limit on the number of samples retained for
+/// each target. Since we have 5 vCPU microstates for which we track occupancy
+/// and up to 64 vCPUs, a single collection can produce many samples.
 ///
 /// This limit provides extra space for up to 64 samples per vCPU per microstate,
 /// to ensure we don't throw away too much data if oximeter cannot reach us.
+#[cfg(all(not(test), target_os = "illumos"))]
 const KSTAT_LIMIT_PER_VCPU: u32 =
     crate::stats::virtual_machine::N_VCPU_MICROSTATES * SAMPLE_BUFFER;
+
+/// Per-NIC limit on retained samples, providing extra space for up to 64
+/// samples per tracked kstat field per network interface.
+#[cfg(all(not(test), target_os = "illumos"))]
+const KSTAT_LIMIT_PER_NIC: u32 =
+    crate::stats::network_interface::N_NIC_KSTAT_FIELDS * SAMPLE_BUFFER;
 
 /// Shared type for tracking metrics about the Propolis API server itself.
 #[derive(Clone, Debug)]
@@ -185,17 +191,12 @@ pub fn start_oximeter_server(
 }
 
 /// Create an object that can be used to sample kstat-based metrics.
-pub(crate) fn create_kstat_sampler(
-    log: &Logger,
-    spec: &Spec,
-) -> Option<KstatSampler> {
-    let kstat_limit = usize::try_from(
-        (u32::from(spec.board.cpus) * KSTAT_LIMIT_PER_VCPU)
-            + (spec.nics.len() as u32 * SAMPLE_BUFFER),
-    )
-    .unwrap();
-
-    match KstatSampler::with_sample_limit(log, kstat_limit) {
+///
+/// Note that limits on the number of retained samples are specified per-target
+/// when each target is added to the sampler (see [`track_vcpu_kstats`] and
+/// [`track_network_interface_kstats`]).
+pub(crate) fn create_kstat_sampler(log: &Logger) -> Option<KstatSampler> {
+    match KstatSampler::new(log) {
         Ok(sampler) => Some(sampler),
         Err(e) => {
             slog::error!(
@@ -226,8 +227,12 @@ pub(crate) async fn track_vcpu_kstats(
     sampler: &KstatSampler,
     virtual_machine: &VirtualMachine,
 ) {
+    let n_max_samples =
+        usize::try_from(virtual_machine.n_vcpus() * KSTAT_LIMIT_PER_VCPU)
+            .unwrap();
     let details = oximeter_instruments::kstat::CollectionDetails::never(
         VCPU_KSTAT_INTERVAL,
+        n_max_samples,
     );
     if let Err(e) = sampler.add_target(virtual_machine.clone(), details).await {
         slog::error!(
@@ -262,8 +267,11 @@ pub(crate) async fn track_network_interface_kstats(
     interface_ids: NetworkInterfaceIds,
 ) {
     let nics = InstanceNetworkInterfaces::new(virtual_machine, &interface_ids);
+    let n_max_samples =
+        interface_ids.len() * usize::try_from(KSTAT_LIMIT_PER_NIC).unwrap();
     let details = oximeter_instruments::kstat::CollectionDetails::never(
         NETWORK_INTERFACE_SAMPLE_INTERVAL,
+        n_max_samples,
     );
     if let Err(e) = sampler.add_target(nics, details).await {
         let network_interface_ids = interface_ids

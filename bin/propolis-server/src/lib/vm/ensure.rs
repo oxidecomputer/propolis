@@ -541,7 +541,6 @@ async fn initialize_vm_objects(
         state: MachineInitializerState::default(),
         kstat_sampler: initialize_kstat_sampler(
             &log,
-            &spec,
             options.oximeter_registry.clone(),
         ),
         stats_vm: VirtualMachine::new(spec.board.cpus, &properties),
@@ -705,11 +704,10 @@ async fn initialize_vm_objects(
 /// Create an object used to sample kstats.
 fn initialize_kstat_sampler(
     log: &slog::Logger,
-    spec: &Spec,
     producer_registry: Option<ProducerRegistry>,
 ) -> Option<KstatSampler> {
     let registry = producer_registry?;
-    let sampler = create_kstat_sampler(log, spec)?;
+    let sampler = create_kstat_sampler(log)?;
 
     match registry.register_producer(sampler.clone()) {
         Ok(_) => Some(sampler),

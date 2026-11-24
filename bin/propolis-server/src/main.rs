@@ -333,7 +333,7 @@ fn main() -> anyhow::Result<()> {
                 IpAddr::V4(_) => None,
                 IpAddr::V6(ipv6_addr) => {
                     let sled_subnet = Ipv6Subnet::<
-                        { omicron_common::address::SLED_PREFIX },
+                        { omicron_common::address::SLED_PREFIX_LENGTH },
                     >::new(ipv6_addr);
                     let sa_addr =
                         omicron_common::address::get_sled_address(sled_subnet);
