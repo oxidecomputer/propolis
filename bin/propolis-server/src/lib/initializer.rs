@@ -1601,21 +1601,16 @@ impl MachineInitializer<'_> {
 
     fn topo_cpuid_leaves(&self) -> Result<Vec<TopoKind>, MachineInitError> {
         // This is trying to find a local minima of annoying.. the alternative
-        // here would to have `CpuTopology` hold a `Vec<TopoKind>` directly.
-        // That opens questions like, what is the semantic of including a leaf
-        // multiple times? And we would want another glue type between the
-        // `propolis-server`-internal `TopoKind` that we use, to whatever
-        // version's external `TopoKind`. On those axes, it would be mildly
-        // simpler to just have a bag of bools for what leaves we want to
-        // specialize in this CPU topology.
+        // here would to have `CpuTopology` hold a `HashSet<TopoKind>` directly.
+        // That would probably be reasonable, but rustc would accept expressions
+        // like `[Std4, Std4, Ext8, Ext1E]` which might not be obviously wrong
+        // at a skim.
         //
-        // The downside of a bag of bools is that we have to map them to the
-        // internal `TopoKinds` enum at some point. This is that point. This
-        // conversion is incredibly typo-sensitive: would you spot
-        // `if std_4 { topo_leaves.push(TopoKind::StdB); }`? But converting
-        // across `TopoKinds` enums in versioned conversions would be similarly
-        // sensitive, and at least with a bag of booleans the fields are named
-        // and `std_4: std_b` would stand out.
+        // Taking a bag-of-bools approach could have a comparable failure mode
+        // like `std_4: std_b` when constructing `TopoLeaves`, but hopefully
+        // that's a more obvious typo. We still have to convert bools to
+        // `TopoKind`, below, but *this* code is unlikely to change whereas
+        // callers will somewhat more often.
         let mut topo_leaves = Vec::new();
 
         let TopoLeaves { std_4, std_b, ext_8, ext_1e } =
