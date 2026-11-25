@@ -178,7 +178,7 @@ impl Specializer {
                             value: self.num_vcpu.get() as u32,
                             why: Some(
                                 "Don't know how to set CPUID leaf 1 processor \
-                             count if there are more than 254 threads!",
+                                 count if there are more than 254 threads!",
                             ),
                         }
                     })?;

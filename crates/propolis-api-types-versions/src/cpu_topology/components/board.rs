@@ -14,7 +14,7 @@ use crate::v1::components::board::{Chipset, Cpuid, GuestHypervisorInterface};
 ///
 /// Leaves may be selected here without being present in `Cpuid`, in which case
 /// the extra selected topology leaves are ignored. Conversely, `Cpuid` leaves
-/// with topology information that are not mentioend here probably indicate a
+/// with topology information that are not mentioned here probably indicate a
 /// bug (at best, those leaves will probably indicate collection of single-core
 /// sockets in the machine.)
 #[derive(Copy, Clone, PartialEq, Deserialize, Serialize, Debug, JsonSchema)]
@@ -28,10 +28,9 @@ pub struct TopoLeaves {
 
 /// A *very* simple topology for for a VM's vCPUs.
 ///
-/// Typically this will be configured as `threads_per_core: 2` to indicate SMT,
-/// and one socket. The number of vCPUs in each socket is the same, meaning that
-/// the number of vCPUs must divide evenly into the number of sockets in the
-/// topology.
+/// Typically this will be configured as `has_smt: true` and one socket. Each
+/// socket has the same number of vCPUs, so `Board::cpus` should evenly divide
+/// by the number of sockets chosen here.
 // TODO: Should this express a NUMA topology as well? Probably! Though an
 // explicit topology would make migration trickier..
 // TODO: How does this describe CPU bindings? Should it? Probably. Nexus will
@@ -44,16 +43,19 @@ pub struct TopoLeaves {
 pub struct CpuTopology {
     pub has_smt: bool,
     pub sockets: u16,
-    // One might imagine TopoLeaves on either `Cpuid` or here, with topology information. I settled
-    // on Board->CpuTopology->TopoLeaves because CpuTopology ultimately decides aspects like "how
-    // many sockets does the guest think this board has", so the topology leaves we specialize are
-    // more "part of the board" than "part of the CPUs going in the board". Since a reasonable
-    // interpretation of CPUID leaves are that they come "from" a CPU in a socket, it is a little
-    // funky that these aren't part of `Cpuid`.
+    // One might imagine TopoLeaves on either `Cpuid` or here, with topology
+    // information. I settled on Board->CpuTopology->TopoLeaves because
+    // CpuTopology ultimately decides aspects like "how many sockets does the
+    // guest think this board has", so the topology leaves we specialize are
+    // more "part of the board" than "part of the CPUs going in the board".
+    // Since a reasonable interpretation of CPUID leaves are that they come
+    // "from" a CPU in a socket, it is a little funky that these aren't part of
+    // `Cpuid`.
     //
-    // Metaphysically speaking, there are kind of `MAX_CPUS * permutations(TopoLeaves)` distinct
-    // "CPU SKUs" that could be present, so what's really important is that the specialization
-    // `(Cpuid, vcpus, CpuTopology) -> CpuidSet` is stable.
+    // Metaphysically speaking, there are kind of `MAX_CPUS *
+    // permutations(TopoLeaves)` distinct "CPU SKUs" that could be present, so
+    // what's really important is that the specialization `(Cpuid, vcpus,
+    // CpuTopology) -> CpuidSet` is stable.
     pub topo_leaves: TopoLeaves,
 }
 

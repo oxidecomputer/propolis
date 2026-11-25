@@ -355,7 +355,7 @@ impl VmConfig {
                         std_4: true,
                         std_b: true,
                         ext_8: true,
-                        ext_1e: false,
+                        ext_1e: true,
                     },
                 },
                 memory_mb: self.memory,

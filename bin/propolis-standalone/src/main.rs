@@ -903,6 +903,7 @@ struct SmbiosParams {
     rom_size: usize,
     rom_version: String,
     num_cpus: u16,
+    has_smt: bool,
     cpuid_ident: Option<CpuidValues>,
     cpuid_procname: Option<[CpuidValues; 3]>,
 }
@@ -979,6 +980,12 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
         anyhow::anyhow!("SMBIOS tables cannot yet express >255 CPUs")
     })?;
 
+    let (core_count, thread_count) = if params.has_smt {
+        (num_cpus / 2, num_cpus)
+    } else {
+        (num_cpus, num_cpus)
+    };
+
     let smb_type4 = smbios::table::Type4 {
         proc_type: type4::ProcType::Central,
         proc_family,
@@ -990,10 +997,9 @@ fn generate_smbios(params: SmbiosParams) -> anyhow::Result<smbios::TableBytes> {
         // method". This is somewhat more appropriate than any other value,
         // which all suggest a socket is involved.
         proc_upgrade: 0x2,
-        core_count: num_cpus,
-        core_enabled: num_cpus,
-        // TODO: fill in thread count from smt
-        thread_count: num_cpus,
+        core_count,
+        core_enabled: core_count,
+        thread_count,
         proc_characteristics: type4::Characteristics::IS_64_BIT
             | type4::Characteristics::MULTI_CORE,
         ..Default::default()
@@ -1522,6 +1528,7 @@ fn setup_instance(
                 .clone()
                 .unwrap_or_else(|| "v0.0.1-alpha 1".to_string()),
             num_cpus: cpus,
+            has_smt: config.main.smt,
             cpuid_ident,
             cpuid_procname,
         })

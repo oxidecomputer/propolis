@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! API request and response types for the TODO API version.
+//! API request and response types for the CPU_TOPOLOGY API version.
 
 use std::{collections::BTreeMap, net::SocketAddr};
 

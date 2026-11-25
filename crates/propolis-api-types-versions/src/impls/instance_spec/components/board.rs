@@ -9,7 +9,7 @@ impl CpuTopology {
     /// "single-thread-per-socket" for a VM.
     ///
     /// This further implies vCPU-many single-thread sockets, which many guests
-    /// either begrudgingly tolerate or worse particularly for high socket
+    /// either begrudgingly tolerate or worse, particularly for high socket
     /// counts. The worst cases here are OSes with fixed 64-entry arrays where a
     /// "socket 65" or above causes stray memory accesses! This constructor is
     /// exclusively to support VMs on the "initial" virtual platform, in
@@ -19,13 +19,16 @@ impl CpuTopology {
         Self {
             has_smt: true,
             sockets,
-            // The initial CPU platform as presented was even funkier than
+            // The initial CPU topology as presented was even funkier than
             // simply "vCPU-many single-thread sockets"; we would report SMT
             // (above), but clear topology information from CPUID leaves Bh and
-            // 8000_001Eh. CPUID leaf 4h got topology information because it is
-            // Intel-only, so by populating that information we would not alter
-            // VMs in the product but would get to make Intel more right by
-            // default.
+            // 8000_001Eh.
+            //
+            // Intel-only CPUID leaf 4h would be specialized when this initial
+            // CPU topology was the default - it is only included here for
+            // completeness in describing the "before explicit virtual
+            // platforms" state of a propolis-server VM. The value of `std_4`
+            // has no bearing on the behavior of an Oxide rack's VMs.
             topo_leaves: TopoLeaves {
                 std_4: true,
                 std_b: false,

@@ -29,8 +29,6 @@ impl From<Spec> for v9::instance_spec::InstanceSpec {
             (v6_spec, topo)
         };
 
-        eprintln!("ok, spec to v9 instance spec..");
-
         let mut spec: v9::instance_spec::InstanceSpec = v6_spec.into();
         spec.board.cpu_topology = topo;
 

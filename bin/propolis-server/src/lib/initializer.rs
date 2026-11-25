@@ -1649,14 +1649,9 @@ impl MachineInitializer<'_> {
             );
 
             let has_smt = self.spec.board.cpu_topology.has_smt;
-            // Instead of `TopoKind::supported`, the instance spec selects what
-            // leaves may get specialized topology data. This is to maintain the
-            // reported topology of VMs created either before CPU platforms or
-            // with platforms that inadvertently reported `board.cpus`-many
-            // single-core sockets.
-            //
-            // While it's probably OK to go change that, one would not expect
-            // their CPU sockets to unify across a reboot.
+            // Specifics of the guest vCPU topology are dictated by the VM's
+            // virtual platform, which may not include all supported topology
+            // leaves.
             let cpu_topo_leaves = self.topo_cpuid_leaves()?;
             info!(self.log, "computed cpu topo leaves {:?}", cpu_topo_leaves);
 

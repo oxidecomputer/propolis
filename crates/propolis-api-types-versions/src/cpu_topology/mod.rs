@@ -2,10 +2,9 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! Version `NVME_WRITE_CACHE` of the Propolis Server API.
+//! Version `CPU_TOPOLOGY` of the Propolis Server API.
 //!
-//! This version adds an API field to control if an NVMe device reports having a
-//! volatile write cache.
+//! This version adds parameters to control a VM's guest-observed CPU topology.
 
 pub mod api;
 pub mod components;
