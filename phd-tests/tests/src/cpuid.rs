@@ -105,22 +105,10 @@ async fn verify_guest_brand_string(vm: &TestVm) -> anyhow::Result<()> {
 }
 
 /// Launches a test VM with a synthetic brand string injected into its CPUID
-/// leaves.
-///
-/// Some tests cover specific CPU topologies, for which this helper is
-/// unsuitable; instead, use `launch_cpuid_smoke_test_vm_with_topo` and use
-/// explicit settings for the code under test.
+/// leaves, with a PHD-default CPU topology.
 async fn launch_cpuid_smoke_test_vm(
     ctx: &TestCtx,
     vm_name: &str,
-) -> anyhow::Result<TestVm> {
-    launch_cpuid_smoke_test_vm_with_topo(ctx, vm_name, None).await
-}
-
-async fn launch_cpuid_smoke_test_vm_with_topo(
-    ctx: &TestCtx,
-    vm_name: &str,
-    guest_topo: Option<CpuTopology>,
 ) -> anyhow::Result<TestVm> {
     let mut host_cpuid = cpuid_utils::host::query_complete(
         cpuid_utils::host::CpuidSource::BhyveDefault,
@@ -144,9 +132,22 @@ async fn launch_cpuid_smoke_test_vm_with_topo(
             })
             .collect(),
     );
-    if let Some(topo) = guest_topo {
-        cfg.cpu_topology(topo);
-    }
+    let mut vm = ctx.spawn_vm(&cfg, None).await?;
+    vm.launch().await?;
+    vm.wait_to_boot().await?;
+
+    Ok(vm)
+}
+
+/// Launches a test VM with a specified CPU topology, but CPUID leaves otherwise
+/// taken from the host system.
+async fn launch_cpuid_test_vm_with_topo(
+    ctx: &TestCtx,
+    vm_name: &str,
+    guest_topo: CpuTopology,
+) -> anyhow::Result<TestVm> {
+    let mut cfg = ctx.vm_config_builder(vm_name);
+    cfg.cpu_topology(guest_topo);
     let mut vm = ctx.spawn_vm(&cfg, None).await?;
     vm.launch().await?;
     vm.wait_to_boot().await?;
@@ -339,9 +340,6 @@ impl<'a> LinuxGuestTopo<'a> {
 }
 
 async fn check_legacy_topo(guest_topo: &LinuxGuestTopo<'_>) {
-    // Because the "legacy" (AMD) topology is single-thread sockets, a bunch of
-    // things that are seemingly bogus.
-
     // All cores should be in a distinct socket matching their APIC ID.
     for (idx, item) in guest_topo.physical_package_ids().await.enumerate() {
         let item: usize = item.try_into().unwrap();
@@ -509,10 +507,10 @@ async fn guest_cpu_legacy_topo_test(ctx: &TestCtx) {
         CpuVendor::Amd => CpuTopology::legacy_single_thread_sockets(2),
     };
 
-    let vm = launch_cpuid_smoke_test_vm_with_topo(
+    let vm = launch_cpuid_test_vm_with_topo(
         ctx,
         "guest_cpu_legacy_topo_test",
-        Some(legacy_topo),
+        legacy_topo,
     )
     .await?;
 
@@ -551,10 +549,10 @@ async fn guest_cpu_single_socket_smt(ctx: &TestCtx) {
     // should show.
     let test_topo = CpuTopology::single_socket_smt();
 
-    let vm = launch_cpuid_smoke_test_vm_with_topo(
+    let vm = launch_cpuid_test_vm_with_topo(
         ctx,
         "guest_cpu_single_socket_smt",
-        Some(test_topo),
+        test_topo,
     )
     .await?;
 
