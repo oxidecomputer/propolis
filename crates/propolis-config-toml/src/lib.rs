@@ -69,6 +69,10 @@ pub enum HypervisorInterface {
     },
 }
 
+fn default_cpu_topology() -> String {
+    "single_socket".to_string()
+}
+
 /// Settings covering the VM "at large".
 ///
 /// This corresponds to (and is a subset of) the `main` block understood by
@@ -118,6 +122,9 @@ pub struct MachineSettings {
     //
     // That all to say: this could be a list.
     pub hv_interface: Option<HypervisorInterface>,
+
+    #[serde(default = "default_cpu_topology")]
+    pub cpu_topology: String,
 }
 
 /// The instance's chipset.

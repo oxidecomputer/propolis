@@ -55,7 +55,7 @@ pub(crate) fn v3_to_spec_builder(
     // v6 `InstanceSpec->SpecBuilder`.
     let v6_spec: v6::instance_spec::InstanceSpec = value.into();
 
-    api_spec_v6::v6_to_spec_builder(v6_spec).map_err(|e| e.into())
+    api_spec_v6::v6_to_spec_builder(v6_spec)
 }
 
 fn amend_component(
@@ -128,7 +128,7 @@ pub(crate) fn amend(
 #[cfg(test)]
 mod test {
     use propolis_api_types_versions::latest::components::board::{
-        Board, Chipset, Cpuid, GuestHypervisorInterface, I440Fx,
+        Board, Chipset, CpuTopology, Cpuid, GuestHypervisorInterface, I440Fx,
     };
     use propolis_api_types_versions::latest::{
         self,
@@ -153,6 +153,7 @@ mod test {
                     entries: vec![],
                     vendor: CpuidVendor::Amd,
                 }),
+                cpu_topology: CpuTopology::legacy_single_thread_sockets(4),
             },
             components: Default::default(),
             smbios: Some(SmbiosType1Input {
@@ -179,7 +180,8 @@ mod test {
                 .finish();
         assert!(spec.vsock.is_some());
 
-        let v6_spec = v6::instance_spec::InstanceSpec::from(spec.clone());
+        let v6_spec = v6::instance_spec::InstanceSpec::try_from(spec.clone())
+            .expect("can convert v3-conformant spec to v6");
         let v6_comp: v6::instance_spec::Component = vsock_comp.clone();
         assert_eq!(v6_spec.components.get(&vsock_id), Some(&v6_comp));
 

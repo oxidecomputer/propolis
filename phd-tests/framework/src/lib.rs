@@ -72,7 +72,7 @@ pub struct Framework {
     pub(crate) tmp_directory: Utf8PathBuf,
     pub(crate) log_config: LogConfig,
 
-    pub(crate) default_guest_cpus: u8,
+    pub(crate) default_guest_cpus: u16,
     pub(crate) default_guest_memory_mib: u64,
     pub(crate) default_guest_os_artifact: String,
     pub(crate) default_bootrom_artifact: String,
@@ -110,7 +110,7 @@ pub struct FrameworkParameters<'a> {
     pub artifact_toml: Utf8PathBuf,
     pub log_config: LogConfig,
 
-    pub default_guest_cpus: u8,
+    pub default_guest_cpus: u16,
     pub default_guest_memory_mib: u64,
     pub default_guest_os_artifact: String,
     pub default_bootrom_artifact: String,

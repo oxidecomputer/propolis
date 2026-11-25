@@ -8,10 +8,11 @@ use anyhow::Context;
 use cpuid_utils::CpuidIdent;
 use propolis_client::{
     instance_spec::{
-        Board, BootOrderEntry, BootSettings, Chipset, Component, Cpuid,
-        CpuidEntry, CpuidVendor, GuestHypervisorInterface, InstanceMetadata,
-        InstanceSpec, MigrationFailureInjector, NvmeDisk, PciPath, SerialPort,
-        SerialPortNumber, SpecKey, VirtioDisk, VirtioSocket,
+        Board, BootOrderEntry, BootSettings, Chipset, Component, CpuTopology,
+        Cpuid, CpuidEntry, CpuidVendor, GuestHypervisorInterface,
+        InstanceMetadata, InstanceSpec, MigrationFailureInjector, NvmeDisk,
+        PciPath, SerialPort, SerialPortNumber, SpecKey, VirtioDisk,
+        VirtioSocket,
     },
     support::nvme_serial_from_str,
 };
@@ -62,7 +63,7 @@ struct DiskRequest<'a> {
 
 pub struct VmConfig<'dr> {
     vm_name: String,
-    cpus: u8,
+    cpus: u16,
     memory_mib: u64,
     cpuid: Option<Vec<CpuidEntry>>,
     bootrom_artifact: String,
@@ -71,12 +72,13 @@ pub struct VmConfig<'dr> {
     migration_failure: Option<MigrationFailureInjector>,
     guest_hv_interface: Option<GuestHypervisorInterface>,
     vsock: Option<VirtioSocket>,
+    cpu_topology: CpuTopology,
 }
 
 impl<'dr> VmConfig<'dr> {
     pub(crate) fn new(
         vm_name: &str,
-        cpus: u8,
+        cpus: u16,
         memory_mib: u64,
         bootrom: &str,
         guest_artifact: &'dr str,
@@ -92,6 +94,7 @@ impl<'dr> VmConfig<'dr> {
             migration_failure: None,
             guest_hv_interface: None,
             vsock: None,
+            cpu_topology: CpuTopology::single_socket_smt(),
         };
 
         config.boot_disk(
@@ -104,7 +107,7 @@ impl<'dr> VmConfig<'dr> {
         config
     }
 
-    pub fn cpus(&mut self, cpus: u8) -> &mut Self {
+    pub fn cpus(&mut self, cpus: u16) -> &mut Self {
         self.cpus = cpus;
         self
     }
@@ -126,6 +129,11 @@ impl<'dr> VmConfig<'dr> {
 
     pub fn cpuid(&mut self, entries: Vec<CpuidEntry>) -> &mut Self {
         self.cpuid = Some(entries);
+        self
+    }
+
+    pub fn cpu_topology(&mut self, cpu_topology: CpuTopology) -> &mut Self {
+        self.cpu_topology = cpu_topology;
         self
     }
 
@@ -241,6 +249,7 @@ impl<'dr> VmConfig<'dr> {
             migration_failure,
             guest_hv_interface,
             vsock,
+            cpu_topology,
         } = self;
         let framework = &ctx.framework;
         let bootrom_path = framework
@@ -322,6 +331,7 @@ impl<'dr> VmConfig<'dr> {
                     .as_ref()
                     .cloned()
                     .unwrap_or_default(),
+                cpu_topology: *cpu_topology,
             },
             components: Default::default(),
             smbios: None,

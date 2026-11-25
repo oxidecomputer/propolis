@@ -4,7 +4,7 @@
 
 use std::convert::TryInto;
 use std::fs::File;
-use std::num::{NonZeroU8, NonZeroUsize};
+use std::num::{NonZeroU16, NonZeroUsize};
 use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -51,6 +51,7 @@ use propolis::intr_pins;
 use propolis::vmm::{self, Builder, Machine};
 use propolis::vsock::GuestCid;
 use propolis_api_types::instance::InstanceProperties;
+use propolis_api_types::instance_spec::components::board::TopoLeaves;
 use propolis_api_types::instance_spec::components::devices::SerialPortNumber;
 use propolis_api_types::instance_spec::{self, SpecKey};
 use propolis_types::{CpuidIdent, CpuidVendor};
@@ -118,6 +119,9 @@ pub enum MachineInitError {
 
     #[error("failed to start attestation server")]
     AttestationServer(#[source] std::io::Error),
+
+    #[error("unsupported VM configuration")]
+    UnsupportedCpuConfig(&'static str),
 
     #[cfg(feature = "falcon")]
     #[error("softnpu p9 device missing")]
@@ -1229,7 +1233,7 @@ impl MachineInitializer<'_> {
     fn generate_smbios(
         &self,
         bootrom_version: &Option<String>,
-    ) -> smbios::TableBytes {
+    ) -> Result<smbios::TableBytes, MachineInitError> {
         use smbios::table::{type0, type1, type16, type4};
 
         let rom_size =
@@ -1337,6 +1341,12 @@ impl MachineInitializer<'_> {
             .and_then(|vals| propolis::cpuid::parse_brand_string(vals).ok())
             .unwrap_or_default();
 
+        let num_cpus: u8 = self.spec.board.cpus.try_into().map_err(|_| {
+            MachineInitError::UnsupportedCpuConfig(
+                "more CPUs than expressible in Type 4 SMBIOS v2.7 tables",
+            )
+        })?;
+
         let smb_type4 = smbios::table::Type4 {
             proc_type: type4::ProcType::Central,
             proc_family,
@@ -1347,9 +1357,9 @@ impl MachineInitializer<'_> {
             // unknown
             proc_upgrade: 0x2,
             // make core and thread counts equal for now
-            core_count: self.spec.board.cpus,
-            core_enabled: self.spec.board.cpus,
-            thread_count: self.spec.board.cpus,
+            core_count: num_cpus,
+            core_enabled: num_cpus,
+            thread_count: num_cpus,
             proc_characteristics: type4::Characteristics::IS_64_BIT
                 | type4::Characteristics::MULTI_CORE,
             ..Default::default()
@@ -1391,7 +1401,7 @@ impl MachineInitializer<'_> {
         smb_tables.add(0x1700.into(), &smb_type17).unwrap();
         smb_tables.add(0x3200.into(), &smb_type32).unwrap();
 
-        smb_tables.commit()
+        Ok(smb_tables.commit())
     }
 
     fn generate_e820(&self) -> Result<Entry, MachineInitError> {
@@ -1478,7 +1488,7 @@ impl MachineInitializer<'_> {
     fn generate_acpi_tables(
         &self,
         acpi_variant: acpi::AcpiVariant,
-        cpus: u8,
+        cpus: u16,
     ) -> Result<fwcfg::formats::AcpiTables, MachineInitError> {
         let (lowmem, _) = get_spec_guest_ram_limits(self.spec);
         let generators: Vec<_> = self
@@ -1518,7 +1528,7 @@ impl MachineInitializer<'_> {
     /// Should not be called before [`Self::initialize_rom()`].
     pub fn initialize_fwcfg(
         &mut self,
-        cpus: u8,
+        cpus: u16,
         bootrom_version: &Option<String>,
         acpi_variant: acpi::AcpiVariant,
     ) -> Result<Arc<ramfb::RamFb>, MachineInitError> {
@@ -1531,7 +1541,7 @@ impl MachineInitializer<'_> {
             .map_err(|e| MachineInitError::FwcfgInsertFailed("cpu count", e))?;
 
         let smbios::TableBytes { entry_point, structure_table } =
-            self.generate_smbios(bootrom_version);
+            self.generate_smbios(bootrom_version)?;
         fwcfg
             .insert_named(
                 "etc/smbios/smbios-tables",
@@ -1589,11 +1599,44 @@ impl MachineInitializer<'_> {
         Ok(ramfb)
     }
 
+    fn topo_cpuid_leaves(&self) -> Result<Vec<TopoKind>, MachineInitError> {
+        // This is trying to find a local minima of annoying.. the alternative
+        // here would to have `CpuTopology` hold a `HashSet<TopoKind>` directly.
+        // That would probably be reasonable, but rustc would accept expressions
+        // like `[Std4, Std4, Ext8, Ext1E]` which might not be obviously wrong
+        // at a skim.
+        //
+        // Taking a bag-of-bools approach could have a comparable failure mode
+        // like `std_4: std_b` when constructing `TopoLeaves`, but hopefully
+        // that's a more obvious typo. We still have to convert bools to
+        // `TopoKind`, below, but *this* code is unlikely to change whereas
+        // callers will somewhat more often.
+        let mut topo_leaves = Vec::new();
+
+        let TopoLeaves { std_4, std_b, ext_8, ext_1e } =
+            self.spec.board.cpu_topology.topo_leaves;
+
+        if std_4 {
+            topo_leaves.push(TopoKind::Std4);
+        }
+        if std_b {
+            topo_leaves.push(TopoKind::StdB);
+        }
+        if ext_8 {
+            topo_leaves.push(TopoKind::Ext8);
+        }
+        if ext_1e {
+            topo_leaves.push(TopoKind::Ext1E);
+        }
+        Ok(topo_leaves)
+    }
+
     /// Initialize virtual CPUs by first setting their capabilities, inserting
     /// them into the device map, and then, if a kstat sampler is provided,
     /// tracking their kstats.
     pub async fn initialize_cpus(&mut self) -> Result<(), MachineInitError> {
         let hv_interface = self.machine.guest_hv_interface.as_ref();
+
         for vcpu in self.machine.vcpus.iter() {
             // Report that the guest is running on bhyve.
             //
@@ -1605,33 +1648,24 @@ impl MachineInitializer<'_> {
                     requests to set hypervisor leaves",
             );
 
-            // Instead of `TopoKind::supported`, we use an intentionally-reduced
-            // list of Intel-only leaves for the moment. This is because if we
-            // specialize leaves used by AMD (or just both vendors), we'll
-            // change the topology a guest sees.
-            //
-            // The initial CPU platform defined in Nexus (Omicron#8728) hews to
-            // the pre-specialization topology, which won't have leaf B at all.
-            // Before that is sent, though, we'll see the present-but-zero
-            // leaves from bhyve, which we would happily specialize into
-            // something reflecting the guest if requested here. Once
-            // Omicron#8728 lands and propolis-server receives explicit CPUID
-            // profiles, we can add AMD leaves here too.
-            let cpu_topo_leaves = [TopoKind::Std4];
+            let has_smt = self.spec.board.cpu_topology.has_smt;
+            // Specifics of the guest vCPU topology are dictated by the VM's
+            // virtual platform, which may not include all supported topology
+            // leaves.
+            let cpu_topo_leaves = self.topo_cpuid_leaves()?;
+            info!(self.log, "computed cpu topo leaves {:?}", cpu_topo_leaves);
 
-            let specialized = propolis::cpuid::Specializer::new()
-                .with_vcpu_count(
-                    NonZeroU8::new(self.spec.board.cpus).unwrap(),
-                    true,
-                )
-                .with_vcpuid(vcpu.id)
-                .with_cache_topo()
-                .clear_cpu_topo(TopoKind::iter())
-                .with_cpu_topo(cpu_topo_leaves.into_iter())
-                .execute(set)
-                .map_err(|e| {
-                    MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
-                })?;
+            let specialized = propolis::cpuid::Specializer::new(
+                NonZeroU16::new(self.spec.board.cpus).unwrap(),
+            )
+            .with_cpu_topo(has_smt, cpu_topo_leaves.into_iter())
+            .with_vcpuid(vcpu.id)
+            .with_cache_topo()
+            .clear_cpu_topo(TopoKind::iter())
+            .execute(set)
+            .map_err(|e| {
+                MachineInitError::CpuidSpecializationFailed(vcpu.id, e)
+            })?;
 
             info!(self.log, "setting CPUID for vCPU";
                     "vcpu" => vcpu.id,

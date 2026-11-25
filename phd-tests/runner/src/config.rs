@@ -159,7 +159,7 @@ pub struct RunOptions {
     /// The number of CPUs to assign to the guest in tests where the test is
     /// using the default machine configuration.
     #[clap(long, value_parser, default_value = "2")]
-    pub default_guest_cpus: u8,
+    pub default_guest_cpus: u16,
 
     /// The amount of memory, in MiB, to assign to the guest in tests where the
     /// test is using the default machine configuration.

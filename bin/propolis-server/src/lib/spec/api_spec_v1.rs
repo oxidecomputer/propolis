@@ -10,10 +10,7 @@ use std::collections::BTreeMap;
 
 use propolis_api_types::instance::ReplacementComponent;
 use propolis_api_types::instance_spec::{
-    components::{
-        board::Board as InstanceSpecBoard,
-        devices::{BootSettings, SerialPort as SerialPortDesc},
-    },
+    components::devices::{BootSettings, SerialPort as SerialPortDesc},
     SpecKey,
 };
 use propolis_api_types_versions::{v1, v2, v3, v6};
@@ -22,8 +19,8 @@ use propolis_api_types_versions::{v1, v2, v3, v6};
 use propolis_api_types::instance_spec::components::devices::SoftNpuPort as SoftNpuPortSpec;
 
 use super::{
-    builder::SpecBuilder, LegacyApiSpecError, SerialPortDevice, Spec,
-    StorageBackend, StorageDevice,
+    builder::SpecBuilder, AcpiVariant, Board, CpuTopology, LegacyApiSpecError,
+    SerialPortDevice, Spec, StorageBackend, StorageDevice,
 };
 use crate::migrate::MigrateError;
 
@@ -136,11 +133,42 @@ impl TryFrom<Spec> for v1::instance_spec::InstanceSpec {
             spec.components.insert(key, val);
         }
 
-        let board = InstanceSpecBoard {
-            cpus: board.cpus,
-            memory_mb: board.memory_mb,
-            chipset: board.chipset,
-            guest_hv_interface: board.guest_hv_interface,
+        let Board {
+            cpus,
+            memory_mb,
+            chipset,
+            guest_hv_interface,
+            cpu_topology,
+            acpi_variant,
+        } = board;
+
+        let cpus_u8: u8 = cpus.try_into().map_err(|_| {
+            LegacyApiSpecError::IncompatibleComponent(
+                "v1 Board cannot express >255 vCPUs".to_string(),
+            )
+        })?;
+
+        if acpi_variant != AcpiVariant::V0 {
+            return Err(LegacyApiSpecError::IncompatibleComponent(
+                "v1 Board cannot express ACPI \
+                 variants other than V0"
+                    .to_string(),
+            ));
+        }
+
+        if cpu_topology != CpuTopology::legacy_single_thread_sockets(cpus) {
+            return Err(LegacyApiSpecError::IncompatibleComponent(
+                "v1 Board cannot express CPU topologies \
+                 other than single-thread sockets"
+                    .to_string(),
+            ));
+        }
+
+        let board = v1::components::board::Board {
+            cpus: cpus_u8,
+            memory_mb,
+            chipset,
+            guest_hv_interface,
             cpuid: Some(cpuid.into_instance_spec_cpuid()),
         };
         let mut spec = v1::instance_spec::InstanceSpec {

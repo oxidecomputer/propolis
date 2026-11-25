@@ -76,7 +76,7 @@ pub(crate) fn amend(
 #[cfg(test)]
 mod test {
     use propolis_api_types_versions::latest::components::board::{
-        Board, Chipset, Cpuid, GuestHypervisorInterface, I440Fx,
+        Board, Chipset, CpuTopology, Cpuid, GuestHypervisorInterface, I440Fx,
     };
     use propolis_api_types_versions::latest::{
         self,
@@ -107,6 +107,7 @@ mod test {
                     entries: vec![],
                     vendor: CpuidVendor::Amd,
                 }),
+                cpu_topology: CpuTopology::legacy_single_thread_sockets(4),
             },
             components: Default::default(),
             smbios: Some(smbios_input.clone()),
@@ -122,7 +123,8 @@ mod test {
             .expect("SMBIOS type 1 input preserved");
         assert_eq!(&smbios_input, smbios);
 
-        let v6_spec = v6::instance_spec::InstanceSpec::from(spec.clone());
+        let v6_spec = v6::instance_spec::InstanceSpec::try_from(spec.clone())
+            .expect("can convert v2-conformant spec to v6");
         let smbios =
             v6_spec.smbios.as_ref().expect("SMBIOS type 1 input preserved");
         assert_eq!(&smbios_input, smbios);

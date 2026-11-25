@@ -17,9 +17,9 @@ use clap::{Args, Parser, Subcommand};
 use futures::{future, SinkExt};
 use newtype_uuid::{GenericUuid, TypedUuid, TypedUuidKind, TypedUuidTag};
 use propolis_client::instance_spec::{
-    BlobStorageBackend, Board, Chipset, Component, CrucibleStorageBackend,
-    I440Fx, InstanceMetadata, InstanceProperties, InstanceSpec,
-    InstanceSpecGetResponse, NvmeDisk, PciPath, QemuPvpanic,
+    BlobStorageBackend, Board, Chipset, Component, CpuTopology,
+    CrucibleStorageBackend, I440Fx, InstanceMetadata, InstanceProperties,
+    InstanceSpec, InstanceSpecGetResponse, NvmeDisk, PciPath, QemuPvpanic,
     ReplacementComponent, SerialPort, SerialPortNumber, SpecKey, VirtioDisk,
 };
 use propolis_client::support::nvme_serial_from_str;
@@ -176,7 +176,7 @@ struct VmConfig {
 
     /// Number of vCPUs allocated to instance
     #[clap(short = 'c', default_value = "4", action, requires = "config_toml")]
-    vcpus: u8,
+    vcpus: u16,
 
     /// Memory allocated to instance (MiB)
     #[clap(short, default_value = "1024", action, requires = "config_toml")]
@@ -332,11 +332,28 @@ impl VmConfig {
             .map(|cfg| cfg.hv_interface.clone())
             .unwrap_or_default();
 
+        let cpu_topology = match parsed_toml
+            .as_ref()
+            .map(|cfg| cfg.machine_settings.cpu_topology.as_str())
+        {
+            None | Some("single_socket") => CpuTopology::single_socket_smt(),
+            Some("legacy_single_thread_sockets") => {
+                CpuTopology::legacy_single_thread_sockets(self.vcpus)
+            }
+            Some(other) => {
+                anyhow::bail!(
+                    "cpu_topology must be omitted, \"single_socket\" \
+                     or \"legacy_single_thread_sockets\". got: {other}"
+                )
+            }
+        };
+
         let mut spec = InstanceSpec {
             board: Board {
                 chipset: Chipset::I440Fx(I440Fx { enable_pcie }),
                 cpuid: cpuid_profile,
                 cpus: self.vcpus,
+                cpu_topology,
                 memory_mb: self.memory,
                 guest_hv_interface,
             },
