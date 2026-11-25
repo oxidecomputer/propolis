@@ -69,12 +69,8 @@ pub enum HypervisorInterface {
     },
 }
 
-fn default_smt() -> bool {
-    true
-}
-
-fn default_sockets() -> u16 {
-    1
+fn default_cpu_topology() -> String {
+    "single_socket".to_string()
 }
 
 /// Settings covering the VM "at large".
@@ -127,10 +123,8 @@ pub struct MachineSettings {
     // That all to say: this could be a list.
     pub hv_interface: Option<HypervisorInterface>,
 
-    #[serde(default = "default_smt")]
-    pub smt: bool,
-    #[serde(default = "default_sockets")]
-    pub sockets: u16,
+    #[serde(default = "default_cpu_topology")]
+    pub cpu_topology: String,
 }
 
 /// The instance's chipset.

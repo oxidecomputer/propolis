@@ -20,8 +20,7 @@ use propolis_client::instance_spec::{
     BlobStorageBackend, Board, Chipset, Component, CpuTopology,
     CrucibleStorageBackend, I440Fx, InstanceMetadata, InstanceProperties,
     InstanceSpec, InstanceSpecGetResponse, NvmeDisk, PciPath, QemuPvpanic,
-    ReplacementComponent, SerialPort, SerialPortNumber, SpecKey, TopoLeaves,
-    VirtioDisk,
+    ReplacementComponent, SerialPort, SerialPortNumber, SpecKey, VirtioDisk,
 };
 use propolis_client::support::nvme_serial_from_str;
 use propolis_client::types::{
@@ -333,31 +332,28 @@ impl VmConfig {
             .map(|cfg| cfg.hv_interface.clone())
             .unwrap_or_default();
 
-        let smt = parsed_toml
+        let cpu_topology = match parsed_toml
             .as_ref()
-            .map(|cfg| cfg.machine_settings.smt)
-            .unwrap_or(true);
-
-        let sockets = parsed_toml
-            .as_ref()
-            .map(|cfg| cfg.machine_settings.sockets)
-            .unwrap_or(1);
+            .map(|cfg| cfg.machine_settings.cpu_topology.as_str())
+        {
+            None | Some("single_socket") => CpuTopology::single_socket_smt(),
+            Some("legacy_single_thread_sockets") => {
+                CpuTopology::legacy_single_thread_sockets(self.vcpus)
+            }
+            Some(other) => {
+                anyhow::bail!(
+                    "cpu_topology must be omitted, \"single_socket\" \
+                     or \"legacy_single_thread_sockets\". got: {other}"
+                )
+            }
+        };
 
         let mut spec = InstanceSpec {
             board: Board {
                 chipset: Chipset::I440Fx(I440Fx { enable_pcie }),
                 cpuid: cpuid_profile,
                 cpus: self.vcpus,
-                cpu_topology: CpuTopology {
-                    has_smt: smt,
-                    sockets,
-                    topo_leaves: TopoLeaves {
-                        std_4: true,
-                        std_b: true,
-                        ext_8: true,
-                        ext_1e: true,
-                    },
-                },
+                cpu_topology,
                 memory_mb: self.memory,
                 guest_hv_interface,
             },

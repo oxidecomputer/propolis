@@ -60,7 +60,8 @@ pub struct Main {
     pub name: String,
     pub cpus: u16,
 
-    // TODO: I'd *really* like to know what the Hygon 4-way SMT CPUID leaves look like..
+    // TODO: I'd *really* like to know what the Hygon 4-way SMT CPUID leaves
+    // look like..
     #[serde(default = "default_smt")]
     pub smt: bool,
     #[serde(default = "default_sockets")]
