@@ -286,9 +286,7 @@ impl<'a> VmEnsureNotStarted<'a> {
                     .await
                 })
                 .map_err(|e| {
-                    anyhow::anyhow!(
-                        "failed to join VM object creation task: {e}"
-                    )
+                    e.context("failed to join VM object creation task")
                 })?;
             Ok((vmm_rt, init_result))
         })
