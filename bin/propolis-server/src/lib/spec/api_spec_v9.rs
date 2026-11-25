@@ -25,7 +25,15 @@ impl From<Spec> for v9::instance_spec::InstanceSpec {
                 );
             let topo =
                 std::mem::replace(&mut spec.board.cpu_topology, older_topo);
-            let v6_spec: v6::instance_spec::InstanceSpec = spec.into();
+            let v6_spec: v6::instance_spec::InstanceSpec =
+                spec.try_into().unwrap_or_else(|e| {
+                    unreachable!(
+                        "Converting to Spec without v9 bits to v6 failed: {e} \
+                     This is currently impossible. When spec to \
+                     v9::instance_spec::InstanceSpec becomes fallible, \
+                     this should `?`."
+                    );
+                });
             (v6_spec, topo)
         };
 
@@ -62,4 +70,57 @@ pub(crate) fn amend(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use propolis_api_types_versions::latest::components::board::{
+        Board, Chipset, CpuTopology, Cpuid, GuestHypervisorInterface, I440Fx,
+    };
+    use propolis_api_types_versions::latest::{
+        self,
+        instance_spec::{CpuidVendor, SmbiosType1Input},
+    };
+    use propolis_api_types_versions::{v6, v9};
+
+    #[test]
+    fn cpu_topology() {
+        let api_spec = latest::instance_spec::InstanceSpec {
+            board: Board {
+                cpus: 4,
+                memory_mb: 512,
+                chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
+                guest_hv_interface: GuestHypervisorInterface::Bhyve,
+                // Providing *any* CPUID settings keeps Propolis from querying
+                // bhyve for defaults to use instead, which requires .. byhve
+                // *and* VMM access. Provide a (useless) empty CPUID set so this
+                // test can run on non-illumos test systems.
+                cpuid: Some(Cpuid {
+                    entries: vec![],
+                    vendor: CpuidVendor::Amd,
+                }),
+                cpu_topology: CpuTopology::single_socket_smt(),
+            },
+            components: Default::default(),
+            smbios: Some(SmbiosType1Input {
+                manufacturer: "a4x2".to_string(),
+                product_name: "913-0000019".to_string(),
+                serial_number: "2FAKE000".to_string(),
+                version: 2,
+            }),
+        };
+
+        let test_topo = api_spec.board.cpu_topology;
+
+        let spec =
+            crate::spec::api_spec_latest::latest_to_spec_builder(api_spec)
+                .unwrap()
+                .finish();
+
+        let v9_spec = v9::instance_spec::InstanceSpec::from(spec.clone());
+        assert_eq!(v9_spec.board.cpu_topology, test_topo);
+
+        let v6_res = v6::instance_spec::InstanceSpec::try_from(spec.clone());
+        assert!(v6_res.is_err());
+    }
 }

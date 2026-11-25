@@ -915,7 +915,7 @@
         ]
       },
       "CpuTopology": {
-        "description": "A *very* simple topology for for a VM's vCPUs.\n\nTypically this will be configured as `threads_per_core: 2` to indicate SMT, and one socket. The number of vCPUs in each socket is the same, meaning that the number of vCPUs must divide evenly into the number of sockets in the topology.",
+        "description": "A *very* simple topology for for a VM's vCPUs.\n\nTypically this will be configured as `has_smt: true` and one socket. Each socket has the same number of vCPUs, so `Board::cpus` should evenly divide by the number of sockets chosen here.",
         "type": "object",
         "properties": {
           "has_smt": {
@@ -2202,7 +2202,7 @@
         ]
       },
       "TopoLeaves": {
-        "description": "A collection of CPUID leaves to specialize for a board's `CpuTopology`.\n\nLeaves may be selected here without being present in `Cpuid`, in which case the extra selected topology leaves are ignored. Conversely, `Cpuid` leaves with topology information that are not mentioend here probably indicate a bug (at best, those leaves will probably indicate collection of single-core sockets in the machine.)",
+        "description": "A collection of CPUID leaves to specialize for a board's `CpuTopology`.\n\nLeaves may be selected here without being present in `Cpuid`, in which case the extra selected topology leaves are ignored. Conversely, `Cpuid` leaves with topology information that are not mentioned here probably indicate a bug (at best, those leaves will probably indicate collection of single-core sockets in the machine.)",
         "type": "object",
         "properties": {
           "ext_1e": {

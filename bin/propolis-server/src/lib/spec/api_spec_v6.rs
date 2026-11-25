@@ -11,12 +11,16 @@ use propolis_api_types::instance::ReplacementComponent;
 use propolis_api_types::instance_spec::SpecKey;
 use propolis_api_types_versions::{v3, v6, v9};
 
-use super::{builder::SpecBuilder, ApiSpecError, Disk, Spec, StorageDevice};
+use super::{
+    builder::SpecBuilder, Disk, LegacyApiSpecError, Spec, StorageDevice,
+};
 use crate::migrate::MigrateError;
 use crate::spec::api_spec_v9;
 
-impl From<Spec> for v6::instance_spec::InstanceSpec {
-    fn from(mut val: Spec) -> Self {
+impl TryFrom<Spec> for v6::instance_spec::InstanceSpec {
+    type Error = LegacyApiSpecError;
+
+    fn try_from(mut val: Spec) -> Result<Self, Self::Error> {
         // v6 adds a new field on NvmeDisk. Such disks probably can't be
         // converted to v3 components and would cause a conversion from
         // Spec->v3::instance_spec::InstanceSpec to fail. So, extract those
@@ -36,15 +40,7 @@ impl From<Spec> for v6::instance_spec::InstanceSpec {
         }
         val.disks.retain(|_, disk| !v6_only_disk(disk));
 
-        let v3_spec: v3::instance_spec::InstanceSpec =
-            val.try_into().unwrap_or_else(|e| {
-                unreachable!(
-                    "Converting to Spec without v6 bits to v3 failed: {e}. \
-                        This is currently impossible. When Spec to \
-                        v6::instance_spec::InstanceSpec becomes fallible, \
-                        this should `?`."
-                );
-            });
+        let v3_spec: v3::instance_spec::InstanceSpec = val.try_into()?;
 
         let mut spec: v6::instance_spec::InstanceSpec = v3_spec.into();
 
@@ -78,7 +74,7 @@ impl From<Spec> for v6::instance_spec::InstanceSpec {
             insert_component(&mut spec, backend_id, backend_component);
         }
 
-        spec
+        Ok(spec)
     }
 }
 
@@ -87,9 +83,9 @@ impl From<Spec> for v6::instance_spec::InstanceSpec {
 /// additional (non-v6) components to the builder before calling `finish()`.
 pub(crate) fn v6_to_spec_builder(
     value: v6::instance_spec::InstanceSpec,
-) -> Result<SpecBuilder, ApiSpecError> {
+) -> Result<SpecBuilder, LegacyApiSpecError> {
     let v9_spec: v9::instance_spec::InstanceSpec = value.into();
-    api_spec_v9::v9_to_spec_builder(v9_spec)
+    Ok(api_spec_v9::v9_to_spec_builder(v9_spec)?)
 }
 
 // pub(crate) as the next version (v9) still uses
@@ -160,4 +156,86 @@ pub(crate) fn amend(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use propolis_api_types_versions::latest::components::board::{
+        Board, Chipset, CpuTopology, Cpuid, GuestHypervisorInterface, I440Fx,
+    };
+    use propolis_api_types_versions::latest::{
+        self,
+        components::{backends::BlobStorageBackend, devices::NvmeDisk},
+        instance_spec::{self, CpuidVendor, SmbiosType1Input, SpecKey},
+    };
+    use propolis_api_types_versions::{v3, v6, v9};
+
+    #[test]
+    fn nvme_vwc() {
+        let mut api_spec = latest::instance_spec::InstanceSpec {
+            board: Board {
+                cpus: 4,
+                memory_mb: 512,
+                chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
+                guest_hv_interface: GuestHypervisorInterface::Bhyve,
+                // Providing *any* CPUID settings keeps Propolis from querying
+                // bhyve for defaults to use instead, which requires .. byhve
+                // *and* VMM access. Provide a (useless) empty CPUID set so this
+                // test can run on non-illumos test systems.
+                cpuid: Some(Cpuid {
+                    entries: vec![],
+                    vendor: CpuidVendor::Amd,
+                }),
+                cpu_topology: CpuTopology::legacy_single_thread_sockets(4),
+            },
+            components: Default::default(),
+            smbios: Some(SmbiosType1Input {
+                manufacturer: "a4x2".to_string(),
+                product_name: "913-0000019".to_string(),
+                serial_number: "2FAKE000".to_string(),
+                version: 2,
+            }),
+        };
+
+        let nvme_backend_id: SpecKey =
+            SpecKey::Name("nvme-backend-id".to_string());
+        let nvme_device_id: SpecKey =
+            SpecKey::Name("nvme-device-id".to_string());
+        let test_backend = BlobStorageBackend {
+            base64: "AAAAAAAA".to_string(),
+            readonly: true,
+        };
+        let test_disk = NvmeDisk {
+            backend_id: nvme_backend_id.clone(),
+            pci_path: instance_spec::PciPath::new(0, 4, 0).unwrap(),
+            serial_number: [0u8; 20],
+            has_write_cache: false,
+        };
+
+        let disk_backend_comp =
+            instance_spec::Component::BlobStorageBackend(test_backend);
+        let disk_comp = instance_spec::Component::NvmeDisk(test_disk);
+
+        api_spec
+            .components
+            .insert(nvme_backend_id.clone(), disk_backend_comp.clone());
+        api_spec.components.insert(nvme_device_id.clone(), disk_comp.clone());
+
+        let spec =
+            crate::spec::api_spec_latest::latest_to_spec_builder(api_spec)
+                .unwrap()
+                .finish();
+
+        let v9_spec = v9::instance_spec::InstanceSpec::from(spec.clone());
+        let v6_comp: v6::instance_spec::Component = disk_comp.clone();
+        assert_eq!(v9_spec.components.get(&nvme_device_id), Some(&v6_comp));
+
+        let v6_spec = v6::instance_spec::InstanceSpec::try_from(spec.clone())
+            .expect("can convert v6-conformant spec to v6");
+        let v6_comp: v6::instance_spec::Component = disk_comp.clone();
+        assert_eq!(v6_spec.components.get(&nvme_device_id), Some(&v6_comp));
+
+        let v3_res = v3::instance_spec::InstanceSpec::try_from(spec.clone());
+        assert!(v3_res.is_err());
+    }
 }
