@@ -9,7 +9,7 @@
 
 use super::{
     AcpiVariant, GPE0_BLK_ADDR, GPE0_BLK_LEN, OEM_ID, OEM_REVISION,
-    OEM_TABLE_ID,
+    OEM_TABLE_ID, SCI_IRQ,
 };
 use crate::hw::{chipset::i440fx, pci};
 use acpi_tables::{
@@ -113,7 +113,7 @@ impl Aml for Fadt {
             .flag(Flags::TmrValExt)
             .flag(Flags::ResetRegSup);
 
-        fadt.sci_int = (i440fx::SCI_IRQ as u16).into();
+        fadt.sci_int = (SCI_IRQ as u16).into();
         if self.config.acpi_variant == AcpiVariant::V0 {
             // Propolis doesn't currently handle this I/O port, but its value
             // is retained from the original EDK2 tables for consistency. It

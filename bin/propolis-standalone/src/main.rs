@@ -1227,10 +1227,14 @@ fn setup_instance(
         },
     );
     let chipset_lpc = i440fx::Piix3Lpc::create(machine.hdl.clone());
+
+    let sci_pin = chipset_lpc.irq_pin(acpi::SCI_IRQ).unwrap();
+    let acpi = acpi::Acpi::create(sci_pin.into());
+
     let chipset_pm = i440fx::Piix3PM::create(
         machine.hdl.clone(),
         chipset_hb.power_pin(),
-        chipset_lpc.sci_pin(),
+        acpi.sci_pin()?,
         log.new(slog::o!("device" => "piix3pm")),
     );
 
@@ -1249,6 +1253,7 @@ fn setup_instance(
     guard.inventory.register(&chipset_hb);
     guard.inventory.register(&chipset_lpc);
     guard.inventory.register(&chipset_pm);
+    guard.inventory.register(&acpi);
 
     // RTC: populate time and CMOS
     let rtc = chipset_lpc.rtc.as_ref();
