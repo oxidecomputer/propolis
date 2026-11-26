@@ -122,7 +122,13 @@ fn run_server(
 ) -> anyhow::Result<()> {
     use propolis::api_version;
 
-    slog::info!(log, "Running {}", propolis::version());
+    slog::info!(
+        log,
+        "Running {}, propolis-server API v{}-v{}",
+        propolis::version(),
+        propolis_server_api::oldest_version(),
+        propolis_server_api::latest_version()
+    );
 
     // Check that devices conform to expected API version
     if let Err(e) = api_version::check() {
