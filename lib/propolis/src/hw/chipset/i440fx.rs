@@ -20,7 +20,9 @@ use crate::hw::pci::topology::{LogicalBusId, RoutedBusId};
 use crate::hw::pci::{
     self, Bdf, INTxPinID, LintrCfg, PcieCfgDecoder, PioCfgDecoder,
 };
-use crate::intr_pins::{IntrPin, LegacyPIC, LegacyPin, NoOpPin};
+use crate::intr_pins::{
+    IntrPin, LegacyPIC, LegacyPin, NoOpPin, OrGate, OrGateError,
+};
 use crate::lifecycle;
 use crate::migrate::*;
 use crate::mmio::MmioFn;
@@ -100,28 +102,33 @@ impl IntrPin for LNKPin {
 
 struct IrqConfig {
     pic: Arc<LegacyPIC>,
+    lnk_gates: [Arc<OrGate>; 4],
     lnk_pins: [Arc<LNKPin>; 4],
 }
 impl IrqConfig {
     fn create(hdl: Arc<VmmHdl>) -> Arc<Self> {
         let pic = LegacyPIC::new(hdl);
-        Arc::new(Self {
-            pic,
-            lnk_pins: [
-                Arc::new(LNKPin::new()),
-                Arc::new(LNKPin::new()),
-                Arc::new(LNKPin::new()),
-                Arc::new(LNKPin::new()),
-            ],
-        })
+        let lnk_pins = [
+            Arc::new(LNKPin::new()),
+            Arc::new(LNKPin::new()),
+            Arc::new(LNKPin::new()),
+            Arc::new(LNKPin::new()),
+        ];
+        let lnk_gates = [
+            OrGate::new(lnk_pins[0].clone()),
+            OrGate::new(lnk_pins[1].clone()),
+            OrGate::new(lnk_pins[2].clone()),
+            OrGate::new(lnk_pins[3].clone()),
+        ];
+        Arc::new(Self { pic, lnk_gates, lnk_pins })
     }
     fn set_lnk_route(&self, idx: usize, irq: Option<u8>) {
         assert!(idx <= 3);
         self.lnk_pins[idx].reassign(irq.and_then(|i| self.pic.pin_handle(i)));
     }
-    fn intr_pin(&self, idx: usize) -> Arc<dyn IntrPin> {
+    fn intr_pin(&self, idx: usize) -> Result<Arc<dyn IntrPin>, OrGateError> {
         assert!(idx <= 3);
-        Arc::clone(&self.lnk_pins[idx]) as Arc<dyn IntrPin>
+        self.lnk_gates[idx].new_input()
     }
 }
 
@@ -447,7 +454,8 @@ impl Piix3Lpc {
         };
         // D->A->B->C starting at 0:0.0
         let pin_route = (bdf.location.dev.get() + intx_pin as u8 + 2) % 4;
-        Some((intx_pin, self.irq_config.intr_pin(pin_route as usize)))
+        let pin = self.irq_config.intr_pin(pin_route as usize).ok()?;
+        Some((intx_pin, pin))
     }
 
     pub fn irq_pin(&self, irq: u8) -> Option<Box<dyn IntrPin>> {
