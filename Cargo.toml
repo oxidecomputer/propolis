@@ -97,8 +97,8 @@ crucible = { git = "https://github.com/oxidecomputer/crucible", rev = "5274b8ada
 crucible-client-types = { git = "https://github.com/oxidecomputer/crucible", rev = "5274b8ada3720ec46b0f4ac5d44a4dadf057aee8" }
 
 # Attestation
-dice-verifier = { git = "https://github.com/oxidecomputer/dice-util", rev = "d7472bfa91aee859c3fe0bdc1dbb1e320285228e", features = ["sled-agent"] }
-vm-attest = { git = "https://github.com/oxidecomputer/vm-attest", rev = "deaf0203ecfa8cbe8c0c28c9bd16645d5d7be4e8", default-features = false }
+oxide-rot = { git = "https://github.com/oxidecomputer/dice-util", rev = "5e98c6fcd1fb0b3b423d73ccf4798e65b17b7d76", features = ["sled-agent"] }
+vm-attest = { git = "https://github.com/oxidecomputer/vm-attest", rev = "2a2c8435a6863316ed5e1992f24dcc9c35d64d00", default-features = false }
 
 # External dependencies
 acpi_tables = { git = 'https://github.com/oxidecomputer/acpi_tables.git', tag = "v0.2.1-oxide.1" }
@@ -180,7 +180,7 @@ slog-term = "2.8"
 strum = "0.26"
 syn = "1.0"
 tar = "0.4"
-tempfile = "3.2"
+tempfile = "3.27"
 termwiz = "0.20"
 thiserror = "1.0"
 tokio = "1.52"

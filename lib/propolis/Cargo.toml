@@ -11,7 +11,7 @@ bit_field.workspace = true
 bitflags = { workspace = true, features = ["serde"] }
 bitstruct.workspace = true
 byteorder.workspace = true
-dice-verifier.workspace = true
+oxide-rot.workspace = true
 lazy_static.workspace = true
 thiserror.workspace = true
 bhyve_api.workspace = true
