@@ -190,6 +190,9 @@ pub struct RegisteredChipset {
     chipset: Arc<dyn Chipset>,
     isa: Arc<i440fx::Piix3Lpc>,
     pm: Arc<i440fx::Piix3PM>,
+    // TODO(luiz): make acpi optional once it's exposed in the instance spec.
+    #[expect(dead_code, reason = "acpi will be wired in later work")]
+    acpi: Arc<acpi::Acpi>,
 }
 impl RegisteredChipset {
     pub fn pci_attach(&self, bdf: pci::Bdf, dev: Arc<dyn pci::Endpoint>) {
@@ -357,10 +360,18 @@ impl MachineInitializer<'_> {
                 let chipset_lpc =
                     i440fx::Piix3Lpc::create(self.machine.hdl.clone());
 
+                // XXX: The chipset should be independent from ACPI, but
+                // currently chipset_pm handles some ACPI power management
+                // operations and needs access to the SCI pin. It will be
+                // possible to move ACPI out of chipset once those operations
+                // are fully handled in ACPI.
+                let sci_pin = chipset_lpc.irq_pin(acpi::SCI_IRQ).unwrap();
+                let acpi = acpi::Acpi::create(sci_pin.into());
+
                 let chipset_pm = i440fx::Piix3PM::create(
                     self.machine.hdl.clone(),
                     chipset_hb.power_pin(),
-                    chipset_lpc.sci_pin(),
+                    acpi.sci_pin().expect("SCI pin is available"),
                     self.log.new(slog::o!("device" => "piix3pm")),
                 );
 
@@ -394,6 +405,10 @@ impl MachineInitializer<'_> {
                     SpecKey::Name(chipset_pm.type_name().into()),
                     chipset_pm.clone(),
                 );
+                self.devices.insert(
+                    SpecKey::Name(acpi.type_name().into()),
+                    acpi.clone(),
+                );
 
                 // Record attachment for any bridges in PCI topology too
                 for (bdf, bridge) in bridges {
@@ -413,6 +428,7 @@ impl MachineInitializer<'_> {
                     chipset: chipset_hb,
                     isa: chipset_lpc,
                     pm: chipset_pm,
+                    acpi,
                 })
             }
         }
