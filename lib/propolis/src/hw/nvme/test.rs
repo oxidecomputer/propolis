@@ -4,9 +4,7 @@
 
 use crate::block::{self, Backend, BackendOpts, Device, InMemoryBackend};
 use crate::hw::pci::{test::Scaffold, Bus, BusLocation, Endpoint};
-use crate::migrate::{
-    MigrateCtx, MigrateMulti, PayloadOffer, PayloadOffers, PayloadOutputs,
-};
+use crate::migrate::test::MigrationDriver;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -355,46 +353,8 @@ impl FuzzCtx {
     /// imported. This is consistent with practical uses of devices, where
     /// vCPUs are stopped while migrating out.
     fn nvme_migrate(&mut self) {
-        let mut payload_outputs = PayloadOutputs::new();
-        let acc_mem = self.scaffold.acc_mem.access().unwrap();
-        let migrate_ctx = MigrateCtx { mem: &acc_mem };
-
-        self.nvme
-            .export(&mut payload_outputs, &migrate_ctx)
-            .expect("can export");
-
-        let mut data = Vec::new();
-        let payload_outputs = payload_outputs.into_iter().collect::<Vec<_>>();
-        let mut desers: Vec<ron::Deserializer> =
-            Vec::with_capacity(payload_outputs.len());
-        let mut metadata: Vec<(&str, u32)> =
-            Vec::with_capacity(payload_outputs.len());
-
-        let mut payload_offers = {
-            for payload in payload_outputs.iter() {
-                data.push(
-                    ron::ser::to_string(&payload.payload)
-                        .expect("can serialize"),
-                );
-            }
-            for (payload, data) in payload_outputs.iter().zip(data.iter()) {
-                desers.push(
-                    ron::Deserializer::from_str(data).expect("can deserialize"),
-                );
-                metadata.push((&payload.kind, payload.version));
-            }
-            let offer_iter =
-                metadata.iter().zip(desers.iter_mut()).map(|(meta, deser)| {
-                    PayloadOffer {
-                        kind: meta.0,
-                        version: meta.1,
-                        payload: Box::new(
-                            <dyn erased_serde::Deserializer>::erase(deser),
-                        ),
-                    }
-                });
-            PayloadOffers::new(offer_iter)
-        };
+        let driver = MigrationDriver::with_mem(&self.scaffold.acc_mem);
+        let payload = driver.export(self.nvme.as_ref());
 
         self.nvme =
             PciNvme::create(Self::TEST_SERIAL, None, true, self.log.clone());
@@ -414,9 +374,7 @@ impl FuzzCtx {
             None,
         );
 
-        self.nvme
-            .import(&mut payload_offers, &migrate_ctx)
-            .expect("can import");
+        driver.import(self.nvme.as_ref(), payload);
     }
 }
 
