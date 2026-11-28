@@ -9,7 +9,7 @@ use crate::common::*;
 use crate::hw::bhyve::{
     BhyveAtPic, BhyveAtPit, BhyveIoApic, BhyvePmTimer, BhyveRtc,
 };
-use crate::hw::chipset::Chipset;
+use crate::hw::chipset::{Chipset, ChipsetError};
 use crate::hw::ibmpc;
 use crate::hw::ids::pci::{
     PIIX3_ISA_DEV_ID, PIIX3_ISA_SUB_DEV_ID, PIIX4_HB_DEV_ID,
@@ -308,6 +308,15 @@ impl Chipset for I440FxHostBridge {
                 lintr_cfg,
             )
             .unwrap();
+    }
+    fn pci_detach(
+        &self,
+        bdf: Bdf,
+    ) -> Result<Option<Arc<dyn pci::Endpoint>>, ChipsetError> {
+        let dev = self
+            .pci_topology
+            .pci_detach(LogicalBusId(bdf.bus.get()), bdf.location)?;
+        Ok(dev)
     }
     fn power_pin(&self) -> Arc<dyn IntrPin> {
         self.pin_power.clone()

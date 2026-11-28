@@ -34,7 +34,7 @@ use propolis::cpuid::TopoKind;
 use propolis::enlightenment::Enlightenment;
 use propolis::firmware::{acpi, smbios};
 use propolis::hw::bhyve::BhyveHpet;
-use propolis::hw::chipset::{i440fx, Chipset};
+use propolis::hw::chipset::{i440fx, Chipset, ChipsetError};
 use propolis::hw::ibmpc;
 use propolis::hw::pci;
 use propolis::hw::pci::topology::PciTopologyError;
@@ -197,6 +197,13 @@ pub struct RegisteredChipset {
 impl RegisteredChipset {
     pub fn pci_attach(&self, bdf: pci::Bdf, dev: Arc<dyn pci::Endpoint>) {
         self.chipset.pci_attach(bdf, dev, self.isa.route_lintr(bdf));
+    }
+    #[expect(dead_code)]
+    pub fn pci_detach(
+        &self,
+        bdf: pci::Bdf,
+    ) -> Result<Option<Arc<dyn pci::Endpoint>>, ChipsetError> {
+        self.chipset.pci_detach(bdf)
     }
     pub fn irq_pin(&self, irq: u8) -> Option<Box<dyn intr_pins::IntrPin>> {
         self.isa.irq_pin(irq)

@@ -318,6 +318,10 @@ impl Endpoint for Bridge {
         assert!(_old.is_none());
     }
 
+    fn detach(&self) {
+        panic!("unexpected PCI bridge detach");
+    }
+
     fn cfg_rw(&self, mut rwo: RWOp) {
         self.cfg_map.process(&mut rwo, |id, rwo| match id {
             CfgReg::Std => {

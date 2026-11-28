@@ -50,6 +50,9 @@ pub trait Device: Send + Sync + 'static {
     /// Attaches the device to the virtual machine.
     fn attach(&self) {}
 
+    /// Detaches the device from the virtual machine.
+    fn detach(&self) {}
+
     /// Notification that the interrupt mode has changed.  For
     /// example, we might change from MSI-X to MSI.
     fn interrupt_mode_change(&self, mode: IntrMode) {
@@ -74,6 +77,10 @@ impl<D: Device + Send + Sync + 'static> Endpoint for D {
         let ds = self.device_state();
         ds.attach(attachment);
         self.attach();
+    }
+    fn detach(&self) {
+        self.detach();
+        self.device_state().detach();
     }
     fn cfg_rw(&self, mut rwo: RWOp) {
         let ds = self.device_state();
@@ -197,8 +204,8 @@ impl State {
     }
 
     /// Returns the bus attachment state.
-    fn attached(&self) -> &bus::Attachment {
-        self.attach.as_ref().unwrap()
+    fn attached(&self) -> Option<&bus::Attachment> {
+        self.attach.as_ref()
     }
 
     /// Is MMIO access decoding enabled?
@@ -342,7 +349,9 @@ impl DeviceState {
                 let mut val = RegStatus::empty();
                 if self.lintr_support {
                     let state = self.state.lock().unwrap();
-                    if let Some((_id, pin)) = state.attached().lintr_cfg() {
+                    if let Some((_id, pin)) =
+                        state.attached().and_then(bus::Attachment::lintr_cfg)
+                    {
                         if pin.is_asserted() {
                             val.insert(RegStatus::INTR_STATUS);
                         }
@@ -360,8 +369,7 @@ impl DeviceState {
                 if self.lintr_support {
                     let state = self.state.lock().unwrap();
                     let pin_ident = state
-                        .attach
-                        .as_ref()
+                        .attached()
                         .and_then(bus::Attachment::lintr_cfg)
                         .map(|(id, _pin)| *id as u8)
                         .unwrap_or(0);
@@ -389,8 +397,7 @@ impl DeviceState {
                 let mut val = HEADER_TYPE_DEVICE;
                 let state = self.state.lock().unwrap();
                 if state
-                    .attach
-                    .as_ref()
+                    .attached()
                     .map(bus::Attachment::is_multifunc)
                     .unwrap_or(false)
                 {
@@ -432,8 +439,9 @@ impl DeviceState {
                 let val = wo.read_u32();
                 let mut state = self.state.lock().unwrap();
                 if let Some(res) = state.bars.reg_write(*bar, val) {
-                    let attach = state.attached();
-                    if state.decoding_active(&res.def) {
+                    if let (Some(attach), true) =
+                        (state.attached(), state.decoding_active(&res.def))
+                    {
                         attach.bar_unregister(res.id);
                         attach.bar_register(res.id, res.def, res.val_new);
                         dev.bar_update(BarState {
@@ -478,8 +486,9 @@ impl DeviceState {
     }
     fn reg_cmd_write(&self, dev: &dyn Device, val: RegCmd) {
         let mut state = self.state.lock().unwrap();
-        let attach = state.attached();
+        let Some(attach) = state.attached() else { return };
         let diff = val ^ state.reg_command;
+        let old = state.reg_command.bits();
 
         // Update BAR registrations
         if diff.intersects(RegCmd::IO_EN | RegCmd::MMIO_EN) {
@@ -530,6 +539,8 @@ impl DeviceState {
             state.reg_command = val;
         }
         // TODO: disable memory and MSI access when busmastering is disabled
+
+        probes::pci_cfg_write!(|| (val.bits(), old));
     }
 
     fn which_intr_mode(&self, state: &State) -> IntrMode {
@@ -538,7 +549,7 @@ impl DeviceState {
         {
             return IntrMode::Msix;
         }
-        if let Some(attach) = state.attach.as_ref() {
+        if let Some(attach) = state.attached() {
             if attach.lintr_cfg().is_some()
                 && !state.reg_command.contains(RegCmd::INTX_DIS)
             {
@@ -635,24 +646,34 @@ impl DeviceState {
         for n in BarN::iter() {
             if let Some(_) = state.bars.get(n) {
                 state.bars.set(n, 0);
-                let attach = state.attached();
-                attach.bar_unregister(n);
-                // TODO: notify device of zeroed BARs
+                if let Some(attach) = state.attached() {
+                    attach.bar_unregister(n);
+                    // TODO: notify device of zeroed BARs
+                }
             }
         }
     }
     fn attach(&self, attachment: bus::Attachment) {
         let mut state = self.state.lock().unwrap();
         let _old = state.attach.replace(attachment);
+        // TODO(luiz): don't panic
         assert!(_old.is_none());
         let attach = state.attach.as_ref().unwrap();
         attach.acc_mem.adopt(&self.acc_mem, None);
         attach.acc_msi.adopt(&self.acc_msi, None);
     }
-
+    fn detach(&self) {
+        let Some(attach) = self.state.lock().unwrap().attach.take() else {
+            return;
+        };
+        if let Some((_id, pin)) = attach.lintr_cfg() {
+            pin.deassert();
+        }
+        drop(attach);
+    }
     pub fn lintr_pin(&self) -> Option<Arc<dyn IntrPin>> {
         let state = self.state.lock().unwrap();
-        let attach = state.attach.as_ref()?;
+        let attach = state.attached()?;
         let (_id, pin) = attach.lintr_cfg()?;
         Some(Arc::clone(pin))
     }
@@ -689,13 +710,18 @@ impl DeviceState {
         inner.bars.import(state.bars)?;
 
         // Reattach any imported Bars to their respective handlers (pio, mmio)
-        let attach = inner.attached();
-        for n in BarN::iter() {
-            if let Some((def, addr)) = inner.bars.get(n) {
-                if inner.decoding_active(&def) {
-                    attach.bar_register(n, def, addr);
+        if let Some(attach) = inner.attached() {
+            for n in BarN::iter() {
+                if let Some((def, addr)) = inner.bars.get(n) {
+                    if inner.decoding_active(&def) {
+                        attach.bar_register(n, def, addr);
+                    }
                 }
             }
+        } else {
+            return Err(MigrateStateError::ImportFailed(
+                "PciState: device is not attached".to_string(),
+            ));
         }
 
         match (self.msix_cfg.as_ref(), state.msix) {
@@ -1349,6 +1375,11 @@ pub mod migrate {
             ("pci-device", 1)
         }
     }
+}
+
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn pci_cfg_write(value: u16, old: u16) {}
 }
 
 #[cfg(test)]

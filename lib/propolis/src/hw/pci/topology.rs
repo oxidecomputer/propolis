@@ -84,13 +84,21 @@ impl Topology {
         dev: Arc<dyn Endpoint>,
         lintr_cfg: Option<LintrCfg>,
     ) -> Result<(), PciTopologyError> {
-        if let Some(bus_index) = self.logical_buses.get(&bus) {
-            let bus = &self.buses[bus_index.0];
-            bus.attach(location, dev, lintr_cfg);
-            Ok(())
-        } else {
-            Err(PciTopologyError::LogicalBusNotFound(bus))
-        }
+        self.bus(bus)?.attach(location, dev, lintr_cfg);
+        Ok(())
+    }
+
+    /// Detaches a device from a logical bus in this topology.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the logical bus is not present in the topology.
+    pub fn pci_detach(
+        &self,
+        bus: LogicalBusId,
+        location: BusLocation,
+    ) -> Result<Option<Arc<dyn Endpoint>>, PciTopologyError> {
+        Ok(self.bus(bus)?.detach(location))
     }
 
     /// Issues a configuration space I/O to a device at the supplied location.
@@ -148,6 +156,13 @@ impl Topology {
             let _old = guard.routed_buses.remove(&routed_id);
             assert!(_old.is_some());
         }
+    }
+
+    fn bus(&self, bus: LogicalBusId) -> Result<&Bus, PciTopologyError> {
+        self.logical_buses
+            .get(&bus)
+            .map(|idx| &self.buses[idx.0])
+            .ok_or(PciTopologyError::LogicalBusNotFound(bus))
     }
 
     #[cfg(test)]

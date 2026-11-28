@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
+use strum::IntoEnumIterator;
+
 use super::bar::BarDefine;
 use super::{BarN, BusLocation, Endpoint, LintrCfg};
 use crate::accessors::*;
@@ -50,6 +52,15 @@ impl Bus {
             acc_mem,
         };
         dev.attach(attached);
+    }
+
+    pub fn detach(&self, location: BusLocation) -> Option<Arc<dyn Endpoint>> {
+        let dev = self.inner.lock().unwrap().detach(location)?;
+        // Detach device without holding a lock to inner. The device receives a
+        // weak reference to inner on attach, so it could attempt to lock it on
+        // detach.
+        dev.detach();
+        Some(dev)
     }
 
     pub fn device_at(
@@ -115,15 +126,23 @@ impl Slot {
         let _old = self.funcs[location.func.get() as usize].replace(dev);
 
         // XXX be strict for now
+        // TODO(luiz): don't be strict
         assert!(matches!(_old, None));
 
         // Keep multi-func state updated
-        if !self.state.is_multifunc.load(Ordering::Acquire) {
-            if self.funcs.iter().filter(|x| x.is_some()).count() > 1 {
-                self.state.is_multifunc.store(true, Ordering::Release);
-            }
-        }
+        self.update_state();
         self.state.clone()
+    }
+
+    fn detach(&mut self, location: BusLocation) -> Option<Arc<dyn Endpoint>> {
+        let dev = self.funcs[location.func.get() as usize].take()?;
+        self.update_state();
+        Some(dev)
+    }
+
+    fn update_state(&mut self) {
+        let is_multifunc = self.funcs.iter().flatten().count() > 1;
+        self.state.is_multifunc.store(is_multifunc, Ordering::Release);
     }
 }
 
@@ -184,6 +203,13 @@ impl Inner {
             self.acc_mem.child(Some(acc_name)),
         )
     }
+    fn detach(&mut self, location: BusLocation) -> Option<Arc<dyn Endpoint>> {
+        let dev = self.slots[location.dev.get() as usize].detach(location)?;
+        for n in BarN::iter() {
+            self.bar_unregister(location, n);
+        }
+        Some(dev)
+    }
     fn bar_register(
         &mut self,
         location: BusLocation,
@@ -191,6 +217,7 @@ impl Inner {
         def: BarDefine,
         value: u64,
     ) {
+        // XXX(luiz): don't panic
         let dev = self.device_at(location).unwrap();
 
         let live = match def {
@@ -266,6 +293,9 @@ mod test {
         fn attach(&self, attachment: Attachment) {
             let mut attach = self.inner.lock().unwrap();
             attach.replace(attachment);
+        }
+        fn detach(&self) {
+            self.inner.lock().unwrap().take();
         }
         fn cfg_rw(&self, _op: RWOp) {}
         fn bar_rw(&self, _bar: BarN, _rwo: RWOp) {}
