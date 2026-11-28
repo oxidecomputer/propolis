@@ -1249,6 +1249,7 @@ fn setup_instance(
     chipset_hb.attach(machine);
     chipset_lpc.attach(&machine.bus_pio);
     chipset_pm.attach(&machine.bus_pio);
+    acpi.attach(&machine.bus_pio);
 
     guard.inventory.register(&chipset_hb);
     guard.inventory.register(&chipset_lpc);
